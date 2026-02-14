@@ -8,21 +8,25 @@
 
 //! Interactive TUI client for the Monarch mesh admin HTTP API.
 //!
-//! Displays the full topology as a navigable tree: host → proc → actor.
-//! Selecting any node shows contextual details on the right pane,
-//! including actor flight recorder events when an actor is selected.
+//! Displays the mesh topology as a navigable tree by walking
+//! `GET /v1/{reference}` endpoints. Selecting any node shows
+//! contextual details on the right pane, including actor flight
+//! recorder events when an actor is selected.
 //!
 //! ```bash
 //! # Terminal 1: Run dining philosophers (or any hyperactor application)
-//! buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_example_dining_philosophers -- --in-process
+//! buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_example_dining_philosophers
 //!
 //! # Terminal 2: Run this TUI (use the port printed by the application)
 //! buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX
 //! ```
 
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
 use std::io;
 use std::io::IsTerminal;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -39,13 +43,12 @@ use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use futures::StreamExt;
 use hyperactor::ActorId;
-use hyperactor::admin::ActorDetails;
-use hyperactor::admin::HostDetails;
-use hyperactor::admin::HostProcEntry;
-use hyperactor::admin::HostSummary;
-use hyperactor::admin::ProcDetails;
+use hyperactor::ProcId;
+use hyperactor::admin::RecordedEvent;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor_mesh::mesh_admin::NodePayload;
+use hyperactor_mesh::mesh_admin::NodeProperties;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use ratatui::Terminal;
@@ -66,7 +69,6 @@ use ratatui::widgets::ListItem;
 use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
-use serde::Deserialize;
 use serde_json::Value;
 
 /// Command-line arguments for the admin TUI.
@@ -78,112 +80,132 @@ struct Args {
     addr: String,
 
     /// Refresh interval in milliseconds
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 5000)]
     refresh_ms: u64,
-}
-
-// Client-side projection of the mesh admin `/v1/hosts` response.
-// This type is private in mesh_admin.rs so we replicate it here for deserialization.
-#[derive(Debug, Deserialize)]
-struct MeshHostsResponse {
-    #[allow(dead_code)]
-    total: usize,
-    hosts: Vec<HostSummary>,
-    unreachable: Vec<String>,
 }
 
 // Topology tree model
 
-/// What kind of entity a tree node represents.
-#[derive(Debug, Clone)]
-enum NodeKind {
-    Host {
-        addr: String,
-    },
-    Proc {
-        host_addr: String,
-        proc_name: String,
-    },
-    Actor {
-        host_addr: String,
-        proc_name: String,
-        actor_name: String,
-        /// Display label including pid (e.g. "sieve[0]"), used for
-        /// unique expand keys when multiple actors share the same name.
-        actor_label: String,
-    },
+/// Maximum recursion depth when walking references.
+/// Root(skipped) → Host(0) → Proc(1) → Actor(2) → ChildActor(3).
+const MAX_TREE_DEPTH: usize = 4;
+
+/// Lightweight classification for a topology node, used for UI
+/// concerns (primarily color-coding and a few display heuristics).
+///
+/// This is derived from the node's [`NodeProperties`] variant rather
+/// than being persisted in the payload.
+#[derive(Debug, Clone, Copy)]
+enum NodeType {
+    /// Synthetic root of the admin tree (not rendered as a row; hosts
+    /// appear at depth 0).
+    Root,
+    /// A host in the mesh, identified by its admin-reported address.
+    Host,
+    /// A proc running on a host (system or user).
+    Proc,
+    /// An actor instance within a proc.
+    Actor,
 }
 
-impl NodeKind {
-    /// Return a stable key for preserving state (expanded + selection) across refreshes.
-    fn expand_key(&self) -> String {
-        match self {
-            NodeKind::Host { addr } => format!("host:{}", addr),
-            NodeKind::Proc {
-                host_addr,
-                proc_name,
-            } => format!("proc:{}:{}", host_addr, proc_name),
-            NodeKind::Actor {
-                host_addr,
-                proc_name,
-                actor_label,
-                ..
-            } => format!("actor:{}:{}:{}", host_addr, proc_name, actor_label),
+impl NodeType {
+    /// Classify a node for UI purposes by mapping from its
+    /// [`NodeProperties`] variant.
+    ///
+    /// This is a lossy projection: it preserves only the high-level
+    /// kind (root/host/proc/actor), not the detailed fields (e.g.,
+    /// `is_system`, counts, status).
+    fn from_properties(props: &NodeProperties) -> Self {
+        match props {
+            NodeProperties::Root { .. } => NodeType::Root,
+            NodeProperties::Host { .. } => NodeType::Host,
+            NodeProperties::Proc { .. } => NodeType::Proc,
+            NodeProperties::Actor { .. } => NodeType::Actor,
         }
     }
 }
 
-/// A single node in the topology tree.
+/// A single row in the flattened topology view.
+///
+/// `TreeNode` is the UI model (not the authoritative topology): it
+/// stores just enough information to render indentation,
+/// expand/collapse state, and a stable `reference` key for fetching
+/// the full [`NodePayload`] from the admin API.
 #[derive(Debug, Clone)]
 struct TreeNode {
+    /// Human-friendly label shown in the tree (derived from
+    /// [`NodePayload`]).
     label: String,
+    /// Visual indentation level in the tree (0 = host under root).
     depth: usize,
-    kind: NodeKind,
+    /// The reference string for this node (opaque identity).
+    reference: String,
+    /// Node type for color coding.
+    node_type: NodeType,
+    /// Whether this node is currently expanded in the UI.
     expanded: bool,
+    /// Whether the backing payload reports any children (controls
+    /// fold arrow rendering).
     has_children: bool,
-}
-
-/// Contextual detail for the currently selected node.
-#[derive(Debug)]
-enum NodeDetail {
-    Host(HostDetails),
-    Proc(ProcDetails),
-    Actor(ActorDetails),
 }
 
 // Application state
 
+/// Runtime state for the admin TUI.
+///
+/// `App` owns the HTTP client, the currently materialized topology
+/// tree, selection state, and a small cache of fetched
+/// [`NodePayload`]s so navigation/detail rendering can be responsive
+/// without re-fetching every node on every keypress.
 struct App {
+    /// Base URL for the admin server (e.g. `http://127.0.0.1:8080`).
     base_url: String,
+    /// Shared HTTP client used for all `GET /v1/{reference}`
+    /// requests.
     client: reqwest::Client,
+    /// Set when the user requests exit (e.g. `q` / `Esc` / `Ctrl-C`).
     should_quit: bool,
 
-    /// Flattened topology tree: host → proc → actor.
+    /// Flattened topology tree built by walking references from
+    /// `"root"`.
     tree: Vec<TreeNode>,
-    /// Currently selected index into visible_indices().
+    /// Currently selected index into `visible_indices()`.
     selected: usize,
-    /// Detail for the selected node (fetched on selection change).
-    detail: Option<NodeDetail>,
+    /// Detail payload for the selected node (usually served from
+    /// `node_cache`).
+    detail: Option<NodePayload>,
+    /// Error string for the detail pane when fetching/parsing the
+    /// selected node fails.
     detail_error: Option<String>,
 
+    /// Timestamp string for the last successful refresh (local time).
     last_refresh: String,
+    /// Top-level connection/refresh error surfaced in the header.
     error: Option<String>,
 
-    /// Whether to show system/infrastructure procs (prefixed with `[system]`).
+    /// Whether to show system/infrastructure procs (toggled via `s`).
     show_system_procs: bool,
+
+    /// Cache of fetched node payloads, keyed by reference string.
+    node_cache: HashMap<String, NodePayload>,
 }
 
 /// Result of handling a key event.
 enum KeyResult {
     /// Nothing changed.
     None,
-    /// Selection or expand/collapse changed; re-fetch detail.
+    /// Selection or expand/collapse changed; update detail from cache.
     DetailChanged,
     /// A filter/view setting changed; full tree refresh needed.
     NeedsRefresh,
 }
 
 impl App {
+    /// Construct a new TUI app instance targeting the given admin
+    /// server address.
+    ///
+    /// `addr` is the host:port pair (e.g. `127.0.0.1:8080`); the HTTP
+    /// base URL is derived from it.
     fn new(addr: &str) -> Self {
         Self {
             base_url: format!("http://{}", addr),
@@ -196,10 +218,15 @@ impl App {
             last_refresh: String::new(),
             error: None,
             show_system_procs: false,
+            node_cache: HashMap::new(),
         }
     }
 
-    /// Compute which tree indices are visible (not hidden by collapsed ancestors).
+    /// Return the indices of `self.tree` that are currently visible.
+    ///
+    /// Visibility is determined by expansion state: any node whose
+    /// ancestor is collapsed is hidden. The returned indices are in
+    /// on-screen order (top-to-bottom).
     fn visible_indices(&self) -> Vec<usize> {
         let mut visible = Vec::new();
         let mut skip_below: Option<usize> = None;
@@ -219,152 +246,25 @@ impl App {
         visible
     }
 
-    /// Get the tree index for the currently selected visible row.
+    /// Map the current on-screen selection (`self.selected`) to a
+    /// concrete index in `self.tree`.
+    ///
+    /// Returns `None` if the selection is out of range (e.g. the tree
+    /// is empty).
     fn selected_tree_index(&self) -> Option<usize> {
         let visible = self.visible_indices();
         visible.get(self.selected).copied()
     }
 
-    /// Rebuild the full topology tree from the admin API.
+    /// Fetch a single node payload from the admin API.
     ///
-    /// 1. GET /v1/hosts → list of hosts
-    /// 2. For each host, GET /v1/hosts/{addr} → proc names
-    /// 3. For each proc, GET /v1/hosts/{addr}/procs/{name} → root actors
-    async fn refresh(&mut self) {
-        self.error = None;
-
-        // Save expanded state before rebuilding
-        let expanded_keys: HashSet<String> = self
-            .tree
-            .iter()
-            .filter(|n| n.expanded)
-            .map(|n| n.kind.expand_key())
-            .collect();
-
-        // Save current selection's expand_key to restore position
-        let selected_key = self
-            .selected_tree_index()
-            .and_then(|idx| self.tree.get(idx))
-            .map(|n| n.kind.expand_key());
-
-        let (hosts, unreachable_hosts) = match self
-            .client
-            .get(format!("{}/v1/hosts", self.base_url))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<MeshHostsResponse>().await {
-                    Ok(mesh_resp) => (mesh_resp.hosts, mesh_resp.unreachable),
-                    Err(e) => {
-                        self.error = Some(format!("Parse error: {}", e));
-                        return;
-                    }
-                }
-            }
-            Ok(resp) => {
-                self.error = Some(format!("HTTP {}", resp.status()));
-                return;
-            }
-            Err(e) => {
-                self.error = Some(format!("Failed to connect: {}", e));
-                return;
-            }
-        };
-
-        let mut tree = Vec::new();
-
-        for host in &hosts {
-            let host_key = format!("host:{}", host.addr);
-            tree.push(TreeNode {
-                label: host.addr.clone(),
-                depth: 0,
-                kind: NodeKind::Host {
-                    addr: host.addr.clone(),
-                },
-                expanded: expanded_keys.contains(&host_key),
-                has_children: true,
-            });
-
-            // Fetch host details to get proc names
-            let host_details = self.fetch_host_details(&host.addr).await;
-            let mut proc_entries: Vec<&HostProcEntry> = match &host_details {
-                Some(hd) => hd
-                    .procs
-                    .iter()
-                    .filter(|p| self.show_system_procs || !p.name.starts_with("[system]"))
-                    .collect(),
-                None => continue,
-            };
-            proc_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-            // Update the host label to include proc count
-            if let Some(host_node) = tree.last_mut() {
-                host_node.label = format!("{}  ({} procs)", host.addr, proc_entries.len());
-            }
-
-            for entry in &proc_entries {
-                self.append_proc_to_tree(&mut tree, &entry.name, &host.addr, 1, &expanded_keys)
-                    .await;
-            }
-        }
-
-        // Show unreachable hosts (greyed out, no children to expand)
-        for addr in &unreachable_hosts {
-            tree.push(TreeNode {
-                label: format!("{} (unreachable)", addr),
-                depth: 0,
-                kind: NodeKind::Host { addr: addr.clone() },
-                expanded: false,
-                has_children: false,
-            });
-        }
-
-        self.tree = tree;
-        self.last_refresh = chrono_now();
-
-        // Restore selection position
-        let visible = self.visible_indices();
-        if let Some(ref key) = selected_key {
-            if let Some(pos) = visible.iter().position(|&idx| {
-                self.tree
-                    .get(idx)
-                    .map(|n| n.kind.expand_key() == *key)
-                    .unwrap_or(false)
-            }) {
-                self.selected = pos;
-            }
-        }
-        // Clamp selection
-        if !visible.is_empty() && self.selected >= visible.len() {
-            self.selected = visible.len() - 1;
-        }
-
-        // Fetch detail for current selection
-        self.fetch_selected_detail().await;
-    }
-
-    async fn fetch_host_details(&self, addr: &str) -> Option<HostDetails> {
-        let url = format!("{}/v1/hosts/{}", self.base_url, url_encode(addr));
-        let resp = self.client.get(&url).send().await.ok()?;
-        if resp.status().is_success() {
-            resp.json::<HostDetails>().await.ok()
-        } else {
-            None
-        }
-    }
-
-    async fn fetch_proc_details(
-        &self,
-        host_addr: &str,
-        proc_name: &str,
-    ) -> Result<ProcDetails, String> {
-        let url = format!(
-            "{}/v1/hosts/{}/procs/{}",
-            self.base_url,
-            url_encode(host_addr),
-            url_encode(proc_name),
-        );
+    /// `reference` is the opaque identifier used by the server (e.g.
+    /// `"root"`, a `ProcId` string, or an `ActorId` string). The
+    /// reference is URL-encoded and requested from `GET
+    /// /v1/{reference}`. Returns a parsed `NodePayload` on success,
+    /// or a human-readable error string on failure.
+    async fn fetch_node(&self, reference: &str) -> Result<NodePayload, String> {
+        let url = format!("{}/v1/{}", self.base_url, urlencoding::encode(reference));
         let resp = self
             .client
             .get(&url)
@@ -372,7 +272,7 @@ impl App {
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
         if resp.status().is_success() {
-            resp.json::<ProcDetails>()
+            resp.json::<NodePayload>()
                 .await
                 .map_err(|e| format!("Parse error: {}", e))
         } else {
@@ -380,116 +280,217 @@ impl App {
         }
     }
 
-    /// Append a proc and its actors to the tree at the given depth.
-    async fn append_proc_to_tree(
-        &self,
-        tree: &mut Vec<TreeNode>,
-        proc_name: &str,
-        host_addr: &str,
-        depth: usize,
-        expanded_keys: &HashSet<String>,
-    ) {
-        let kind = NodeKind::Proc {
-            host_addr: host_addr.to_string(),
-            proc_name: proc_name.to_string(),
-        };
-        let proc_key = kind.expand_key();
-        let short_name = extract_short_proc_name(proc_name);
-        tree.push(TreeNode {
-            label: short_name,
-            depth,
-            kind,
-            expanded: expanded_keys.contains(&proc_key),
-            has_children: true,
-        });
+    /// Refresh the in-memory topology model by re-walking the
+    /// reference graph from `"root"`.
+    ///
+    /// Preserves expansion state (and tries to preserve the current
+    /// selection) across rebuilds, updates the node cache, and then
+    /// refreshes the detail pane for the currently selected row.
+    async fn refresh(&mut self) {
+        self.error = None;
 
-        // Fetch proc details to get actors
-        if let Ok(pd) = self.fetch_proc_details(host_addr, proc_name).await {
-            for root_actor in &pd.actors {
-                // Parse the ActorId to get a short display label and the
-                // plain actor name (used for URL construction — the handler
-                // matches against `actor_id.name()`).
-                let (label, actor_name) = match ActorId::from_str(root_actor) {
-                    Ok(actor_id) => (
-                        format!("{}[{}]", actor_id.name(), actor_id.pid()),
-                        actor_id.name().to_string(),
-                    ),
-                    Err(_) => (root_actor.clone(), root_actor.clone()),
-                };
-                tree.push(TreeNode {
-                    label: label.clone(),
-                    depth: depth + 1,
-                    kind: NodeKind::Actor {
-                        host_addr: host_addr.to_string(),
-                        proc_name: proc_name.to_string(),
-                        actor_name,
-                        actor_label: label,
-                    },
-                    expanded: false,
-                    has_children: false,
-                });
+        // Save expanded state before rebuilding.
+        let expanded_keys: HashSet<String> = self
+            .tree
+            .iter()
+            .filter(|n| n.expanded)
+            .map(|n| n.reference.clone())
+            .collect();
+
+        // Save current selection's reference to restore position.
+        let selected_key = self
+            .selected_tree_index()
+            .and_then(|idx| self.tree.get(idx))
+            .map(|n| n.reference.clone());
+
+        // Fetch root.
+        let root = match self.fetch_node("root").await {
+            Ok(payload) => payload,
+            Err(e) => {
+                self.error = Some(format!("Failed to connect: {}", e));
+                return;
+            }
+        };
+
+        let mut tree = Vec::new();
+        let mut cache = HashMap::new();
+        cache.insert("root".to_string(), root.clone());
+
+        // Build tree recursively from root's children (skip root node
+        // itself — hosts stay at depth 0, matching the old layout).
+        let mut root_children = root.children.clone();
+        root_children.sort_by(|a, b| natural_ref_cmp(a, b));
+        for child_ref in &root_children {
+            self.build_subtree(&mut tree, &mut cache, child_ref, 0, &expanded_keys)
+                .await;
+        }
+
+        self.tree = tree;
+        self.node_cache = cache;
+        self.last_refresh = chrono::Local::now().format("%H:%M:%S").to_string();
+
+        // Restore selection position.
+        let visible = self.visible_indices();
+        if let Some(ref key) = selected_key {
+            if let Some(pos) = visible.iter().position(|&idx| {
+                self.tree
+                    .get(idx)
+                    .map(|n| n.reference == *key)
+                    .unwrap_or(false)
+            }) {
+                self.selected = pos;
             }
         }
+        // Clamp selection.
+        if !visible.is_empty() && self.selected >= visible.len() {
+            self.selected = visible.len() - 1;
+        }
+
+        // Update detail from cache for current selection.
+        self.update_selected_detail().await;
     }
 
-    /// Fetch contextual detail for the currently selected tree node.
-    async fn fetch_selected_detail(&mut self) {
+    /// Recursively expand a reference into a flattened `TreeNode`
+    /// list.
+    ///
+    /// Fetches `reference` from the admin API, appends a
+    /// corresponding `TreeNode` to `tree`, caches the full
+    /// `NodePayload` in `cache`, and (if the node is marked expanded
+    /// in `expanded_keys`) recurses into its children until
+    /// `MAX_TREE_DEPTH` is reached.
+    ///
+    /// Notes:
+    /// - Uses `cache` as a visited set to avoid cycles / duplicate
+    ///   display when the same reference appears under multiple parents
+    ///   (only the first occurrence is shown).
+    /// - Applies view filtering (e.g. hide `is_system` procs unless
+    ///   enabled) before inserting.
+    /// - Returns a boxed future so callers can build the tree with
+    ///   async recursion without an explicit `async fn` recursive
+    ///   signature.
+    fn build_subtree<'a>(
+        &'a self,
+        tree: &'a mut Vec<TreeNode>,
+        cache: &'a mut HashMap<String, NodePayload>,
+        reference: &'a str,
+        depth: usize,
+        expanded_keys: &'a HashSet<String>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            // Depth guard.
+            if depth >= MAX_TREE_DEPTH {
+                return;
+            }
+
+            // If already visited, skip silently. A node can appear in
+            // multiple parents' children lists (e.g. sieve actors); we
+            // only display it under the first parent encountered.
+            if cache.contains_key(reference) {
+                return;
+            }
+
+            let payload = match self.fetch_node(reference).await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+
+            // Filter: skip system procs when hidden.
+            if let NodeProperties::Proc { is_system, .. } = payload.properties {
+                if !self.show_system_procs && is_system {
+                    return;
+                }
+            }
+
+            let label = derive_label(&payload);
+            let node_type = NodeType::from_properties(&payload.properties);
+            let has_children = !payload.children.is_empty();
+
+            tree.push(TreeNode {
+                label,
+                depth,
+                reference: reference.to_string(),
+                node_type,
+                expanded: expanded_keys.contains(reference),
+                has_children,
+            });
+
+            cache.insert(reference.to_string(), payload.clone());
+
+            // Only recurse into children when the node is expanded.
+            // Collapsed nodes still show the fold arrow via has_children.
+            if expanded_keys.contains(reference) {
+                let mut children = payload.children.clone();
+                children.sort_by(|a, b| natural_ref_cmp(a, b));
+
+                if matches!(payload.properties, NodeProperties::Proc { .. }) {
+                    for child_ref in &children {
+                        if expanded_keys.contains(child_ref.as_str()) {
+                            self.build_subtree(tree, cache, child_ref, depth + 1, expanded_keys)
+                                .await;
+                        } else {
+                            let label = derive_label_from_ref(child_ref);
+                            tree.push(TreeNode {
+                                label,
+                                depth: depth + 1,
+                                reference: child_ref.clone(),
+                                node_type: NodeType::Actor,
+                                expanded: false,
+                                has_children: true,
+                            });
+                        }
+                    }
+                } else {
+                    for child_ref in &children {
+                        self.build_subtree(tree, cache, child_ref, depth + 1, expanded_keys)
+                            .await;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Update the right-hand detail pane for the currently selected
+    /// row.
+    ///
+    /// Looks up the selected node’s reference and populates
+    /// `self.detail` from `node_cache` when available; otherwise
+    /// fetches the payload from the admin API and caches it. On fetch
+    /// failure, clears `detail` and records a human-readable error in
+    /// `detail_error` so the UI can display it.
+    async fn update_selected_detail(&mut self) {
         self.detail = None;
         self.detail_error = None;
 
-        let tree_idx = match self.selected_tree_index() {
-            Some(idx) => idx,
-            None => return,
-        };
-        let node = match self.tree.get(tree_idx) {
-            Some(n) => n.clone(),
-            None => return,
-        };
-
-        match &node.kind {
-            NodeKind::Host { addr } => match self.fetch_host_details(addr).await {
-                Some(hd) => self.detail = Some(NodeDetail::Host(hd)),
-                None => self.detail_error = Some("Failed to fetch host details".to_string()),
-            },
-            NodeKind::Proc {
-                host_addr,
-                proc_name,
-            } => match self.fetch_proc_details(host_addr, proc_name).await {
-                Ok(pd) => self.detail = Some(NodeDetail::Proc(pd)),
-                Err(e) => self.detail_error = Some(e),
-            },
-            NodeKind::Actor {
-                host_addr,
-                proc_name,
-                actor_name,
-                ..
-            } => {
-                let url = format!(
-                    "{}/v1/hosts/{}/procs/{}/{}",
-                    self.base_url,
-                    url_encode(host_addr),
-                    url_encode(proc_name),
-                    url_encode(actor_name),
-                );
-                match self.client.get(&url).send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        match resp.json::<ActorDetails>().await {
-                            Ok(ad) => self.detail = Some(NodeDetail::Actor(ad)),
-                            Err(_) => {
-                                self.detail_error =
-                                    Some("Failed to parse actor details".to_string());
+        if let Some(idx) = self.selected_tree_index() {
+            if let Some(node) = self.tree.get(idx) {
+                let reference = node.reference.clone();
+                if let Some(payload) = self.node_cache.get(&reference) {
+                    self.detail = Some(payload.clone());
+                } else {
+                    match self.fetch_node(&reference).await {
+                        Ok(payload) => {
+                            self.detail = Some(payload.clone());
+                            if let Some(node) = self.tree.get_mut(idx) {
+                                node.has_children = !payload.children.is_empty();
                             }
+                            self.node_cache.insert(reference, payload);
                         }
-                    }
-                    _ => {
-                        self.detail_error = Some("Failed to fetch actor details".to_string());
+                        Err(e) => {
+                            self.detail_error = Some(format!("Fetch failed: {}", e));
+                        }
                     }
                 }
             }
         }
     }
 
-    /// Handle a key event.
+    /// Handle a single keypress and update in-memory UI state.
+    ///
+    /// Returns a `KeyResult` describing whether only the
+    /// selection/expand state changed (so the detail pane should be
+    /// refreshed) or whether a full topology refresh is required
+    /// (e.g. after expanding nodes or toggling system-proc
+    /// visibility).
     fn on_key(&mut self, key: KeyEvent) -> KeyResult {
         let visible = self.visible_indices();
         let vis_len = visible.len();
@@ -536,12 +537,12 @@ impl App {
                 }
             }
             KeyCode::Tab => {
-                // Expand selected node
+                // Expand selected node; triggers refresh to fetch children.
                 if let Some(&tree_idx) = visible.get(self.selected) {
                     if let Some(node) = self.tree.get_mut(tree_idx) {
                         if node.has_children && !node.expanded {
                             node.expanded = true;
-                            return KeyResult::DetailChanged;
+                            return KeyResult::NeedsRefresh;
                         }
                     }
                 }
@@ -560,13 +561,13 @@ impl App {
                 KeyResult::None
             }
             KeyCode::Char('e') => {
-                // Expand all
+                // Expand all; triggers refresh to fetch all children.
                 for node in &mut self.tree {
                     if node.has_children {
                         node.expanded = true;
                     }
                 }
-                KeyResult::DetailChanged
+                KeyResult::NeedsRefresh
             }
             KeyCode::Char('c') => {
                 // Collapse all (plain 'c'; Ctrl+C is handled above)
@@ -587,44 +588,90 @@ impl App {
 
 // Helpers
 
-/// URL-encode a string for use in URL path segments.
-fn url_encode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for c in s.chars() {
-        match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => result.push(c),
-            _ => {
-                for byte in c.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
-                }
-            }
-        }
-    }
-    result
-}
-
-/// Extract a short display name from a full ProcId string.
+/// Derive a human-friendly label for a resolved node payload.
 ///
-/// ProcId::Direct format is `channel_addr,name`. We want just the `name` part.
-/// System procs are prefixed with `[system] ` — preserve the prefix and shorten
-/// the ProcId portion.
-/// If there's no comma, return the whole string.
-fn extract_short_proc_name(proc_id: &str) -> String {
-    if let Some(inner) = proc_id.strip_prefix("[system] ") {
-        let short = if let Some(pos) = inner.rfind(',') {
-            &inner[pos + 1..]
-        } else {
-            inner
-        };
-        return format!("[system] {}", short);
-    }
-    if let Some(pos) = proc_id.rfind(',') {
-        proc_id[pos + 1..].to_string()
-    } else {
-        proc_id.to_string()
+/// Kept as a free function (rather than an inherent `NodePayload`
+/// method) because `NodePayload` lives in
+/// `hyperactor_mesh::mesh_admin`; adding an extension trait here
+/// would be more ceremony than it's worth for a small formatting
+/// helper.
+///
+/// Uses `NodeProperties` to format a concise label for the tree view:
+/// roots show host counts, hosts show proc counts, procs show actor
+/// counts, and actors are rendered as `name[pid]` when the identity
+/// parses as an `ActorId`.
+fn derive_label(payload: &NodePayload) -> String {
+    match &payload.properties {
+        NodeProperties::Root { num_hosts } => format!("Mesh Root ({} hosts)", num_hosts),
+        NodeProperties::Host { addr, num_procs } => format!("{}  ({} procs)", addr, num_procs),
+        NodeProperties::Proc {
+            proc_name,
+            num_actors,
+            ..
+        } => {
+            let short = ProcId::from_str(proc_name)
+                .ok()
+                .and_then(|pid| pid.name().cloned())
+                .unwrap_or_else(|| proc_name.clone());
+            format!("{}  ({} actors)", short, num_actors)
+        }
+        NodeProperties::Actor { .. } => match ActorId::from_str(&payload.identity) {
+            Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+            Err(_) => payload.identity.clone(),
+        },
     }
 }
 
+/// Derive a display label from an opaque reference string without
+/// fetching.
+///
+/// If the reference parses as an `ActorId`, format it as `name[pid]`;
+/// otherwise fall back to showing the raw reference.
+fn derive_label_from_ref(reference: &str) -> String {
+    match ActorId::from_str(reference) {
+        Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+        Err(_) => reference.to_string(),
+    }
+}
+
+/// Compare reference strings using a "natural" order for trailing
+/// `[N]` indices.
+///
+/// If both strings end with a bracketed numeric suffix (e.g.
+/// `foo[2]`), compares their non-index prefixes lexicographically and
+/// the numeric suffixes numerically so `...[2]` sorts before
+/// `...[10]`. If either string lacks a trailing numeric index, falls
+/// back to plain lexicographic comparison.
+fn natural_ref_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    match (extract_trailing_index(a), extract_trailing_index(b)) {
+        (Some((prefix_a, idx_a)), Some((prefix_b, idx_b))) => {
+            prefix_a.cmp(prefix_b).then(idx_a.cmp(&idx_b))
+        }
+        _ => a.cmp(b),
+    }
+}
+
+/// Parse a trailing bracketed numeric index from a reference string.
+///
+/// Returns `(prefix, N)` for strings ending in `[N]` (e.g.
+/// `foo[12]`), where `prefix` is everything before the final `[` and
+/// `N` is the parsed `u64`. Returns `None` if the string does not end
+/// in a well-formed numeric index.
+fn extract_trailing_index(s: &str) -> Option<(&str, u64)> {
+    let s = s.strip_suffix(']')?;
+    let bracket = s.rfind('[')?;
+    let num: u64 = s[bracket + 1..].parse().ok()?;
+    Some((&s[..bracket], num))
+}
+
+/// Produce a compact, human-readable summary string for a recorded
+/// event.
+///
+/// Prefers common message-like fields (`message`, then `msg`),
+/// otherwise renders a useful hint such as `handler: ...`. As a
+/// fallback, formats up to three key/value pairs from the event
+/// fields (using `format_value`) to keep the TUI line short; if
+/// nothing matches, falls back to the event `name`.
 fn format_event_summary(name: &str, fields: &Value) -> String {
     if let Some(obj) = fields.as_object() {
         if let Some(msg) = obj.get("message").and_then(|v| v.as_str()) {
@@ -650,6 +697,13 @@ fn format_event_summary(name: &str, fields: &Value) -> String {
     name.to_string()
 }
 
+/// Format a JSON value into a short, single-line representation
+/// suitable for the TUI.
+///
+/// Strings/numbers/bools render as-is; `null` renders as `"null"`.
+/// Arrays and objects are summarized by their length/field count
+/// (e.g. `"[3]"`, `"{5}"`) to avoid dumping large payloads into the
+/// event list.
 fn format_value(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -661,21 +715,26 @@ fn format_value(v: &Value) -> String {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-fn chrono_now() -> String {
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let hours = (secs / 3600) % 24;
-    let mins = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{:02}:{:02}:{:02}", hours, mins, s)
+/// Convert an ISO 8601 UTC timestamp (e.g.
+/// "2026-02-11T19:11:01.265Z") to a local-timezone HH:MM:SS string.
+/// Falls back to extracting the raw UTC time portion if parsing
+/// fails.
+fn format_local_time(timestamp: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| timestamp.get(11..19).unwrap_or(timestamp).to_string())
 }
 
 // Terminal setup / teardown
 
+/// Put the terminal into "TUI mode".
+///
+/// Enables raw mode, switches to the alternate screen, and clears it,
+/// returning a `ratatui::Terminal` backed by crossterm.
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -686,6 +745,10 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     Ok(terminal)
 }
 
+/// Restore the terminal back to normal “shell mode”.
+///
+/// Disables raw mode, leaves the alternate screen, and re-enables the
+/// cursor.
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
@@ -736,6 +799,10 @@ async fn main() -> io::Result<()> {
     result
 }
 
+/// Drive the main event loop for the admin TUI.
+///
+/// Periodically refreshes topology from the admin API, renders the UI
+/// each tick, and processes keyboard input until the user exits.
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     args: &Args,
@@ -756,7 +823,7 @@ async fn run_app(
                     Some(Ok(Event::Key(key))) => {
                         match app.on_key(key) {
                             KeyResult::DetailChanged => {
-                                app.fetch_selected_detail().await;
+                                app.update_selected_detail().await;
                             }
                             KeyResult::NeedsRefresh => {
                                 app.refresh().await;
@@ -780,6 +847,10 @@ async fn run_app(
 
 // UI rendering
 
+/// Render a full frame of the TUI.
+///
+/// Splits the screen into header/body/footer regions and delegates to
+/// the corresponding render helpers.
 fn ui(frame: &mut ratatui::Frame<'_>, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -795,6 +866,10 @@ fn ui(frame: &mut ratatui::Frame<'_>, app: &App) {
     render_footer(frame, chunks[2]);
 }
 
+/// Render the top status/header bar.
+///
+/// Shows connection status (or the last refresh time) and reflects
+/// current view toggles like whether system procs are visible.
 fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let status = if let Some(err) = &app.error {
         format!("ERROR: {}", err)
@@ -824,6 +899,10 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(header, area);
 }
 
+/// Render the main body of the UI.
+///
+/// Splits the screen into a left topology pane and a right detail
+/// pane, and renders each using the current application state.
 fn render_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -834,7 +913,13 @@ fn render_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     render_detail_pane(frame, chunks[1], app);
 }
 
-/// Render the topology tree: host → proc → actor.
+/// Render the topology tree (left pane).
+///
+/// Uses the flattened `app.tree` plus `visible_indices()` to display
+/// only nodes not hidden by collapsed ancestors. Each row includes
+/// indentation/connectors, an expand/collapse glyph for nodes with
+/// children, and color-coding by `NodeType`, with the selected row
+/// highlighted.
 fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let visible = app.visible_indices();
 
@@ -879,10 +964,11 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
-                match node.kind {
-                    NodeKind::Host { .. } => Style::default().fg(Color::Cyan),
-                    NodeKind::Proc { .. } => Style::default().fg(Color::Green),
-                    NodeKind::Actor { .. } => Style::default().fg(Color::White),
+                match node.node_type {
+                    NodeType::Root => Style::default().fg(Color::Magenta),
+                    NodeType::Host => Style::default().fg(Color::Cyan),
+                    NodeType::Proc => Style::default().fg(Color::Green),
+                    NodeType::Actor => Style::default().fg(Color::White),
                 }
             };
 
@@ -905,12 +991,16 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// Render contextual details for the selected node.
+/// Render the contextual details pane (right side).
+///
+/// If a `NodePayload` for the current selection is available in
+/// `app.detail`, dispatches to `render_node_detail` to show a
+/// type-specific view (root/host/proc/actor). Otherwise, shows either
+/// the last fetch error (`app.detail_error`) or a neutral "select a
+/// node" placeholder message.
 fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     match &app.detail {
-        Some(NodeDetail::Actor(details)) => render_actor_detail(frame, area, details),
-        Some(NodeDetail::Host(details)) => render_host_detail(frame, area, details),
-        Some(NodeDetail::Proc(details)) => render_proc_detail(frame, area, details),
+        Some(payload) => render_node_detail(frame, area, payload),
         None => {
             let msg = app
                 .detail_error
@@ -931,7 +1021,98 @@ fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn render_host_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &HostDetails) {
+/// Render the details view for a resolved node.
+///
+/// This is the main dispatcher for the right-hand pane: it matches on
+/// `payload.properties` and forwards to the appropriate renderer
+/// (`render_root_detail`, `render_host_detail`, `render_proc_detail`,
+/// or `render_actor_detail`) with the relevant fields extracted from
+/// the payload.
+fn render_node_detail(frame: &mut ratatui::Frame<'_>, area: Rect, payload: &NodePayload) {
+    match &payload.properties {
+        NodeProperties::Root { num_hosts } => {
+            render_root_detail(frame, area, payload, *num_hosts);
+        }
+        NodeProperties::Host { addr, num_procs } => {
+            render_host_detail(frame, area, payload, addr, *num_procs);
+        }
+        NodeProperties::Proc {
+            proc_name,
+            num_actors,
+            ..
+        } => {
+            render_proc_detail(frame, area, payload, proc_name, *num_actors);
+        }
+        NodeProperties::Actor {
+            actor_status,
+            actor_type,
+            messages_processed,
+            created_at,
+            last_message_handler,
+            total_processing_time_us,
+            flight_recorder,
+        } => {
+            render_actor_detail(
+                frame,
+                area,
+                payload,
+                actor_status,
+                actor_type,
+                *messages_processed,
+                created_at,
+                last_message_handler.as_deref(),
+                *total_processing_time_us,
+                flight_recorder.as_deref(),
+            );
+        }
+    }
+}
+
+/// Render the right-pane detail view for the mesh root node.
+///
+/// Shows a simple summary (host count) and then lists the root’s
+/// immediate children (host references) so the user can quickly see
+/// which hosts are currently registered under the mesh.
+fn render_root_detail(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    payload: &NodePayload,
+    num_hosts: usize,
+) {
+    let block = Block::default()
+        .title("Root Details")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Gray));
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Hosts: ", Style::default().fg(Color::Gray)),
+            Span::raw(num_hosts.to_string()),
+        ]),
+        Line::default(),
+    ];
+    for child in &payload.children {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(child, Style::default().fg(Color::Cyan)),
+        ]));
+    }
+
+    let p = Paragraph::new(lines).block(block);
+    frame.render_widget(p, area);
+}
+
+/// Render the right-pane detail view for a host node.
+///
+/// Displays the host's address and proc count, then lists the host’s
+/// proc children using a shortened proc name for readability.
+fn render_host_detail(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    payload: &NodePayload,
+    addr: &str,
+    num_procs: usize,
+) {
     let block = Block::default()
         .title("Host Details")
         .borders(Borders::ALL)
@@ -940,30 +1121,22 @@ fn render_host_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Host
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Address: ", Style::default().fg(Color::Gray)),
-            Span::raw(&details.addr),
+            Span::raw(addr),
         ]),
         Line::from(vec![
             Span::styled("Procs: ", Style::default().fg(Color::Gray)),
-            Span::raw(details.procs.len().to_string()),
+            Span::raw(num_procs.to_string()),
         ]),
+        Line::default(),
     ];
-    if let Some(url) = &details.agent_url {
-        lines.push(Line::from(vec![
-            Span::styled("Agent: ", Style::default().fg(Color::Gray)),
-            Span::styled(url, Style::default().fg(Color::Blue)),
-        ]));
-    }
-    lines.push(Line::default());
-    for proc in &details.procs {
-        let actor_info = if proc.num_actors > 0 {
-            format!(" ({} actors)", proc.num_actors)
-        } else {
-            String::new()
-        };
+    for child in &payload.children {
+        let short = ProcId::from_str(child)
+            .ok()
+            .and_then(|pid| pid.name().cloned())
+            .unwrap_or_else(|| child.clone());
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(&proc.name, Style::default().fg(Color::Green)),
-            Span::styled(actor_info, Style::default().fg(Color::DarkGray)),
+            Span::styled(short, Style::default().fg(Color::Green)),
         ]));
     }
 
@@ -971,7 +1144,18 @@ fn render_host_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Host
     frame.render_widget(p, area);
 }
 
-fn render_proc_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &ProcDetails) {
+/// Render the right-pane detail view for a proc node.
+///
+/// Shows the proc's full name and actor count, then lists up to the
+/// first 50 child actor references (with an elision line if there are
+/// more) to keep the UI responsive and the pane readable.
+fn render_proc_detail(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    payload: &NodePayload,
+    proc_name: &str,
+    num_actors: usize,
+) {
     let block = Block::default()
         .title("Proc Details")
         .borders(Borders::ALL)
@@ -980,18 +1164,18 @@ fn render_proc_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Proc
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Name: ", Style::default().fg(Color::Gray)),
-            Span::raw(&details.proc_name),
+            Span::raw(proc_name),
         ]),
         Line::from(vec![
             Span::styled("Actors: ", Style::default().fg(Color::Gray)),
-            Span::raw(details.actors.len().to_string()),
+            Span::raw(num_actors.to_string()),
         ]),
         Line::default(),
     ];
-    for (i, actor) in details.actors.iter().enumerate() {
+    for (i, actor) in payload.children.iter().enumerate() {
         if i >= 50 {
             lines.push(Line::from(Span::styled(
-                format!("  ... and {} more", details.actors.len() - 50),
+                format!("  ... and {} more", payload.children.len() - 50),
                 Style::default().fg(Color::DarkGray),
             )));
             break;
@@ -1006,7 +1190,26 @@ fn render_proc_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Proc
     frame.render_widget(p, area);
 }
 
-fn render_actor_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &ActorDetails) {
+/// Render the right-pane detail view for an actor node, including
+/// flight-recorder events.
+///
+/// The top section summarizes actor status/type, message/processing
+/// stats, creation time, last handler, and child count; the bottom
+/// section parses the optional flight-recorder JSON and displays a
+/// compact, timestamped list of recent events.
+#[allow(clippy::too_many_arguments)]
+fn render_actor_detail(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    payload: &NodePayload,
+    actor_status: &str,
+    actor_type: &str,
+    messages_processed: u64,
+    created_at: &str,
+    last_message_handler: Option<&str>,
+    total_processing_time_us: u64,
+    flight_recorder_json: Option<&str>,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(10), Constraint::Min(5)])
@@ -1022,8 +1225,8 @@ fn render_actor_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Act
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                &details.actor_status,
-                Style::default().fg(if details.actor_status == "Running" {
+                actor_status,
+                Style::default().fg(if actor_status == "Running" {
                     Color::Green
                 } else {
                     Color::Yellow
@@ -1032,32 +1235,32 @@ fn render_actor_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Act
         ]),
         Line::from(vec![
             Span::styled("Type: ", Style::default().fg(Color::Gray)),
-            Span::raw(&details.actor_type),
+            Span::raw(actor_type),
         ]),
         Line::from(vec![
             Span::styled("Messages: ", Style::default().fg(Color::Gray)),
-            Span::raw(details.messages_processed.to_string()),
+            Span::raw(messages_processed.to_string()),
         ]),
         Line::from(vec![
             Span::styled("Processing time: ", Style::default().fg(Color::Gray)),
             Span::raw(
                 humantime::format_duration(std::time::Duration::from_micros(
-                    details.total_processing_time_us,
+                    total_processing_time_us,
                 ))
                 .to_string(),
             ),
         ]),
         Line::from(vec![
             Span::styled("Created: ", Style::default().fg(Color::Gray)),
-            Span::raw(&details.created_at),
+            Span::raw(created_at),
         ]),
         Line::from(vec![
             Span::styled("Last handler: ", Style::default().fg(Color::Gray)),
-            Span::raw(details.last_message_handler.as_deref().unwrap_or("-")),
+            Span::raw(last_message_handler.unwrap_or("-")),
         ]),
         Line::from(vec![
             Span::styled("Children: ", Style::default().fg(Color::Gray)),
-            Span::raw(details.children.len().to_string()),
+            Span::raw(payload.children.len().to_string()),
         ]),
     ])
     .block(info_block);
@@ -1069,14 +1272,17 @@ fn render_actor_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Act
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Gray));
 
-    let events: Vec<Line> = if details.flight_recorder.is_empty() {
+    let recorded_events: Vec<RecordedEvent> = flight_recorder_json
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default();
+
+    let events: Vec<Line> = if recorded_events.is_empty() {
         vec![Line::from(Span::styled(
             "No events",
             Style::default().fg(Color::Gray),
         ))]
     } else {
-        details
-            .flight_recorder
+        recorded_events
             .iter()
             .take(20)
             .map(|event| {
@@ -1093,10 +1299,7 @@ fn render_actor_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Act
                         Style::default().fg(level_color),
                     ),
                     Span::styled(
-                        format!(
-                            "{} ",
-                            event.timestamp.get(11..19).unwrap_or(&event.timestamp)
-                        ),
+                        format!("{} ", format_local_time(&event.timestamp)),
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::raw(format_event_summary(&event.name, &event.fields)),
@@ -1111,6 +1314,12 @@ fn render_actor_detail(frame: &mut ratatui::Frame<'_>, area: Rect, details: &Act
     frame.render_widget(recorder, chunks[1]);
 }
 
+/// Render the bottom help bar showing the keyboard shortcuts.
+///
+/// This is a static hint line
+/// (quit/navigation/expand-collapse/filter) separated from the main
+/// UI with a top border so it reads like a persistent status/help
+/// footer.
 fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect) {
     let help = "q: quit | j/k: navigate | g/G: top/bottom | Tab/Shift-Tab: expand/collapse | e/c: expand/collapse all | s: system procs";
     let footer = Paragraph::new(help)
