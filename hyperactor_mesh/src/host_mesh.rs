@@ -21,7 +21,6 @@ use ndslice::view::CollectMeshExt;
 
 use crate::supervision::MeshFailure;
 
-pub mod host_admin;
 pub mod mesh_agent;
 
 use std::collections::HashSet;
@@ -1076,6 +1075,11 @@ impl HostMeshRef {
     /// The name of the referenced host mesh.
     pub fn name(&self) -> &Name {
         &self.name
+    }
+
+    /// The host references (channel addresses) in rank order.
+    pub fn hosts(&self) -> &[HostRef] {
+        &self.ranks
     }
 
     /// Spawn a [`MeshAdminAgent`] on `proc` and return its HTTP address.
