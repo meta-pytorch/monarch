@@ -11,17 +11,13 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.98"
-chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
-reqwest = { version = "0.11.18", features = ["blocking", "cookies", "gzip", "json", "multipart", "native-tls", "rustls-tls", "rustls-tls-native-roots", "socks", "stream"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tabwriter = { version = "1.4.1", features = ["ansi_formatting"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-urlencoding = "2.1.0"
 
 [lints]
 rust = { unexpected_cfgs = { check-cfg = ["cfg(fbcode_build)"], level = "warn" } }

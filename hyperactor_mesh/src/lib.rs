@@ -16,7 +16,6 @@
 #![feature(async_fn_track_caller)]
 
 pub mod actor_mesh;
-pub mod admin_proxy;
 pub mod alloc;
 mod assign;
 pub mod bootstrap;
