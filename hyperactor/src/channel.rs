@@ -686,10 +686,25 @@ impl ChannelAddr {
                         .ok()
                         .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                         .unwrap_or("unknown_host".to_string()),
-                    TlsMode::IpV6 => local_ipv6()
-                        .ok()
-                        .and_then(|addr| addr.to_string().parse().ok())
-                        .expect("failed to retrieve ipv6 address"),
+                    TlsMode::IpV6 => match net::meta::tw_task_ip() {
+                        net::meta::TwTaskIp::Ip(v6) => v6.to_string(),
+                        net::meta::TwTaskIp::NotTwTask => {
+                            tracing::debug!(
+                                "this host is not a TW task, falling back to local_ipv6"
+                            );
+                            local_ipv6()
+                                .ok()
+                                .and_then(|addr| addr.to_string().parse().ok())
+                                .expect("failed to retrieve ipv6 address")
+                        }
+                        net::meta::TwTaskIp::Error(msg) => {
+                            tracing::error!("{}, falling back to local_ipv6", msg);
+                            local_ipv6()
+                                .ok()
+                                .and_then(|addr| addr.to_string().parse().ok())
+                                .expect("failed to retrieve ipv6 address")
+                        }
+                    },
                 };
                 Self::MetaTls(MetaTlsAddr::Host {
                     hostname: host_address,
