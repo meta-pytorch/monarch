@@ -680,6 +680,80 @@ pub(crate) mod meta {
         })
     }
 
+    const DEFAULT_FBWHOAMI_PATH: &str = "/etc/fbwhoami";
+
+    /// Result of reading the primary IPv6 address from `/etc/fbwhoami`.
+    #[derive(Debug, Clone)]
+    pub(crate) enum WhoAmIIp {
+        /// Successfully parsed an IPv6 address from fbwhoami.
+        Ip(Ipv6Addr),
+        /// The fbwhoami file was not found.
+        NotFound,
+        /// The file exists but the IPv6 key was missing or unparseable.
+        Error(String),
+    }
+
+    /// Reads the primary IPv6 address from `/etc/fbwhoami`, caching the result.
+    ///
+    /// Parses the file as `KEY=VALUE` lines and extracts `DEVICE_PRIMARY_IPV6`.
+    /// Returns `WhoAmIIp::NotFound` if the file does not exist,
+    /// `WhoAmIIp::Error` if the key is missing or the value is not a valid
+    /// IPv6 address, or `WhoAmIIp::Ip` on success.
+    pub(crate) fn who_am_i_ip() -> &'static WhoAmIIp {
+        use std::io::BufRead;
+        use std::sync::OnceLock;
+
+        static WHO_AM_I: OnceLock<WhoAmIIp> = OnceLock::new();
+
+        WHO_AM_I.get_or_init(|| {
+            let file = match File::open(DEFAULT_FBWHOAMI_PATH) {
+                Ok(f) => f,
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        return WhoAmIIp::NotFound;
+                    }
+                    return WhoAmIIp::Error(format!(
+                        "failed to open {}: {}",
+                        DEFAULT_FBWHOAMI_PATH, e
+                    ));
+                }
+            };
+
+            for line in BufReader::new(file).lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return WhoAmIIp::Error(format!(
+                            "failed to read {}: {}",
+                            DEFAULT_FBWHOAMI_PATH, e
+                        ));
+                    }
+                };
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("DEVICE_PRIMARY_IPV6=") {
+                    if value.is_empty() {
+                        return WhoAmIIp::Error(format!(
+                            "DEVICE_PRIMARY_IPV6 is empty in {}",
+                            DEFAULT_FBWHOAMI_PATH
+                        ));
+                    }
+                    return match value.parse::<Ipv6Addr>() {
+                        Ok(addr) => WhoAmIIp::Ip(addr),
+                        Err(e) => WhoAmIIp::Error(format!(
+                            "failed to parse DEVICE_PRIMARY_IPV6 value '{}': {}",
+                            value, e
+                        )),
+                    };
+                }
+            }
+
+            WhoAmIIp::Error(format!(
+                "DEVICE_PRIMARY_IPV6 not found in {}",
+                DEFAULT_FBWHOAMI_PATH
+            ))
+        })
+    }
+
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
         // Try to parse as a socket address first
@@ -2584,6 +2658,16 @@ mod tests {
                 super::meta::TwTaskIp::NotTwTask | super::meta::TwTaskIp::Ip(_)
             ),
             "tw_task_ip() returned Error unexpectedly"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(not(fbcode_build), ignore)]
+    fn test_who_am_i_ip() {
+        assert!(
+            matches!(super::meta::who_am_i_ip(), super::meta::WhoAmIIp::Ip(_)),
+            "who_am_i_ip() did not return Ip: {:?}",
+            super::meta::who_am_i_ip()
         );
     }
 }
