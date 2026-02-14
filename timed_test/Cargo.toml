@@ -21,4 +21,4 @@ quote = "1.0.44"
 syn = { version = "2.0.110", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 
 [dev-dependencies]
-tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.48.0", features = ["full", "test-util", "tracing"] }
