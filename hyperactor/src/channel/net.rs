@@ -570,6 +570,7 @@ pub(crate) mod meta {
     use std::fs::File;
     use std::io;
     use std::io::BufReader;
+    use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -590,8 +591,22 @@ pub(crate) mod meta {
     use super::*;
     use crate::RemoteMessage;
 
+    /// Result of reading the task IP from TW metadata.
+    #[derive(Debug, Clone)]
+    pub(crate) enum TwTaskIp {
+        /// Successfully parsed an IPv6 task IP from TW metadata.
+        Ip(Ipv6Addr),
+        /// Not running as a TW task (metadata file not found). This would
+        /// happen on dev machines.
+        NotTwTask,
+        /// TW metadata exists but task IP could not be determined
+        /// (parse error or non-IPv6 address). This should never happen.
+        Error(String),
+    }
+
     const DEFAULT_SRV_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
     const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
+    const DEFAULT_TW_METADATA_PATH: &str = "/etc/tw/api/metadata.json";
 
     declare_attrs! {
         /// Path to the server CA certificate for TLS connections.
@@ -617,6 +632,52 @@ pub(crate) mod meta {
             None,
         ).process_local())
         pub attr TLS_KEY: String = String::new();
+    }
+
+    /// Reads the task IP from TW metadata, caching the result with OnceLock.
+    /// Returns `TwTaskIp::NotTwTask` if the metadata file is not found,
+    /// `TwTaskIp::Error` if it exists but is unparseable or not IPv6,
+    /// or `TwTaskIp::Ip(v6)` on success.
+    ///
+    /// TW metadata is defined in: https://fburl.com/wiki/y0lakvle
+    pub(crate) fn tw_task_ip() -> &'static TwTaskIp {
+        use std::net::IpAddr;
+        use std::sync::OnceLock;
+
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TwMetadata {
+            task_ip: IpAddr,
+        }
+
+        static TASK_IP: OnceLock<TwTaskIp> = OnceLock::new();
+
+        TASK_IP.get_or_init(|| {
+            let file = match File::open(DEFAULT_TW_METADATA_PATH) {
+                Ok(f) => f,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return TwTaskIp::NotTwTask;
+                    }
+                    return TwTaskIp::Error(format!(
+                        "failed to open {}: {}",
+                        DEFAULT_TW_METADATA_PATH, e
+                    ));
+                }
+            };
+            match serde_json::from_reader::<_, TwMetadata>(file) {
+                Ok(metadata) => match metadata.task_ip {
+                    IpAddr::V6(v6) => TwTaskIp::Ip(v6),
+                    other => TwTaskIp::Error(format!("task_ip is not an IPv6 address: {}", other)),
+                },
+                Err(e) => TwTaskIp::Error(format!(
+                    "failed to parse task_ip from {}: {}",
+                    DEFAULT_TW_METADATA_PATH, e
+                )),
+            }
+        })
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
@@ -2511,5 +2572,18 @@ mod tests {
         // dropped and when wait_for was called. So we still need to do an
         // equality check.
         assert_eq!(*watcher.borrow(), TxStatus::Closed);
+    }
+
+    #[test]
+    fn test_tw_task_ip_does_not_panic() {
+        // In test environments (non-TW) we expect NotTwTask.
+        // On TW hosts we expect Ip. Either way, Error should not occur.
+        assert!(
+            matches!(
+                super::meta::tw_task_ip(),
+                super::meta::TwTaskIp::NotTwTask | super::meta::TwTaskIp::Ip(_)
+            ),
+            "tw_task_ip() returned Error unexpectedly"
+        );
     }
 }
