@@ -686,10 +686,44 @@ impl ChannelAddr {
                         .ok()
                         .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                         .unwrap_or("unknown_host".to_string()),
-                    TlsMode::IpV6 => local_ipv6()
-                        .ok()
-                        .and_then(|addr| addr.to_string().parse().ok())
-                        .expect("failed to retrieve ipv6 address"),
+                    TlsMode::IpV6 => match net::meta::tw_task_ip() {
+                        net::meta::TwTaskIp::Ip(v6) => v6.to_string(),
+                        other => {
+                            match &other {
+                                net::meta::TwTaskIp::NotTwTask => {
+                                    tracing::debug!(
+                                        "this host is not a TW task, falling back to who_am_i_ip"
+                                    );
+                                }
+                                net::meta::TwTaskIp::Error(msg) => {
+                                    tracing::error!("{}, falling back to who_am_i_ip", msg);
+                                }
+                                net::meta::TwTaskIp::Ip(_) => unreachable!(),
+                            }
+                            match net::meta::who_am_i_ip() {
+                                net::meta::WhoAmIIp::Ip(v6) => v6.to_string(),
+                                net::meta::WhoAmIIp::NotFound => {
+                                    tracing::warn!(
+                                        "who_am_i_ip: fbwhoami not found, falling back to local_ipv6"
+                                    );
+                                    local_ipv6()
+                                        .ok()
+                                        .and_then(|addr| addr.to_string().parse().ok())
+                                        .expect("failed to retrieve ipv6 address")
+                                }
+                                net::meta::WhoAmIIp::Error(msg) => {
+                                    tracing::warn!(
+                                        "who_am_i_ip returned error: {}, falling back to local_ipv6",
+                                        msg
+                                    );
+                                    local_ipv6()
+                                        .ok()
+                                        .and_then(|addr| addr.to_string().parse().ok())
+                                        .expect("failed to retrieve ipv6 address")
+                                }
+                            }
+                        }
+                    },
                 };
                 Self::MetaTls(MetaTlsAddr::Host {
                     hostname: host_address,

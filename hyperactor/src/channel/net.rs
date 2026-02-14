@@ -570,6 +570,7 @@ pub(crate) mod meta {
     use std::fs::File;
     use std::io;
     use std::io::BufReader;
+    use std::net::Ipv6Addr;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -590,8 +591,22 @@ pub(crate) mod meta {
     use super::*;
     use crate::RemoteMessage;
 
+    /// Result of reading the task IP from TW metadata.
+    #[derive(Debug, Clone)]
+    pub(crate) enum TwTaskIp {
+        /// Successfully parsed an IPv6 task IP from TW metadata.
+        Ip(Ipv6Addr),
+        /// Not running as a TW task (metadata file not found). This would
+        /// happen on dev machines.
+        NotTwTask,
+        /// TW metadata exists but task IP could not be determined
+        /// (parse error or non-IPv6 address). This should never happen.
+        Error(String),
+    }
+
     const DEFAULT_SRV_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
     const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
+    const DEFAULT_TW_METADATA_PATH: &str = "/etc/tw/api/metadata.json";
 
     declare_attrs! {
         /// Path to the server CA certificate for TLS connections.
@@ -617,6 +632,126 @@ pub(crate) mod meta {
             None,
         ).process_local())
         pub attr TLS_KEY: String = String::new();
+    }
+
+    /// Reads the task IP from TW metadata, caching the result with OnceLock.
+    /// Returns `TwTaskIp::NotTwTask` if the metadata file is not found,
+    /// `TwTaskIp::Error` if it exists but is unparseable or not IPv6,
+    /// or `TwTaskIp::Ip(v6)` on success.
+    ///
+    /// TW metadata is defined in: https://fburl.com/wiki/y0lakvle
+    pub(crate) fn tw_task_ip() -> &'static TwTaskIp {
+        use std::net::IpAddr;
+        use std::sync::OnceLock;
+
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TwMetadata {
+            task_ip: IpAddr,
+        }
+
+        static TASK_IP: OnceLock<TwTaskIp> = OnceLock::new();
+
+        TASK_IP.get_or_init(|| {
+            let file = match File::open(DEFAULT_TW_METADATA_PATH) {
+                Ok(f) => f,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return TwTaskIp::NotTwTask;
+                    }
+                    return TwTaskIp::Error(format!(
+                        "failed to open {}: {}",
+                        DEFAULT_TW_METADATA_PATH, e
+                    ));
+                }
+            };
+            match serde_json::from_reader::<_, TwMetadata>(file) {
+                Ok(metadata) => match metadata.task_ip {
+                    IpAddr::V6(v6) => TwTaskIp::Ip(v6),
+                    other => TwTaskIp::Error(format!("task_ip is not an IPv6 address: {}", other)),
+                },
+                Err(e) => TwTaskIp::Error(format!(
+                    "failed to parse task_ip from {}: {}",
+                    DEFAULT_TW_METADATA_PATH, e
+                )),
+            }
+        })
+    }
+
+    const DEFAULT_FBWHOAMI_PATH: &str = "/etc/fbwhoami";
+
+    /// Result of reading the primary IPv6 address from `/etc/fbwhoami`.
+    #[derive(Debug, Clone)]
+    pub(crate) enum WhoAmIIp {
+        /// Successfully parsed an IPv6 address from fbwhoami.
+        Ip(Ipv6Addr),
+        /// The fbwhoami file was not found.
+        NotFound,
+        /// The file exists but the IPv6 key was missing or unparseable.
+        Error(String),
+    }
+
+    /// Reads the primary IPv6 address from `/etc/fbwhoami`, caching the result.
+    ///
+    /// Parses the file as `KEY=VALUE` lines and extracts `DEVICE_PRIMARY_IPV6`.
+    /// Returns `WhoAmIIp::NotFound` if the file does not exist,
+    /// `WhoAmIIp::Error` if the key is missing or the value is not a valid
+    /// IPv6 address, or `WhoAmIIp::Ip` on success.
+    pub(crate) fn who_am_i_ip() -> &'static WhoAmIIp {
+        use std::io::BufRead;
+        use std::sync::OnceLock;
+
+        static WHO_AM_I: OnceLock<WhoAmIIp> = OnceLock::new();
+
+        WHO_AM_I.get_or_init(|| {
+            let file = match File::open(DEFAULT_FBWHOAMI_PATH) {
+                Ok(f) => f,
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::NotFound {
+                        return WhoAmIIp::NotFound;
+                    }
+                    return WhoAmIIp::Error(format!(
+                        "failed to open {}: {}",
+                        DEFAULT_FBWHOAMI_PATH, e
+                    ));
+                }
+            };
+
+            for line in BufReader::new(file).lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return WhoAmIIp::Error(format!(
+                            "failed to read {}: {}",
+                            DEFAULT_FBWHOAMI_PATH, e
+                        ));
+                    }
+                };
+                let trimmed = line.trim();
+                if let Some(value) = trimmed.strip_prefix("DEVICE_PRIMARY_IPV6=") {
+                    if value.is_empty() {
+                        return WhoAmIIp::Error(format!(
+                            "DEVICE_PRIMARY_IPV6 is empty in {}",
+                            DEFAULT_FBWHOAMI_PATH
+                        ));
+                    }
+                    return match value.parse::<Ipv6Addr>() {
+                        Ok(addr) => WhoAmIIp::Ip(addr),
+                        Err(e) => WhoAmIIp::Error(format!(
+                            "failed to parse DEVICE_PRIMARY_IPV6 value '{}': {}",
+                            value, e
+                        )),
+                    };
+                }
+            }
+
+            WhoAmIIp::Error(format!(
+                "DEVICE_PRIMARY_IPV6 not found in {}",
+                DEFAULT_FBWHOAMI_PATH
+            ))
+        })
     }
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
@@ -2511,5 +2646,28 @@ mod tests {
         // dropped and when wait_for was called. So we still need to do an
         // equality check.
         assert_eq!(*watcher.borrow(), TxStatus::Closed);
+    }
+
+    #[test]
+    fn test_tw_task_ip_does_not_panic() {
+        // In test environments (non-TW) we expect NotTwTask.
+        // On TW hosts we expect Ip. Either way, Error should not occur.
+        assert!(
+            matches!(
+                super::meta::tw_task_ip(),
+                super::meta::TwTaskIp::NotTwTask | super::meta::TwTaskIp::Ip(_)
+            ),
+            "tw_task_ip() returned Error unexpectedly"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(not(fbcode_build), ignore)]
+    fn test_who_am_i_ip() {
+        assert!(
+            matches!(super::meta::who_am_i_ip(), super::meta::WhoAmIIp::Ip(_)),
+            "who_am_i_ip() did not return Ip: {:?}",
+            super::meta::who_am_i_ip()
+        );
     }
 }
