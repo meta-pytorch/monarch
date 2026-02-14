@@ -1399,6 +1399,9 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Always export the `Signal` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
 
+        // Always export the `IntrospectMessage` type.
+        impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
+
         impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
             fn bind(ports: &hyperactor::proc::Ports<Self>) {
                 #(#bindings)*

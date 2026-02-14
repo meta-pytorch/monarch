@@ -6,6 +6,5 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-pub mod admin;
 pub mod list;
 pub mod show;
