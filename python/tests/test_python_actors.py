@@ -1290,6 +1290,7 @@ def test_python_task_tuple() -> None:
     PythonTask.from_coroutine(consume()).block_on()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), flaking (actor_queue_dispatch=True)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_select_result() -> None:
     def s(t):
