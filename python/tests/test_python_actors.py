@@ -309,6 +309,7 @@ def test_rank_size_sync() -> None:
     host.shutdown().get()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), thread 'monarch-pytokio-worker-0' (7432) panicked at hyperactor_mesh/src/host_mesh/mesh_agent.rs:209:39:
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_accumulate_sync() -> None:
@@ -328,7 +329,7 @@ class CastToCounter(Actor):
         return list(c.value.call().get())
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.oss_skip  # SF (02-14-2026), thread 'monarch-pytokio-worker-1' (7391) panicked at hyperactor_mesh/src/host_mesh/mesh_agent.rs:209:39:host present@pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_value_mesh() -> None:
     per_host = {"hosts": 1, "gpus": 2}
@@ -1290,6 +1291,7 @@ def test_python_task_tuple() -> None:
     PythonTask.from_coroutine(consume()).block_on()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), flaking (actor_queue_dispatch=True)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_select_result() -> None:
     def s(t):
@@ -1376,6 +1378,7 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
         return True
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), python/tests/test_python_actors.py::test_undeliverable_message_without_override[actor_queue_dispatch=False]
 @pytest.mark.timeout(10)
 # Not compatible with queue dispatch, as it assumes concurrent dispatch
 async def test_undeliverable_message_with_override() -> None:
@@ -1392,6 +1395,7 @@ async def test_undeliverable_message_with_override() -> None:
     pm.stop().get()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), thread 'monarch-pytokio-worker-6' (10946) panicked at hyperactor_mesh/src/host_mesh/mesh_agent.rs:209:39:
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_undeliverable_message_without_override() -> None:

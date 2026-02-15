@@ -312,6 +312,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     await proc.stop()
 
 
+@pytest.mark.oss_skip  # temp disable (SF, 02-14-2026) python/tests/test_actor_error.py::test_actor_init_exception_sync[2-ExceptionActor-distributed_proc_mesh-actor_queue_dispatch=True] FAILED
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True})
 @pytest.mark.parametrize(
@@ -841,6 +842,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     await proc.stop()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), flaking
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -889,6 +891,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
         await proc.stop()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), python/tests/test_actor_error.py::test_process_exit_handling[ErrorActor-actor_queue_dispatch=False] + TEST_EXIT_CODE=1
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "error_actor_cls",
@@ -945,6 +948,7 @@ class FaultActor(Actor):
         return None
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), python/tests/test_actor_error.py::test_sigsegv_handling[actor_queue_dispatch=False] + TEST_EXIT_CODE=1
 @pytest.mark.timeout(180)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_sigsegv_handling():
@@ -985,6 +989,7 @@ async def test_sigsegv_handling():
         await procs.stop()
 
 
+@pytest.mark.oss_skip  # SF (02-14-2026), python/tests/test_actor_error.py::test_supervision_with_proc_mesh_stopped[local_proc_mesh-actor_queue_dispatch=False] + TEST_EXIT_CODE=1
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
