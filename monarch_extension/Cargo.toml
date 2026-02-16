@@ -33,7 +33,7 @@ ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.48.0", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { path = "../torch-sys-cuda", optional = true }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
