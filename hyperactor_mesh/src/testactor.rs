@@ -36,7 +36,7 @@ use hyperactor::context;
 use hyperactor::ordering::SEQ_INFO;
 use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_config::global::Source;
 use ndslice::Point;
 #[cfg(test)]
@@ -130,7 +130,7 @@ impl Handler<GetActorId> for TestActor {
         cx: &Context<Self>,
         GetActorId(reply): GetActorId,
     ) -> Result<(), anyhow::Error> {
-        let seq_info = cx.headers().get(SEQ_INFO).cloned();
+        let seq_info = cx.headers().get(SEQ_INFO);
         reply.send(cx, (cx.self_id().clone(), seq_info))?;
         Ok(())
     }
@@ -276,7 +276,7 @@ impl hyperactor::RemoteSpawn for FailingCreateTestActor {
 
     async fn new(
         _params: Self::Params,
-        _environment: Attrs,
+        _environment: Flattrs,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Err(anyhow::anyhow!("test failure"))
     }
@@ -346,7 +346,7 @@ impl hyperactor::RemoteSpawn for WrapperActor {
 
     async fn new(
         (proc_mesh, supervisor, test_name): Self::Params,
-        _environment: Attrs,
+        _environment: Flattrs,
     ) -> Result<Self, hyperactor::internal_macro_support::anyhow::Error> {
         Ok(Self {
             proc_mesh,

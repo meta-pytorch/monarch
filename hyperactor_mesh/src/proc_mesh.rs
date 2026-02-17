@@ -224,6 +224,16 @@ impl ProcMesh {
 
         let region = allocation.extent().clone().into();
         let ranks = allocation.ranks();
+
+        // Set the global supervision sink to the first ProcMeshAgent's
+        // supervision event handler. Last-mesh-wins semantics: if a
+        // previous mesh installed a sink, it is replaced.
+        if let Some(first) = ranks.first() {
+            crate::global_client::set_global_supervision_sink(
+                first.agent.port::<ActorSupervisionEvent>(),
+            );
+        }
+
         let root_comm_actor = comm_actor_name.as_ref().map(|name| {
             ActorRef::attest(
                 ranks

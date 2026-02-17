@@ -18,7 +18,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -47,7 +47,7 @@ impl Actor for BenchActor {}
 #[async_trait]
 impl RemoteSpawn for BenchActor {
     type Params = Duration;
-    async fn new(params: Duration, _environment: Attrs) -> Result<Self, anyhow::Error> {
+    async fn new(params: Duration, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             processing_time: params,
         })

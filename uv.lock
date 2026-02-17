@@ -1676,6 +1676,7 @@ kubernetes = [
     { name = "kubernetes" },
 ]
 test = [
+    { name = "kubernetes" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1700,6 +1701,7 @@ requires-dist = [
     { name = "clusterscope" },
     { name = "ipython", marker = "extra == 'examples'" },
     { name = "kubernetes", marker = "extra == 'kubernetes'" },
+    { name = "kubernetes", marker = "extra == 'test'" },
     { name = "lark" },
     { name = "numpy" },
     { name = "opentelemetry-api" },

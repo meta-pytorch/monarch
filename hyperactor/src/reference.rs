@@ -35,7 +35,7 @@ use std::str::FromStr;
 
 use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -771,7 +771,7 @@ impl<A: Referable> ActorRef<A> {
     pub fn send_with_headers<M: RemoteMessage>(
         &self,
         cx: &impl context::Actor,
-        headers: Attrs,
+        headers: Flattrs,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where
@@ -932,7 +932,7 @@ impl PortId {
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
     pub fn send(&self, cx: &impl context::Actor, serialized: wirevalue::Any) {
-        let mut headers = Attrs::new();
+        let mut headers = Flattrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(
             self.clone(),
@@ -950,7 +950,7 @@ impl PortId {
         &self,
         cx: &impl context::Actor,
         serialized: wirevalue::Any,
-        mut headers: Attrs,
+        mut headers: Flattrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         cx.post(
@@ -1091,7 +1091,7 @@ impl<M: RemoteMessage> PortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Flattrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1100,7 +1100,7 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn send_with_headers(
         &self,
         cx: &impl context::Actor,
-        headers: Attrs,
+        headers: Flattrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
         let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
@@ -1118,7 +1118,7 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn send_serialized(
         &self,
         cx: &impl context::Actor,
-        mut headers: Attrs,
+        mut headers: Flattrs,
         message: wirevalue::Any,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -1278,7 +1278,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Flattrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1286,7 +1286,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
     pub fn send_with_headers(
         self,
         cx: &impl context::Actor,
-        mut headers: Attrs,
+        mut headers: Flattrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
@@ -1704,7 +1704,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
             let seq_info = headers.get(SEQ_INFO);
-            tx.send(seq_info.cloned()).unwrap();
+            tx.send(seq_info).unwrap();
             Ok(())
         });
         port_handle.send(&client, ()).unwrap();
@@ -1777,7 +1777,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
             let seq_info = headers.get(SEQ_INFO);
-            tx.send(seq_info.cloned()).unwrap();
+            tx.send(seq_info).unwrap();
             Ok(())
         });
         port_handle.send(&client, ()).unwrap();

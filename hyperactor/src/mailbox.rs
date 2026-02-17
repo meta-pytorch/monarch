@@ -94,7 +94,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use futures::Sink;
 use futures::Stream;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -136,8 +136,6 @@ pub use undeliverable::Undeliverable;
 pub use undeliverable::UndeliverableMessageError;
 pub use undeliverable::custom_monitored_return_handle;
 pub use undeliverable::monitored_return_handle; // TODO: Audit
-pub use undeliverable::supervise_undeliverable_messages;
-pub use undeliverable::supervise_undeliverable_messages_with;
 /// For [`MailboxAdminMessage`], a message type for mailbox administration.
 pub mod mailbox_admin_message;
 pub use mailbox_admin_message::MailboxAdminMessage;
@@ -216,7 +214,7 @@ pub struct MessageEnvelope {
     errors: Vec<DeliveryError>,
 
     /// Additional context for this message.
-    headers: Attrs,
+    headers: Flattrs,
 
     /// Decremented at every `MailboxSender` hop.
     ttl: u8,
@@ -230,7 +228,7 @@ wirevalue::register_type!(MessageEnvelope);
 
 impl MessageEnvelope {
     /// Create a new envelope with the provided sender, destination, and message.
-    pub fn new(sender: ActorId, dest: PortId, data: wirevalue::Any, headers: Attrs) -> Self {
+    pub fn new(sender: ActorId, dest: PortId, data: wirevalue::Any, headers: Flattrs) -> Self {
         Self {
             sender,
             dest,
@@ -245,7 +243,7 @@ impl MessageEnvelope {
 
     /// Create a new envelope whose sender ID is unknown.
     pub(crate) fn new_unknown(dest: PortId, data: wirevalue::Any) -> Self {
-        Self::new(id!(unknown[0].unknown), dest, data, Attrs::new())
+        Self::new(id!(unknown[0].unknown), dest, data, Flattrs::new())
     }
 
     /// Construct a new serialized value by serializing the provided T-typed value.
@@ -253,7 +251,7 @@ impl MessageEnvelope {
         source: ActorId,
         dest: PortId,
         value: &T,
-        headers: Attrs,
+        headers: Flattrs,
     ) -> Result<Self, wirevalue::Error> {
         Ok(Self {
             headers,
@@ -327,7 +325,7 @@ impl MessageEnvelope {
     }
 
     /// The message headers.
-    pub fn headers(&self) -> &Attrs {
+    pub fn headers(&self) -> &Flattrs {
         &self.headers
     }
 
@@ -457,9 +455,9 @@ impl MessageEnvelope {
         self.return_undeliverable
     }
 
-    /// Get a mutable reference to this envelope's headers.
-    pub fn headers_mut(&mut self) -> &mut Attrs {
-        &mut self.headers
+    /// Set a header value on this envelope.
+    pub fn set_header<T: Serialize>(&mut self, key: hyperactor_config::attrs::Key<T>, value: T) {
+        self.headers.set(key, value);
     }
 }
 
@@ -486,7 +484,7 @@ pub struct MessageMetadata {
     sender: ActorId,
     dest: PortId,
     errors: Vec<DeliveryError>,
-    headers: Attrs,
+    headers: Flattrs,
     ttl: u8,
     return_undeliverable: bool,
 }
@@ -831,7 +829,7 @@ impl MailboxSender for UndeliverableMailboxSender {
             actor_name = sender_name,
             actor_id = envelope.sender.to_string(),
             dest = envelope.dest.to_string(),
-            headers = envelope.headers().to_string(), // todo: implement tracing::Value for Attrs
+            headers = envelope.headers().to_string(), // todo: implement tracing::Value for Flattrs
             data = envelope.data().to_string(),
             return_handle = %return_handle,
             "message not delivered, {}",
@@ -1041,7 +1039,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 );
                 return_port.send_serialized(
                     &client,
-                    Attrs::new(),
+                    Flattrs::new(),
                     wirevalue::Any::serialize(&Undeliverable(envelope)).unwrap(),
                 );
             }
@@ -1354,7 +1352,7 @@ impl Mailbox {
     // TODO: consider making lifetime bound to Self instead.
     pub(crate) fn open_enqueue_port<M: Message>(
         &self,
-        enqueue: impl Fn(Attrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
+        enqueue: impl Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync + 'static,
     ) -> PortHandle<M> {
         PortHandle {
             mailbox: self.clone(),
@@ -1746,7 +1744,7 @@ impl<M: Message> PortHandle<M> {
             ));
         }
 
-        let mut headers = Attrs::new();
+        let mut headers = Flattrs::new();
 
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
@@ -2073,7 +2071,7 @@ impl<M> Drop for OncePortReceiver<M> {
 /// Error that that occur during SerializedSender's send operation.
 pub struct SerializedSenderError {
     /// The headers associated with the message.
-    pub headers: Attrs,
+    pub headers: Flattrs,
     /// The message was tried to send.
     pub data: wirevalue::Any,
     /// The mailbox sender error that occurred.
@@ -2101,7 +2099,7 @@ trait SerializedSender: Send + Sync {
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SerializedSender`.
     fn send_serialized(
         &self,
-        headers: Attrs,
+        headers: Flattrs,
         serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError>;
 }
@@ -2111,11 +2109,11 @@ enum UnboundedPortSender<M: Message> {
     /// Send directly to the mpsc queue.
     Mpsc(mpsc::UnboundedSender<M>),
     /// Use the provided function to enqueue the item.
-    Func(Arc<dyn Fn(Attrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
+    Func(Arc<dyn Fn(Flattrs, M) -> Result<(), anyhow::Error> + Send + Sync>),
 }
 
 impl<M: Message> UnboundedPortSender<M> {
-    fn send(&self, headers: Attrs, message: M) -> Result<(), anyhow::Error> {
+    fn send(&self, headers: Flattrs, message: M) -> Result<(), anyhow::Error> {
         match self {
             Self::Mpsc(sender) => sender.send(message).map_err(anyhow::Error::from),
             Self::Func(func) => func(headers, message),
@@ -2159,7 +2157,7 @@ impl<M: Message> UnboundedSender<M> {
     }
 
     #[allow(dead_code)]
-    fn send(&self, headers: Attrs, message: M) -> Result<(), MailboxSenderError> {
+    fn send(&self, headers: Flattrs, message: M) -> Result<(), MailboxSenderError> {
         self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_bound(self.port_id.clone(), MailboxSenderErrorKind::Other(err))
         })
@@ -2185,7 +2183,7 @@ impl<M: RemoteMessage> SerializedSender for UnboundedSender<M> {
 
     fn send_serialized(
         &self,
-        headers: Attrs,
+        headers: Flattrs,
         serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError> {
         // Here, the stack ensures that this port is only instantiated for M-typed messages.
@@ -2281,7 +2279,7 @@ impl<M: RemoteMessage> SerializedSender for OnceSender<M> {
 
     fn send_serialized(
         &self,
-        headers: Attrs,
+        headers: Flattrs,
         serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError> {
         match serialized.deserialized() {
@@ -2316,7 +2314,7 @@ impl SerializedSender for UntypedUnboundedSender {
 
     fn send_serialized(
         &self,
-        headers: Attrs,
+        headers: Flattrs,
         serialized: wirevalue::Any,
     ) -> Result<bool, SerializedSenderError> {
         (self.sender)(serialized).map_err(|(data, err)| SerializedSenderError {
@@ -3250,7 +3248,7 @@ mod tests {
                 a: 123,
                 b: "hello".into(),
             },
-            Attrs::new(),
+            Flattrs::new(),
         )
         .unwrap();
 
@@ -3288,7 +3286,7 @@ mod tests {
             foo.actor_id().clone(),
             PortId(id!(corge[0].bar), 9999u64),
             wirevalue::Any::serialize(&1u64).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         );
         return_handle.send(&client, Undeliverable(message)).unwrap();
 
@@ -3320,7 +3318,7 @@ mod tests {
             id!(foo[0].bar),
             PortId(id!(baz[0].corge), 9999u64),
             wirevalue::Any::serialize(&1u64).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         );
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
@@ -3832,7 +3830,7 @@ mod tests {
             actor.mailbox().actor_id().clone(),
             split_port_id.clone(),
             serialized,
-            Attrs::new(),
+            Flattrs::new(),
         );
         actor.mailbox().post(envelope, undeliverable_handle);
 
@@ -3996,7 +3994,7 @@ mod tests {
         // `::serialize`).
         let payload = 1234_u64;
         let envelope =
-            MessageEnvelope::serialize(actor_id.clone(), dest.clone(), &payload, Attrs::new())
+            MessageEnvelope::serialize(actor_id.clone(), dest.clone(), &payload, Flattrs::new())
                 .expect("serialize");
 
         // Post it. This will start bouncing between forwarder and
@@ -4040,7 +4038,7 @@ mod tests {
             actor_id.clone(),
             user_port.bind().port_id().clone(),
             &payload,
-            Attrs::new(),
+            Flattrs::new(),
         )
         .expect("serialize");
 
@@ -4140,7 +4138,7 @@ mod tests {
             actor_id.clone(),
             user_port.bind().port_id().clone(),
             &42u64,
-            Attrs::new(),
+            Flattrs::new(),
         )
         .expect("serialize");
 
@@ -4185,7 +4183,7 @@ mod tests {
             actor_id.clone(),
             user_port.bind().port_id().clone(),
             &42u64,
-            Attrs::new(),
+            Flattrs::new(),
         )
         .expect("serialize");
 

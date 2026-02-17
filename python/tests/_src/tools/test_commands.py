@@ -394,7 +394,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                         check_interval=_5_MS,
                     )
 
-                    mock_create.called_once_with(config, "123")
+                    mock_create.assert_called_once_with(config, "123")
                     self.assertEqual(server_info.server_handle, "slurm:///456")
                     self.assertListEqual(
                         mock_info.call_args_list,
@@ -490,7 +490,7 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                 force_restart=True,
             )
 
-            mock_create.called_once_with(config, "123")
+            mock_create.assert_called_once_with(config, "123")
             mock_kill.assert_called_once_with("slurm:///123")
             self.assertEqual(server_info.server_handle, "slurm:///456")
             self.assertListEqual(

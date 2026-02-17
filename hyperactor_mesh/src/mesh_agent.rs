@@ -222,10 +222,31 @@ struct ActorInstanceState {
 }
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
+///
+/// ## Supervision event ingestion (remote)
+///
+/// `ProcMeshAgent` is the *process/rank-local* sink for
+/// `ActorSupervisionEvent`s produced by the runtime (actor failures,
+/// routing failures, undeliverables, etc.).
+///
+/// We **export** `ActorSupervisionEvent` as a handler so that other
+/// procs—most importantly the process-global root client created by
+/// `global_root_client()`—can forward undeliverables as supervision
+/// events to the *currently active* mesh.
+///
+/// Without exporting this handler, `ActorSupervisionEvent` cannot be
+/// addressed via `ActorRef`/`PortRef` across processes, and the
+/// global-root-client undeliverable → supervision pipeline would
+/// degrade to log-only behavior (events become undeliverable again or
+/// are dropped).
+///
+/// See `global_client.rs` for the invariant and the forwarding path
+/// ("last sink wins").
 #[hyperactor::export(
     handlers=[
         MeshAgentMessage,
         AdminQueryMessage,
+        ActorSupervisionEvent,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
         resource::Stop { cast = true },
         resource::StopAll { cast = true },
@@ -998,7 +1019,7 @@ mod tests {
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
-    use hyperactor_config::attrs::Attrs;
+    use hyperactor_config::Flattrs;
 
     use super::*;
 
@@ -1035,7 +1056,7 @@ mod tests {
             id!(world[0].sender),
             id!(world[0].receiver[0][1]),
             &data,
-            Attrs::new(),
+            Flattrs::new(),
         )
         .unwrap()
     }

@@ -411,7 +411,7 @@ impl<M: RemoteMessage> Rx<M> for SimRx<M> {
 mod tests {
     use std::iter::zip;
 
-    use hyperactor_config::attrs::Attrs;
+    use hyperactor_config::Flattrs;
     use ndslice::extent;
 
     use super::*;
@@ -465,7 +465,7 @@ mod tests {
                 ext.point(vec![0, 0, 0, 1, 0]).unwrap(),
             );
 
-            let msg = MessageEnvelope::new(sender, PortId(dest, 0), data.clone(), Attrs::new());
+            let msg = MessageEnvelope::new(sender, PortId(dest, 0), data.clone(), Flattrs::new());
             tx.post(msg);
             assert_eq!(*rx.recv().await.unwrap().data(), data);
         }
@@ -549,7 +549,7 @@ mod tests {
             controller,
             PortId(dest, 0),
             wirevalue::Any::serialize(&456).unwrap(),
-            Attrs::new(),
+            Flattrs::new(),
         ));
         {
             // Allow simnet to run
@@ -630,14 +630,14 @@ mod tests {
                 client.clone(),
                 PortId(dest.clone(), 0),
                 wirevalue::Any::serialize(&456).unwrap(),
-                Attrs::new(),
+                Flattrs::new(),
             ));
             // Send system message
             controller_tx.post(MessageEnvelope::new(
                 controller.clone(),
                 PortId(dest.clone(), 0),
                 wirevalue::Any::serialize(&456).unwrap(),
-                Attrs::new(),
+                Flattrs::new(),
             ));
             // Allow some time for simnet to run
             RealClock.sleep(tokio::time::Duration::from_secs(1)).await;

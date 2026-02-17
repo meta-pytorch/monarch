@@ -28,9 +28,9 @@ use hyperactor::context;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
@@ -201,7 +201,7 @@ fn send_subscriber_message(
     subscriber: &PortRef<Option<MeshFailure>>,
     message: MeshFailure,
 ) {
-    let mut headers = Attrs::new();
+    let mut headers = Flattrs::new();
     headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
     if let Err(error) = subscriber.send_with_headers(cx, headers, Some(message.clone())) {
         tracing::warn!(
@@ -486,7 +486,7 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     );
 
     for subscriber in health_state.subscribers.iter() {
-        let mut headers = Attrs::new();
+        let mut headers = Flattrs::new();
         headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
         if let Err(e) = subscriber.send_with_headers(cx, headers, None) {
             tracing::warn!(subscriber = %subscriber.port_id(), "error sending heartbeat message: {:?}", e);
