@@ -274,32 +274,53 @@ fn main() {
 
 /// Detect whether to use ROCm or CUDA
 fn detect_platform() -> (bool, String) {
-    // Try ROCm first (ROCm systems may have CUDA installed too)
-    if let Ok(rocm_home) = build_utils::rocm::validate_rocm_installation() {
-        let version = build_utils::rocm::get_rocm_version(&rocm_home)
-            .unwrap_or_else(|_| panic!("Failed to get ROCm version"));
+    // Check for explicit platform selection via env var
+    if let Ok(platform) = std::env::var("MONARCH_RDMA_GPU_PLATFORM") {
+        match platform.to_lowercase().as_str() {
+            "rocm" => {
+                let rocm_home = build_utils::rocm::validate_rocm_installation()
+                    .expect("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm installation not found");
+                println!("cargo:warning=Using ROCm from {} (explicit)", rocm_home);
+                return (true, rocm_home);
+            }
+            "cuda" => {
+                let cuda_home = build_utils::validate_cuda_installation()
+                    .expect("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA installation not found");
+                println!("cargo:warning=Using CUDA from {} (explicit)", cuda_home);
+                return (false, cuda_home);
+            }
+            _ => panic!(
+                "MONARCH_RDMA_GPU_PLATFORM must be 'cuda' or 'rocm', got '{}'",
+                platform
+            ),
+        }
+    }
 
-        if version.0 < 7 {
+    // Auto-detect when env var not set
+    let rocm_result = build_utils::rocm::validate_rocm_installation();
+    let cuda_result = build_utils::validate_cuda_installation();
+
+    match (rocm_result.is_ok(), cuda_result.is_ok()) {
+        (true, true) => {
             panic!(
-                "ROCm {}.{} detected, but ROCm 7.0+ is required",
-                version.0, version.1
+                "Both ROCm and CUDA detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or \
+                 MONARCH_RDMA_GPU_PLATFORM=rocm to select the platform."
             );
         }
-
-        println!(
-            "cargo:warning=Using ROCm {}.{} from {}",
-            version.0, version.1, rocm_home
-        );
-        return (true, rocm_home);
+        (true, false) => {
+            let rocm_home = rocm_result.unwrap();
+            println!("cargo:warning=Using ROCm from {}", rocm_home);
+            (true, rocm_home)
+        }
+        (false, true) => {
+            let cuda_home = cuda_result.unwrap();
+            println!("cargo:warning=Using CUDA from {}", cuda_home);
+            (false, cuda_home)
+        }
+        (false, false) => {
+            panic!("Neither CUDA nor ROCm installation found");
+        }
     }
-
-    // Fall back to CUDA
-    if let Ok(cuda_home) = build_utils::validate_cuda_installation() {
-        println!("cargo:warning=Using CUDA from {}", cuda_home);
-        return (false, cuda_home);
-    }
-
-    panic!("Neither CUDA nor ROCm installation found!");
 }
 
 /// Hipify CUDA sources to HIP
