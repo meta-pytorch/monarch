@@ -8,6 +8,12 @@
 
 //! The mesh agent actor that manages a host.
 
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
+
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
