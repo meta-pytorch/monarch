@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-strict
+import ipaddress
 import logging
 import socket
 from enum import auto, Enum
@@ -104,7 +105,23 @@ def _resolve_ipaddr(
 
             # sockaddr is a tuple (ipv4) or a 4-tuple (ipv6)
             # in both cases the first element is the ip addr
-            return str(sockaddr[0])
+            addr = str(sockaddr[0])
+
+            # Link-local addresses (fe80::/10 for IPv6, 169.254.0.0/16 for IPv4)
+            # are not routable beyond the local network segment and are unusable
+            # for inter-process TCP communication in most environments including
+            # containers.
+            if ipaddress.ip_address(addr).is_link_local:
+                logger.info(
+                    "skipping link-local address `%s` for `%s:%d`"
+                    " (link-local addresses are not usable for inter-process communication)",
+                    addr,
+                    hostname,
+                    port,
+                )
+                return None
+
+            return addr
     except socket.gaierror as e:
         logger.info(
             "no %s address that can bind TCP sockets for `%s:%d` (error: %s)",

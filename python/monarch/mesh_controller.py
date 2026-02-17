@@ -39,7 +39,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     UnflattenArg,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox, PortId
+from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
     PicklingState,
@@ -189,7 +189,6 @@ class WriteWrapper:
 class Controller(_Controller):
     def __init__(self, instance: Instance, workers: "HyProcMesh") -> None:
         super().__init__()
-        self._mailbox: Mailbox = Instance._mailbox
         self._pending_debugger_sessions: deque[ActorId] = deque()
 
     def node(

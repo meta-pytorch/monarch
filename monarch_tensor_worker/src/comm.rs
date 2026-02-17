@@ -19,6 +19,7 @@ use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
+use hyperactor_config::Flattrs;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;
@@ -410,6 +411,7 @@ mod tests {
     use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
@@ -655,12 +657,15 @@ mod tests {
         let workers = try_join_all((0..world_size).map(async |rank| {
             proc.spawn(
                 &format!("worker{}", rank),
-                WorkerActor::new(WorkerParams {
-                    world_size,
-                    rank,
-                    device_index: Some(rank.try_into()?),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size,
+                        rank,
+                        device_index: Some(rank.try_into()?),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -839,12 +844,15 @@ mod tests {
         let handle1 = proc
             .spawn(
                 "worker1",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -852,12 +860,15 @@ mod tests {
         let handle2 = proc
             .spawn(
                 "worker2",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 1,
-                    device_index: Some(1),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 1,
+                        device_index: Some(1),
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -994,9 +1005,9 @@ mod tests {
         assert!(val, "send_tensor result was unexpected value: {val}");
 
         handle1.drain_and_stop("test").unwrap();
-        assert_matches!(handle1.await, ActorStatus::Stopped);
+        assert_matches!(handle1.await, ActorStatus::Stopped(_));
         handle2.drain_and_stop("test").unwrap();
-        assert_matches!(handle2.await, ActorStatus::Stopped);
+        assert_matches!(handle2.await, ActorStatus::Stopped(_));
 
         let error_responses = controller_rx.drain();
         assert!(
@@ -1018,12 +1029,15 @@ mod tests {
         let handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1135,7 +1149,7 @@ mod tests {
         assert!(val, "send_tensor_local result was unexpected value: {val}");
 
         handle.drain_and_stop("test").unwrap();
-        assert_matches!(handle.await, ActorStatus::Stopped);
+        assert_matches!(handle.await, ActorStatus::Stopped(_));
 
         let error_responses = controller_rx.drain();
         assert!(

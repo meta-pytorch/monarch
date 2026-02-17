@@ -11,6 +11,7 @@ mod commands;
 use clap::Parser;
 use clap::Subcommand;
 
+use crate::commands::admin::AdminCommand;
 use crate::commands::list::ListCommand;
 use crate::commands::show::ShowCommand;
 
@@ -28,6 +29,9 @@ enum Command {
 
     #[clap(about = r#"List available resources"#)]
     List(ListCommand),
+
+    #[clap(about = r#"Admin commands for the hyperactor admin HTTP API"#)]
+    Admin(AdminCommand),
 }
 
 #[cfg(fbcode_build)]
@@ -49,5 +53,6 @@ async fn run() -> Result<(), anyhow::Error> {
     match args.command {
         Command::Show(command) => Ok(command.run().await?),
         Command::List(command) => Ok(command.run().await?),
+        Command::Admin(command) => Ok(command.run().await?),
     }
 }

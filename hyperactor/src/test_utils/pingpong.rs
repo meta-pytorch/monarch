@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -74,7 +75,10 @@ impl RemoteSpawn for PingPongActor {
         Option<Duration>,
     );
 
-    async fn new((undeliverable_port_ref, error_ttl, delay): Self::Params) -> anyhow::Result<Self> {
+    async fn new(
+        (undeliverable_port_ref, error_ttl, delay): Self::Params,
+        _environment: Flattrs,
+    ) -> anyhow::Result<Self> {
         Ok(Self::new(undeliverable_port_ref, error_ttl, delay))
     }
 }

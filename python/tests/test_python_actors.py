@@ -29,7 +29,6 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 import cloudpickle
 import monarch.actor
 import pytest
-import torch
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
@@ -74,11 +73,6 @@ from monarch.actor import (
 from monarch.config import configured, parametrize_config
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
-
-needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA not available",
-)
 
 
 class Counter(Actor):
@@ -1842,6 +1836,33 @@ def test_get_or_spawn_controller_on_unpickled_proc_mesh():
     child_pm = this_host().spawn_procs(per_host={"procs": 1})
     my_actor.register_pm.call(child_pm).get()
     assert my_actor.spawn_and_get_from_store.call_one(ChildActor, "a").get() == 1
+
+
+class RunForeverOnInitActor(Actor):
+    """Actor whose __init__ never returns."""
+
+    def __init__(self, pm: ProcMesh, send: Port):
+        counter = pm.spawn("counter_from_init", Counter, 42)
+        send.send(counter)
+        threading.Event().wait()
+
+    @endpoint
+    async def unreachable(self) -> None:
+        pass
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+async def test_run_forever_on_init():
+    """Test that an actor whose __init__ never returns still allows
+    initialization side effects to propagate."""
+    pm = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    # Fake type, actually ActorMesh[Counter], but necessary for type-checking.
+    send, recv = Channel[Counter].open()
+    forever = pm.spawn("forever", RunForeverOnInitActor, pm, send)
+    counter = recv.recv().get()
+    assert counter.value.call_one().get() == 42
+    await cast(ActorMesh, forever).stop()
 
 
 @pytest.mark.timeout(60)

@@ -6,16 +6,19 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! RecordBatchSink - TraceEventSink that produces Arrow RecordBatches
+//! RecordBatchSink - Collects tracing telemetry data as Arrow RecordBatches
+//!
+//! Implements TraceEventSink for tracing events (spans, log events).
 //!
 //! Produces three tables:
 //! - `spans`: Information about span creation (NewSpan events)
 //! - `span_events`: Enter/exit/close events for spans
 //! - `events`: Tracing events (e.g., tracing::info!())
+//!
+//! For entity lifecycle events (actors, meshes), see EntityDispatcher.
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::time::SystemTime;
 
 use datafusion::arrow::record_batch::RecordBatch;
 use hyperactor_telemetry::FieldValue;
@@ -37,13 +40,7 @@ pub fn reset_flush_count() {
     FLUSH_COUNT.store(0, Ordering::SeqCst);
 }
 
-/// Helper to convert SystemTime to microseconds since Unix epoch.
-fn timestamp_to_micros(timestamp: &SystemTime) -> i64 {
-    timestamp
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as i64
-}
+use crate::timestamp_to_micros;
 
 /// Helper to convert FieldValue slice to JSON string.
 fn fields_to_json(fields: &[(&str, FieldValue)]) -> String {
@@ -113,7 +110,7 @@ pub type FlushCallback = Box<dyn Fn(&str, RecordBatch) + Send>;
 
 /// Trait for buffer types that can produce RecordBatches.
 /// Auto-implemented by the RecordBatchRow derive macro.
-pub trait RecordBatchBuffer {
+pub(crate) trait RecordBatchBuffer {
     fn len(&self) -> usize;
     fn to_record_batch(&mut self) -> anyhow::Result<RecordBatch>;
 }
@@ -177,7 +174,9 @@ impl RecordBatchSinkInner {
     }
 }
 
-/// A TraceEventSink that buffers trace events and produces Arrow RecordBatches.
+/// Buffers tracing events and produces Arrow RecordBatches.
+///
+/// Implements TraceEventSink for tracing events (spans, log events).
 ///
 /// This type can be cloned to get a handle for flushing from outside the
 /// telemetry system. Clone it before registering with telemetry if you need
@@ -187,6 +186,8 @@ impl RecordBatchSinkInner {
 /// - `spans`: Information about span creation (NewSpan events)
 /// - `span_events`: Enter/exit/close events for spans
 /// - `events`: Tracing events (e.g., tracing::info!())
+///
+/// For entity lifecycle events (actors, meshes), see EntityDispatcher.
 #[derive(Clone)]
 pub struct RecordBatchSink {
     inner: Arc<Mutex<RecordBatchSinkInner>>,

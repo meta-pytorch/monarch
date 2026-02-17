@@ -45,7 +45,7 @@ struct KeepPyBytesAlive {
 
 impl KeepPyBytesAlive {
     fn new(py_bytes: Py<PyBytes>) -> Self {
-        let (ptr, len) = Python::with_gil(|py| {
+        let (ptr, len) = Python::attach(|py| {
             let bytes_ref = py_bytes.as_bytes(py);
             (bytes_ref.as_ptr(), bytes_ref.len())
         });
@@ -156,7 +156,7 @@ impl Buffer {
     /// # Returns
     /// The total number of bytes stored in the buffer
     fn __len__(&self) -> usize {
-        let fragments_len: usize = Python::with_gil(|py| {
+        let fragments_len: usize = Python::attach(|py| {
             self.fragments
                 .iter()
                 .map(|frag| match frag {

@@ -29,7 +29,7 @@ use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
 use hyperactor_mesh::alloc::sim::SimAllocator;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::transport::default_transport;
 use ndslice::Extent;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -381,7 +381,7 @@ impl PyRemoteProcessAllocInitializer {
     ///   `monarch/python/monarch/_rust_bindings/monarch_hyperactor/alloc.pyi`
     async fn py_initialize_alloc(&self) -> PyResult<Vec<String>> {
         let args = (&self.constraints.match_labels,);
-        let coro = monarch_with_gil(|py| -> PyResult<PyObject> {
+        let coro = monarch_with_gil(|py| -> PyResult<Py<PyAny>> {
             self.py_inner
                 .bind(py)
                 .call_method1("initialize_alloc", args)

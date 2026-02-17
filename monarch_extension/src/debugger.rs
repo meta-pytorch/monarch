@@ -110,7 +110,7 @@ impl PdbActor {
         })?
     }
 
-    fn receive(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn receive(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let instance = self.instance.clone();
         let result =
             signal_safe_block_on(
@@ -200,7 +200,7 @@ mod tests {
     /// get_tokio_runtime() in a tokio async test will panic.
     #[test]
     fn test_pdb_actor() {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
 
         let proc = Proc::local();
         let (_, controller_ref, controller_rx) = proc

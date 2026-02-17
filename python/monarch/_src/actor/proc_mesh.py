@@ -472,33 +472,13 @@ class ProcMesh(MeshTrait):
         supervision_display_name = (
             f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
         )
-        actor_mesh = HyProcMesh.spawn_async(
-            pm,
-            instance._as_rust(),
-            name,
-            _Actor,
-            emulated=False,
-            supervision_display_name=supervision_display_name,
-        )
-        # Inlined ActorMesh._create implementation
-        mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)
 
-        # We don't start the supervision polling loop until the first call to
-        # supervision_event, which needs an Instance. Initialize here so events
-        # can be collected even without any endpoints being awaited.
-        supervision_display_name = (
-            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
-        )
-        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
-
-        # send __init__ message to the mesh to initialize the user defined
-        # python actor object.
-        message = _create_endpoint_message(
+        init_message = _create_endpoint_message(
             MethodSpecifier.Init(),
             inspect.signature(Class.__init__),
             (
                 ActorInitArgs(
-                    cast(Type[Actor], mesh._class),
+                    cast(Type[Actor], Class),
                     self,
                     self._controller_controller or instance._controller_controller,
                     name,
@@ -510,7 +490,26 @@ class ProcMesh(MeshTrait):
             None,
             self,
         )
-        mesh._inner.cast_unresolved(message, "all", instance._as_rust())
+
+        actor_mesh = HyProcMesh.spawn_async(
+            pm,
+            instance._as_rust(),
+            name,
+            _Actor,
+            init_message,
+            emulated=False,
+            supervision_display_name=supervision_display_name,
+        )
+
+        mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)
+
+        # We don't start the supervision polling loop until the first call to
+        # supervision_event, which needs an Instance. Initialize here so events
+        # can be collected even without any endpoints being awaited.
+        supervision_display_name = (
+            f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
+        )
+        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
 
         instance._add_child(mesh)
         return cast(TActor, mesh)

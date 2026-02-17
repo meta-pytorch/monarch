@@ -27,7 +27,6 @@ use crate::actor::PythonMessageKind;
 use crate::actor_mesh::PythonActorMesh;
 use crate::context::PyInstance;
 use crate::mailbox::EitherPortRef;
-use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonOncePortRef;
 use crate::pickle::PendingMessage;
 use crate::pickle::PicklingState;
@@ -104,17 +103,19 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Returns:
 /// An awaitable task yielding a `ProbeReport`.
 #[pyfunction]
-#[pyo3(signature = (actor_mesh_inner, instance, mailbox, method_name, pickling_state))]
+#[pyo3(signature = (actor_mesh_inner, instance, method_name, pickling_state))]
 pub(crate) fn probe_exit_port_via_mesh(
     actor_mesh_inner: &PythonActorMesh,
     instance: &PyInstance,
-    mailbox: &PyMailbox,
     method_name: String,
     pickling_state: PyRefMut<'_, PicklingState>,
 ) -> PyResult<PyPythonTask> {
     // Open a OncePort<PythonMessage> - this is what ActorProcLauncher
     // does
-    let (exit_port, exit_port_rx) = mailbox.get_inner().open_once_port::<PythonMessage>();
+    let (exit_port, exit_port_rx) = instance
+        ._mailbox()
+        .get_inner()
+        .open_once_port::<PythonMessage>();
 
     // Build the PythonMessageKind with ExplicitPort
     let bound_port = exit_port.bind();

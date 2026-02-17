@@ -98,10 +98,9 @@ async def test_port_receives_result() -> None:
         proc_mesh.spawn("probe_actor", WireFormatProbeActor),
     )
 
-    # Get instance and mailbox from the test context
+    # Get instance from the test context
     ins = context().actor_instance
     instance = ins._as_rust()
-    mailbox = ins._mailbox
 
     # Slice to a single actor and get its _inner (PythonActorMesh).
     # Cast needed: _inner is typed as ActorMeshProtocol but
@@ -118,7 +117,7 @@ async def test_port_receives_result() -> None:
 
     # Call the Rust probe and await the result
     report = await probe_exit_port_via_mesh(
-        actor_mesh_inner, instance, mailbox, "send_result_on_port", pickling_state
+        actor_mesh_inner, instance, "send_result_on_port", pickling_state
     )
 
     # Assert we received a PythonMessage
@@ -158,10 +157,9 @@ async def test_port_receives_exception() -> None:
         proc_mesh.spawn("probe_actor", WireFormatProbeActor),
     )
 
-    # Get instance and mailbox from the test context
+    # Get instance from the test context
     ins = context().actor_instance
     instance = ins._as_rust()
-    mailbox = ins._mailbox
 
     # Slice to a single actor and get its _inner (PythonActorMesh).
     # Cast needed: _inner is typed as ActorMeshProtocol but
@@ -178,7 +176,7 @@ async def test_port_receives_exception() -> None:
 
     # Call the Rust probe and await the result
     report = await probe_exit_port_via_mesh(
-        actor_mesh_inner, instance, mailbox, "send_exception_on_port", pickling_state
+        actor_mesh_inner, instance, "send_exception_on_port", pickling_state
     )
 
     # Assert we received a PythonMessage

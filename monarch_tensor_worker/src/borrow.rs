@@ -177,6 +177,7 @@ mod tests {
     use anyhow::Result;
     use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessage;
@@ -201,12 +202,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await?,
             )
             .unwrap();
@@ -353,12 +357,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )

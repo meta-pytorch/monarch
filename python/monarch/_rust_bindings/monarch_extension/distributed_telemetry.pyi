@@ -13,19 +13,23 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 @final
 class DatabaseScanner:
     """
-    Rust-backed DuckDB database scanner.
+    Rust-backed DataFusion database scanner.
 
-    Each scanner holds a local DuckDB database and can scan tables.
-    Data flows directly Rust-to-Rust via PortRef for efficiency.
+    Each scanner holds local in-memory tables (DataFusion MemTables) and can
+    scan them. Data flows directly Rust-to-Rust via PortRef for efficiency.
     """
 
     def __init__(self, rank: int) -> None:
         """
-        Create a new DatabaseScanner with test data.
+        Create a new DatabaseScanner.
 
         Args:
-            rank: The rank of this scanner, used to partition test data
+            rank: The rank of this scanner
         """
+        ...
+
+    def flush(self) -> None:
+        """Flush any pending trace events to the tables."""
         ...
 
     def table_names(self) -> List[str]:

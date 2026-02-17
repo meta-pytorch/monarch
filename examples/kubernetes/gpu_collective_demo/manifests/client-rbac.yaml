@@ -13,15 +13,28 @@ metadata:
   namespace: monarch-tests
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monarch-client
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: monarch-client-binding
   namespace: monarch-tests
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: monarch-client-role
 subjects:
   - kind: ServiceAccount
     name: monarch-client
     namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: monarch-client
+  apiGroup: rbac.authorization.k8s.io

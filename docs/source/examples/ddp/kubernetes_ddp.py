@@ -15,7 +15,7 @@ Data Parallel (DDP) on Kubernetes using Monarch's ``SPMDActor`` and ``Kubernetes
 
 This example shows:
 
-- How to provision GPU workers on Kubernetes using the MonarchMesh CRD
+- How to provision GPU workers on Kubernetes using ``KubernetesJob`` with Python-native provisioning
 - How to connect to Kubernetes pods using ``KubernetesJob``
 - How to run multi-node DDP training using ``SPMDActor``
 
@@ -29,10 +29,26 @@ Before running this example, you need:
 3. NVIDIA device plugin deployed
 4. ``kubectl`` configured to access the cluster
 
-Kubernetes Manifest
--------------------
+Python-Native Provisioning
+--------------------------
 
-The following manifest (``ddp_mesh.yaml``) provisions the worker pods::
+With ``--provision``, the script creates MonarchMesh CRDs directly from Python.
+No YAML manifests for worker pods are needed -- only a controller pod with
+RBAC permissions to create CRDs and watch pods::
+
+    # Deploy the controller with CRD permissions
+    kubectl apply -f manifests/ddp_provision.yaml
+
+    # Copy scripts and run
+    kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
+    kubectl cp train.py monarch-tests/ddp-controller:/tmp/train.py
+    kubectl exec -it ddp-controller -n monarch-tests -- \\
+        python /tmp/kubernetes_ddp.py --provision --num_hosts 2 --gpus_per_host 4
+
+YAML Manifest Provisioning
+---------------------------
+
+Alternatively, you can pre-provision workers with YAML manifests::
 
     apiVersion: monarch.pytorch.org/v1alpha1
     kind: MonarchMesh
@@ -123,14 +139,85 @@ This script:
 
 import argparse
 import asyncio
+import textwrap
 
+from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
+from monarch.config import configure
 from monarch.job.kubernetes import KubernetesJob
 from monarch.spmd import SPMDActor
 from monarch.tools.network import AddrType
 
+configure(enable_log_forwarding=True)
 
-# Path to train.py on worker pods (must be copied manually, see instructions below)
+# Path to train.py on worker pods
 TRAIN_SCRIPT = "/tmp/train.py"
+
+# Training script content — written to worker pods at startup when provisioning
+_TRAIN_SCRIPT_CONTENT = textwrap.dedent("""\
+    import os
+    import torch
+    import torch.distributed as dist
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.nn.parallel import DistributedDataParallel as DDP
+
+    def main():
+        dist.init_process_group("nccl")
+        rank = dist.get_rank()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        model = nn.Linear(10, 1).cuda()
+        ddp_model = DDP(model)
+        optimizer = optim.SGD(ddp_model.parameters(), lr=0.01)
+        for step in range(5):
+            inputs = torch.randn(4, 10).cuda()
+            outputs = ddp_model(inputs)
+            loss = outputs.sum()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            print(f"[Rank {rank}] Step {step} loss={loss.item()}")
+        dist.destroy_process_group()
+
+    if __name__ == "__main__":
+        main()
+""")
+
+
+def build_gpu_pod_spec(gpus_per_host: int) -> dict:
+    """Build a PodSpec with GPU resources and shared memory for NCCL.
+
+    The bootstrap command writes train.py to the worker filesystem
+    before starting the Monarch worker loop, so the SPMDActor can
+    find and execute it.
+    """
+    # Write train.py then start the worker loop
+    bootstrap = (
+        "import pathlib\n"
+        f"pathlib.Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})\n"
+        + _WORKER_BOOTSTRAP_SCRIPT
+    )
+    return {
+        "containers": [
+            {
+                "name": "worker",
+                "image": "ghcr.io/meta-pytorch/monarch:latest",
+                "command": ["python", "-u", "-c", bootstrap],
+                "env": [{"name": "MONARCH_PORT", "value": "26600"}],
+                "resources": {
+                    "limits": {"nvidia.com/gpu": str(gpus_per_host)},
+                    "requests": {"nvidia.com/gpu": str(gpus_per_host)},
+                },
+                "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+            }
+        ],
+        "volumes": [
+            {
+                "name": "dshm",
+                "emptyDir": {"medium": "Memory", "sizeLimit": "16Gi"},
+            }
+        ],
+    }
 
 
 # %%
@@ -140,13 +227,19 @@ TRAIN_SCRIPT = "/tmp/train.py"
 # using ``SPMDActor`` to execute the training script.
 
 
-async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddpmesh"):
+async def main(
+    num_hosts: int = 2,
+    gpus_per_host: int = 4,
+    mesh_name: str = "ddpmesh",
+    provision: bool = False,
+) -> None:
     """Run DDP training on Kubernetes.
 
     Args:
         num_hosts: Number of worker pods (must match MonarchMesh replicas)
         gpus_per_host: GPUs per pod (must match nvidia.com/gpu in MonarchMesh)
         mesh_name: Name of the MonarchMesh resource
+        provision: If True, create MonarchMesh CRDs from Python
     """
     print("=" * 60)
     print("Kubernetes DDP Example")
@@ -156,12 +249,21 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
     # %%
     # Connect to Kubernetes
     # ~~~~~~~~~~~~~~~~~~~~~
-    # Create a ``KubernetesJob`` that connects to pre-provisioned pods in the
-    # ``monarch-tests`` namespace. The MonarchMesh CRD provisions worker pods
-    # with labels that ``KubernetesJob`` uses for discovery.
+    # Create a ``KubernetesJob`` in the ``monarch-tests`` namespace.
+    # With ``--provision``, the job creates MonarchMesh CRDs via the K8s API
+    # using ``pod_spec`` for full control over the pod template (needed for
+    # the shared memory volume that NCCL requires). Without ``--provision``,
+    # it attaches to pre-provisioned pods.
 
     k8s_job = KubernetesJob(namespace="monarch-tests")
-    k8s_job.add_mesh(mesh_name, num_replicas=num_hosts)
+    if provision:
+        k8s_job.add_mesh(
+            mesh_name,
+            num_replicas=num_hosts,
+            pod_spec=build_gpu_pod_spec(gpus_per_host),
+        )
+    else:
+        k8s_job.add_mesh(mesh_name, num_replicas=num_hosts)
 
     # %%
     # Create Process Mesh
@@ -172,6 +274,9 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
     job_state = k8s_job.state()
     host_mesh = getattr(job_state, mesh_name)
     proc_mesh = host_mesh.spawn_procs({"gpus": gpus_per_host})
+
+    # Stream logs from all processes to the client
+    await proc_mesh.logging_option(stream_to_client=True)
 
     # %%
     # Run DDP Training with SPMDActor
@@ -199,11 +304,35 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
     # Clean up
     proc_mesh.stop().get()
 
+    if provision:
+        k8s_job.kill()
+
 
 # %%
 # Running the Example
 # -------------------
-# To run this example:
+#
+# **Option 1: Python-native provisioning (recommended)**
+#
+# With ``--provision``, train.py is embedded in the worker pod spec and
+# written to the filesystem at startup. No manual file copying to workers
+# is needed.
+#
+# 1. Deploy the controller with CRD permissions::
+#
+#        kubectl apply -f manifests/ddp_provision.yaml
+#
+# 2. Run from the controller::
+#
+#        kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
+#        kubectl exec -it ddp-controller -n monarch-tests -- \
+#            python /tmp/kubernetes_ddp.py --provision --num_hosts 2 --gpus_per_host 4
+#
+# 3. Clean up::
+#
+#        kubectl delete -f manifests/ddp_provision.yaml
+#
+# **Option 2: YAML manifest provisioning**
 #
 # 1. Deploy the MonarchMesh::
 #
@@ -211,47 +340,31 @@ async def main(num_hosts: int = 2, gpus_per_host: int = 4, mesh_name: str = "ddp
 #
 # 2. Wait for pods to be ready::
 #
-#        # Check worker pods
 #        kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker
-#
-#        # Check controller pod
 #        kubectl get pods -n monarch-tests ddp-controller
 #
-# 3. Copy train.py to each worker pod (in production, code is typically baked into
-#    the image, git synced, or loaded from shared storage)::
+# 3. Copy train.py to each worker pod::
 #
 #        for pod in $(kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker -o name); do
 #            kubectl cp train.py monarch-tests/${pod#pod/}:/tmp/train.py
 #        done
 #
-# 4. Run from the controller pod. You can either get a shell::
+# 4. Run from the controller pod::
 #
-#        # Copy the script to the controller
 #        kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
+#        kubectl exec -it ddp-controller -n monarch-tests -- \
+#            python /tmp/kubernetes_ddp.py --num_hosts 2 --gpus_per_host 4
 #
-#        # Get a shell into the controller
-#        kubectl exec -it ddp-controller -n monarch-tests -- /bin/bash
-#
-#        # Inside the controller, run the DDP example
-#        python /tmp/kubernetes_ddp.py --num_hosts 2 --gpus_per_host 4
-#
-#    Or run directly without a shell::
-#
-#        kubectl exec -it ddp-controller -n monarch-tests -- python /tmp/kubernetes_ddp.py
-#
-# 5. View worker logs::
-#
-#        kubectl logs -n monarch-tests -l app.kubernetes.io/name=monarch-worker
-#
-# 6. Clean up::
+# 5. Clean up::
 #
 #        kubectl delete -f manifests/ddp_mesh.yaml
 #
 # Command-line Arguments
 # ~~~~~~~~~~~~~~~~~~~~~~
-# - ``--num_hosts``: Number of worker pods (must match ``spec.replicas`` in YAML)
-# - ``--gpus_per_host``: GPUs per pod (must match ``nvidia.com/gpu`` in YAML)
-# - ``--mesh_name``: Name of the MonarchMesh resource (must match ``metadata.name`` in YAML)
+# - ``--provision``: Create MonarchMesh CRDs from Python (no worker YAML needed)
+# - ``--num_hosts``: Number of worker pods
+# - ``--gpus_per_host``: GPUs per pod
+# - ``--mesh_name``: Name of the MonarchMesh resource
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run DDP training on Kubernetes")
@@ -259,19 +372,26 @@ if __name__ == "__main__":
         "--num_hosts",
         type=int,
         default=2,
-        help="Number of worker pods (must match spec.replicas in YAML)",
+        help="Number of worker pods",
     )
     parser.add_argument(
         "--gpus_per_host",
         type=int,
         default=4,
-        help="GPUs per pod (must match nvidia.com/gpu in YAML)",
+        help="GPUs per pod",
     )
     parser.add_argument(
         "--mesh_name",
         type=str,
         default="ddpmesh",
-        help="Name of the MonarchMesh resource (must match metadata.name in YAML)",
+        help="Name of the MonarchMesh resource",
+    )
+    parser.add_argument(
+        "--provision",
+        action="store_true",
+        help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
     args = parser.parse_args()
-    asyncio.run(main(args.num_hosts, args.gpus_per_host, args.mesh_name))
+    asyncio.run(
+        main(args.num_hosts, args.gpus_per_host, args.mesh_name, args.provision)
+    )
