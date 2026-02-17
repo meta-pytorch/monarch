@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
+use typeuri::Named;
 use uuid::Uuid;
 
 use crate::ActorId;
@@ -170,7 +171,6 @@ impl<T> OrderedSender<T> {
     }
 
     pub(crate) fn direct_send(&self, msg: T) -> Result<(), SendError<T>> {
-        assert!(!self.enable_buffering);
         self.tx.send(msg)
     }
 }
@@ -186,26 +186,26 @@ enum SeqKey {
 }
 
 /// A message's sequencer number infomation.
-#[derive(
-    Debug,
-    Serialize,
-    Deserialize,
-    Clone,
-    typeuri::Named,
-    AttrValue,
-    PartialEq
-)]
-pub struct SeqInfo {
-    /// Message's session ID
-    pub session_id: Uuid,
-    /// Message's sequence number in the given session.
-    pub seq: u64,
+#[derive(Debug, Serialize, Deserialize, Clone, Named, AttrValue, PartialEq)]
+pub enum SeqInfo {
+    /// Messages with the same session ID should be delivered in order.
+    Session {
+        /// Message's session ID
+        session_id: Uuid,
+        /// Message's sequence number in the given session.
+        seq: u64,
+    },
+    /// This message does not have a seq number and should be delivered
+    /// immediately.
+    Direct,
 }
-wirevalue::register_type!(SeqInfo);
 
 impl fmt::Display for SeqInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.session_id, self.seq)
+        match self {
+            Self::Direct => write!(f, "direct"),
+            Self::Session { session_id, seq } => write!(f, "{}:{}", session_id, seq),
+        }
     }
 }
 
@@ -213,13 +213,17 @@ impl std::str::FromStr for SeqInfo {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "direct" {
+            return Ok(SeqInfo::Direct);
+        }
+
         let parts: Vec<_> = s.split(':').collect();
         if parts.len() != 2 {
             return Err(anyhow::anyhow!("invalid SeqInfo: {}", s));
         }
         let session_id: Uuid = parts[0].parse()?;
         let seq: u64 = parts[1].parse()?;
-        Ok(SeqInfo { session_id, seq })
+        Ok(SeqInfo::Session { session_id, seq })
     }
 }
 
@@ -262,7 +266,7 @@ impl Sequencer {
         let mut guard = self.last_seqs.lock().unwrap();
         let entry = guard.entry(key).or_default();
         *entry += 1;
-        SeqInfo {
+        SeqInfo::Session {
             session_id: self.session_id,
             seq: *entry,
         }
@@ -277,8 +281,6 @@ impl Sequencer {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-
-    use typeuri::Named;
 
     use super::*;
     use crate::id;
@@ -297,6 +299,14 @@ mod tests {
             out.push(m);
         }
         out
+    }
+
+    /// Helper to extract seq from SeqInfo::Session variant (for tests only)
+    fn get_seq(seq_info: SeqInfo) -> u64 {
+        match seq_info {
+            SeqInfo::Session { seq, .. } => seq,
+            SeqInfo::Direct => panic!("expected Session variant, got Direct"),
+        }
     }
 
     #[test]
@@ -475,7 +485,7 @@ mod tests {
         // Clone should share the same state
         let cloned_sequencer = sequencer.clone();
         assert_eq!(sequencer.session_id(), cloned_sequencer.session_id(),);
-        assert_eq!(cloned_sequencer.assign_seq(&port_id).seq, 3);
+        assert_eq!(get_seq(cloned_sequencer.assign_seq(&port_id)), 3);
     }
 
     #[test]
@@ -491,14 +501,14 @@ mod tests {
         let actor_port_2 = actor_id.port_id(TestMsg2::port());
 
         // Actor ports should share a sequence (keyed by ActorId)
-        assert_eq!(sequencer.assign_seq(&actor_port_1).seq, 1);
-        assert_eq!(sequencer.assign_seq(&actor_port_2).seq, 2); // continues from 1
-        assert_eq!(sequencer.assign_seq(&actor_port_1).seq, 3);
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_2)), 2); // continues from 1
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 3);
 
         // Actor ports from a different actor get their own shared sequence
         let actor_id_2 = id!(worker[1].worker);
         let actor_port_3 = actor_id_2.port_id(TestMsg1::port());
-        assert_eq!(sequencer.assign_seq(&actor_port_3).seq, 1); // independent from actor_id
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_3)), 1); // independent from actor_id
     }
 
     #[test]
@@ -516,16 +526,16 @@ mod tests {
         let port_2 = actor_id_0.port_id(2);
 
         // Non-actor ports should have independent sequences (keyed by PortId)
-        assert_eq!(sequencer.assign_seq(&port_1).seq, 1);
-        assert_eq!(sequencer.assign_seq(&port_2).seq, 1); // independent, starts at 1
-        assert_eq!(sequencer.assign_seq(&port_1).seq, 2);
-        assert_eq!(sequencer.assign_seq(&port_2).seq, 2);
+        assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&port_2)), 1); // independent, starts at 1
+        assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 2);
+        assert_eq!(get_seq(sequencer.assign_seq(&port_2)), 2);
 
         // Non-actor ports from different actors are also independent
         let port_3 = actor_id_1.port_id(1);
-        assert_eq!(sequencer.assign_seq(&port_3).seq, 1); // independent from port_1
-        assert_eq!(sequencer.assign_seq(&port_1).seq, 3);
-        assert_eq!(sequencer.assign_seq(&port_3).seq, 2);
+        assert_eq!(get_seq(sequencer.assign_seq(&port_3)), 1); // independent from port_1
+        assert_eq!(get_seq(sequencer.assign_seq(&port_1)), 3);
+        assert_eq!(get_seq(sequencer.assign_seq(&port_3)), 2);
     }
 
     #[test]
@@ -546,12 +556,12 @@ mod tests {
         let non_actor_port_2 = actor_id.port_id(2);
 
         // Interleave sends to all port types
-        assert_eq!(sequencer.assign_seq(&actor_port_1).seq, 1);
-        assert_eq!(sequencer.assign_seq(&non_actor_port_1).seq, 1); // independent
-        assert_eq!(sequencer.assign_seq(&actor_port_2).seq, 2); // continues actor sequence
-        assert_eq!(sequencer.assign_seq(&non_actor_port_2).seq, 1); // independent
-        assert_eq!(sequencer.assign_seq(&non_actor_port_1).seq, 2); // continues its own
-        assert_eq!(sequencer.assign_seq(&actor_port_1).seq, 3); // continues actor sequence
-        assert_eq!(sequencer.assign_seq(&non_actor_port_2).seq, 2); // continues its own
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 1);
+        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_1)), 1); // independent
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_2)), 2); // continues actor sequence
+        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_2)), 1); // independent
+        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_1)), 2); // continues its own
+        assert_eq!(get_seq(sequencer.assign_seq(&actor_port_1)), 3); // continues actor sequence
+        assert_eq!(get_seq(sequencer.assign_seq(&non_actor_port_2)), 2); // continues its own
     }
 }

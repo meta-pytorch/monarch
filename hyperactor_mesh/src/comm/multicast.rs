@@ -17,10 +17,11 @@ use hyperactor::message::Castable;
 use hyperactor::message::ErasedUnbound;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::reference::ActorId;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::Extent;
 use ndslice::Point;
+use ndslice::Region;
 use ndslice::Shape;
 use ndslice::Slice;
 use ndslice::selection::Selection;
@@ -28,7 +29,10 @@ use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+use uuid::Uuid;
 
+use crate::Name;
+use crate::ValueMesh;
 use crate::comm::CommMeshConfig;
 use crate::reference::ActorMeshId;
 
@@ -36,7 +40,7 @@ use crate::reference::ActorMeshId;
 // v0 casting is deleted.
 pub(crate) trait CastEnvelope {
     fn dest_port(&self) -> &DestinationPort;
-    fn headers(&self) -> &Attrs;
+    fn headers(&self) -> &Flattrs;
     fn sender(&self) -> &ActorId;
     fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point>;
     fn data(&self) -> &ErasedUnbound;
@@ -61,7 +65,7 @@ pub struct CastMessageEnvelope {
     /// The destination actor mesh id.
     actor_mesh_id: ActorMeshId,
     /// The end-to-end message headers.
-    headers: Attrs,
+    headers: Flattrs,
     /// The sender of this message.
     sender: ActorId,
     /// The destination port of the message. It could match multiple actors with
@@ -79,7 +83,7 @@ impl CastEnvelope for CastMessageEnvelope {
         &self.sender
     }
 
-    fn headers(&self) -> &Attrs {
+    fn headers(&self) -> &Flattrs {
         &self.headers
     }
 
@@ -113,7 +117,7 @@ impl CastMessageEnvelope {
         actor_mesh_id: ActorMeshId,
         sender: ActorId,
         shape: Shape,
-        headers: Attrs,
+        headers: Flattrs,
         message: M,
     ) -> Result<Self, anyhow::Error>
     where
@@ -121,10 +125,7 @@ impl CastMessageEnvelope {
         M: Castable + RemoteMessage,
     {
         let data = ErasedUnbound::try_from_message(message)?;
-        let actor_name = match &actor_mesh_id {
-            ActorMeshId::V0(_, actor_name) => actor_name.clone(),
-            ActorMeshId::V1(name) => name.to_string(),
-        };
+        let actor_name = actor_mesh_id.0.to_string();
         Ok(Self {
             actor_mesh_id,
             headers,
@@ -143,7 +144,7 @@ impl CastMessageEnvelope {
         sender: ActorId,
         dest_port: DestinationPort,
         shape: Shape,
-        headers: Attrs,
+        headers: Flattrs,
         data: wirevalue::Any,
     ) -> Self {
         Self {
@@ -268,6 +269,93 @@ pub(crate) struct ForwardMessage {
 }
 wirevalue::register_type!(ForwardMessage);
 
+/// The is used to start casting a message to a group of actors.
+#[derive(Serialize, Deserialize, Debug, Clone, Named)]
+pub(crate) struct CastMessageV1 {
+    /// The additional end-to-end message headers.
+    pub(super) headers: Flattrs,
+    /// The client who sent this message.
+    pub(super) sender: ActorId,
+    /// The client-assigned session id of this message.
+    pub(super) session_id: Uuid,
+    /// The client-assigned sequence numbers of this message.
+    pub(super) seqs: ValueMesh<u64>,
+    /// The destination mesh's region.
+    pub(super) dest_region: Region,
+    /// The destination port of the message. It could match multiple actors with
+    /// rank wildcard.
+    pub(super) dest_port: DestinationPort,
+    /// The serialized message.
+    pub(super) data: ErasedUnbound,
+}
+
+impl CastEnvelope for CastMessageV1 {
+    fn sender(&self) -> &ActorId {
+        &self.sender
+    }
+
+    fn headers(&self) -> &Flattrs {
+        &self.headers
+    }
+
+    fn dest_port(&self) -> &DestinationPort {
+        &self.dest_port
+    }
+
+    fn data(&self) -> &ErasedUnbound {
+        &self.data
+    }
+
+    fn data_mut(&mut self) -> &mut ErasedUnbound {
+        &mut self.data
+    }
+
+    fn cast_point(&self, config: &CommMeshConfig) -> anyhow::Result<Point> {
+        let rank_on_root_mesh = config.self_rank();
+        let cast_point = self.dest_region.point_of_base_rank(rank_on_root_mesh)?;
+        Ok(cast_point)
+    }
+}
+
+impl CastMessageV1 {
+    /// Create a new CastMessageEnvelope.
+    pub(crate) fn new<A, M>(
+        sender: ActorId,
+        dest_mesh: &Name,
+        dest_region: Region,
+        headers: Flattrs,
+        message: M,
+        session_id: Uuid,
+        seqs: ValueMesh<u64>,
+    ) -> Result<Self, anyhow::Error>
+    where
+        A: Referable + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let data = ErasedUnbound::try_from_message(message)?;
+        Ok(Self {
+            headers,
+            sender,
+            session_id,
+            seqs,
+            dest_region,
+            dest_port: DestinationPort::new::<A, M>(dest_mesh.to_string()),
+            data,
+        })
+    }
+}
+
+/// Forward a message to procs of next hops. This is used by comm actor to
+/// forward a message to other comm actors following the selection topology.
+/// This message is not visible to the clients.
+#[derive(Serialize, Deserialize, Debug, Clone, Named)]
+pub(super) struct ForwardMessageV1 {
+    /// The destination of the message.
+    pub(super) dests: Vec<RoutingFrame>,
+    /// The message to distribute.
+    pub(super) message: CastMessageV1,
+}
+
 declare_attrs! {
     /// Used inside headers to store the originating sender of a cast.
     pub attr CAST_ORIGINATING_SENDER: ActorId;
@@ -276,7 +364,7 @@ declare_attrs! {
     pub attr CAST_POINT: Point;
 }
 
-pub fn set_cast_info_on_headers(headers: &mut Attrs, cast_point: Point, sender: ActorId) {
+pub fn set_cast_info_on_headers(headers: &mut Flattrs, cast_point: Point, sender: ActorId) {
     headers.set(CAST_POINT, cast_point);
     headers.set(CAST_ORIGINATING_SENDER, sender);
 }
@@ -287,18 +375,18 @@ pub trait CastInfo {
     /// we represent it as the only member of a 0-dimensonal cast shape,
     /// which is the same as a singleton.
     fn cast_point(&self) -> Point;
-    fn sender(&self) -> &ActorId;
+    fn sender(&self) -> ActorId;
 }
 
 impl<A: Actor> CastInfo for Context<'_, A> {
     fn cast_point(&self) -> Point {
         match self.headers().get(CAST_POINT) {
-            Some(point) => point.clone(),
+            Some(point) => point,
             None => Extent::unity().point_of_rank(0).unwrap(),
         }
     }
 
-    fn sender(&self) -> &ActorId {
+    fn sender(&self) -> ActorId {
         self.headers()
             .get(CAST_ORIGINATING_SENDER)
             .expect("has sender header")

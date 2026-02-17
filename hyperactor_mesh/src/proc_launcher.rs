@@ -65,7 +65,7 @@ pub(crate) use systemd::SystemdProcLauncher;
 /// `exit_rx`. `exit_rx` is the single source of truth for terminal
 /// status.
 #[derive(Debug)]
-pub(crate) struct LaunchResult {
+pub struct LaunchResult {
     /// OS process ID if known (`None` for containers/VMs without
     /// visible PID).
     pub pid: Option<u32>,
@@ -78,7 +78,7 @@ pub(crate) struct LaunchResult {
 }
 
 /// How proc stdio is handled.
-pub(crate) enum StdioHandling {
+pub enum StdioHandling {
     /// Pipes provided; manager can attach StreamFwder / tail
     /// collection.
     Captured {
@@ -105,7 +105,7 @@ impl fmt::Debug for StdioHandling {
 
 /// How a proc terminated.
 #[derive(Debug, Clone)]
-pub(crate) enum ProcExitKind {
+pub enum ProcExitKind {
     /// Normal exit with code.
     Exited { code: i32 },
     /// Killed by signal.
@@ -116,7 +116,7 @@ pub(crate) enum ProcExitKind {
 
 /// Terminal status of a proc.
 #[derive(Debug, Clone)]
-pub(crate) struct ProcExitResult {
+pub struct ProcExitResult {
     /// How the proc terminated.
     pub kind: ProcExitKind,
     /// Tail of stderr output if available.
@@ -137,7 +137,7 @@ pub(crate) struct ProcExitResult {
 /// spawning), we can refine this into more structured variants
 /// without changing the trait shape.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ProcLauncherError {
+pub enum ProcLauncherError {
     /// Failure while launching a proc (e.g. command spawn failure).
     #[error("launch failed: {0}")]
     Launch(#[source] std::io::Error),
@@ -168,7 +168,7 @@ pub(crate) enum ProcLauncherError {
 ///   should be used (if applicable)?
 
 #[derive(Debug, Clone)]
-pub(crate) struct LaunchOptions {
+pub struct LaunchOptions {
     /// Serialized Bootstrap payload for
     /// HYPERACTOR_MESH_BOOTSTRAP_MODE env var.
     pub bootstrap_payload: String,
@@ -242,7 +242,7 @@ pub(crate) struct LaunchOptions {
 ///   non-UTF8 we fall back to `"unknown_host"`.
 /// - This is **not** guaranteed to be unique and should not be parsed
 ///   for program logic.
-pub(crate) fn format_process_name(proc_id: &ProcId) -> String {
+pub fn format_process_name(proc_id: &ProcId) -> String {
     let who = match proc_id {
         ProcId::Direct(_, name) => name.clone(),
         ProcId::Ranked(world_id, rank) => format!("{world_id}[{rank}]"),
@@ -286,7 +286,7 @@ pub(crate) fn format_process_name(proc_id: &ProcId) -> String {
 /// assume the returned PID is the only process that needs
 /// terminating.
 #[async_trait]
-pub(crate) trait ProcLauncher: Send + Sync + 'static {
+pub trait ProcLauncher: Send + Sync + 'static {
     /// Launch a proc using the provided bootstrap payload and config.
     ///
     /// Implementations must:

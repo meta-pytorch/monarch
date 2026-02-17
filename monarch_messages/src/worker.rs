@@ -9,6 +9,11 @@
 // NOTE: Until https://github.com/PyO3/pyo3/pull/4674, `pyo3::pymethods` trigger
 // and unsafe-op-in-unsafe-fn warnings.
 #![allow(unsafe_op_in_unsafe_fn)]
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
 
 use std::collections::HashMap;
 use std::fmt;
@@ -348,7 +353,7 @@ impl ArgsKwargs {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
     ) -> PyResult<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Convert WireValue args to Python objects
             let py_args: Vec<Bound<'_, PyAny>> = args
                 .into_iter()
@@ -495,9 +500,9 @@ impl Factory {
     pub fn new(
         py: Python<'_>,
         size: Vec<i64>,
-        dtype: PyObject,
-        layout: PyObject,
-        device: PyObject,
+        dtype: Py<PyAny>,
+        layout: Py<PyAny>,
+        device: Py<PyAny>,
     ) -> PyResult<Self> {
         // TODO: Add some validation around dtype / layout. We should have pyre types on
         // the python side to help in the short term.

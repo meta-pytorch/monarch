@@ -31,7 +31,7 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
@@ -104,7 +104,7 @@ impl PyMailbox {
     fn open_accum_port<'py>(
         &self,
         py: Python<'py>,
-        accumulator: PyObject,
+        accumulator: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyTuple>> {
         let py_accumulator = PythonAccumulator::new(py, accumulator)?;
         let (handle, receiver) = self.inner.open_accum_port(py_accumulator);
@@ -130,7 +130,7 @@ impl PyMailbox {
             self.inner.actor_id().clone(),
             port_id,
             message,
-            Attrs::new(),
+            Flattrs::new(),
         );
         let return_handle = self
             .inner
@@ -343,7 +343,7 @@ pub(super) struct PythonPortReceiver {
 
 async fn recv_async(
     receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let message = receiver
         .lock()
         .await
@@ -596,7 +596,7 @@ impl Bind for EitherPortRef {
 }
 
 #[derive(Debug, Named)]
-struct PythonReducer(PyObject);
+struct PythonReducer(Py<PyAny>);
 
 impl PythonReducer {
     fn new(params: Option<wirevalue::Any>) -> anyhow::Result<Self> {
@@ -624,12 +624,12 @@ impl CommReducer for PythonReducer {
 }
 
 struct PythonAccumulator {
-    accumulator: PyObject,
+    accumulator: Py<PyAny>,
     reducer: Option<wirevalue::Any>,
 }
 
 impl PythonAccumulator {
-    fn new<'py>(py: Python<'py>, accumulator: PyObject) -> PyResult<Self> {
+    fn new<'py>(py: Python<'py>, accumulator: Py<PyAny>) -> PyResult<Self> {
         let py_reducer = accumulator.getattr(py, "reducer")?;
         let reducer: Option<wirevalue::Any> = if py_reducer.is_none(py) {
             None
@@ -696,7 +696,7 @@ fn resolve_pending_pickle_blocking(mut message: PythonMessage) -> PyResult<Pytho
     // before pickling, or (b) already had to be explicitly blocked on outside the tokio runtime
     // before pickling. Any use case that worked before should still work now.
     if let Some(pending_pickle_state) = message.pending_pickle_state.take() {
-        message.message = Python::with_gil(|py| {
+        message.message = Python::attach(|py| {
             signal_safe_block_on(
                 py,
                 pending_pickle_state.resolve(message.message.into_bytes()),

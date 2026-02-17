@@ -79,8 +79,8 @@ impl<'py> IntoPyObject<'py> for WireValue {
     }
 }
 
-impl From<PyObject> for WireValue {
-    fn from(obj: PyObject) -> Self {
-        Python::with_gil(|py| WireValue::PyObject(PickledPyObject::pickle(obj.bind(py)).unwrap()))
+impl From<Py<PyAny>> for WireValue {
+    fn from(obj: Py<PyAny>) -> Self {
+        Python::attach(|py| WireValue::PyObject(PickledPyObject::pickle(obj.bind(py)).unwrap()))
     }
 }

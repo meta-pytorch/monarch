@@ -10,14 +10,14 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.98"
 derive_more = { version = "1.0.0", features = ["full"] }
-enum-as-inner = "0.6.0"
+enum-as-inner = "0.6.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
-thiserror = "2.0.12"
+thiserror = "2.0.18"
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

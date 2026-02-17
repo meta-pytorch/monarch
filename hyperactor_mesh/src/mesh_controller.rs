@@ -28,31 +28,30 @@ use hyperactor::context;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Attrs;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
+use ndslice::view::Point;
 use ndslice::view::Ranked;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
 use typeuri::Named;
 
-use crate::actor_mesh::update_undeliverable_envelope_for_casting;
+use crate::Name;
+use crate::ValueMesh;
+use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
-use crate::proc_mesh::mesh_agent::ActorState;
+use crate::casting::update_undeliverable_envelope_for_casting;
+use crate::host_mesh::HostMeshRef;
+use crate::mesh_agent::ActorState;
+use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
-use crate::v1;
-use crate::v1::Name;
-use crate::v1::ValueMesh;
-use crate::v1::actor_mesh::ActorMeshRef;
-use crate::v1::host_mesh::HostMeshRef;
-use crate::v1::proc_mesh::ProcMeshRef;
-use crate::v1::view::Point;
 
 declare_attrs! {
     /// Time between checks of actor states to create supervision events for
@@ -170,7 +169,7 @@ impl<A: Referable> ActorMeshController<A> {
         &self,
         cx: &impl context::Actor,
         reason: String,
-    ) -> v1::Result<ValueMesh<resource::Status>> {
+    ) -> crate::Result<ValueMesh<resource::Status>> {
         // Cannot use "ActorMesh::stop" as it tries to message the controller, which is this actor.
         self.mesh
             .proc_mesh()
@@ -202,7 +201,7 @@ fn send_subscriber_message(
     subscriber: &PortRef<Option<MeshFailure>>,
     message: MeshFailure,
 ) {
-    let mut headers = Attrs::new();
+    let mut headers = Flattrs::new();
     headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
     if let Err(error) = subscriber.send_with_headers(cx, headers, Some(message.clone())) {
         tracing::warn!(
@@ -412,7 +411,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             // Use an actor id from the mesh.
             mesh.get(rank).unwrap().actor_id().clone(),
             None,
-            ActorStatus::Stopped,
+            ActorStatus::Stopped("ActorMeshController received explicit stop request".to_string()),
             None,
         );
         let failure_message = MeshFailure {
@@ -450,7 +449,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
                 }
             }
             // An ActorStopError means some actors didn't reach the stopped state.
-            Err(v1::Error::ActorStopError { statuses }) => {
+            Err(crate::Error::ActorStopError { statuses }) => {
                 // If there are no states yet, nothing to update.
                 if let Some(max_rank) = max_rank {
                     let extent = extent.expect("no actors in mesh");
@@ -487,7 +486,7 @@ fn send_heartbeat(cx: &impl context::Actor, health_state: &HealthState) {
     );
 
     for subscriber in health_state.subscribers.iter() {
-        let mut headers = Attrs::new();
+        let mut headers = Flattrs::new();
         headers.set(ACTOR_MESH_SUBSCRIBER_MESSAGE, true);
         if let Err(e) = subscriber.send_with_headers(cx, headers, None) {
             tracing::warn!(subscriber = %subscriber.port_id(), "error sending heartbeat message: {:?}", e);
@@ -587,7 +586,13 @@ fn actor_state_to_supervision_events(
                 vec![ActorSupervisionEvent::new(
                     actor_id.expect("actor_id is None"),
                     None,
-                    ActorStatus::Stopped,
+                    ActorStatus::Stopped(
+                        format!(
+                            "actor status is {}; actor may have been killed",
+                            state.status
+                        )
+                        .to_string(),
+                    ),
                     None,
                 )]
             }
@@ -653,12 +658,11 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 // make the proc failure the cause. It is a hack to try to determine
                 // the correct status based on process exit status.
                 let actor_status = match state.state.and_then(|s| s.proc_status) {
-                    Some(ProcStatus::Stopped { .. })
-                    // SIGTERM
-                    | Some(ProcStatus::Killed { signal: 15, .. })
+                    Some(ProcStatus::Stopped { exit_code, .. }) => {
+                        ActorStatus::Stopped(format!("process exited with code {}", exit_code))
+                    }
                     // Conservatively treat lack of status as stopped
-                    | None => ActorStatus::Stopped,
-
+                    None => ActorStatus::Stopped("no status received from process".to_string()),
                     Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
                         "process failure: {}",
                         status

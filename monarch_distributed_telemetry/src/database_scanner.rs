@@ -38,6 +38,7 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyModule;
 use serde_multipart::Part;
 
+use crate::EntityDispatcher;
 use crate::QueryResponse;
 use crate::RecordBatchSink;
 use crate::serialize_batch;
@@ -100,14 +101,16 @@ pub struct DatabaseScanner {
     table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
     rank: usize,
     max_batches: usize,
-    /// Handle to flush the RecordBatchSink (when not using fake data)
+    /// Handle to flush the RecordBatchSink for trace events (spans, events)
     sink: Option<RecordBatchSink>,
+    /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
+    dispatcher: Option<EntityDispatcher>,
 }
 
 fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     use rand::Rng;
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     // Create hosts table schema
     let hosts_schema = Arc::new(Schema::new(vec![
@@ -120,7 +123,7 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     ]));
 
     // Use random base to avoid duplicate host_ids across actors
-    let host_start = rng.gen_range(0..10000) * 10;
+    let host_start = rng.random_range(0..10000) * 10;
     let host_end = host_start + 10;
     let datacenters = ["us-east-1", "us-west-2", "eu-west-1", "ap-south-1"];
     let os_types = ["ubuntu-22.04", "debian-12", "rhel-9", "amazon-linux-2"];
@@ -136,12 +139,12 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
     let mut mems = Vec::new();
 
     for host_id in host_start..host_end {
-        host_ids.push(host_id as i32);
+        host_ids.push(host_id);
         hostnames.push(format!("server-{:05}", host_id));
-        dcs.push(datacenters[rng.gen_range(0..datacenters.len())].to_string());
-        oses.push(os_types[rng.gen_range(0..os_types.len())].to_string());
-        cpus.push(cpu_options[rng.gen_range(0..cpu_options.len())] as i32);
-        mems.push(memory_options[rng.gen_range(0..memory_options.len())] as i32);
+        dcs.push(datacenters[rng.random_range(0..datacenters.len())].to_string());
+        oses.push(os_types[rng.random_range(0..os_types.len())].to_string());
+        cpus.push(cpu_options[rng.random_range(0..cpu_options.len())]);
+        mems.push(memory_options[rng.random_range(0..memory_options.len())]);
     }
 
     let hosts_batch = RecordBatch::try_new(
@@ -192,16 +195,16 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
         let timestamp_micros = now - (i * 90 * 1_000_000);
         timestamps.push(timestamp_micros);
 
-        let host_id = rng.gen_range(host_start..host_end);
+        let host_id = rng.random_range(host_start..host_end);
         metric_host_ids.push(host_id as i32);
 
-        let metric_name = metric_names[rng.gen_range(0..metric_names.len())];
+        let metric_name = metric_names[rng.random_range(0..metric_names.len())];
         metric_names_col.push(metric_name.to_string());
 
         let value = match metric_name {
-            "cpu_usage" | "memory_usage" => rng.gen_range(0.0..100.0),
-            "disk_io" => rng.gen_range(0.0..1000.0),
-            _ => rng.gen_range(0.0..10000.0),
+            "cpu_usage" | "memory_usage" => rng.random_range(0.0..100.0),
+            "disk_io" => rng.random_range(0.0..1000.0),
+            _ => rng.random_range(0.0..10000.0),
         };
         values.push(value);
     }
@@ -241,27 +244,37 @@ impl DatabaseScanner {
             rank,
             max_batches,
             sink: None,
+            dispatcher: None,
         };
 
         if use_fake_data {
             fill_fake_batches(&scanner)
                 .map_err(|e| PyException::new_err(format!("failed to create fake data: {}", e)))?;
         } else {
-            // Register a RecordBatchSink to receive telemetry events
-            // Clone the sink before registering so we can call flush() later
+            // Create and register a RecordBatchSink for trace events (spans, events)
             let sink = scanner.create_record_batch_sink(batch_size);
             scanner.sink = Some(sink.clone());
             hyperactor_telemetry::register_sink(Box::new(sink));
+
+            // Create and register an EntityDispatcher for entity events (actors, meshes)
+            let dispatcher = scanner.create_entity_dispatcher(batch_size);
+            scanner.dispatcher = Some(dispatcher.clone());
+            hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
         }
 
         Ok(scanner)
     }
 
-    /// Flush any pending trace events to the tables.
+    /// Flush any pending trace events and entity events to the tables.
     fn flush(&self) -> PyResult<()> {
         if let Some(ref sink) = self.sink {
             sink.flush()
                 .map_err(|e| PyException::new_err(format!("failed to flush sink: {}", e)))?;
+        }
+        if let Some(ref dispatcher) = self.dispatcher {
+            dispatcher
+                .flush()
+                .map_err(|e| PyException::new_err(format!("failed to flush dispatcher: {}", e)))?;
         }
         Ok(())
     }
@@ -371,8 +384,15 @@ impl DatabaseScanner {
                 .clone()
         };
 
-        // Push the batch (push ignores empty batches)
-        get_tokio_runtime().block_on(table.push(batch));
+        // Push the batch (push ignores empty batches).
+        // Use block_in_place + Handle::current() when called from within a tokio
+        // runtime (e.g., from notify_sent_message on a worker thread), otherwise
+        // fall back to creating/reusing a runtime via get_tokio_runtime().
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(table.push(batch)));
+        } else {
+            get_tokio_runtime().block_on(table.push(batch));
+        }
         Ok(())
     }
 
@@ -385,6 +405,26 @@ impl DatabaseScanner {
         let max_batches = self.max_batches;
 
         RecordBatchSink::new(
+            batch_size,
+            Box::new(move |table_name, batch| {
+                if let Err(e) =
+                    Self::push_batch_to_tables(&table_data, max_batches, table_name, batch)
+                {
+                    tracing::error!("Failed to push batch to table {}: {}", table_name, e);
+                }
+            }),
+        )
+    }
+
+    /// Create an EntityDispatcher that pushes batches to this scanner's tables.
+    ///
+    /// The dispatcher can be registered with hyperactor_telemetry::set_entity_dispatcher()
+    /// to receive entity events (actors, meshes) and store them as queryable tables.
+    pub fn create_entity_dispatcher(&self, batch_size: usize) -> EntityDispatcher {
+        let table_data = self.table_data.clone();
+        let max_batches = self.max_batches;
+
+        EntityDispatcher::new(
             batch_size,
             Box::new(move |table_name, batch| {
                 if let Err(e) =

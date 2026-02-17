@@ -23,13 +23,14 @@ use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::actor_mesh::ActorMeshRef;
 use hyperactor_mesh::bootstrap::MESH_ENABLE_LOG_FORWARDING;
 use hyperactor_mesh::logging::LogClientActor;
 use hyperactor_mesh::logging::LogClientMessage;
 use hyperactor_mesh::logging::LogForwardActor;
 use hyperactor_mesh::logging::LogForwardMessage;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::actor_mesh::ActorMeshRef;
 use monarch_types::SerializablePyErr;
 use ndslice::View;
 use pyo3::Bound;
@@ -66,11 +67,11 @@ pub enum LoggerRuntimeMessage {
 #[derive(Debug)]
 #[hyperactor::export(spawn = true, handlers = [LoggerRuntimeMessage {cast = true}])]
 pub struct LoggerRuntimeActor {
-    logger: Arc<PyObject>,
+    logger: Arc<Py<PyAny>>,
 }
 
 impl LoggerRuntimeActor {
-    fn get_logger(py: Python) -> PyResult<PyObject> {
+    fn get_logger(py: Python) -> PyResult<Py<PyAny>> {
         // Import the Python AutoReloader class
         let logging_module = py.import("logging")?;
         let logger = logging_module.call_method0("getLogger")?;
@@ -78,7 +79,7 @@ impl LoggerRuntimeActor {
         Ok(logger.into())
     }
 
-    fn set_logger_level(py: Python, logger: &PyObject, level: u8) -> PyResult<()> {
+    fn set_logger_level(py: Python, logger: &Py<PyAny>, level: u8) -> PyResult<()> {
         let logger = logger.bind(py);
         logger.call_method1("setLevel", (level,))?;
         Ok(())
@@ -90,7 +91,7 @@ impl Actor for LoggerRuntimeActor {}
 impl RemoteSpawn for LoggerRuntimeActor {
     type Params = ();
 
-    async fn new(_: ()) -> Result<Self, anyhow::Error> {
+    async fn new(_: (), _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let logger =
             monarch_with_gil(|py| Self::get_logger(py).map_err(SerializablePyErr::from_fn(py)))
                 .await?;
@@ -528,8 +529,8 @@ fn format_traceback<'py>(py: Python<'py>, err: PyErr) -> String {
 #[pyfunction]
 fn log_endpoint_exception<'py>(
     py: Python<'py>,
-    e: PyObject,
-    endpoint: PyObject,
+    e: Py<PyAny>,
+    endpoint: Py<PyAny>,
     actor_id: PyActorId,
 ) {
     let pyerr = PyErr::from_value(e.into_bound(py));
@@ -565,8 +566,8 @@ mod tests {
     use hyperactor::Instance;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::proc::Proc;
-    use hyperactor_mesh::v1::ProcMesh;
-    use hyperactor_mesh::v1::host_mesh::HostMesh;
+    use hyperactor_mesh::ProcMesh;
+    use hyperactor_mesh::host_mesh::HostMesh;
     use ndslice::Extent;
     use ndslice::View; // .region(), .num_ranks() etc.
 

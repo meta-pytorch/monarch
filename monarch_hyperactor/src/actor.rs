@@ -33,14 +33,17 @@ use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Attrs;
-use hyperactor_mesh::actor_mesh::update_undeliverable_envelope_for_casting;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
+use hyperactor_mesh::comm::multicast::CAST_POINT;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::proc_mesh::default_bind_spec;
 use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
+use hyperactor_mesh::transport::default_bind_spec;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
+use ndslice::Point;
+use ndslice::extent;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
@@ -55,7 +58,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
 use tokio::sync::oneshot;
-use tracing::Instrument;
 use typeuri::Named;
 
 use crate::buffers::Buffer;
@@ -177,10 +179,10 @@ wirevalue::register_type!(PythonMessage);
 struct ResolvedCallMethod {
     method: MethodSpecifier,
     bytes: FrozenBuffer,
-    local_state: PyObject,
+    local_state: Py<PyAny>,
     /// Implements PortProtocol
     /// Concretely either a Port, DroppingPort, or LocalPort
-    response_port: PyObject,
+    response_port: Py<PyAny>,
 }
 
 /// Message sent through the queue in queue-dispatch mode.
@@ -194,9 +196,9 @@ pub struct QueuedMessage {
     #[pyo3(get)]
     pub bytes: FrozenBuffer,
     #[pyo3(get)]
-    pub local_state: PyObject,
+    pub local_state: Py<PyAny>,
     #[pyo3(get)]
-    pub response_port: PyObject,
+    pub response_port: Py<PyAny>,
 }
 
 impl PythonMessage {
@@ -438,7 +440,7 @@ pub enum PythonActorDispatchMode {
 )]
 pub struct PythonActor {
     /// The Python object that we delegate message handling to.
-    actor: PyObject,
+    actor: Py<PyAny>,
     /// Stores a reference to the Python event loop to run Python coroutines on.
     /// This is None when using single runtime mode, Some when using per-actor mode.
     task_locals: Option<pyo3_async_runtimes::TaskLocals>,
@@ -447,21 +449,29 @@ pub struct PythonActor {
     instance: Option<Py<crate::context::PyInstance>>,
     /// Dispatch mode for this actor.
     dispatch_mode: PythonActorDispatchMode,
+    /// The location in the actor mesh at which this actor was spawned.
+    spawn_point: OnceLock<Option<Point>>,
+    /// Initial message to process during PythonActor::init.
+    init_message: Option<PythonMessage>,
 }
 
 impl PythonActor {
-    pub(crate) fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
+    pub(crate) fn new(
+        actor_type: PickledPyObject,
+        init_message: Option<PythonMessage>,
+        spawn_point: Option<Point>,
+    ) -> Result<Self, anyhow::Error> {
         let use_queue_dispatch = hyperactor_config::global::get(ACTOR_QUEUE_DISPATCH);
 
         Ok(monarch_with_gil_blocking(
             |py| -> Result<Self, SerializablePyErr> {
                 let unpickled = actor_type.unpickle(py)?;
                 let class_type: &Bound<'_, PyType> = unpickled.downcast()?;
-                let actor: PyObject = class_type.call0()?.into_py_any(py)?;
+                let actor: Py<PyAny> = class_type.call0()?.into_py_any(py)?;
 
                 // Only create per-actor TaskLocals if not using shared runtime
                 let task_locals = (!hyperactor_config::global::get(SHARED_ASYNCIO_RUNTIME))
-                    .then(|| Python::allow_threads(py, create_task_locals));
+                    .then(|| Python::detach(py, create_task_locals));
 
                 let dispatch_mode = if use_queue_dispatch {
                     let (sender, receiver) = pympsc::channel().map_err(|e| {
@@ -481,6 +491,8 @@ impl PythonActor {
                     task_locals,
                     instance: None,
                     dispatch_mode,
+                    spawn_point: OnceLock::from(spawn_point),
+                    init_message,
                 })
             },
         )?)
@@ -530,9 +542,26 @@ impl PythonActor {
             .getattr("RootClientActor")
             .expect("get RootClientActor");
 
-        let mut actor = PythonActor::new(
+        let actor_type =
             PickledPyObject::pickle(&actor_mesh_mod.getattr("_Actor").expect("get _Actor"))
-                .expect("pickle _Actor"),
+                .expect("pickle _Actor");
+
+        let init_message = PythonMessage::new(
+            PythonMessageKind::CallMethod {
+                name: MethodSpecifier::Init {},
+                response_port: None,
+            },
+            root_client_class
+                .call_method0("_pickled_init_args")
+                .expect("call RootClientActor._pickled_init_args"),
+            None,
+        )
+        .expect("create RootClientActor init message");
+
+        let mut actor = PythonActor::new(
+            actor_type,
+            Some(init_message),
+            Some(extent!().point_of_rank(0).unwrap()),
         )
         .expect("create client PythonActor");
 
@@ -552,22 +581,6 @@ impl PythonActor {
             .unwrap();
         let instance = root_client_instance.get().unwrap();
 
-        handle
-            .send(
-                instance,
-                PythonMessage::new(
-                    PythonMessageKind::CallMethod {
-                        name: MethodSpecifier::Init {},
-                        response_port: None,
-                    },
-                    root_client_class
-                        .call_method0("_pickled_init_args")
-                        .expect("call RootClientActor._pickled_init_args"),
-                    None,
-                )
-                .expect("create RootClientActor init message"),
-            )
-            .expect("initialize root client");
         // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
         // are bound.
         let _client_ref = handle.bind::<PythonActor>();
@@ -692,7 +705,7 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
     // may release/reacquire the GIL; if thread 0 holds the GIL blocking on ROOT_CLIENT_ACTOR.get_or_init
     // while thread 1 blocks on acquiring the GIL inside PythonActor::bootstrap_client, we get
     // a deadlock.
-    py.allow_threads(|| {
+    py.detach(|| {
         ROOT_CLIENT_ACTOR.get_or_init(|| {
             monarch_with_gil_blocking(|py| {
                 let (client, _handle) = PythonActor::bootstrap_client(py);
@@ -705,62 +718,68 @@ pub(crate) fn root_client_actor(py: Python<'_>) -> &'static Instance<PythonActor
 #[async_trait]
 impl Actor for PythonActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode else {
-            return Ok(());
-        };
+        if let PythonActorDispatchMode::Queue { receiver, .. } = &mut self.dispatch_mode {
+            let receiver = receiver.take().unwrap();
 
-        let receiver = receiver.take().unwrap();
+            // Create an error port that converts PythonMessage to an abort signal.
+            // This allows Python to send errors that trigger actor supervision.
+            let error_port: hyperactor::PortHandle<PythonMessage> =
+                this.port::<Signal>().contramap(|msg: PythonMessage| {
+                    monarch_with_gil_blocking(|py| {
+                        let err = match msg.kind {
+                            PythonMessageKind::Exception { .. } => {
+                                // Deserialize the error from the message
+                                let cloudpickle = py.import("cloudpickle").unwrap();
+                                let err_obj = cloudpickle
+                                    .call_method1("loads", (msg.message.to_bytes().as_ref(),))
+                                    .unwrap();
+                                let py_err = pyo3::PyErr::from_value(err_obj);
+                                SerializablePyErr::from(py, &py_err)
+                            }
+                            _ => {
+                                let py_err = PyRuntimeError::new_err(format!(
+                                    "expected Exception, got {:?}",
+                                    msg.kind
+                                ));
+                                SerializablePyErr::from(py, &py_err)
+                            }
+                        };
+                        Signal::Abort(err.to_string())
+                    })
+                });
 
-        // Create an error port that converts PythonMessage to an abort signal.
-        // This allows Python to send errors that trigger actor supervision.
-        let error_port: hyperactor::PortHandle<PythonMessage> =
-            this.port::<Signal>().contramap(|msg: PythonMessage| {
-                monarch_with_gil_blocking(|py| {
-                    let err = match msg.kind {
-                        PythonMessageKind::Exception { .. } => {
-                            // Deserialize the error from the message
-                            let cloudpickle = py.import("cloudpickle").unwrap();
-                            let err_obj = cloudpickle
-                                .call_method1("loads", (msg.message.to_bytes().as_ref(),))
-                                .unwrap();
-                            let py_err = pyo3::PyErr::from_value(err_obj);
-                            SerializablePyErr::from(py, &py_err)
-                        }
-                        _ => {
-                            let py_err = PyRuntimeError::new_err(format!(
-                                "expected Exception, got {:?}",
-                                msg.kind
-                            ));
-                            SerializablePyErr::from(py, &py_err)
-                        }
-                    };
-                    Signal::Abort(err.to_string())
-                })
-            });
+            let error_port_handle = PythonPortHandle::new(error_port);
 
-        let error_port_handle = PythonPortHandle::new(error_port);
+            monarch_with_gil(|py| {
+                let tl = self
+                    .task_locals
+                    .as_ref()
+                    .unwrap_or_else(|| shared_task_locals(py));
+                let awaitable = self.actor.call_method(
+                    py,
+                    "_dispatch_loop",
+                    (receiver, error_port_handle),
+                    None,
+                )?;
+                let future =
+                    pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))?;
+                tokio::spawn(async move {
+                    if let Err(e) = future.await {
+                        tracing::error!("message loop error: {}", e);
+                    }
+                });
+                Ok::<_, anyhow::Error>(())
+            })
+            .await?;
+        }
 
-        monarch_with_gil(|py| {
-            let tl = self
-                .task_locals
-                .as_ref()
-                .unwrap_or_else(|| shared_task_locals(py));
-            let awaitable = self.actor.call_method(
-                py,
-                "_dispatch_loop",
-                (receiver, error_port_handle),
-                None,
-            )?;
-            let future =
-                pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))?;
-            tokio::spawn(async move {
-                if let Err(e) = future.await {
-                    tracing::error!("message loop error: {}", e);
-                }
-            });
-            Ok::<_, anyhow::Error>(())
-        })
-        .await?;
+        if let Some(init_message) = self.init_message.take() {
+            let spawn_point = self.spawn_point.get().unwrap().as_ref().expect("PythonActor should never be spawned with init_message unless spawn_point also specified").clone();
+            let mut headers = Flattrs::new();
+            headers.set(CAST_POINT, spawn_point);
+            let cx = Context::new(this, headers);
+            <Self as Handler<PythonMessage>>::handle(self, &cx, init_message).await?;
+        }
 
         Ok(())
     }
@@ -773,7 +792,7 @@ impl Actor for PythonActor {
         // Calls the "__cleanup__" method on the python instance to allow the actor
         // to control its own cleanup.
         // No headers because this isn't in the context of a message.
-        let cx = Context::new(this, Attrs::new());
+        let cx = Context::new(this, Flattrs::new());
         // Turn the ActorError into a representation of the error. We may not
         // have an original exception object or traceback, so we just pass in
         // the message.
@@ -906,7 +925,7 @@ impl Actor for PythonActor {
         this: &Instance<Self>,
         event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        let cx = Context::new(this, Attrs::new());
+        let cx = Context::new(this, Flattrs::new());
         self.handle(
             &cx,
             MeshFailure {
@@ -920,12 +939,36 @@ impl Actor for PythonActor {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+pub struct PythonActorParams {
+    // The pickled actor class to instantiate.
+    actor_type: PickledPyObject,
+    // Python message to process as part of the actor initialization.
+    init_message: Option<PythonMessage>,
+}
+
+impl PythonActorParams {
+    pub(crate) fn new(actor_type: PickledPyObject, init_message: Option<PythonMessage>) -> Self {
+        Self {
+            actor_type,
+            init_message,
+        }
+    }
+}
+
 #[async_trait]
 impl RemoteSpawn for PythonActor {
-    type Params = PickledPyObject;
+    type Params = PythonActorParams;
 
-    async fn new(actor_type: PickledPyObject) -> Result<Self, anyhow::Error> {
-        Self::new(actor_type)
+    async fn new(
+        PythonActorParams {
+            actor_type,
+            init_message,
+        }: PythonActorParams,
+        environment: Flattrs,
+    ) -> Result<Self, anyhow::Error> {
+        let spawn_point = environment.get(CAST_POINT);
+        Self::new(actor_type, init_message, spawn_point)
     }
 }
 
@@ -956,7 +999,7 @@ fn create_task_locals() -> pyo3_async_runtimes::TaskLocals {
 /// Get the shared TaskLocals, creating it if necessary.
 fn shared_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
     static SHARED_TASK_LOCALS: OnceLock<pyo3_async_runtimes::TaskLocals> = OnceLock::new();
-    Python::allow_threads(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
+    Python::detach(py, || SHARED_TASK_LOCALS.get_or_init(create_task_locals))
 }
 
 // [Panics in async endpoints]
@@ -996,19 +1039,19 @@ fn shared_task_locals(py: Python) -> &'static pyo3_async_runtimes::TaskLocals {
 // `PyTaskCompleter` callback explodes.
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 struct PanicFlag {
-    sender: Option<tokio::sync::oneshot::Sender<PyObject>>,
+    sender: Option<tokio::sync::oneshot::Sender<Py<PyAny>>>,
 }
 
 #[pymethods]
 impl PanicFlag {
-    fn signal_panic(&mut self, ex: PyObject) {
+    fn signal_panic(&mut self, ex: Py<PyAny>) {
         self.sender.take().unwrap().send(ex).unwrap();
     }
 }
 
 #[async_trait]
 impl Handler<PythonMessage> for PythonActor {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(
         &mut self,
         cx: &Context<PythonActor>,
@@ -1038,15 +1081,12 @@ impl PythonActor {
         // See [Panics in async endpoints].
         let (sender, receiver) = oneshot::channel();
 
-        let (future, rank) = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
+        let future = monarch_with_gil(|py| -> Result<_, SerializablePyErr> {
             let inst = self.instance.get_or_insert_with(|| {
                 let inst: crate::context::PyInstance = cx.into();
                 inst.into_pyobject(py).unwrap().into()
             });
-            let rank = inst
-                .getattr(py, "rank")?
-                .getattr(py, "rank")?
-                .extract::<usize>(py)?;
+
             let awaitable = self.actor.call_method(
                 py,
                 "handle",
@@ -1069,32 +1109,18 @@ impl PythonActor {
                 .unwrap_or_else(|| shared_task_locals(py));
 
             pyo3_async_runtimes::into_future_with_locals(tl, awaitable.into_bound(py))
-                .map(|a| (a, rank))
                 .map_err(|err| err.into())
         })
         .await?;
 
         // Spawn a child actor to await the Python handler method.
-        tokio::spawn(
-            handle_async_endpoint_panic(
-                cx.port(),
-                PythonTask::new(future)?,
-                receiver,
-                cx.self_id().to_string(),
-                endpoint.clone(),
-            )
-            .instrument(
-                tracing::info_span!(
-                    "PythonActor endpoint",
-                    actor_id = %cx.self_id(),
-                    %rank,
-                    %endpoint
-                )
-                .or_current()
-                .follows_from(tracing::Span::current().id())
-                .clone(),
-            ),
-        );
+        tokio::spawn(handle_async_endpoint_panic(
+            cx.port(),
+            PythonTask::new(future)?,
+            receiver,
+            cx.self_id().to_string(),
+            endpoint,
+        ));
         Ok(())
     }
 
@@ -1280,7 +1306,7 @@ impl Handler<MeshFailure> for PythonActor {
 async fn handle_async_endpoint_panic(
     panic_sender: PortHandle<Signal>,
     task: PythonTask,
-    side_channel: oneshot::Receiver<PyObject>,
+    side_channel: oneshot::Receiver<Py<PyAny>>,
     actor_id: String,
     endpoint: String,
 ) {
@@ -1352,7 +1378,7 @@ async fn handle_async_endpoint_panic(
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 struct LocalPort {
     instance: PyInstance,
-    inner: Option<OncePortHandle<Result<PyObject, PyObject>>>,
+    inner: Option<OncePortHandle<Result<Py<PyAny>, Py<PyAny>>>>,
 }
 
 impl Debug for LocalPort {
@@ -1372,12 +1398,12 @@ where
 
 #[pymethods]
 impl LocalPort {
-    fn send(&mut self, obj: PyObject) -> PyResult<()> {
+    fn send(&mut self, obj: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.send(self.instance.deref(), Ok(obj))
             .map_err(to_py_error)
     }
-    fn exception(&mut self, e: PyObject) -> PyResult<()> {
+    fn exception(&mut self, e: Py<PyAny>) -> PyResult<()> {
         let port = self.inner.take().expect("use local port once");
         port.send(self.instance.deref(), Err(e))
             .map_err(to_py_error)
@@ -1404,11 +1430,11 @@ mod tests {
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
     use hyperactor::reference::UnboundPort;
+    use hyperactor_mesh::Error as MeshError;
+    use hyperactor_mesh::Name;
+    use hyperactor_mesh::host_mesh::mesh_agent::ProcState;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
-    use hyperactor_mesh::v1::Error as MeshError;
-    use hyperactor_mesh::v1::Name;
-    use hyperactor_mesh::v1::host_mesh::mesh_agent::ProcState;
     use pyo3::PyTypeInfo;
 
     use super::*;
@@ -1492,9 +1518,9 @@ mod tests {
         let rust_msg = err.to_string();
         let pyerr = to_py_error(err);
 
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         monarch_with_gil_blocking(|py| {
-            assert!(pyerr.get_type(py).is(&PyValueError::type_object(py)));
+            assert!(pyerr.get_type(py).is(PyValueError::type_object(py)));
             let py_msg = pyerr.value(py).to_string();
 
             // 1) Bridge preserves the exact message
@@ -1503,7 +1529,7 @@ mod tests {
             assert!(py_msg.contains(", state: "));
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
-            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::v1::host_mesh::mesh_agent::HostMeshAgent>";
+            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent>";
             assert!(py_msg.starts_with(expected_prefix));
         });
     }

@@ -54,6 +54,7 @@ use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::override_or_global;
@@ -68,8 +69,11 @@ use tracing::Level;
 use typeuri::Named;
 
 use crate::config::MESH_PROC_LAUNCHER_KIND;
+use crate::host_mesh::mesh_agent::HostAgentMode;
+use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
+use crate::mesh_agent::ProcMeshAgent;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::NativeProcLauncher;
 use crate::proc_launcher::ProcExitKind;
@@ -79,11 +83,7 @@ use crate::proc_launcher::ProcLauncherError;
 use crate::proc_launcher::StdioHandling;
 use crate::proc_launcher::SystemdProcLauncher;
 use crate::proc_launcher::format_process_name;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
 use crate::resource;
-use crate::v1;
-use crate::v1::host_mesh::mesh_agent::HostAgentMode;
-use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
 
 mod mailbox;
 
@@ -362,7 +362,7 @@ pub enum Bootstrap {
     },
 
     /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
-    /// managed by a [`crate::v1::host_mesh::mesh_agent::HostMeshAgent`].
+    /// managed by a [`crate::host_mesh::mesh_agent::HostMeshAgent`].
     Host {
         /// The address on which to serve the host.
         addr: ChannelAddr,
@@ -398,13 +398,13 @@ impl Bootstrap {
     /// Serialize the mode into a environment-variable-safe string by
     /// base64-encoding its JSON representation.
     #[allow(clippy::result_large_err)]
-    pub(crate) fn to_env_safe_string(&self) -> v1::Result<String> {
+    pub(crate) fn to_env_safe_string(&self) -> crate::Result<String> {
         Ok(BASE64_STANDARD.encode(serde_json::to_string(&self)?))
     }
 
     /// Deserialize the mode from the representation returned by [`to_env_safe_string`].
     #[allow(clippy::result_large_err)]
-    pub(crate) fn from_env_safe_string(str: &str) -> v1::Result<Self> {
+    pub(crate) fn from_env_safe_string(str: &str) -> crate::Result<Self> {
         let data = BASE64_STANDARD.decode(str)?;
         let data = std::str::from_utf8(&data)?;
         Ok(serde_json::from_str(data)?)
@@ -1569,8 +1569,9 @@ impl FromStr for LauncherKind {
 /// via the selected launcher (e.g. direct child termination for
 /// native, `StopUnit` for systemd).
 pub struct BootstrapProcManager {
-    /// The process launcher backend.
-    launcher: Arc<dyn ProcLauncher>,
+    /// The process launcher backend. Initialized on first use via
+    /// `launcher()`, or explicitly via `set_launcher()`.
+    launcher: OnceLock<Arc<dyn ProcLauncher>>,
 
     /// The command specification used to bootstrap new processes.
     command: BootstrapCommand,
@@ -1598,16 +1599,6 @@ impl BootstrapProcManager {
     /// backed by a specific binary path (e.g. a bootstrap
     /// trampoline).
     pub(crate) fn new(command: BootstrapCommand) -> Result<Self, io::Error> {
-        let kind_str = hyperactor_config::global::get_cloned(MESH_PROC_LAUNCHER_KIND);
-        let kind: LauncherKind = kind_str.parse()?;
-
-        let launcher: Arc<dyn ProcLauncher> = match kind {
-            LauncherKind::Native => Arc::new(NativeProcLauncher::new()),
-            LauncherKind::Systemd => Arc::new(SystemdProcLauncher::new()),
-        };
-
-        tracing::info!(kind = ?kind, config_value = %kind_str, "proc launcher selected");
-
         let file_appender = if hyperactor_config::global::get(MESH_ENABLE_FILE_CAPTURE) {
             match crate::logging::FileAppender::new() {
                 Some(fm) => {
@@ -1624,11 +1615,44 @@ impl BootstrapProcManager {
         };
 
         Ok(Self {
-            launcher,
+            launcher: OnceLock::new(),
             command,
             children: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             file_appender,
             socket_dir: runtime_dir()?,
+        })
+    }
+
+    /// Install a custom launcher.
+    ///
+    /// Returns error if already initialized (by prior
+    /// `set_launcher()` OR by a spawn that triggered default init via
+    /// `launcher()`).
+    ///
+    /// Must be called before any spawn operation that would
+    /// initialize the default launcher.
+    pub fn set_launcher(&self, launcher: Arc<dyn ProcLauncher>) -> Result<(), ProcLauncherError> {
+        self.launcher.set(launcher).map_err(|_| {
+            ProcLauncherError::Other(
+                "launcher already initialized; call set_proc_launcher before first spawn".into(),
+            )
+        })
+    }
+
+    /// Get the launcher, initializing with the default if not already
+    /// set.
+    ///
+    /// Once this is called, any subsequent calls to `set_launcher()`
+    /// will fail.
+    pub fn launcher(&self) -> &Arc<dyn ProcLauncher> {
+        self.launcher.get_or_init(|| {
+            let kind_str = hyperactor_config::global::get_cloned(MESH_PROC_LAUNCHER_KIND);
+            let kind: LauncherKind = kind_str.parse().unwrap_or(LauncherKind::Native);
+            tracing::info!(kind = ?kind, config_value = %kind_str, "using default proc launcher");
+            match kind {
+                LauncherKind::Native => Arc::new(NativeProcLauncher::new()),
+                LauncherKind::Systemd => Arc::new(SystemdProcLauncher::new()),
+            }
         })
     }
 
@@ -1669,6 +1693,7 @@ impl BootstrapProcManager {
                 Err(_) => {
                     // exit_rx sender was dropped without sending - launcher error.
                     let _ = handle.mark_failed("exit_rx sender dropped unexpectedly");
+                    crate::admin_proxy::deregister_remote_proc(&proc_id.to_string());
                     tracing::error!(
                         name = "ProcStatus",
                         status = "Exited::ChannelDropped",
@@ -1678,6 +1703,10 @@ impl BootstrapProcManager {
                     return;
                 }
             };
+
+            // Deregister from the admin proxy so the proc no longer
+            // appears in proxied admin queries.
+            crate::admin_proxy::deregister_remote_proc(&proc_id.to_string());
 
             // Collect stderr tail from StreamFwder if we captured stdio.
             // The launcher may also provide stderr_tail in exit_result;
@@ -1806,7 +1835,9 @@ impl ProcManager for BootstrapProcManager {
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
         let (callback_addr, mut callback_rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix))?;
+            channel::serve::<(ChannelAddr, ActorRef<ProcMeshAgent>)>(ChannelAddr::any(
+                ChannelTransport::Unix,
+            ))?;
 
         // Decide whether we need to capture stdio.
         let overrides = &config.client_config_override;
@@ -1843,7 +1874,7 @@ impl ProcManager for BootstrapProcManager {
 
         // Launch via the configured launcher backend.
         let launch_result = self
-            .launcher
+            .launcher()
             .launch(&proc_id, opts.clone())
             .await
             .map_err(|e| {
@@ -1904,7 +1935,7 @@ impl ProcManager for BootstrapProcManager {
         };
 
         // Create handle with launcher reference for terminate/kill delegation.
-        let handle = BootstrapProcHandle::new(proc_id.clone(), Arc::downgrade(&self.launcher));
+        let handle = BootstrapProcHandle::new(proc_id.clone(), Arc::downgrade(self.launcher()));
         handle.mark_running(launch_result.started_at);
         handle.set_stream_monitors(out_fwder, err_fwder);
 
@@ -1920,9 +1951,11 @@ impl ProcManager for BootstrapProcManager {
 
         // Handle callback from child proc when it confirms bootstrap.
         let h = handle.clone();
+        let proxy_proc_id = proc_id.to_string();
         tokio::spawn(async move {
             match callback_rx.recv().await {
                 Ok((addr, agent)) => {
+                    crate::admin_proxy::register_remote_proc(proxy_proc_id, agent.clone());
                     let _ = h.mark_ready(addr, agent);
                 }
                 Err(e) => {
@@ -2334,13 +2367,13 @@ mod tests {
     use tokio::process::Command;
 
     use super::*;
+    use crate::ActorMesh;
     use crate::alloc::AllocSpec;
     use crate::alloc::Allocator;
     use crate::alloc::ProcessAllocator;
-    use crate::v1::ActorMesh;
-    use crate::v1::host_mesh::HostMesh;
-    use crate::v1::testactor;
-    use crate::v1::testing;
+    use crate::host_mesh::HostMesh;
+    use crate::testactor;
+    use crate::testing;
 
     // Helper: Avoid repeating
     // `ChannelAddr::any(ChannelTransport::Unix)`.
@@ -2514,14 +2547,16 @@ mod tests {
 
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
-        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
         // Spawn the forwarder in this proc (it will serve
         // BOOTSTRAP_LOG_CHANNEL).
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
+            .await
+            .unwrap();
         let _log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
@@ -3255,7 +3290,7 @@ mod tests {
         actor_mesh
             .cast(&instance, testactor::GetActorId(port.bind()))
             .unwrap();
-        let got_id = rx.recv().await.unwrap();
+        let (got_id, _seq) = rx.recv().await.unwrap();
         assert_eq!(
             got_id,
             actor_mesh.values().next().unwrap().actor_id().clone()
@@ -3319,7 +3354,7 @@ mod tests {
         actor_mesh
             .cast(&instance, testactor::GetActorId(port.bind()))
             .unwrap();
-        let got_id = rx.recv().await.unwrap();
+        let (got_id, _) = rx.recv().await.unwrap();
         assert_eq!(
             got_id,
             actor_mesh.values().next().unwrap().actor_id().clone()
@@ -3390,8 +3425,8 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_host_bootstrap() {
-        use crate::proc_mesh::mesh_agent::NewClientInstanceClient;
-        use crate::v1::host_mesh::mesh_agent::GetLocalProcClient;
+        use crate::host_mesh::mesh_agent::GetLocalProcClient;
+        use crate::mesh_agent::NewClientInstanceClient;
 
         // Create a local instance just to call the local bootstrap actor.
         // We should find a way to avoid this for local handles.
@@ -3412,5 +3447,185 @@ mod tests {
             .new_client_instance(&temp_instance)
             .await
             .unwrap();
+    }
+
+    // BootstrapProcManager OnceLock Semantics Tests
+    //
+    // These tests verify the "install exactly once / default locks
+    // in" behavior of the proc launcher OnceLock.
+
+    use std::time::Duration;
+
+    use crate::proc_launcher::LaunchOptions;
+    use crate::proc_launcher::LaunchResult;
+    use crate::proc_launcher::ProcExitKind;
+    use crate::proc_launcher::ProcExitResult;
+    use crate::proc_launcher::ProcLauncher;
+    use crate::proc_launcher::ProcLauncherError;
+    use crate::proc_launcher::StdioHandling;
+
+    /// A dummy proc launcher for testing. Does not actually launch
+    /// anything.
+    #[allow(dead_code)]
+    struct DummyLauncher {
+        /// Marker value to identify this instance.
+        marker: u64,
+    }
+
+    impl DummyLauncher {
+        fn new(marker: u64) -> Self {
+            Self { marker }
+        }
+
+        #[allow(dead_code)]
+        fn marker(&self) -> u64 {
+            self.marker
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProcLauncher for DummyLauncher {
+        async fn launch(
+            &self,
+            _proc_id: &ProcId,
+            _opts: LaunchOptions,
+        ) -> Result<LaunchResult, ProcLauncherError> {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            // Immediately send exit result
+            let _ = tx.send(ProcExitResult {
+                kind: ProcExitKind::Exited { code: 0 },
+                stderr_tail: Some(vec![]),
+            });
+            Ok(LaunchResult {
+                pid: None,
+                started_at: RealClock.system_time_now(),
+                stdio: StdioHandling::ManagedByLauncher,
+                exit_rx: rx,
+            })
+        }
+
+        async fn terminate(
+            &self,
+            _proc_id: &ProcId,
+            _timeout: Duration,
+        ) -> Result<(), ProcLauncherError> {
+            Ok(())
+        }
+
+        async fn kill(&self, _proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+            Ok(())
+        }
+    }
+
+    // set_launcher() then launcher() returns the same Arc.
+    #[test]
+    #[cfg(fbcode_build)]
+    fn test_set_launcher_then_get() {
+        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+
+        let custom: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(42));
+        let custom_ptr = Arc::as_ptr(&custom);
+
+        // Install the custom launcher
+        manager.set_launcher(custom).unwrap();
+
+        // Get the launcher and verify it's the same Arc
+        let got = manager.launcher();
+        let got_ptr = Arc::as_ptr(got);
+
+        assert_eq!(
+            custom_ptr, got_ptr,
+            "launcher() should return the same Arc that was set"
+        );
+    }
+
+    // launcher() first (forces default init), then set_launcher()
+    // fails.
+    #[test]
+    #[cfg(fbcode_build)]
+    fn test_get_launcher_then_set_fails() {
+        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+
+        // Force default initialization by calling launcher()
+        let _ = manager.launcher();
+
+        // Now try to set a custom launcher - should fail
+        let custom: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(99));
+        let result = manager.set_launcher(custom);
+
+        assert!(
+            result.is_err(),
+            "set_launcher should fail after launcher() was called"
+        );
+
+        // Verify error message mentions the cause
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("already initialized"),
+            "error should mention 'already initialized', got: {}",
+            err_msg
+        );
+    }
+
+    // set_launcher() twice fails.
+    #[test]
+    #[cfg(fbcode_build)]
+    fn test_set_launcher_twice_fails() {
+        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+
+        let first: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(1));
+        let second: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(2));
+
+        // First set should succeed
+        manager.set_launcher(first).unwrap();
+
+        // Second set should fail
+        let result = manager.set_launcher(second);
+        assert!(result.is_err(), "second set_launcher should fail");
+
+        // Verify error message
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("already initialized"),
+            "error should mention 'already initialized', got: {}",
+            err_msg
+        );
+    }
+
+    /// OnceLock is empty before any call.
+    #[test]
+    #[cfg(fbcode_build)]
+    fn test_launcher_initially_empty() {
+        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+
+        // At this point, the OnceLock should be empty (not yet
+        // initialized) We can verify this by successfully calling
+        // set_launcher
+        let custom: Arc<dyn ProcLauncher> = Arc::new(DummyLauncher::new(123));
+        let result = manager.set_launcher(custom);
+
+        assert!(
+            result.is_ok(),
+            "set_launcher should succeed on fresh manager"
+        );
+    }
+
+    /// launcher() returns the same Arc on repeated calls.
+    #[test]
+    #[cfg(fbcode_build)]
+    fn test_launcher_idempotent() {
+        let manager = BootstrapProcManager::new(BootstrapCommand::test()).unwrap();
+
+        // Call launcher() twice
+        let first = manager.launcher();
+        let second = manager.launcher();
+
+        // Should return the same Arc (same pointer)
+        assert!(
+            Arc::ptr_eq(first, second),
+            "launcher() should return the same Arc on repeated calls"
+        );
     }
 }

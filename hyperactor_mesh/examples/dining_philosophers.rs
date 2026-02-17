@@ -14,26 +14,39 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use clap::Parser;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
+use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::ActorMeshRef;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
+use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
 use typeuri::Named;
+
+/// Command-line arguments for the dining philosophers example.
+#[derive(Parser)]
+#[command(name = "dining_philosophers")]
+struct Args {
+    /// Run all procs in-process rather than as separate OS processes.
+    #[arg(long)]
+    in_process: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum ChopstickStatus {
@@ -91,7 +104,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start
@@ -150,10 +163,10 @@ impl Handler<PhilosopherMessage> for PhilosopherActor {
         match message {
             PhilosopherMessage::Start(waiter) => {
                 self.waiter.set(waiter)?;
-                self.request_chopsticks(cx).await?;
-                // Start is always broadcasted to all philosophers; so this is
-                // our global rank.
+                // Set rank before requesting chopsticks so we request
+                // the correct pair and identify ourselves properly.
                 self.rank = point.rank();
+                self.request_chopsticks(cx).await?;
             }
             PhilosopherMessage::GrantChopstick(chopstick) => {
                 tracing::debug!("philosopher {} granted chopstick {}", self.rank, chopstick);
@@ -238,15 +251,28 @@ impl Waiter {
 async fn main() -> Result<ExitCode> {
     hyperactor::initialize_with_current_runtime();
 
-    // Option: run as a local process mesh
-    // let host_mesh = HostMesh::process(extent!(hosts = 1), BootstrapCommand::current().unwrap())
-    //     .await
-    //     .unwrap();
+    let args = Args::parse();
 
-    let host_mesh = HostMesh::local().await?;
+    let host_mesh = if args.in_process {
+        HostMesh::local_in_process().await?
+    } else {
+        HostMesh::local().await?
+    };
 
     let group_size = 5;
     let instance = global_root_client();
+
+    // Start the mesh admin agent, which aggregates admin state
+    // across all hosts and serves an HTTP API.
+    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin".to_string())?;
+    let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
+    println!("Mesh admin server listening on http://{}", mesh_admin_addr);
+    println!(
+        "  - List hosts:    curl http://{}/v1/hosts",
+        mesh_admin_addr
+    );
+    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
+
     let proc_mesh = host_mesh
         .spawn(instance, "philosophers", extent!(replica = group_size))
         .await?;

@@ -9,9 +9,9 @@
 use hyperactor::ActorRef;
 use hyperactor::reference::ProcId;
 use hyperactor::reference::Reference;
-use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
 use hyperactor_mesh::resource::GetStateClient;
-use hyperactor_mesh::v1::host_mesh::mesh_agent::HostMeshAgent;
 
 #[derive(clap::Args, Debug)]
 pub struct ShowCommand {
