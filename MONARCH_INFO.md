@@ -110,6 +110,7 @@ uv sync
 - `MONARCH_PACKAGE_NAME` - Override package name (default: `torchmonarch`)
 - `MONARCH_VERSION` - Override version (default: `0.0.1`)
 - `ENABLE_MESSAGE_LOGGING` - Enable hyperactor message logging
+- `MONARCH_RDMA_GPU_PLATFORM` - Select GPU platform for RDMA builds: `cuda` or `rocm`. Required when both CUDA and ROCm are installed; auto-detected when only one is present
 
 **PyTorch Index Configuration:**
 The project uses PyTorch from specific indices (see `pyproject.toml`). Default is `pytorch-cu128`. To change:
