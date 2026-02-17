@@ -17,24 +17,23 @@ permissions:
 
 jobs:
   build-rocm:
-    name: Build ROCm (rocm7.1-py3.10)
+    name: Build ROCm (py3.10)
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: true
       matrix:
         include:
-          - name: 4xlargegpu
-            runs-on: linux.rocm.gpu.gfx942.8.meta-pytorch
+          - name: "7.1"
             torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/'
-            gpu-arch-type: "rocm"
-            gpu-arch-version: "7.1"
+          - name: "7.2"
+            torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/'
     with:
       timeout: 60
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      runner: linux.rocm.gpu.gfx942.1.meta-pytorch
+      gpu-arch-type: rocm
+      gpu-arch-version: ${{ matrix.name }}
       submodules: recursive
-      upload-artifact: monarch-rocm-${{ github.sha }}
+      upload-artifact: monarch-rocm${{ matrix.name }}-${{ github.sha }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
