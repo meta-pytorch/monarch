@@ -55,6 +55,7 @@ use crate::metrics;
 /// method by doing `stream.next()`. Adding this trait would prevent this
 /// from happening in this file. The callsite would have to `StreamExt::next()`
 /// to disambiguate.
+#[allow(dead_code)]
 trait UnimplementedStreamExt {
     fn next(&mut self) {
         unimplemented!()

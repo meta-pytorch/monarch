@@ -132,6 +132,7 @@ pub(crate) fn register_proc(proc: &Proc) {
 /// Deregister a proc from the admin server.
 ///
 /// After deregistration, the proc will no longer appear in API responses.
+#[allow(dead_code)]
 pub(crate) fn deregister_proc(proc: &Proc) {
     deregister_proc_by_id(proc.proc_id());
 }

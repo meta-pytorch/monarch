@@ -35,11 +35,13 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use hyperactor::ActorRef;
 use hyperactor::admin;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use tokio::net::TcpListener;
 
-use crate::proc_mesh::global_root_client;
-use crate::proc_mesh::mesh_agent::AdminQueryMessageClient;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::global_root_client;
+use crate::mesh_agent::AdminQueryMessageClient;
+use crate::mesh_agent::ProcMeshAgent;
 
 /// Shared state for the admin proxy, holding references to remote proc agents.
 #[derive(Clone, Default)]
@@ -123,7 +125,8 @@ async fn proxy_get_proc(
         let cx = global_root_client();
         let agent = agent_ref.clone();
         let query_future = agent.get_proc_details(cx);
-        let response = tokio::time::timeout(Duration::from_secs(2), query_future)
+        let response = RealClock
+            .timeout(Duration::from_secs(2), query_future)
             .await
             .map_err(|_| StatusCode::GATEWAY_TIMEOUT)?
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -161,7 +164,8 @@ async fn proxy_get_actor(
         let cx = global_root_client();
         let agent = agent_ref.clone();
         let query_future = agent.get_actor_details(cx, actor_name);
-        let response = tokio::time::timeout(Duration::from_secs(2), query_future)
+        let response = RealClock
+            .timeout(Duration::from_secs(2), query_future)
             .await
             .map_err(|_| StatusCode::GATEWAY_TIMEOUT)?
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;

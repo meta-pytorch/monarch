@@ -1,0 +1,24 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Controller manifest for Python-native MonarchMesh provisioning.
+#
+# Prerequisites:
+# - Kubernetes cluster with Monarch operator installed
+# - monarch-tests namespace created
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: monarch-client-demo
+  namespace: monarch-tests
+spec:
+  serviceAccountName: monarch-client
+  containers:
+    - name: monarch
+      image: ghcr.io/meta-pytorch/monarch:latest
+      command: ["sleep"]
+      args: ["infinity"]

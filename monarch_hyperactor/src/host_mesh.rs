@@ -15,18 +15,18 @@ use std::time::Duration;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::host;
-use hyperactor_mesh::proc_mesh::default_bind_spec;
-use hyperactor_mesh::proc_mesh::mesh_agent::GetProcClient;
+use hyperactor_mesh::host_mesh::HostMesh;
+use hyperactor_mesh::host_mesh::HostMeshRef;
+use hyperactor_mesh::host_mesh::mesh_agent::GetLocalProcClient;
+use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
+use hyperactor_mesh::host_mesh::mesh_agent::ShutdownHost;
+use hyperactor_mesh::mesh_agent::GetProcClient;
+use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
-use hyperactor_mesh::v1::ProcMeshRef;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
-use hyperactor_mesh::v1::host_mesh::HostMeshRef;
-use hyperactor_mesh::v1::host_mesh::mesh_agent::GetLocalProcClient;
-use hyperactor_mesh::v1::host_mesh::mesh_agent::HostMeshAgent;
-use hyperactor_mesh::v1::host_mesh::mesh_agent::ShutdownHost;
-use hyperactor_mesh::v1::proc_mesh::ProcRef;
+use hyperactor_mesh::transport::default_bind_spec;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
@@ -294,7 +294,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         // Store the agent for later shutdown
         HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok(); // Ignore error if already set
 
-        let host_mesh_name = hyperactor_mesh::v1::Name::new_reserved("local").unwrap();
+        let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
@@ -304,14 +304,13 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             .instance("temp")
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let local_proc_agent: hyperactor::ActorHandle<
-            hyperactor_mesh::proc_mesh::mesh_agent::ProcMeshAgent,
-        > = host_mesh_agent
-            .get_local_proc(&temp_instance)
-            .await
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let local_proc_agent: hyperactor::ActorHandle<hyperactor_mesh::mesh_agent::ProcMeshAgent> =
+            host_mesh_agent
+                .get_local_proc(&temp_instance)
+                .await
+                .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let proc_mesh_name = hyperactor_mesh::v1::Name::new_reserved("local").unwrap();
+        let proc_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let proc_mesh = ProcMeshRef::new_singleton(
             proc_mesh_name,
             ProcRef::new(

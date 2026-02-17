@@ -19,7 +19,7 @@ use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;
@@ -411,6 +411,7 @@ mod tests {
     use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
@@ -663,7 +664,7 @@ mod tests {
                         device_index: Some(rank.try_into()?),
                         controller_actor: controller_ref.clone(),
                     },
-                    Attrs::default(),
+                    Flattrs::default(),
                 )
                 .await
                 .unwrap(),
@@ -850,7 +851,7 @@ mod tests {
                         device_index: Some(0),
                         controller_actor: controller_ref.clone(),
                     },
-                    Attrs::default(),
+                    Flattrs::default(),
                 )
                 .await
                 .unwrap(),
@@ -866,7 +867,7 @@ mod tests {
                         device_index: Some(1),
                         controller_actor: controller_ref,
                     },
-                    Attrs::default(),
+                    Flattrs::default(),
                 )
                 .await
                 .unwrap(),
@@ -1035,7 +1036,7 @@ mod tests {
                         device_index: Some(0),
                         controller_actor: controller_ref,
                     },
-                    Attrs::default(),
+                    Flattrs::default(),
                 )
                 .await
                 .unwrap(),

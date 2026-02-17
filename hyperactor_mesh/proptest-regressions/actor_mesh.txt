@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 7da0353e3138258986cf2598af0836656a1f7c3399a9ffa18ca93cf983b3e64c # shrinks to extent = Extent { inner: ExtentData { labels: ["d/0"], sizes: [1] } }
+cc 9e66a45c3b88c8717157ee7da4a27441b5d03520023e87fabfc4e5a5591bdb03 # shrinks to extent = Extent { inner: ExtentData { labels: ["d/0", "d/1", "d/2", "d/3"], sizes: [6, 4, 3, 7] } }

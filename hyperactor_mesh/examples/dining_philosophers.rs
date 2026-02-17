@@ -26,14 +26,14 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::ActorMeshRef;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
+use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -43,11 +43,7 @@ use typeuri::Named;
 #[derive(Parser)]
 #[command(name = "dining_philosophers")]
 struct Args {
-    /// Run all procs in-process (makes actors visible in admin tree).
-    ///
-    /// By default, procs are spawned as separate OS processes. With this
-    /// flag, all procs run in the current process, which allows the admin
-    /// tree endpoint to show all actors (useful for debugging with the TUI).
+    /// Run all procs in-process rather than as separate OS processes.
     #[arg(long)]
     in_process: bool,
 }
@@ -108,7 +104,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start
@@ -257,8 +253,6 @@ async fn main() -> Result<ExitCode> {
 
     let args = Args::parse();
 
-    // Use in-process mode for debugging (actors visible in admin tree),
-    // or child-process mode (default) for production-like behavior.
     let host_mesh = if args.in_process {
         HostMesh::local_in_process().await?
     } else {

@@ -1,0 +1,65 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Controller manifest for Python-native MonarchMesh provisioning.
+#
+# The Python script creates MonarchMesh CRDs via the K8s API using --provision.
+# No worker pod YAML manifests are needed.
+#
+# Prerequisites:
+# - Kubernetes cluster with Monarch operator installed
+# - GPU nodes with nvidia.com/gpu resources available
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monarch-tests
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: ddp-controller
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: ddp-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ddp-controller
+  namespace: monarch-tests
+spec:
+  containers:
+    - name: controller
+      image: ghcr.io/meta-pytorch/monarch:latest
+      command: ["sleep"]
+      args: ["infinity"]
+  serviceAccountName: ddp-controller

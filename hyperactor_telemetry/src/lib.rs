@@ -72,6 +72,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use lazy_static::lazy_static;
 pub use opentelemetry;
@@ -286,6 +287,136 @@ lazy_static! {
         let (sender, receiver) = mpsc::channel();
         (sender, Mutex::new(Some(receiver)))
     };
+    /// Global unified entity event dispatcher.
+    /// Receives all entity lifecycle events (actors, meshes, etc.) directly (not via tracing).
+    /// Only one dispatcher is supported; setting a new dispatcher replaces the previous one.
+    static ref ENTITY_EVENT_DISPATCHER: Mutex<Option<Box<dyn EntityEventDispatcher>>> = Mutex::new(None);
+}
+
+/// Event data for actor creation.
+/// This is passed to EntityEventDispatcher implementations when an actor is spawned.
+#[derive(Debug, Clone)]
+pub struct ActorEvent {
+    /// Unique identifier for this actor (hashed from ActorId)
+    pub id: u64,
+    /// Timestamp when the actor was created
+    pub timestamp: SystemTime,
+    /// ID of the mesh this actor belongs to (hashed from actor_name)
+    pub mesh_id: u64,
+    /// Rank index into the mesh shape
+    pub rank: u64,
+    /// Full hierarchical name of this actor
+    pub full_name: String,
+}
+
+/// Notify the registered dispatcher that an actor was created.
+/// This is called from hyperactor when an actor is spawned.
+pub fn notify_actor_created(event: ActorEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(&EntityEvent::Actor(event)) {
+                tracing::error!("Failed to dispatch actor event: {:?}", e);
+            }
+        }
+    }
+}
+
+/// Event data for actor mesh creation.
+/// This is passed to EntityEventDispatcher implementations when an actor mesh is spawned.
+#[derive(Debug, Clone)]
+pub struct ActorMeshEvent {
+    /// Unique identifier for this mesh (hashed)
+    pub id: u64,
+    /// Timestamp when the mesh was created
+    pub timestamp: SystemTime,
+    /// Mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    pub class: String,
+    /// User-provided name for this mesh
+    pub given_name: String,
+    /// Full hierarchical name as it appears in supervision events
+    pub full_name: String,
+    /// Shape of the mesh, serialized from ndslice::Extent
+    pub shape_json: String,
+    /// Parent mesh ID (None for root meshes)
+    pub parent_mesh_id: Option<u64>,
+    /// Region over which the parent spawned this mesh, serialized from ndslice::Region
+    pub parent_view_json: Option<String>,
+}
+
+/// Notify the registered dispatcher that an actor mesh was created.
+/// This is called from hyperactor_mesh when an actor mesh is spawned.
+pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(&EntityEvent::ActorMesh(event)) {
+                tracing::error!("Failed to dispatch actor mesh event: {}", e);
+            }
+        }
+    }
+}
+
+/// Unified event enum for all entity lifecycle events.
+///
+/// This enum wraps all entity events (actors, meshes, and future event types)
+/// into a single type. This enables a single sink to handle all entity events,
+/// simplifying the registration and notification infrastructure.
+///
+/// # Future Extensions
+/// Additional variants can be added for:
+/// - `ActorStatus(ActorStatusEvent)` - actor status changes
+/// - `Message(MessageEvent)` - message sends/receives
+/// - `SentMessage(SentMessageEvent)` - outgoing message tracking
+#[derive(Debug, Clone)]
+pub enum EntityEvent {
+    /// An actor was created.
+    Actor(ActorEvent),
+    /// An actor mesh was created.
+    ActorMesh(ActorMeshEvent),
+}
+
+/// Trait for dispatchers that receive unified entity events.
+///
+/// This is the preferred way to receive entity lifecycle events. Implement this
+/// trait and register with `set_entity_dispatcher` to receive notifications for
+/// all entity types (actors, meshes, etc.) through a single callback.
+///
+/// The dispatcher pattern routes events to appropriate handlers based on the
+/// event type (Actor, Mesh, etc.), distinguishing this from TraceEventSink
+/// which handles tracing spans and events.
+///
+/// # Example
+/// ```ignore
+/// use hyperactor_telemetry::{set_entity_dispatcher, EntityEventDispatcher, EntityEvent};
+///
+/// struct MyEntityDispatcher;
+/// impl EntityEventDispatcher for MyEntityDispatcher {
+///     fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error> {
+///         match event {
+///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
+///             EntityEvent::ActorMesh(mesh) => println!("Mesh: {}", mesh.full_name),
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// set_entity_dispatcher(Box::new(MyEntityDispatcher));
+/// ```
+pub trait EntityEventDispatcher: Send + Sync {
+    /// Dispatch an entity event to the appropriate handler.
+    fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error>;
+}
+
+/// Set the dispatcher to receive all entity events.
+///
+/// This can be called at any time. The dispatcher will receive all subsequent entity
+/// events (actors, meshes, etc.) through a single callback.
+///
+/// Note: Only one dispatcher is supported. Setting a new dispatcher replaces any
+/// previously set dispatcher.
+pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
+    if let Ok(mut slot) = ENTITY_EVENT_DISPATCHER.lock() {
+        *slot = Some(dispatcher);
+    }
 }
 
 /// Register a sink to receive trace events.

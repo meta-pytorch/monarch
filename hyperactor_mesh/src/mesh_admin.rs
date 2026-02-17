@@ -37,14 +37,16 @@ use hyperactor::admin::ApiError;
 use hyperactor::admin::HostDetails;
 use hyperactor::admin::HostSummary;
 use hyperactor::admin::ProcDetails;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::net::TcpListener;
 use typeuri::Named;
 
-use crate::proc_mesh::global_root_client;
-use crate::v1::host_mesh::host_admin::HostAdminQueryMessageClient;
-use crate::v1::host_mesh::mesh_agent::HostMeshAgent;
+use crate::global_root_client;
+use crate::host_mesh::host_admin::HostAdminQueryMessageClient;
+use crate::host_mesh::mesh_agent::HostMeshAgent;
 
 /// Timeout for fan-out queries that hit every host in the mesh.
 /// Kept short so that a few slow or dead hosts don't block the entire
@@ -202,7 +204,7 @@ async fn list_hosts(
             // Spawn the actor call so the reply port survives timeout.
             let task = tokio::spawn(async move { agent.get_host_details(cx).await });
             async move {
-                let resp = tokio::time::timeout(FANOUT_TIMEOUT, task).await;
+                let resp = RealClock.timeout(FANOUT_TIMEOUT, task).await;
                 (addr, resp)
             }
         })
@@ -253,7 +255,8 @@ async fn get_host(
     let cx = global_root_client();
     let agent = agent.clone();
     let task = tokio::spawn(async move { agent.get_host_details(cx).await });
-    let response = tokio::time::timeout(SINGLE_HOST_TIMEOUT, task)
+    let response = RealClock
+        .timeout(SINGLE_HOST_TIMEOUT, task)
         .await
         .map_err(|_| ApiError {
             code: "gateway_timeout".to_string(),
@@ -298,7 +301,8 @@ async fn get_proc(
     let agent = agent.clone();
     let pn = proc_name.clone();
     let task = tokio::spawn(async move { agent.get_proc_details(cx, pn).await });
-    let response = tokio::time::timeout(SINGLE_HOST_TIMEOUT, task)
+    let response = RealClock
+        .timeout(SINGLE_HOST_TIMEOUT, task)
         .await
         .map_err(|_| ApiError {
             code: "gateway_timeout".to_string(),
@@ -347,7 +351,8 @@ async fn get_actor(
     let pn = proc_name.clone();
     let an = actor_name.clone();
     let task = tokio::spawn(async move { agent.get_actor_details(cx, pn, an).await });
-    let response = tokio::time::timeout(SINGLE_HOST_TIMEOUT, task)
+    let response = RealClock
+        .timeout(SINGLE_HOST_TIMEOUT, task)
         .await
         .map_err(|_| ApiError {
             code: "gateway_timeout".to_string(),
@@ -394,7 +399,7 @@ async fn tree_dump(State(state): State<Arc<MeshAdminState>>) -> Result<String, A
             let agent = agent.clone();
             let task = tokio::spawn(async move { agent.get_host_details(cx).await });
             async move {
-                let resp = tokio::time::timeout(FANOUT_TIMEOUT, task).await;
+                let resp = RealClock.timeout(FANOUT_TIMEOUT, task).await;
                 (addr, resp)
             }
         })

@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -248,7 +248,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     /// Creates a new actor instance given its instantiation parameters.
     /// The `environment` allows whoever is responsible for spawning this actor
     /// to pass in additional context that may be useful.
-    async fn new(params: Self::Params, environment: Attrs) -> anyhow::Result<Self>;
+    async fn new(params: Self::Params, environment: Flattrs) -> anyhow::Result<Self>;
 
     /// A type-erased entry point to spawn this actor. This is
     /// primarily used by hyperactor's remote actor registration
@@ -258,7 +258,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         proc: &Proc,
         name: &str,
         serialized_params: Data,
-        environment: Attrs,
+        environment: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
@@ -293,7 +293,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
 impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     type Params = ();
 
-    async fn new(_params: Self::Params, _environment: Attrs) -> anyhow::Result<Self> {
+    async fn new(_params: Self::Params, _environment: Flattrs) -> anyhow::Result<Self> {
         Ok(Default::default())
     }
 }
@@ -1185,31 +1185,45 @@ mod tests {
         let (tx, mut rx) = client.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
+
+        // Verify that unbound handle can send message.
+        actor_handle.send(&client, "unbound".to_string()).unwrap();
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ("unbound".to_string(), SeqInfo::Direct)
+        );
+
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
 
         let session_id = client.sequencer().session_id();
         let mut expected_seq = 0;
         // Interleave messages sent through the handle and the reference.
-        for _ in 0..10 {
-            actor_handle.send(&client, "".to_string()).unwrap();
+        for m in 0..10 {
+            actor_handle.send(&client, format!("{m}")).unwrap();
             expected_seq += 1;
             assert_eq!(
-                rx.recv().await.unwrap().1,
-                SeqInfo {
-                    session_id,
-                    seq: expected_seq,
-                }
-            );
-
-            for _ in 0..2 {
-                actor_ref.port().send(&client, "".to_string()).unwrap();
-                expected_seq += 1;
-                assert_eq!(
-                    rx.recv().await.unwrap().1,
-                    SeqInfo {
+                rx.recv().await.unwrap(),
+                (
+                    format!("{m}"),
+                    SeqInfo::Session {
                         session_id,
                         seq: expected_seq,
                     }
+                )
+            );
+
+            for n in 0..2 {
+                actor_ref.port().send(&client, format!("{m}-{n}")).unwrap();
+                expected_seq += 1;
+                assert_eq!(
+                    rx.recv().await.unwrap(),
+                    (
+                        format!("{m}-{n}"),
+                        SeqInfo::Session {
+                            session_id,
+                            seq: expected_seq,
+                        }
+                    )
                 );
             }
         }
@@ -1225,7 +1239,7 @@ mod tests {
         let (actor_tx, mut actor_rx) = client.open_port();
 
         // Channel for receiving seq info from non-actor port
-        let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel();
+        let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
@@ -1233,7 +1247,7 @@ mod tests {
         // Create a non-actor port using open_enqueue_port
         let non_actor_tx_clone = non_actor_tx.clone();
         let non_actor_port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
-            let seq_info = headers.get(SEQ_INFO).cloned();
+            let seq_info = headers.get(SEQ_INFO);
             non_actor_tx_clone.send(seq_info).unwrap();
             Ok(())
         });
@@ -1252,42 +1266,42 @@ mod tests {
         actor_handle.send(&client, "msg1".to_string()).unwrap();
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
-            SeqInfo { session_id, seq: 1 }
+            SeqInfo::Session { session_id, seq: 1 }
         );
 
         // Send to actor ports via ActorRef - seq 2 (shared with ActorHandle)
         actor_ref.port().send(&client, "msg2".to_string()).unwrap();
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
-            SeqInfo { session_id, seq: 2 }
+            SeqInfo::Session { session_id, seq: 2 }
         );
 
         // Send to non-actor port - has its own sequence starting at 1
         non_actor_port_handle.send(&client, ()).unwrap();
         assert_eq!(
             non_actor_rx.recv().await.unwrap(),
-            Some(SeqInfo { session_id, seq: 1 })
+            Some(SeqInfo::Session { session_id, seq: 1 })
         );
 
         // Send more to actor ports via ActorHandle - seq continues at 3
         actor_handle.send(&client, "msg3".to_string()).unwrap();
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
-            SeqInfo { session_id, seq: 3 }
+            SeqInfo::Session { session_id, seq: 3 }
         );
 
         // Send more to non-actor port - its sequence continues at 2
         non_actor_port_handle.send(&client, ()).unwrap();
         assert_eq!(
             non_actor_rx.recv().await.unwrap(),
-            Some(SeqInfo { session_id, seq: 2 })
+            Some(SeqInfo::Session { session_id, seq: 2 })
         );
 
         // Send via ActorRef again - seq 4
         actor_ref.port().send(&client, "msg4".to_string()).unwrap();
         assert_eq!(
             actor_rx.recv().await.unwrap().1,
-            SeqInfo { session_id, seq: 4 }
+            SeqInfo::Session { session_id, seq: 4 }
         );
 
         actor_handle.drain_and_stop("test cleanup").unwrap();
@@ -1316,7 +1330,7 @@ mod tests {
         actor_handle.send(&client1, "c1_msg1".to_string()).unwrap();
         assert_eq!(
             rx.recv().await.unwrap().1,
-            SeqInfo {
+            SeqInfo::Session {
                 session_id: session_id_1,
                 seq: 1
             }
@@ -1326,7 +1340,7 @@ mod tests {
         actor_handle.send(&client2, "c2_msg1".to_string()).unwrap();
         assert_eq!(
             rx.recv().await.unwrap().1,
-            SeqInfo {
+            SeqInfo::Session {
                 session_id: session_id_2,
                 seq: 1
             }
@@ -1339,7 +1353,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rx.recv().await.unwrap().1,
-            SeqInfo {
+            SeqInfo::Session {
                 session_id: session_id_1,
                 seq: 2
             }
@@ -1352,7 +1366,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rx.recv().await.unwrap().1,
-            SeqInfo {
+            SeqInfo::Session {
                 session_id: session_id_2,
                 seq: 2
             }
@@ -1362,7 +1376,7 @@ mod tests {
         actor_handle.send(&client1, "c1_msg3".to_string()).unwrap();
         assert_eq!(
             rx.recv().await.unwrap().1,
-            SeqInfo {
+            SeqInfo::Session {
                 session_id: session_id_1,
                 seq: 3
             }
@@ -1374,7 +1388,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rx.recv().await.unwrap().1,
-            SeqInfo {
+            SeqInfo::Session {
                 session_id: session_id_2,
                 seq: 3
             }
@@ -1430,7 +1444,10 @@ mod tests {
         // passing this assert means GetSeqActor processed the 2nd message.
         assert_eq!(
             rx.recv().await.unwrap(),
-            ("finally".to_string(), SeqInfo { session_id, seq: 1 })
+            (
+                "finally".to_string(),
+                SeqInfo::Session { session_id, seq: 1 }
+            )
         );
     }
 
@@ -1463,7 +1480,10 @@ mod tests {
                 }
 
                 for m in buffer.clone() {
-                    let seq = m.headers().get(SEQ_INFO).expect("seq should be set").seq as usize;
+                    let seq = match m.headers().get(SEQ_INFO).expect("seq should be set") {
+                        SeqInfo::Session { seq, .. } => seq as usize,
+                        SeqInfo::Direct => panic!("expected Session variant"),
+                    };
                     // seq no is one-based.
                     let order = relay_orders[seq - 1];
                     buffer[order] = m;
@@ -1512,7 +1532,7 @@ mod tests {
         for expect in expected {
             let expected = (
                 expect.0,
-                SeqInfo {
+                SeqInfo::Session {
                     session_id,
                     seq: expect.1,
                 },

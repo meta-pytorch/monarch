@@ -27,11 +27,11 @@ use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor_config::Attrs;
-use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::View;
+use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -94,7 +94,7 @@ impl Handler<NextNumber> for SieveActor {
                 msg.prime_collector.send(cx, msg.number)?;
 
                 self.next = Some(
-                    SieveActor::new(SieveParams { prime: msg.number }, Attrs::default())
+                    SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default())
                         .await?
                         .spawn(cx)?,
                 );
@@ -111,7 +111,7 @@ impl RemoteSpawn for SieveActor {
     type Params = SieveParams;
 
     /// Creates a sieve actor for `prime`.
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
         Ok(Self {
             prime: params.prime,
             next: None,
@@ -141,16 +141,17 @@ async fn main() -> Result<ExitCode> {
     );
     println!();
 
-    println!("Computation starts in 5 seconds.");
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("Starting computation...");
+    // TODO: put an indicatif spinner here
+    println!("Starts in 5 seconds.");
+    RealClock.sleep(Duration::from_secs(5)).await;
+    println!("Starting...");
 
     let proc_mesh = host_mesh
         .spawn(instance, "sieve", extent!(replica = 1))
         .await?;
 
     let sieve_params = SieveParams { prime: 2 };
-    let sieve_mesh: hyperactor_mesh::v1::ActorMesh<SieveActor> =
+    let sieve_mesh: hyperactor_mesh::ActorMesh<SieveActor> =
         proc_mesh.spawn(&instance, "sieve", &sieve_params).await?;
     let sieve_head = sieve_mesh.get(0).unwrap();
 

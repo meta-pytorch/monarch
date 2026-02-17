@@ -15,7 +15,7 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use monarch_types::SerializablePyErr;
 use pyo3::prelude::*;
 use serde::Deserialize;
@@ -49,7 +49,7 @@ impl Actor for AutoReloadActor {}
 impl RemoteSpawn for AutoReloadActor {
     type Params = AutoReloadParams;
 
-    async fn new(Self::Params {}: Self::Params, _environment: Attrs) -> Result<Self> {
+    async fn new(Self::Params {}: Self::Params, _environment: Flattrs) -> Result<Self> {
         AutoReloadActor::new().await
     }
 }
