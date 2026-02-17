@@ -176,10 +176,8 @@ impl GlobalClientActor {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
                             for supervision_event in self.supervision_rx.drain() {
-                                tracing::warn!(
-                                    %supervision_event,
-                                    "global root client absorbed child supervision event (during error drain)",
-                                );
+                                instance.handle_supervision_event(&mut self, supervision_event).await
+                                    .expect("GlobalClientActor::handle_supervision_event is infallible");
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
@@ -192,16 +190,8 @@ impl GlobalClientActor {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Ok(supervision_event) = self.supervision_rx.recv() => {
-                        // The global root client is the root of the
-                        // supervision tree: there is no parent to
-                        // escalate to.  Child-actor failures (e.g.
-                        // ActorMeshControllers detecting dead procs
-                        // after mesh teardown) are expected and must
-                        // not crash the process.
-                        tracing::warn!(
-                            %supervision_event,
-                            "global root client absorbed child supervision event",
-                        );
+                        instance.handle_supervision_event(&mut self, supervision_event).await
+                            .expect("GlobalClientActor::handle_supervision_event is infallible");
                     }
                 };
             };
@@ -238,6 +228,22 @@ impl GlobalClientActor {
 /// `ProcMesh` allocation completes), we log and drop the event.
 #[async_trait]
 impl Actor for GlobalClientActor {
+    /// The global root client is the root of the supervision tree:
+    /// there is no parent to escalate to. Child-actor failures (e.g.
+    /// ActorMeshControllers detecting dead procs after mesh teardown)
+    /// are expected and must not crash the process.
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::warn!(
+            %event,
+            "global root client absorbed child supervision event",
+        );
+        Ok(true)
+    }
+
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
