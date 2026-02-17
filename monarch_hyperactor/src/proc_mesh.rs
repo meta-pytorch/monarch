@@ -8,7 +8,6 @@
 
 use std::fmt::Debug;
 use std::ops::Deref;
-use std::sync::Arc;
 
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::ProcMeshRef;
@@ -25,7 +24,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyType;
 
-use crate::actor::to_py_error;
+use crate::actor::PythonActorParams;
+use crate::actor::PythonMessage;
 use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
@@ -95,43 +95,14 @@ impl PyProcMesh {
         })
     }
 
-    #[pyo3(signature = (instance, name, actor, supervision_display_name = None))]
-    fn spawn_nonblocking<'py>(
-        &self,
-        instance: &PyInstance,
-        name: String,
-        actor: &Bound<'py, PyType>,
-        supervision_display_name: Option<String>,
-    ) -> PyResult<PyPythonTask> {
-        let pickled_type = PickledPyObject::pickle(actor.as_any())?;
-        let proc_mesh = self.mesh_ref()?.clone();
-        let instance = instance.clone();
-        let mesh_impl = async move {
-            let full_name = hyperactor_mesh::Name::new(name).unwrap();
-            let actor_mesh = proc_mesh
-                .spawn_with_name(
-                    instance.deref(),
-                    full_name,
-                    &pickled_type,
-                    supervision_display_name,
-                    false,
-                )
-                .await
-                .map_err(to_py_error)?;
-            Ok(PythonActorMesh::from_impl(Arc::new(
-                PythonActorMeshImpl::new_owned(actor_mesh),
-            )))
-        };
-        PyPythonTask::new(mesh_impl)
-    }
-
     #[staticmethod]
-    #[pyo3(signature = (proc_mesh, instance, name, actor, emulated, supervision_display_name = None))]
+    #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
         name: String,
         actor: Py<PyType>,
+        mut init_message: PythonMessage,
         emulated: bool,
         supervision_display_name: Option<String>,
     ) -> PyResult<Py<PyAny>> {
@@ -139,11 +110,21 @@ impl PyProcMesh {
         let instance = instance.clone();
         let mesh_impl = async move {
             let proc_mesh = task.await?;
-            let (proc_mesh, pickled_type) = monarch_with_gil(|py| -> PyResult<_> {
+
+            if let Some(pending_pickle_state) = init_message.pending_pickle_state.take() {
+                init_message.message = pending_pickle_state
+                    .resolve(init_message.message.into_bytes())
+                    .await?;
+            }
+
+            let (proc_mesh, params) = monarch_with_gil(|py| -> PyResult<_> {
                 let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
                 let slf = slf.borrow();
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
-                Ok((slf.mesh_ref()?.clone(), pickled_type))
+                Ok((
+                    slf.mesh_ref()?.clone(),
+                    PythonActorParams::new(pickled_type, Some(init_message)),
+                ))
             })
             .await?;
 
@@ -152,7 +133,7 @@ impl PyProcMesh {
                 .spawn_with_name(
                     instance.deref(),
                     full_name,
-                    &pickled_type,
+                    &params,
                     supervision_display_name,
                     false,
                 )
