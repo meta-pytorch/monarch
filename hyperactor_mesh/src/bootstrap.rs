@@ -81,6 +81,7 @@ use crate::proc_launcher::ProcExitResult;
 use crate::proc_launcher::ProcLauncher;
 use crate::proc_launcher::ProcLauncherError;
 use crate::proc_launcher::StdioHandling;
+#[cfg(target_os = "linux")]
 use crate::proc_launcher::SystemdProcLauncher;
 use crate::proc_launcher::format_process_name;
 use crate::resource;
@@ -1514,6 +1515,7 @@ pub(crate) enum LauncherKind {
     Native,
     /// Spawn via transient `systemd --user` units and observe via
     /// D-Bus.
+    #[cfg(target_os = "linux")]
     Systemd,
 }
 
@@ -1525,16 +1527,24 @@ impl FromStr for LauncherKind {
     /// Accepted values (case-insensitive, surrounding whitespace
     /// ignored):
     /// - `""` or `"native"` → [`LauncherKind::Native`]
-    /// - `"systemd"` → [`LauncherKind::Systemd`]
+    /// - `"systemd"` → [`LauncherKind::Systemd`] (Linux only)
     ///
     /// Returns [`io::ErrorKind::InvalidInput`] for any other string.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "native" => Ok(Self::Native),
+            #[cfg(target_os = "linux")]
             "systemd" => Ok(Self::Systemd),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown proc launcher kind {other:?}; expected 'native' or 'systemd'"),
+                format!(
+                    "unknown proc launcher kind {other:?}; expected 'native'{}",
+                    if cfg!(target_os = "linux") {
+                        " or 'systemd'"
+                    } else {
+                        ""
+                    }
+                ),
             )),
         }
     }
@@ -1651,6 +1661,7 @@ impl BootstrapProcManager {
             tracing::info!(kind = ?kind, config_value = %kind_str, "using default proc launcher");
             match kind {
                 LauncherKind::Native => Arc::new(NativeProcLauncher::new()),
+                #[cfg(target_os = "linux")]
                 LauncherKind::Systemd => Arc::new(SystemdProcLauncher::new()),
             }
         })
@@ -3305,7 +3316,7 @@ mod tests {
     /// Same as `bootstrap_canonical_simple` but using the systemd
     /// launcher backend.
     #[tokio::test]
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     async fn bootstrap_canonical_simple_systemd_launcher() {
         // Acquire exclusive config lock and select systemd launcher.
         let config = hyperactor_config::global::lock();
