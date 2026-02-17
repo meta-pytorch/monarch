@@ -789,7 +789,7 @@ impl ProcLauncher for ActorProcLauncher {
         self.spawner
             .send(&self.instance, message)
             .map_err(|e| ProcLauncherError::Terminate(format!("send failed: {e}")))
-}
+    }
 
     /// Forcefully kill a proc.
     ///
