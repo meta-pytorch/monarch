@@ -10,13 +10,7 @@ from typing import final
 
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
-<<<<<<< dest:   864f4f1b28a4 - generatedunixname89002005337844: [Codemod][Rem...
-||||||| base:   22e0cac56b6a - generatedunixname89002005279527: [Codemod][Ent...
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
-=======
-from monarch._rust_bindings.monarch_hyperactor.mailbox import Mailbox
 from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
->>>>>>> source: f7dd4d49c103 pickle_stack - zdevito: [monarch] Refactor pickl...
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
 @final
