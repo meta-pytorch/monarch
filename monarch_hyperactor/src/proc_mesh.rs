@@ -25,7 +25,6 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyType;
 
 use crate::actor::PythonActorParams;
-use crate::actor::PythonMessage;
 use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;

@@ -63,7 +63,6 @@ from monarch._src.actor.device_utils import _local_device_count
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
-from monarch._src.actor.pickle import is_pending_pickle_allowed
 from monarch._src.actor.shape import MeshTrait
 from monarch.tools.config.environment import CondaEnvironment
 from monarch.tools.config.workspace import Workspace

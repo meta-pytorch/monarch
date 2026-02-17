@@ -16,7 +16,6 @@ from typing import Any, Callable, cast, Coroutine, Iterable, Type, TYPE_CHECKING
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
-    PythonMessage,
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
@@ -24,6 +23,10 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocSpec,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -128,9 +131,10 @@ async def test_actor_mesh() -> None:
     proc_mesh_task: Shared[ProcMesh] = PythonTask.from_coroutine(task()).spawn()
 
     # Create an explicit init message
-    init_message = PythonMessage(
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
-        pickle.dumps(None),
+        init_state,
     )
 
     # Use spawn_async with the explicit init message

@@ -260,7 +260,7 @@ impl PythonMessage {
                 response_port,
             } => {
                 monarch_with_gil(|py| {
-                    let local_state: PyObject = PyList::empty(py).unbind().into();
+                    let local_state: Py<PyAny> = PyList::empty(py).unbind().into();
                     let instance: PyInstance = cx.into();
                     let response_port = response_port
                         .map_or_else(

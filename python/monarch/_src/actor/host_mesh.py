@@ -24,7 +24,6 @@ from monarch._src.actor.allocator import (
     ProcessAllocator,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.pickle import is_pending_pickle_allowed
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch.tools.config.workspace import Workspace

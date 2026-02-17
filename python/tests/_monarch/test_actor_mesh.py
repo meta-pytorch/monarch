@@ -23,6 +23,10 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     AllocSpec,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.proc_mesh import _get_bootstrap_args
@@ -142,9 +146,10 @@ async def test_bind_and_pickling() -> None:
 
 def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
     # Create an explicit init message
-    init_message = PythonMessage(
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
-        pickle.dumps(None),
+        init_state,
     )
 
     # Use spawn_async with the explicit init message

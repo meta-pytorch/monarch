@@ -27,6 +27,10 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.allocator import LocalAllocator
 
@@ -192,9 +196,10 @@ async def test_reducer() -> None:
     proc_mesh_task = allocate()
 
     # Create an explicit init message
-    init_message = PythonMessage(
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
-        pickle.dumps(None),
+        init_state,
     )
 
     # Use spawn_async with the explicit init message

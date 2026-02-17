@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
 
@@ -39,7 +40,7 @@ class ProcMesh:
         instance: Instance,
         name: str,
         actor: Type["Actor"],
-        init_message: PythonMessage,
+        init_message: PendingMessage,
         emulated: bool,
         supervision_display_name: str | None = None,
     ) -> PythonActorMesh: ...

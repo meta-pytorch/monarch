@@ -68,7 +68,7 @@ thread_local! {
 /// It collects tensor engine references and pending pickles during serialization.
 struct ActivePicklingState {
     /// References to tensor engine objects that need special handling.
-    tensor_engine_references: VecDeque<PyObject>,
+    tensor_engine_references: VecDeque<Py<PyAny>>,
     /// Pending pickles (PyShared values) that must be resolved.
     pending_pickles: VecDeque<Py<PyShared>>,
     /// Whether pending pickles are allowed in this pickling context.
@@ -106,7 +106,7 @@ pub struct PicklingStateInner {
     /// The pickled bytes as a FrozenBuffer (zero-copy).
     buffer: crate::buffers::FrozenBuffer,
     /// References to tensor engine objects that need special handling.
-    tensor_engine_references: VecDeque<PyObject>,
+    tensor_engine_references: VecDeque<Py<PyAny>>,
     /// Pending pickles (PyShared values) that must be resolved.
     pending_pickles: VecDeque<Py<PyShared>>,
 }
@@ -158,7 +158,7 @@ impl PicklingState {
         buffer: PyRef<'_, crate::buffers::FrozenBuffer>,
         tensor_engine_references: Option<&Bound<'_, PyList>>,
     ) -> PyResult<Self> {
-        let refs: VecDeque<PyObject> = tensor_engine_references
+        let refs: VecDeque<Py<PyAny>> = tensor_engine_references
             .map(|list| list.iter().map(|item| item.unbind()).collect())
             .unwrap_or_default();
 
@@ -176,7 +176,7 @@ impl PicklingState {
     /// Returns a Python list containing copies of the tensor engine references.
     fn tensor_engine_references(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
         let inner = self.inner_ref()?;
-        let refs: Vec<PyObject> = inner
+        let refs: Vec<Py<PyAny>> = inner
             .tensor_engine_references
             .iter()
             .map(|r| r.clone_ref(py))
@@ -197,7 +197,7 @@ impl PicklingState {
     ///
     /// This consumes the PicklingState. It will fail if there are any pending
     /// pickles that haven't been resolved.
-    fn unpickle(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn unpickle(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let inner = self.take_inner()?;
 
         // Verify all pending pickles are resolved before unpickling
@@ -245,7 +245,7 @@ impl PicklingState {
         }
 
         // Await all pending pickles to ensure they're resolved
-        let pending: Vec<Py<PyShared>> = Python::with_gil(|py| {
+        let pending: Vec<Py<PyShared>> = Python::attach(|py| {
             self.inner_ref().map(|inner| {
                 inner
                     .pending_pickles
@@ -256,12 +256,12 @@ impl PicklingState {
         })?;
 
         for pending_pickle in pending {
-            let mut task = Python::with_gil(|py| pending_pickle.borrow(py).task())?;
+            let mut task = Python::attach(|py| pending_pickle.borrow(py).task())?;
             task.take_task()?.await?;
         }
 
         // Unpickle (pending pickles are now resolved) and re-pickle without allowing new ones
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let obj = self.unpickle(py)?;
             pickle(py, obj, false, true)
         })
@@ -345,7 +345,7 @@ impl PendingMessage {
 /// Returns True if the reference was successfully pushed.
 /// Raises an error if tensor engine references are not allowed in the current pickling context.
 #[pyfunction]
-fn push_tensor_engine_reference_if_active(obj: PyObject) -> PyResult<bool> {
+fn push_tensor_engine_reference_if_active(obj: Py<PyAny>) -> PyResult<bool> {
     ACTIVE_PICKLING_STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         match state.as_mut() {
@@ -368,7 +368,7 @@ fn push_tensor_engine_reference_if_active(obj: PyObject) -> PyResult<bool> {
 /// This is called from Python during unpickling to retrieve tensor engine
 /// objects in the order they were pushed.
 #[pyfunction]
-fn pop_tensor_engine_reference(py: Python<'_>) -> PyResult<PyObject> {
+fn pop_tensor_engine_reference(py: Python<'_>) -> PyResult<Py<PyAny>> {
     ACTIVE_PICKLING_STATE
         .with(|cell| {
             let mut state = cell.borrow_mut();
@@ -484,7 +484,7 @@ pub fn reduce_shared<'py>(
 #[pyo3(signature = (obj, allow_pending_pickles=true, allow_tensor_engine_references=true))]
 pub fn pickle(
     py: Python<'_>,
-    obj: PyObject,
+    obj: Py<PyAny>,
     allow_pending_pickles: bool,
     allow_tensor_engine_references: bool,
 ) -> PyResult<PicklingState> {
