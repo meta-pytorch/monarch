@@ -54,7 +54,6 @@ use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
-use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::override_or_global;
@@ -2372,6 +2371,7 @@ mod tests {
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
     use hyperactor::id;
+    use hyperactor_config::Flattrs;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
