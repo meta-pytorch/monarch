@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -248,7 +248,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
     /// Creates a new actor instance given its instantiation parameters.
     /// The `environment` allows whoever is responsible for spawning this actor
     /// to pass in additional context that may be useful.
-    async fn new(params: Self::Params, environment: Attrs) -> anyhow::Result<Self>;
+    async fn new(params: Self::Params, environment: Flattrs) -> anyhow::Result<Self>;
 
     /// A type-erased entry point to spawn this actor. This is
     /// primarily used by hyperactor's remote actor registration
@@ -258,7 +258,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         proc: &Proc,
         name: &str,
         serialized_params: Data,
-        environment: Attrs,
+        environment: Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
@@ -293,7 +293,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
 impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     type Params = ();
 
-    async fn new(_params: Self::Params, _environment: Attrs) -> anyhow::Result<Self> {
+    async fn new(_params: Self::Params, _environment: Flattrs) -> anyhow::Result<Self> {
         Ok(Default::default())
     }
 }
@@ -1239,7 +1239,7 @@ mod tests {
         let (actor_tx, mut actor_rx) = client.open_port();
 
         // Channel for receiving seq info from non-actor port
-        let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel();
+        let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
         let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
@@ -1247,7 +1247,7 @@ mod tests {
         // Create a non-actor port using open_enqueue_port
         let non_actor_tx_clone = non_actor_tx.clone();
         let non_actor_port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
-            let seq_info = headers.get(SEQ_INFO).cloned();
+            let seq_info = headers.get(SEQ_INFO);
             non_actor_tx_clone.send(seq_info).unwrap();
             Ok(())
         });
@@ -1481,7 +1481,7 @@ mod tests {
 
                 for m in buffer.clone() {
                     let seq = match m.headers().get(SEQ_INFO).expect("seq should be set") {
-                        SeqInfo::Session { seq, .. } => *seq as usize,
+                        SeqInfo::Session { seq, .. } => seq as usize,
                         SeqInfo::Direct => panic!("expected Session variant"),
                     };
                     // seq no is one-based.

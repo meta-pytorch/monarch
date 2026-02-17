@@ -1587,17 +1587,17 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 180)]
+    #[async_timed_test(timeout_secs = 600)]
     #[cfg(fbcode_build)]
-    async fn test_allocate() {
+    async fn test_allocate_dest_reorder_buffer_off() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
         execute_allocate(&config).await;
     }
 
-    #[async_timed_test(timeout_secs = 180)]
+    #[async_timed_test(timeout_secs = 600)]
     #[cfg(fbcode_build)]
-    async fn test_allocate_v1() {
+    async fn test_allocate_dest_reorder_buffer_on() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard1 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);

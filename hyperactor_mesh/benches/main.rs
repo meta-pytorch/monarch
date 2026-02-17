@@ -30,6 +30,19 @@ use bench_actor::BenchActor;
 use bench_actor::BenchMessage;
 use tokio::runtime::Runtime;
 
+/// Single process-wide Runtime shared across all benchmark functions.
+///
+/// `global_root_client()` is a `OnceLock` singleton whose background
+/// tasks (mailbox server, actor run loop) are spawned on whatever
+/// tokio Runtime is active at first call. If each `bench_function`
+/// creates its own `Runtime::new()`, the singleton's tasks die when
+/// the first Runtime is dropped, causing intermittent spawn timeouts
+/// in subsequent benchmarks. Sharing one Runtime avoids this.
+fn shared_runtime() -> &'static Runtime {
+    static RT: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| Runtime::new().unwrap())
+}
+
 // Benchmark how long does it take to process 1KB message on 1, 10, 100, 1K hosts with 8 GPUs each
 fn bench_actor_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("actor_scaling");
@@ -39,7 +52,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
 
     for host_count in host_counts {
         group.bench_function(BenchmarkId::from_parameter(host_count), |b| {
-            let mut b = b.to_async(Runtime::new().unwrap());
+            let mut b = b.to_async(shared_runtime());
             b.iter_custom(|iters| async move {
                 let alloc = LocalAllocator
                     .allocate(AllocSpec {
@@ -137,7 +150,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
             group.bench_function(
                 format!("actors/{}/size/{}", actor_count, format_size(message_size)),
                 |b| {
-                    let mut b = b.to_async(Runtime::new().unwrap());
+                    let mut b = b.to_async(shared_runtime());
                     b.iter_custom(|iters| async move {
                         let alloc = LocalAllocator
                             .allocate(AllocSpec {
@@ -161,6 +174,10 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
 
                         let num_actors = actor_mesh.region().num_ranks();
 
+                        // Scale timeout with payload size: 30s base + 10s per 100MB.
+                        let recv_timeout =
+                            Duration::from_secs(30 + (message_size as u64 / 100_000_000) * 10);
+
                         let start = Instant::now();
                         for i in 0..iters {
                             let (tx, mut rx) = instance.mailbox().open_port();
@@ -180,9 +197,8 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                             let mut msg_rcv = 0;
                             while msg_rcv < num_actors {
                                 #[allow(clippy::disallowed_methods)]
-                                let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
-                                    .await
-                                    .unwrap();
+                                let _ =
+                                    tokio::time::timeout(recv_timeout, rx.recv()).await.unwrap();
                                 msg_rcv += 1;
                             }
                         }

@@ -51,7 +51,7 @@ chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-fea
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 crossterm = { version = "0.28", features = ["event-stream", "serde"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-enum-as-inner = "0.6.0"
+enum-as-inner = "0.6.1"
 erased-serde = "0.4.9"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"

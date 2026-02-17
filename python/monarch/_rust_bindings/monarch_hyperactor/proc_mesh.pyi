@@ -9,7 +9,7 @@
 from typing import Any, final, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import Actor
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
@@ -33,31 +33,13 @@ class ProcMesh:
         """
         ...
 
-    def spawn_nonblocking(
-        self,
-        instance: Instance,
-        name: str,
-        actor: Any,
-        supervision_display_name: str | None = None,
-    ) -> PythonTask[PythonActorMesh]:
-        """
-        Spawn a new actor on this mesh.
-
-        Arguments:
-        - `instance`: The actor instance that will own the returned actor mesh.
-        - `name`: Name of the actor.
-        - `actor`: The type of the actor that will be spawned.
-        - `supervision_display_name`: The name of the actor to display in supervision. If not None, this
-            will be used instead of the fully qualified name of the actor.
-        """
-        ...
-
     @staticmethod
     def spawn_async(
         proc_mesh: Shared["ProcMesh"],
         instance: Instance,
         name: str,
         actor: Type["Actor"],
+        init_message: PythonMessage,
         emulated: bool,
         supervision_display_name: str | None = None,
     ) -> PythonActorMesh: ...

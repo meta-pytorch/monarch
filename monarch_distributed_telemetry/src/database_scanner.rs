@@ -143,7 +143,7 @@ fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
         hostnames.push(format!("server-{:05}", host_id));
         dcs.push(datacenters[rng.random_range(0..datacenters.len())].to_string());
         oses.push(os_types[rng.random_range(0..os_types.len())].to_string());
-        cpus.push(cpu_options[rng.random_range(0..cpu_options.len())] as i32);
+        cpus.push(cpu_options[rng.random_range(0..cpu_options.len())]);
         mems.push(memory_options[rng.random_range(0..memory_options.len())]);
     }
 

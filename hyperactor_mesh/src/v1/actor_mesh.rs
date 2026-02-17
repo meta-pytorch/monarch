@@ -34,7 +34,7 @@ use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
@@ -484,7 +484,7 @@ impl<A: Referable> ActorMeshRef<A> {
         } else {
             for (point, actor) in self.iter() {
                 let create_rank = point.rank();
-                let mut headers = Attrs::new();
+                let mut headers = Flattrs::new();
                 headers.set(
                     multicast::CAST_ORIGINATING_SENDER,
                     cx.instance().self_id().clone(),
@@ -579,7 +579,7 @@ impl<A: Referable> ActorMeshRef<A> {
                 }
             });
 
-            let mut headers = Attrs::new();
+            let mut headers = Flattrs::new();
             headers.set(
                 multicast::CAST_ORIGINATING_SENDER,
                 cx.instance().self_id().clone(),

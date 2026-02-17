@@ -69,7 +69,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::supervision::ActorSupervisionEvent;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
@@ -281,7 +281,7 @@ impl Actor for CudaRdmaActor {
 impl RemoteSpawn for CudaRdmaActor {
     type Params = (ActorRef<RdmaManagerActor>, usize, usize);
 
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let (rdma_manager, device_id, buffer_size) = params;
         let cpu_buffer = vec![0u8; buffer_size].into_boxed_slice();
 

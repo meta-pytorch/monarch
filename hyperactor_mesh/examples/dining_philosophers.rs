@@ -26,7 +26,7 @@ use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -104,7 +104,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start
