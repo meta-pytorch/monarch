@@ -11,7 +11,6 @@ import collections
 import contextvars
 import functools
 import inspect
-import itertools
 import logging
 import threading
 import warnings
@@ -72,7 +71,6 @@ from monarch._rust_bindings.monarch_hyperactor.selection import (
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import (
     Point as HyPoint,
-    Region,
     Shape,
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import (

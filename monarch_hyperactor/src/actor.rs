@@ -49,7 +49,6 @@ use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
@@ -500,17 +499,18 @@ impl PythonActor {
             PickledPyObject::pickle(&actor_mesh_mod.getattr("_Actor").expect("get _Actor"))
                 .expect("pickle _Actor");
 
-        let init_message = PythonMessage::new(
+        let init_frozen_buffer: FrozenBuffer = root_client_class
+            .call_method0("_pickled_init_args")
+            .expect("call RootClientActor._pickled_init_args")
+            .extract()
+            .expect("extract FrozenBuffer from _pickled_init_args");
+        let init_message = PythonMessage::new_from_buf(
             PythonMessageKind::CallMethod {
                 name: MethodSpecifier::Init {},
                 response_port: None,
             },
-            root_client_class
-                .call_method0("_pickled_init_args")
-                .expect("call RootClientActor._pickled_init_args"),
-            None,
-        )
-        .expect("create RootClientActor init message");
+            init_frozen_buffer,
+        );
 
         let mut actor = PythonActor::new(
             actor_type,

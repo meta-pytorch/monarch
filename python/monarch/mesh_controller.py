@@ -34,11 +34,9 @@ from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
-    PythonMessage,
     PythonMessageKind,
     UnflattenArg,
 )
-from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
 from monarch._rust_bindings.monarch_hyperactor.pickle import (
     PendingMessage,
