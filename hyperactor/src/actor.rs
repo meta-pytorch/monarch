@@ -224,10 +224,12 @@ pub fn default_handle_introspect<A: Actor>(
     match msg {
         IntrospectMessage::Query { reply } => {
             let payload = default_actor_payload(cx.cell());
-            reply.send(cx, payload)?;
+            if let Err(e) = reply.send(cx, payload) {
+                tracing::debug!("introspect reply failed (querier gone?): {e}");
+            }
         }
         IntrospectMessage::QueryChild { child_ref, reply } => {
-            reply.send(
+            if let Err(e) = reply.send(
                 cx,
                 NodePayload {
                     identity: String::new(),
@@ -242,7 +244,9 @@ pub fn default_handle_introspect<A: Actor>(
                     children: vec![],
                     parent: None,
                 },
-            )?;
+            ) {
+                tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+            }
         }
     }
     Ok(())
