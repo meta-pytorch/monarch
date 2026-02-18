@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use clap::Parser;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -35,6 +36,20 @@ use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+#[derive(Parser)]
+#[command(name = "sieve")]
+struct Args {
+    /// Number of primes to find.
+    #[arg(long, default_value_t = 100)]
+    num_primes: usize,
+
+    /// Delay between candidate sends (ms). Increase to avoid flooding
+    /// the sieve and spawning excessive actors when prime reports
+    /// arrive slowly.
+    #[arg(long, default_value_t = 1)]
+    send_interval_ms: u64,
+}
 
 /// Candidate number submitted to the sieve.
 ///
@@ -122,6 +137,7 @@ impl RemoteSpawn for SieveActor {
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     hyperactor::initialize_with_current_runtime();
+    let args = Args::parse();
 
     let mut host_mesh = HostMesh::local().await?;
     let instance = global_root_client();
@@ -166,28 +182,31 @@ async fn main() -> Result<ExitCode> {
         let _prime_collector_tx = prime_collector_tx;
         let mut primes = vec![2u64];
         let mut candidate = 3u64;
-        loop {
-            while let Ok(Some(prime)) = prime_collector_rx.try_recv() {
-                primes.push(prime);
+
+        let mut tick = tokio::time::interval(Duration::from_millis(args.send_interval_ms));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        while primes.len() < args.num_primes {
+            tokio::select! {
+                biased;
+
+                Ok(prime) = prime_collector_rx.recv() => {
+                    primes.push(prime);
+                }
+
+                _ = tick.tick() => {
+                    sieve_head
+                        .send(
+                            instance,
+                            NextNumber {
+                                number: candidate,
+                                prime_collector: prime_collector_ref.clone(),
+                            },
+                        )
+                        .unwrap();
+                    candidate += 1;
+                }
             }
-            if primes.len() >= 100 {
-                break;
-            }
-            sieve_head
-                .send(
-                    instance,
-                    NextNumber {
-                        number: candidate,
-                        prime_collector: prime_collector_ref.clone(),
-                    },
-                )
-                .unwrap();
-            candidate += 1;
-            // Yield to the tokio runtime so it can service admin HTTP
-            // requests and deliver incoming prime reports over the
-            // Unix socket. `yield_now()` is insufficient — it
-            // re-schedules immediately and starves the admin server.
-            RealClock.sleep(Duration::from_millis(1)).await;
         }
         println!(
             "Sent {} candidates to find {} primes.",
