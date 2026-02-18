@@ -909,13 +909,36 @@ impl MeshAdminAgent {
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single
 ///   reference (the primary API used by the TUI and programmatic
 ///   clients).
+/// - `GET /SKILL.md` — self-describing API documentation (markdown).
 fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
     Router::new()
+        .route("/SKILL.md", get(serve_skill_md))
         // `/v1/tree` is more specific than the wildcard and takes
         // precedence in Axum's router.
         .route("/v1/tree", get(tree_dump))
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
+}
+
+/// Raw markdown template for the SKILL.md API document.
+const SKILL_MD_TEMPLATE: &str = include_str!("mesh_admin_skill.md");
+
+/// Serves the self-describing API document with the base URL
+/// interpolated so examples are copy-pasteable.
+async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::IntoResponse {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let base = format!("http://{}", host);
+    let body = SKILL_MD_TEMPLATE.replace("{base}", &base);
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 /// Resolve an opaque reference string to a `NodePayload` via the
@@ -1534,9 +1557,9 @@ mod tests {
         assert!(found_user, "should have resolved the user proc");
     }
 
-    // Verifies that build_root_payload includes the root client
-    // proc ID in the children list when provided, alongside the
-    // host children.
+    // Verifies that build_root_payload includes the root client proc
+    // ID in the children list when provided, alongside the host
+    // children.
     #[test]
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
@@ -1681,6 +1704,34 @@ mod tests {
             client_node.parent,
             Some(root_client_proc_id),
             "root client parent should be the proc"
+        );
+    }
+
+    // Verifies that the SKILL.md template contains the canonical
+    // strings that agents and tests rely on. Prevents silent drift or
+    // accidental removal.
+    #[test]
+    fn test_skill_md_contains_canonical_strings() {
+        let template = SKILL_MD_TEMPLATE;
+        assert!(
+            template.contains("GET {base}/v1/root"),
+            "SKILL.md must document the root endpoint"
+        );
+        assert!(
+            template.contains("GET {base}/v1/{reference}"),
+            "SKILL.md must document the reference endpoint"
+        );
+        assert!(
+            template.contains("NodePayload"),
+            "SKILL.md must mention the NodePayload response type"
+        );
+        assert!(
+            template.contains("GET {base}/SKILL.md"),
+            "SKILL.md must document itself"
+        );
+        assert!(
+            template.contains("{base}"),
+            "SKILL.md must use {{base}} placeholder for interpolation"
         );
     }
 }
