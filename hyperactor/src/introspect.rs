@@ -54,6 +54,10 @@ pub enum NodeProperties {
     Root {
         /// Number of hosts registered with the mesh admin agent.
         num_hosts: usize,
+        /// When the mesh was started (ISO-8601 timestamp).
+        started_at: String,
+        /// Username who started the mesh.
+        started_by: String,
     },
 
     /// A host in the mesh, represented by its `HostMeshAgent`.
