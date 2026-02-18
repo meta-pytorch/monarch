@@ -1059,6 +1059,25 @@ impl<A: Actor> Instance<A> {
         &self.inner.cell
     }
 
+    /// Snapshot of this actor's introspection payload.
+    ///
+    /// Returns the same [`NodePayload`] that the blanket
+    /// `Handler<IntrospectMessage>` would produce, but without going
+    /// through the actor message loop. This is safe to call from
+    /// within a handler on the same actor (no self-send deadlock).
+    ///
+    /// The snapshot is best-effort: it reflects framework-owned state
+    /// (status, message count, flight recorder, supervision children)
+    /// at the instant of the call. `nav_parent` is left as `None` —
+    /// callers are responsible for setting topology context.
+    ///
+    /// Note: this acquires a write lock on the flight recorder spool
+    /// and clones its contents. Suitable for occasional introspection
+    /// requests, not for hot paths.
+    pub fn introspect_payload(&self) -> crate::introspect::NodePayload {
+        crate::introspect::default_actor_payload(&self.inner.cell)
+    }
+
     /// Signal the actor to stop.
     pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!(
