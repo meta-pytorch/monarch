@@ -6,13 +6,27 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Mesh-level admin HTTP server for introspecting a host mesh.
+//! Mesh-level admin surface for topology introspection and reference
+//! walking.
 //!
-//! The `MeshAdminAgent` actor aggregates admin queries across all
-//! `HostMeshAgent` instances in a mesh, providing a single HTTP
-//! endpoint for mesh-wide introspection. Individual host, proc, and
-//! actor details are fetched by forwarding requests to the
-//! appropriate `HostMeshAgent` via actor messaging.
+//! This module defines `MeshAdminAgent`, an actor that exposes a
+//! uniform, reference-based HTTP API over an entire host mesh. Rather
+//! than requiring clients to understand host/proc/actor-specific
+//! routes, every addressable entity in the mesh is represented as a
+//! `NodePayload` and resolved via an opaque reference string.
+//!
+//! Incoming HTTP requests are bridged into the actor message loop
+//! using `ResolveReferenceMessage`, ensuring that all topology
+//! resolution and data collection happens through actor messaging.
+//! The agent fans out to `HostMeshAgent` instances to fetch host,
+//! proc, and actor details, then normalizes them into a single
+//! tree-shaped model (`NodeProperties` + children references)
+//! suitable for topology-agnostic clients such as the admin TUI.
+//!
+//! Legacy structured routes are still provided for now (will soon be
+//! removed) but the primary abstraction is the reference-walking API:
+//! clients fetch `root`, follow child references, and progressively
+//! explore the mesh without embedding topology knowledge.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,12 +76,19 @@ const FANOUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// this host and is willing to wait for a response.
 const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Shared state for mesh admin HTTP handlers.
+/// Shared state for the legacy (host-address keyed) mesh admin HTTP
+/// routes.
+///
+/// Handlers use this to look up the `HostMeshAgent` for a given host
+/// address and forward per-host admin queries over actor messaging.
 struct MeshAdminState {
     hosts: HashMap<String, ActorRef<HostMeshAgent>>,
 }
 
-/// Response to a `GetAdminAddr` query.
+/// Response payload for `MeshAdminMessage::GetAdminAddr`.
+///
+/// `addr` is `None` until the admin HTTP server has successfully
+/// bound a listening socket during `MeshAdminAgent::init`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub struct MeshAdminAddrResponse {
     pub addr: Option<String>,
@@ -75,6 +96,10 @@ pub struct MeshAdminAddrResponse {
 wirevalue::register_type!(MeshAdminAddrResponse);
 
 /// Messages handled by the `MeshAdminAgent`.
+///
+/// These are mesh-admin control-plane queries (as opposed to topology
+/// resolution). They’re wirevalue-serializable and come with
+/// generated client/ref helpers via `HandleClient`/`RefClient`.
 #[derive(
     Debug,
     Clone,
@@ -87,7 +112,10 @@ wirevalue::register_type!(MeshAdminAddrResponse);
     Named
 )]
 pub enum MeshAdminMessage {
-    /// Query the HTTP admin address.
+    /// Return the HTTP admin server address that this agent bound in
+    /// `init`.
+    ///
+    /// The reply contains `None` if the server hasn't started yet.
     GetAdminAddr {
         #[reply]
         reply: OncePortRef<MeshAdminAddrResponse>,
@@ -97,29 +125,84 @@ wirevalue::register_type!(MeshAdminMessage);
 
 /// Typed properties for each kind of node in the mesh topology.
 ///
-/// This is a wire-friendly enum (no `serde_json::Value`) so that it
-/// survives wirevalue's bincode-based encoding. The HTTP layer gets
-/// structured JSON for free via `Serialize`.
+/// `NodePayload` is intentionally uniform across node kinds; this
+/// enum carries the variant-specific metadata for each addressable
+/// entity (root/host/proc/actor).
+///
+/// Kept "wire-friendly" (no `serde_json::Value`) so it can be encoded
+/// via wirevalue's bincode path, while the HTTP layer can still
+/// expose structured JSON via `Serialize`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum NodeProperties {
+    /// Synthetic mesh root node (not a real actor/proc).
     Root {
+        /// Number of hosts registered with the mesh admin agent.
         num_hosts: usize,
     },
+
+    /// A host in the mesh, represented by its `HostMeshAgent`.
     Host {
+        /// Host address (e.g. `127.0.0.1:12345`).
         addr: String,
+        /// Number of procs currently reported on this host.
         num_procs: usize,
     },
+
+    /// Properties describing a proc running on a host.
+    ///
+    /// Includes a human-readable proc name, actor count, and a flag
+    /// indicating whether the proc is system/infrastructure-owned
+    /// (for example the host’s `[system]` or local proc) versus a
+    /// user-created proc.
     Proc {
+        /// Human-readable proc identifier (as reported by the host
+        /// admin surface).
+        ///
+        /// For direct procs this is typically the proc's name;
+        /// clients may display a shortened form, but this value is
+        /// the canonical label carried in the payload.
         proc_name: String,
+        /// Number of actors currently hosted by this proc.
+        ///
+        /// Used for quick, non-recursive summary rendering in clients
+        /// (e.g. the tree view).
         num_actors: usize,
+        /// Whether this proc is infrastructure-owned rather than user-created.
+        ///
+        /// `#[serde(default)]` preserves backwards compatibility with older
+        /// payloads that didn’t include this field.
+        #[serde(default)]
+        is_system: bool,
     },
+
+    /// Runtime metadata for a single actor instance.
+    ///
+    /// Captures lifecycle state, activity metrics, and optional
+    /// flight-recorder telemetry used by admin tooling and the TUI to
+    /// display actor health, behavior, and recent execution history.
     Actor {
+        /// Current lifecycle/status of the actor (e.g. "Running",
+        /// "Stopped").
         actor_status: String,
+        /// Concrete actor type name (useful for debugging and UI
+        /// display).
         actor_type: String,
+        /// Total number of messages processed by this actor so far.
         messages_processed: u64,
+        /// Actor creation time, as an ISO-8601 timestamp string.
         created_at: String,
+        /// Name of the most recent message handler run by the actor,
+        /// if known.
         last_message_handler: Option<String>,
+        /// Cumulative time spent processing messages, in
+        /// microseconds.
         total_processing_time_us: u64,
+        /// Serialized flight-recorder events for the actor, if
+        /// enabled/available.
+        ///
+        /// Stored as a JSON string to keep `NodeProperties`
+        /// wire-friendly for `wirevalue` while still allowing the UI
+        /// to render structured events.
         flight_recorder: Option<String>,
     },
 }
@@ -152,9 +235,19 @@ wirevalue::register_type!(ResolveReferenceResponse);
 /// Message for resolving an opaque reference string into a
 /// `NodePayload`.
 ///
-/// Sent by the HTTP bridge handler to `MeshAdminAgent`, which parses
-/// the reference, routes to the appropriate host/proc/actor, and
-/// assembles the response inside the actor message loop.
+/// This is the primary “navigation” request used by the admin HTTP
+/// bridge: the caller provides a reference (e.g. `"root"`, a `ProcId`
+/// string, or an `ActorId` string) and the `MeshAdminAgent` returns a
+/// uniformly shaped `NodePayload` plus child references to continue
+/// walking the topology.
+///
+/// The work happens inside the admin actor's message loop so
+/// resolution can:
+/// - parse and validate the reference format,
+/// - dispatch to the right host/proc/actor via existing admin
+///   queries, and
+/// - return a structured payload without blocking HTTP handlers on
+///   mesh logic.
 #[derive(
     Debug,
     Clone,
@@ -167,9 +260,15 @@ wirevalue::register_type!(ResolveReferenceResponse);
     Named
 )]
 pub enum ResolveReferenceMessage {
-    /// Resolve a reference string to a `NodePayload`.
+    /// Resolve `reference_string` to a `NodePayload`.
+    ///
+    /// On success the reply contains `payload=Some(..), error=None`; on failure
+    /// it contains `payload=None, error=Some(..)`.
     Resolve {
+        /// Opaque reference string identifying a root/host/proc/actor
+        /// node.
         reference_string: String,
+        /// Reply port receiving the resolution result.
         #[reply]
         reply: OncePortRef<ResolveReferenceResponse>,
     },
@@ -178,21 +277,51 @@ wirevalue::register_type!(ResolveReferenceMessage);
 
 /// Actor that serves a mesh-level admin HTTP endpoint.
 ///
-/// The agent holds references to all `HostMeshAgent` instances in the
-/// mesh and forwards HTTP requests to them via actor messaging.
+/// `MeshAdminAgent` is the mesh-wide aggregation point for
+/// introspection: it holds `ActorRef<HostMeshAgent>` handles for each
+/// host, and answers admin queries by forwarding targeted requests to
+/// the appropriate host agent and assembling a uniform `NodePayload`
+/// response for the client.
+///
+/// The agent also exposes an HTTP server (spawned from `init`) and
+/// supports reference-based navigation (`GET /v1/{reference}`) by
+/// resolving opaque reference strings into typed `NodeProperties`
+/// plus child references.
 #[hyperactor::export(handlers = [MeshAdminMessage, ResolveReferenceMessage])]
 pub struct MeshAdminAgent {
+    /// Map of host address string → `HostMeshAgent` reference used to
+    /// fan out or target admin queries.
     hosts: HashMap<String, ActorRef<HostMeshAgent>>,
-    /// Reverse index: HostMeshAgent ActorId → host address string.
-    /// Used to distinguish host agent actors from regular actors when
-    /// routing reference resolution.
+
+    /// Reverse index: `HostMeshAgent` `ActorId` → host address
+    /// string.
+    ///
+    /// The host agent itself is an actor that can appear in multiple
+    /// places (e.g., as a host node and as a child actor under a
+    /// system proc). This index lets reference resolution treat that
+    /// `ActorId` as a *Host* node (via `resolve_host_node`) rather
+    /// than a generic *Actor* node, avoiding cycles / dropped nodes
+    /// in clients like the TUI.
     host_agents_by_actor_id: HashMap<ActorId, String>,
+
+    /// Bound address of the admin HTTP server once started in `init`.
     admin_addr: Option<std::net::SocketAddr>,
 }
 
 impl MeshAdminAgent {
-    /// Create a new mesh admin agent from a list of (host_addr,
-    /// agent_ref) pairs.
+    /// Construct a `MeshAdminAgent` from a list of `(host_addr,
+    /// host_agent_ref)` pairs.
+    ///
+    /// Builds both:
+    /// - `hosts`: the forward map used to route admin queries to the
+    ///   correct `HostMeshAgent`, and
+    /// - `host_agents_by_actor_id`: a reverse index used during
+    ///   reference resolution to recognize host-agent `ActorId`s and
+    ///   resolve them as `NodeProperties::Host` rather than as
+    ///   generic actors.
+    ///
+    /// The HTTP listen address is initialized to `None` and populated
+    /// during `init()` after the server socket is bound.
     pub fn new(hosts: Vec<(String, ActorRef<HostMeshAgent>)>) -> Self {
         let host_agents_by_actor_id: HashMap<ActorId, String> = hosts
             .iter()
@@ -216,15 +345,29 @@ impl std::fmt::Debug for MeshAdminAgent {
     }
 }
 
-/// Shared state for the new reference-based HTTP bridge routes. Holds
-/// an `ActorRef<MeshAdminAgent>` so the thin bridge handler can send
-/// `ResolveReferenceMessage` into the actor message loop.
+/// Shared state for the reference-based `/v1/{*reference}` bridge
+/// route.
+///
+/// The HTTP handler itself is intentionally thin and does not perform
+/// any routing logic. Instead, it forwards each request into the
+/// `MeshAdminAgent` actor via `ResolveReferenceMessage`, ensuring
+/// resolution happens inside the actor message loop (with access to
+/// actor messaging, timeouts, and indices).
 struct BridgeState {
+    /// Reference to the `MeshAdminAgent` actor that performs
+    /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
 }
 
 #[async_trait]
 impl Actor for MeshAdminAgent {
+    /// Initializes the mesh admin HTTP server.
+    ///
+    /// Binds an ephemeral local TCP listener, builds the axum router
+    /// (legacy host/proc/actor routes plus the reference-based bridge
+    /// route), and spawns the server in a background task. The chosen
+    /// listen address is stored in `admin_addr` so it can be returned
+    /// via `GetAdminAddr`.
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -251,6 +394,12 @@ impl Actor for MeshAdminAgent {
 #[async_trait]
 #[hyperactor::forward(MeshAdminMessage)]
 impl MeshAdminMessageHandler for MeshAdminAgent {
+    /// Returns the socket address the admin HTTP server is listening
+    /// on (if started).
+    ///
+    /// This is populated during `init()` after binding the listener.
+    /// If the agent hasn't been initialized yet (or failed to bind),
+    /// the address is `None`.
     async fn get_admin_addr(
         &mut self,
         _cx: &Context<Self>,
@@ -264,6 +413,12 @@ impl MeshAdminMessageHandler for MeshAdminAgent {
 #[async_trait]
 #[hyperactor::forward(ResolveReferenceMessage)]
 impl ResolveReferenceMessageHandler for MeshAdminAgent {
+    /// Resolves an opaque reference string into a `NodePayload` for
+    /// TUI/HTTP consumers.
+    ///
+    /// Important: this handler never returns `Err`, because a handler
+    /// error would crash the actor. Instead, failures are surfaced as
+    /// `ResolveReferenceResponse(Err(..))`.
     async fn resolve(
         &mut self,
         cx: &Context<Self>,
@@ -280,9 +435,19 @@ impl ResolveReferenceMessageHandler for MeshAdminAgent {
 }
 
 impl MeshAdminAgent {
-    /// Resolve a reference string into a `NodePayload` by dispatching
-    /// to the appropriate host agent via existing admin query
-    /// messages.
+    /// Core resolver for the reference-based admin API.
+    ///
+    /// Parses the caller-provided `reference_string` (or handles the
+    /// special `"root"` case), then dispatches to
+    /// `resolve_host_node`, `resolve_proc_node`, or
+    /// `resolve_actor_node` to assemble a fully-populated
+    /// `NodePayload` (properties + child references).
+    ///
+    /// Note: this returns `Err` for internal use; the public
+    /// `resolve` handler converts failures into
+    /// `ResolveReferenceResponse(Err(..))` so the actor never crashes
+    /// on
+    /// lookup errors.
     async fn resolve_reference(
         &self,
         cx: &Context<'_, Self>,
@@ -309,7 +474,13 @@ impl MeshAdminAgent {
         }
     }
 
-    /// Build the root node payload from the hosts map.
+    /// Construct the synthetic root node for the reference tree.
+    ///
+    /// The root is not a real actor/proc; it's a convenience node
+    /// that anchors navigation. Its children are the configured
+    /// `HostMeshAgent` actor IDs (as reference strings), and its
+    /// properties summarize the mesh at a glance (currently just
+    /// `num_hosts`).
     fn build_root_payload(&self) -> NodePayload {
         let children: Vec<String> = self
             .hosts
@@ -326,7 +497,20 @@ impl MeshAdminAgent {
         }
     }
 
-    /// Resolve a host agent ActorId into a host NodePayload.
+    /// Resolve a `HostMeshAgent` actor reference into a host-level
+    /// `NodePayload`.
+    ///
+    /// Host nodes are identified by the `HostMeshAgent`’s `ActorId`,
+    /// but their payload is derived by querying that agent for
+    /// `HostDetails` and translating the result into a stable,
+    /// navigable shape for the TUI/HTTP clients.
+    ///
+    /// Children are emitted as `ProcId` reference strings for every
+    /// proc on the host: system/local procs are returned as plain
+    /// `ProcId` strings (with the `[system] ` prefix stripped), while
+    /// user procs are synthesized as `"{host_addr},{proc_name}"` to
+    /// match the `ProcId::Direct` textual format. The navigation
+    /// parent is `"root"`.
     async fn resolve_host_node(
         &self,
         cx: &Context<'_, Self>,
@@ -380,7 +564,19 @@ impl MeshAdminAgent {
         })
     }
 
-    /// Resolve a ProcId into a proc NodePayload.
+    /// Resolve a `ProcId` reference into a proc-level `NodePayload`.
+    ///
+    /// This looks up the owning host via the proc's `ProcId::Direct`
+    /// address, queries the corresponding `HostMeshAgent` for
+    /// `ProcDetails`, and converts that into a `NodePayload` with
+    /// `NodeProperties::Proc`.
+    ///
+    /// The `is_system` flag is inferred by retrying the lookup using
+    /// the host-admin convention for system/local procs (`"[system]
+    /// <proc_id>"`) when the plain proc-name query returns no JSON.
+    /// Children are the proc’s actor IDs (already serialized as full
+    /// `ActorId` strings), and `nav_parent` is set to the host-agent
+    /// `ActorId` string for the owning host.
     async fn resolve_proc_node(
         &self,
         cx: &Context<'_, Self>,
@@ -416,9 +612,12 @@ impl MeshAdminAgent {
         // If the plain name lookup failed, this may be a system/
         // infrastructure proc. HostAdminQueryMessage::GetProcDetails
         // expects the "[system] <proc_id>" format for those.
+        let is_system;
         let response = if response.json.is_some() {
+            is_system = false;
             response
         } else {
+            is_system = true;
             let system_name = format!("[system] {}", proc_id);
             RealClock
                 .timeout(SINGLE_HOST_TIMEOUT, agent.get_proc_details(cx, system_name))
@@ -437,6 +636,7 @@ impl MeshAdminAgent {
             properties: NodeProperties::Proc {
                 proc_name: details.proc_name,
                 num_actors: details.actors.len(),
+                is_system,
             },
             // ProcDetails.actors contains full ActorId.to_string() values.
             children: details.actors,
@@ -444,7 +644,23 @@ impl MeshAdminAgent {
         })
     }
 
-    /// Resolve an ActorId (not a host agent) into an actor NodePayload.
+    /// Resolve a non-host-agent `ActorId` reference into an
+    /// actor-level `NodePayload`.
+    ///
+    /// Determines the owning proc/host from `actor_id.proc_id()`,
+    /// routes the request to the corresponding `HostMeshAgent`, and
+    /// fetches `ActorDetails` to populate `NodeProperties::Actor`
+    /// (status/type/metrics plus an optional serialized flight
+    /// recorder).
+    ///
+    /// The query uses the full `ActorId` string for an exact match
+    /// (avoiding ambiguous name-only resolution), and if the initial
+    /// lookup returns no JSON it retries using the system-proc naming
+    /// convention (`"[system] <proc_id>"`) to support actors living
+    /// under infrastructure procs. The returned payload links
+    /// `nav_parent` to the proc node (`proc_id.to_string()`), sets
+    /// `supervisor` from `ActorDetails.parent`, and uses
+    /// `ActorDetails.children` as the next-hop references.
     async fn resolve_actor_node(
         &self,
         cx: &Context<'_, Self>,
@@ -465,15 +681,34 @@ impl MeshAdminAgent {
             .hosts
             .get(&host_addr)
             .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
-        let actor_name = actor_id.name().to_string();
+        // Pass the full ActorId string so that query_actor_details can
+        // do an exact match via ActorId::from_str, rather than falling
+        // back to a name-only match which may pick the wrong actor.
+        let actor_name = actor_id.to_string();
         let response = RealClock
             .timeout(
                 SINGLE_HOST_TIMEOUT,
-                agent.get_actor_details(cx, proc_name.clone(), actor_name),
+                agent.get_actor_details(cx, proc_name.clone(), actor_name.clone()),
             )
             .await
             .map_err(|_| anyhow::anyhow!("timed out querying actor details"))?
             .map_err(|e| anyhow::anyhow!("failed to query actor details: {}", e))?;
+
+        // If the plain name lookup failed, this may be an actor in a
+        // system/infrastructure proc. Retry with the "[system] " prefix.
+        let response = if response.json.is_some() {
+            response
+        } else {
+            let system_proc_name = format!("[system] {}", proc_id);
+            RealClock
+                .timeout(
+                    SINGLE_HOST_TIMEOUT,
+                    agent.get_actor_details(cx, system_proc_name, actor_name),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out querying system actor details"))?
+                .map_err(|e| anyhow::anyhow!("failed to query system actor details: {}", e))?
+        };
 
         let json = response
             .json
@@ -498,6 +733,18 @@ impl MeshAdminAgent {
     }
 }
 
+/// Build the Axum router for the mesh admin HTTP server.
+///
+/// Exposes two route families:
+/// - **Legacy, structured endpoints** under `/v1/hosts/...`
+///   (host/proc/actor detail and tree dump), backed by
+///   `MeshAdminState`.
+/// - A **reference-based bridge** at `/v1/{*reference}` that resolves
+///   any opaque reference string into a `NodePayload` by messaging
+///   `MeshAdminAgent` via `BridgeState`.
+///
+/// The legacy routes are mounted first and are more specific, so they
+/// take precedence over the wildcard bridge route when paths overlap.
 fn create_mesh_admin_router(
     legacy_state: Arc<MeshAdminState>,
     bridge_state: Arc<BridgeState>,
@@ -522,57 +769,18 @@ fn create_mesh_admin_router(
     legacy_routes.merge(bridge_routes)
 }
 
-/// Decode percent-encoded characters in a reference path extracted
-/// from an axum wildcard route. Axum does not decode `{*wildcard}`
-/// captures, so characters like `:`, `,`, `[`, and `]` arrive as
-/// `%3A`, `%2C`, `%5B`, and `%5D` respectively.
-fn decode_reference_path(raw: &str) -> Result<String, ApiError> {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 2 >= bytes.len() {
-                return Err(ApiError::bad_request(
-                    "malformed percent-encoding: incomplete escape at end of string",
-                    None,
-                ));
-            }
-            let hi = hex_digit(bytes[i + 1]).ok_or_else(|| {
-                ApiError::bad_request("malformed percent-encoding: invalid hex digit", None)
-            })?;
-            let lo = hex_digit(bytes[i + 2]).ok_or_else(|| {
-                ApiError::bad_request("malformed percent-encoding: invalid hex digit", None)
-            })?;
-            out.push(hi << 4 | lo);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).map_err(|_| {
-        ApiError::bad_request(
-            "malformed percent-encoding: decoded bytes are not valid UTF-8",
-            None,
-        )
-    })
-}
-
-/// Convert an ASCII hex digit to its numeric value.
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// GET /v1/{*reference} -- resolve any reference string to a NodePayload.
+/// Resolve an opaque reference string to a `NodePayload` via the
+/// actor-based resolver.
 ///
-/// Thin bridge handler: sends `ResolveReferenceMessage` to the
-/// `MeshAdminAgent` actor and returns the result as JSON.
+/// Implements `GET /v1/{*reference}` for the reference-walking client
+/// (e.g. the TUI):
+/// - Decodes the wildcard path segment into the original reference
+///   string (Axum does not percent-decode `{*reference}` captures).
+/// - Sends `ResolveReferenceMessage::Resolve` to `MeshAdminAgent` and
+///   awaits the reply.
+/// - Maps resolver failures into appropriate `ApiError`s
+///   (`bad_request`, `not_found`, `gateway_timeout`, or
+///   `internal_error`).
 async fn resolve_reference_bridge(
     State(state): State<Arc<BridgeState>>,
     Path(reference): Path<String>,
@@ -582,7 +790,14 @@ async fn resolve_reference_bridge(
     if reference.is_empty() {
         return Err(ApiError::bad_request("empty reference", None));
     }
-    let reference = decode_reference_path(reference)?;
+    let reference = urlencoding::decode(reference)
+        .map(|cow| cow.into_owned())
+        .map_err(|_| {
+            ApiError::bad_request(
+                "malformed percent-encoding: decoded bytes are not valid UTF-8",
+                None,
+            )
+        })?;
 
     let cx = global_root_client();
     let response = RealClock
@@ -605,6 +820,8 @@ async fn resolve_reference_bridge(
     }
 }
 
+// Legacy
+
 /// Response from the `/v1/hosts` endpoint. Wraps the list of
 /// responsive hosts with metadata about the overall mesh state.
 #[derive(Debug, Serialize, Deserialize)]
@@ -617,7 +834,8 @@ struct MeshHostsResponse {
     unreachable: Vec<String>,
 }
 
-/// GET /v1/hosts -- list all hosts in the mesh, fanning out to each host agent.
+/// GET /v1/hosts -- list all hosts in the mesh, fanning out to each
+/// host agent.
 ///
 /// Each host is queried in parallel. Hosts that don't respond within
 /// `FANOUT_TIMEOUT` are reported in the `unreachable` field rather
@@ -879,44 +1097,10 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_decode_comma() {
-        assert_eq!(decode_reference_path("%2C").unwrap(), ",");
-    }
-
-    #[test]
-    fn test_decode_colon() {
-        assert_eq!(decode_reference_path("%3A").unwrap(), ":");
-    }
-
-    #[test]
-    fn test_decode_brackets() {
-        assert_eq!(decode_reference_path("%5B0%5D").unwrap(), "[0]");
-    }
-
-    #[test]
-    fn test_decode_full_reference() {
-        let encoded = "tcp%3A127.0.0.1%3A8080%2Cdp%2Cphilosopher%5B0%5D";
-        let expected = "tcp:127.0.0.1:8080,dp,philosopher[0]";
-        assert_eq!(decode_reference_path(encoded).unwrap(), expected);
-    }
-
-    #[test]
-    fn test_decode_malformed_truncated() {
-        assert!(decode_reference_path("abc%2").is_err());
-    }
-
-    #[test]
-    fn test_decode_malformed_bad_hex() {
-        assert!(decode_reference_path("%ZZ").is_err());
-    }
-
-    #[test]
-    fn test_decode_passthrough_already_decoded() {
-        let plain = "tcp:127.0.0.1:8080,dp,philosopher[0]";
-        assert_eq!(decode_reference_path(plain).unwrap(), plain);
-    }
-
+    // Verifies that MeshAdminAgent::build_root_payload constructs the
+    // expected root node: identity/root metadata, correct Root
+    // properties (num_hosts), and child links populated with the
+    // stringified IDs of the configured host mesh-agent ActorRefs.
     #[test]
     fn test_build_root_payload() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
@@ -946,9 +1130,11 @@ mod tests {
         assert!(payload.children.contains(&actor_id2.to_string()));
     }
 
-    /// Integration test: resolve references at each level of the mesh
-    /// topology (root -> host -> proc -> actor) by sending
-    /// `ResolveReferenceMessage` through the actor mailbox.
+    // End-to-end smoke test for MeshAdminAgent::resolve that walks
+    // the reference tree: root → host → system proc → host-agent
+    // cross-reference. Verifies the reverse index routes the
+    // HostMeshAgent ActorId to NodeProperties::Host (not Actor),
+    // preventing the TUI's cycle detection from dropping that node.
     #[tokio::test]
     async fn test_resolve_reference_tree_walk() {
         use hyperactor::Proc;
@@ -966,9 +1152,10 @@ mod tests {
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
-        let host = Host::new(manager, ChannelTransport::Unix.any())
-            .await
-            .unwrap();
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
@@ -1037,11 +1224,11 @@ mod tests {
             .await
             .unwrap();
         let proc_node = proc_resp.0.unwrap();
-        assert!(
-            matches!(proc_node.properties, NodeProperties::Proc { .. }),
-            "expected Proc properties, got {:?}",
-            proc_node.properties
-        );
+        if let NodeProperties::Proc { is_system, .. } = &proc_node.properties {
+            assert!(is_system, "system proc should have is_system=true");
+        } else {
+            panic!("expected Proc properties, got {:?}", proc_node.properties);
+        }
         assert_eq!(proc_node.parent, Some(host_child_ref_str.clone()));
         // The system proc should have at least the "agent" actor.
         assert!(
@@ -1049,27 +1236,179 @@ mod tests {
             "proc should have at least one actor child"
         );
 
-        // -- 7. Resolve an actor child --
-        // The first child of the system proc is typically the
-        // HostMeshAgent actor itself, which resolves as a Host node
-        // (the reverse index correctly identifies it). The test
-        // verifies that the reference is resolvable and produces a
-        // valid node — the specific node type depends on whether the
-        // actor is a host agent or a regular actor.
-        let actor_ref_str = &proc_node.children[0];
-        let actor_resp = admin_ref
-            .resolve(&client, actor_ref_str.clone())
+        // -- 7. Cross-reference: system proc child is the host agent --
+        //
+        // The service proc's actor (agent[0]) IS the HostMeshAgent, so
+        // it appears both as a host node (step 5) and as a child of
+        // the system proc. The `host_agents_by_actor_id` reverse index
+        // must route it to `resolve_host_node`, producing
+        // `NodeProperties::Host` — not `NodeProperties::Actor`. This
+        // is the scenario that caused the TUI's cycle detection to
+        // silently drop the node.
+
+        // The system proc must list the host agent among its children.
+        let host_agent_id_str = host_agent_ref.actor_id().to_string();
+        assert!(
+            proc_node.children.contains(&host_agent_id_str),
+            "system proc children {:?} should contain the host agent {}",
+            proc_node.children,
+            host_agent_id_str
+        );
+
+        // Resolve that child reference.
+        let xref_resp = admin_ref
+            .resolve(&client, host_agent_id_str.clone())
             .await
             .unwrap();
-        let actor_node = actor_resp.0.unwrap();
-        assert_eq!(actor_node.identity, *actor_ref_str);
+        let xref_node = xref_resp.0.unwrap();
+
+        // It must resolve as Host, not Actor, because the reverse
+        // index identifies it as a host agent.
         assert!(
-            matches!(
-                actor_node.properties,
-                NodeProperties::Actor { .. } | NodeProperties::Host { .. }
-            ),
-            "expected Actor or Host properties, got {:?}",
-            actor_node.properties
+            matches!(xref_node.properties, NodeProperties::Host { .. }),
+            "host agent child should resolve as Host, got {:?}",
+            xref_node.properties
         );
+
+        // The identity must match the host node resolved in step 5 —
+        // same ActorId appears at both levels of the tree.
+        assert_eq!(
+            xref_node.identity, host_node.identity,
+            "cross-referenced host agent identity should match the host node from step 5"
+        );
+
+        // Sanity: same properties as the host node from step 5.
+        assert_eq!(xref_node.properties, host_node.properties);
+        assert_eq!(xref_node.children, host_node.children);
+    }
+
+    // Verifies MeshAdminAgent::resolve correctly sets
+    // NodeProperties::Proc.is_system for both built-in host procs
+    // (system/local) and a dynamically created user proc. Spawns a
+    // user proc via CreateOrUpdate<ProcSpec>, resolves all host
+    // proc-children, and asserts only the user proc reports
+    // is_system=false while the others report is_system=true.
+    #[tokio::test]
+    async fn test_is_system_flag_for_system_and_user_procs() {
+        use std::time::Duration;
+
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::clock::Clock;
+        use hyperactor::clock::RealClock;
+        use hyperactor::host::Host;
+        use hyperactor::host::LocalProcManager;
+
+        use crate::Name;
+        use crate::host_mesh::mesh_agent::HostAgentMode;
+        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::mesh_agent::ProcMeshAgent;
+        use crate::resource;
+        use crate::resource::ProcSpec;
+        use crate::resource::Rank;
+
+        // Stand up a local in-process Host with a HostMeshAgent.
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+        let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
+        let host_addr = host.addr().clone();
+        let system_proc = host.system_proc().clone();
+        let host_agent_handle = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .unwrap();
+        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_addr_str = host_addr.to_string();
+
+        // Spawn MeshAdminAgent on a separate proc.
+        let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
+        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
+        let admin_handle = admin_proc
+            .spawn(
+                "mesh_admin",
+                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())]),
+            )
+            .unwrap();
+        let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
+
+        // Create a bare client instance for sending messages.
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _handle) = client_proc.instance("client").unwrap();
+
+        // Spawn a user proc via CreateOrUpdate<ProcSpec>.
+        let user_proc_name = Name::new("user_proc").unwrap();
+        host_agent_ref
+            .send(
+                &client,
+                resource::CreateOrUpdate {
+                    name: user_proc_name.clone(),
+                    rank: Rank::new(0),
+                    spec: ProcSpec::default(),
+                },
+            )
+            .unwrap();
+
+        // Wait for the user proc to boot.
+        RealClock.sleep(Duration::from_secs(2)).await;
+
+        // Resolve the host to get its children (system + user procs).
+        let host_resp = admin_ref
+            .resolve(&client, host_agent_ref.actor_id().to_string())
+            .await
+            .unwrap();
+        let host_node = host_resp.0.unwrap();
+
+        // The host should have at least 3 children: system proc,
+        // local proc, and our user proc.
+        assert!(
+            host_node.children.len() >= 3,
+            "expected at least 3 proc children (2 system + 1 user), got {}",
+            host_node.children.len()
+        );
+
+        // Resolve each proc child and verify is_system.
+        let user_proc_name_str = user_proc_name.to_string();
+        let mut found_system = false;
+        let mut found_user = false;
+        for child_ref_str in &host_node.children {
+            let resp = admin_ref
+                .resolve(&client, child_ref_str.clone())
+                .await
+                .unwrap();
+            let node = resp.0.unwrap();
+            if let NodeProperties::Proc {
+                is_system,
+                proc_name,
+                ..
+            } = &node.properties
+            {
+                if proc_name.contains(&user_proc_name_str) {
+                    assert!(
+                        !is_system,
+                        "user proc '{}' should have is_system=false",
+                        proc_name
+                    );
+                    found_user = true;
+                } else {
+                    assert!(
+                        *is_system,
+                        "system proc '{}' should have is_system=true",
+                        proc_name
+                    );
+                    found_system = true;
+                }
+            } else {
+                // Host agent cross-reference — skip.
+            }
+        }
+        assert!(
+            found_system,
+            "should have resolved at least one system proc"
+        );
+        assert!(found_user, "should have resolved the user proc");
     }
 }
