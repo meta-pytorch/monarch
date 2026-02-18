@@ -41,6 +41,7 @@ use crate::checkpoint::Checkpointable;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::context;
+use crate::introspect::IntrospectMessage;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
@@ -145,6 +146,39 @@ pub trait Actor: Sized + Send + 'static {
         handle_undeliverable_message(cx, envelope)
     }
 
+    /// Default introspection handler.
+    ///
+    /// The blanket implementation builds a structural [`NodePayload`]
+    /// from framework-known actor state (identity, type, status,
+    /// supervision parent/children). This provides a generic
+    /// self-description for any actor without requiring custom logic.
+    ///
+    /// # Addressable vs non-addressable children
+    ///
+    /// **Addressable children** are supervision children with their
+    /// own `ActorId`. These actors can be introspected directly by
+    /// sending [`IntrospectMessage::Query`] to the child.
+    ///
+    /// **Non-addressable children** are entities a parent chooses to
+    /// expose in its navigation tree that are not independently
+    /// messageable. For example, a `HostMeshAgent` may expose system
+    /// procs as children even though those procs are not actors. In
+    /// this case the parent must answer on the child's behalf via
+    /// [`IntrospectMessage::QueryChild`].
+    ///
+    /// The default handler reports only addressable children and
+    /// returns an error payload for `QueryChild`. Override this
+    /// method when your actor owns non-addressable children or needs
+    /// to return domain-specific node properties instead of the
+    /// default [`NodeProperties::Actor`].
+    async fn handle_introspect(
+        &mut self,
+        cx: &Instance<Self>,
+        msg: IntrospectMessage,
+    ) -> Result<(), anyhow::Error> {
+        default_handle_introspect(cx, msg)
+    }
+
     /// If overridden, we will use this name in place of the
     /// ActorId for talking about this actor in supervision error
     /// messages.
@@ -163,6 +197,59 @@ pub fn handle_undeliverable_message<A: Actor>(
     assert_eq!(envelope.sender(), cx.self_id());
 
     anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+}
+
+/// Default implementation of [`Actor::handle_introspect`].
+///
+/// Defined as a free function so actor implementations that override
+/// [`Actor::handle_introspect`] can delegate back to the framework
+/// default.
+///
+/// For [`IntrospectMessage::Query`], this replies with a structural
+/// [`NodePayload`] built from framework-owned state (see
+/// [`default_actor_payload`](crate::introspect::default_actor_payload)).
+///
+/// For [`IntrospectMessage::QueryChild`], the default replies with a
+/// [`NodeProperties::Error`] sentinel, since only actors that own
+/// non-addressable children (e.g. a host describing its system procs)
+/// can answer child queries.
+pub fn default_handle_introspect<A: Actor>(
+    cx: &Instance<A>,
+    msg: IntrospectMessage,
+) -> Result<(), anyhow::Error> {
+    use crate::introspect::NodePayload;
+    use crate::introspect::NodeProperties;
+    use crate::introspect::default_actor_payload;
+
+    match msg {
+        IntrospectMessage::Query { reply } => {
+            let payload = default_actor_payload(cx.cell());
+            if let Err(e) = reply.send(cx, payload) {
+                tracing::debug!("introspect reply failed (querier gone?): {e}");
+            }
+        }
+        IntrospectMessage::QueryChild { child_ref, reply } => {
+            if let Err(e) = reply.send(
+                cx,
+                NodePayload {
+                    identity: String::new(),
+                    properties: NodeProperties::Error {
+                        code: "not_found".into(),
+                        message: format!(
+                            "actor {} does not handle QueryChild for {}",
+                            cx.self_id(),
+                            child_ref,
+                        ),
+                    },
+                    children: vec![],
+                    parent: None,
+                },
+            ) {
+                tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An actor that does nothing. It is used to represent "client only" actors,
@@ -204,6 +291,24 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         self.handle_undeliverable_message(cx, message).await
+    }
+}
+
+/// Blanket [`Handler`] impl for [`IntrospectMessage`].
+///
+/// Every [`Actor`] can be introspected by default. This forwards
+/// [`IntrospectMessage`] into [`Actor::handle_introspect`], which
+/// provides the framework default behavior and can be overridden by
+/// actors that need domain-specific introspection (e.g. to describe
+/// non-addressable children via `QueryChild`).
+#[async_trait]
+impl<A: Actor> Handler<IntrospectMessage> for A {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: IntrospectMessage,
+    ) -> Result<(), anyhow::Error> {
+        self.handle_introspect(cx, message).await
     }
 }
 
@@ -1600,5 +1705,255 @@ mod tests {
         let mut relay_orders: Vec<usize> = (0..10000).collect();
         relay_orders.shuffle(&mut rand::thread_rng());
         assert_out_of_order_delivery(expected, relay_orders).await;
+    }
+
+    /// Verifies the default blanket introspection handler for a plain
+    /// actor.
+    ///
+    /// This test spawns a simple `EchoActor`, sends it
+    /// `IntrospectMessage::Query`, and checks that the returned
+    /// `NodePayload` matches the framework’s structural default:
+    ///
+    /// - `identity` matches the actor id
+    /// - `properties` is `NodeProperties::Actor` with populated
+    ///   framework fields
+    /// - no supervision children are reported
+    /// - `supervisor` is None because this actor is spawned as a
+    ///   root/top-level actor in the proc (only supervised child actors
+    ///   report a supervisor id).
+    ///
+    /// This exercises the end-to-end blanket handler path rather than
+    /// calling `default_actor_payload` directly, ensuring the runtime
+    /// wiring behaves as expected.
+    #[tokio::test]
+    async fn test_introspect_query_default_payload() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, _rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx.recv().await.unwrap();
+
+        assert_eq!(payload.identity, handle.actor_id().to_string());
+        match &payload.properties {
+            NodeProperties::Actor {
+                actor_status,
+                actor_type,
+                messages_processed: _,
+                created_at,
+                ..
+            } => {
+                assert!(!actor_type.is_empty());
+                assert!(!actor_status.is_empty());
+                assert!(!created_at.is_empty());
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+        assert!(payload.children.is_empty());
+        assert!(payload.parent.is_none());
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    // Verifies the default introspection behavior for non-addressable
+    // children: a plain actor that does not override
+    // `handle_introspect` responds to `IntrospectMessage::QueryChild`
+    // with the error sentinel payload (`identity == ""`,
+    // `NodeProperties::Error { code: "not_found", .. }`).
+    #[tokio::test]
+    async fn test_introspect_query_child_not_found() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+        use crate::reference::Reference;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, _rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
+
+        let child_ref = Reference::Actor(id!(nonexistent[0].child));
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::QueryChild {
+                    child_ref,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx.recv().await.unwrap();
+
+        assert!(payload.identity.is_empty());
+        match &payload.properties {
+            NodeProperties::Error { code, .. } => {
+                assert_eq!(code, "not_found");
+            }
+            other => panic!("expected NodeProperties::Error, got {:?}", other),
+        }
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    // Verifies that actors can override `Actor::handle_introspect` to
+    // return domain-specific `NodeProperties` (here: `Host`) for
+    // `Query`, while delegating all other introspection variants to
+    // `default_handle_introspect`.
+    #[tokio::test]
+    async fn test_introspect_override() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+
+        #[derive(Debug, Default)]
+        #[hyperactor::export(handlers = [])]
+        struct CustomIntrospectActor;
+
+        #[async_trait]
+        impl Actor for CustomIntrospectActor {
+            async fn handle_introspect(
+                &mut self,
+                cx: &Instance<Self>,
+                msg: IntrospectMessage,
+            ) -> Result<(), anyhow::Error> {
+                match msg {
+                    IntrospectMessage::Query { reply } => {
+                        reply.send(
+                            cx,
+                            NodePayload {
+                                identity: cx.self_id().to_string(),
+                                properties: NodeProperties::Host {
+                                    addr: "1.2.3.4:5678".into(),
+                                    num_procs: 42,
+                                },
+                                children: vec![],
+                                parent: None,
+                            },
+                        )?;
+                    }
+                    other => {
+                        default_handle_introspect(cx, other)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let handle = proc
+            .spawn("custom_introspect", CustomIntrospectActor)
+            .unwrap();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx.recv().await.unwrap();
+
+        assert_eq!(
+            payload.properties,
+            NodeProperties::Host {
+                addr: "1.2.3.4:5678".into(),
+                num_procs: 42,
+            }
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    /// Verifies that a child actor spawned via `spawn_child` reports
+    /// its parent as `supervisor` in the introspection payload, and
+    /// that the parent's payload lists the child in `children`.
+    #[tokio::test]
+    async fn test_introspect_query_supervision_child() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+
+        // Spawn parent.
+        let (tx_parent, _rx_parent) = client.open_port::<u64>();
+        let parent_handle = proc
+            .spawn::<EchoActor>("parent", EchoActor(tx_parent.bind()))
+            .unwrap();
+
+        // Spawn child under parent.
+        let (tx_child, _rx_child) = client.open_port::<u64>();
+        let child_handle = proc
+            .spawn_child::<EchoActor>(parent_handle.cell().clone(), EchoActor(tx_child.bind()))
+            .unwrap();
+
+        // Query the child — supervisor should be the parent.
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        child_handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let child_payload = reply_rx.recv().await.unwrap();
+
+        assert_eq!(child_payload.identity, child_handle.actor_id().to_string(),);
+        assert!(matches!(
+            child_payload.properties,
+            NodeProperties::Actor { .. }
+        ),);
+        assert_eq!(
+            child_payload.parent,
+            Some(parent_handle.actor_id().to_string()),
+        );
+
+        // Query the parent — children should include the child.
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        parent_handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let parent_payload = reply_rx.recv().await.unwrap();
+
+        assert!(parent_payload.parent.is_none());
+        assert!(
+            parent_payload
+                .children
+                .contains(&child_handle.actor_id().to_string()),
+        );
+
+        child_handle.drain_and_stop("test").unwrap();
+        child_handle.await;
+        parent_handle.drain_and_stop("test").unwrap();
+        parent_handle.await;
     }
 }

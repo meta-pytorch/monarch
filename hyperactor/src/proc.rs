@@ -75,6 +75,7 @@ use crate::clock::RealClock;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
+use crate::introspect::IntrospectMessage;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -158,9 +159,6 @@ struct ProcState {
 
 impl Drop for ProcState {
     fn drop(&mut self) {
-        // Deregister from admin server.
-        crate::admin::deregister_proc_by_id(&self.proc_id);
-
         // We only want log ProcStatus::Dropped when ProcState is dropped,
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
@@ -215,7 +213,7 @@ impl Proc {
             status = "Created"
         );
 
-        let proc = Self {
+        Self {
             inner: Arc::new(ProcState {
                 proc_id,
                 proc_muxer: MailboxMuxer::new(),
@@ -225,12 +223,7 @@ impl Proc {
                 supervision_coordinator_port: OnceLock::new(),
                 clock,
             }),
-        };
-
-        // Auto-register with admin server using a weak reference.
-        crate::admin::register_proc(&proc);
-
-        proc
+        }
     }
 
     /// Set the supervision coordinator's port for this proc. Return Err if it is
@@ -367,6 +360,11 @@ impl Proc {
     ) -> Result<ActorHandle<A>, anyhow::Error> {
         let (instance, mut actor_loop_receivers, work_rx) =
             Instance::new(self.clone(), actor_id.clone(), false, parent);
+
+        // Bind IntrospectMessage so that every actor is externally
+        // introspectable, even if the caller does not call
+        // `handle.bind()`.
+        instance.inner.ports.bind::<IntrospectMessage>();
 
         // Notify telemetry sinks of actor creation
         {
@@ -505,7 +503,7 @@ impl Proc {
     ///
     /// When spawn_child returns, the child has an associated cell and is linked
     /// with its parent.
-    fn spawn_child<A: Actor>(
+    pub(crate) fn spawn_child<A: Actor>(
         &self,
         parent: InstanceCell,
         actor: A,
@@ -1051,6 +1049,33 @@ impl<A: Actor> Instance<A> {
     /// This instance's actor ID.
     pub fn self_id(&self) -> &ActorId {
         self.inner.self_id()
+    }
+
+    /// Crate-internal access to the underlying runtime cell.
+    ///
+    /// Used by default introspection and other runtime plumbing. Not
+    /// part of the public actor API.
+    pub(crate) fn cell(&self) -> &InstanceCell {
+        &self.inner.cell
+    }
+
+    /// Snapshot of this actor's introspection payload.
+    ///
+    /// Returns the same [`NodePayload`] that the blanket
+    /// `Handler<IntrospectMessage>` would produce, but without going
+    /// through the actor message loop. This is safe to call from
+    /// within a handler on the same actor (no self-send deadlock).
+    ///
+    /// The snapshot is best-effort: it reflects framework-owned state
+    /// (status, message count, flight recorder, supervision children)
+    /// at the instant of the call. `nav_parent` is left as `None` —
+    /// callers are responsible for setting topology context.
+    ///
+    /// Note: this acquires a write lock on the flight recorder spool
+    /// and clones its contents. Suitable for occasional introspection
+    /// requests, not for hot paths.
+    pub fn introspect_payload(&self) -> crate::introspect::NodePayload {
+        crate::introspect::default_actor_payload(&self.inner.cell)
     }
 
     /// Signal the actor to stop.
@@ -2009,9 +2034,11 @@ impl InstanceCell {
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // All actors handle signals and undeliverable messages.
+        // All actors handle signals, undeliverable messages, and
+        // introspection.
         ports.bind::<Signal>();
         ports.bind::<Undeliverable<MessageEnvelope>>();
+        ports.bind::<IntrospectMessage>();
         // TODO: consider sharing `ports.bound` directly.
         for entry in ports.bound.iter() {
             self.inner
