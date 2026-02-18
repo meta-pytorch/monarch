@@ -21,7 +21,6 @@ use ndslice::view::CollectMeshExt;
 
 use crate::supervision::MeshFailure;
 
-pub mod host_admin;
 pub mod mesh_agent;
 
 use std::collections::HashSet;

@@ -10,9 +10,7 @@
 //! walking.
 //!
 //! This module defines `MeshAdminAgent`, an actor that exposes a
-//! uniform, reference-based HTTP API over an entire host mesh. Rather
-//! than requiring clients to understand host/proc/actor-specific
-//! routes, every addressable entity in the mesh is represented as a
+//! uniform, reference-based HTTP API over an entire host mesh. Every addressable entity in the mesh is represented as a
 //! `NodePayload` and resolved via an opaque reference string.
 //!
 //! Incoming HTTP requests are bridged into the actor message loop
@@ -22,11 +20,6 @@
 //! proc, and actor details, then normalizes them into a single
 //! tree-shaped model (`NodeProperties` + children references)
 //! suitable for topology-agnostic clients such as the admin TUI.
-//!
-//! Legacy structured routes are still provided for now (will soon be
-//! removed) but the primary abstraction is the reference-walking API:
-//! clients fetch `root`, follow child references, and progressively
-//! explore the mesh without embedding topology knowledge.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +30,8 @@ use axum::Json;
 use axum::Router;
 use axum::extract::Path;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use hyperactor::Actor;
 use hyperactor::ActorId;
@@ -49,11 +44,6 @@ use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
-use hyperactor::admin::ActorDetails;
-use hyperactor::admin::ApiError;
-use hyperactor::admin::HostDetails;
-use hyperactor::admin::HostSummary;
-use hyperactor::admin::ProcDetails;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::introspect::IntrospectMessage;
@@ -63,33 +53,69 @@ use hyperactor::mailbox::open_once_port;
 use hyperactor::reference::Reference;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use tokio::net::TcpListener;
 use typeuri::Named;
 
 use crate::global_root_client;
-use crate::host_mesh::host_admin::HostAdminQueryMessageClient;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::host_mesh::mesh_agent::parse_system_proc_ref;
 use crate::host_mesh::mesh_agent::system_proc_ref;
-
-/// Timeout for fan-out queries that hit every host in the mesh.
-/// Kept short so that a few slow or dead hosts don't block the entire
-/// response. Hosts that don't respond within this window are reported
-/// as unreachable and skipped.
-const FANOUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for targeted queries that hit a single, specific host.
 /// Longer than the fan-out timeout because the caller explicitly chose
 /// this host and is willing to wait for a response.
 const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Shared state for the legacy (host-address keyed) mesh admin HTTP
-/// routes.
-///
-/// Handlers use this to look up the `HostMeshAgent` for a given host
-/// address and forward per-host admin queries over actor messaging.
-struct MeshAdminState {
-    hosts: HashMap<String, ActorRef<HostMeshAgent>>,
+/// Structured error response following the gateway RFC envelope
+/// pattern.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiError {
+    /// Machine-readable error code (e.g. "not_found", "bad_request").
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+    /// Additional context about the error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+/// Wrapper for the structured error envelope.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiErrorEnvelope {
+    pub error: ApiError,
+}
+
+impl ApiError {
+    /// Create a "not_found" error.
+    pub fn not_found(message: impl Into<String>, details: Option<Value>) -> Self {
+        Self {
+            code: "not_found".to_string(),
+            message: message.into(),
+            details,
+        }
+    }
+
+    /// Create a "bad_request" error.
+    pub fn bad_request(message: impl Into<String>, details: Option<Value>) -> Self {
+        Self {
+            code: "bad_request".to_string(),
+            message: message.into(),
+            details,
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let status = match self.code.as_str() {
+            "not_found" => StatusCode::NOT_FOUND,
+            "bad_request" => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        let envelope = ApiErrorEnvelope { error: self };
+        (status, Json(envelope)).into_response()
+    }
 }
 
 /// Response payload for `MeshAdminMessage::GetAdminAddr`.
@@ -267,9 +293,8 @@ struct BridgeState {
 impl Actor for MeshAdminAgent {
     /// Initializes the mesh admin HTTP server.
     ///
-    /// Binds an ephemeral local TCP listener, builds the axum router
-    /// (legacy host/proc/actor routes plus the reference-based bridge
-    /// route), and spawns the server in a background task. The chosen
+    /// Binds an ephemeral local TCP listener, builds the axum router,
+    /// and spawns the server in a background task. The chosen
     /// listen address is stored in `admin_addr` so it can be returned
     /// via `GetAdminAddr`.
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
@@ -277,13 +302,10 @@ impl Actor for MeshAdminAgent {
         let addr = listener.local_addr()?;
         self.admin_addr = Some(addr);
 
-        let legacy_state = Arc::new(MeshAdminState {
-            hosts: self.hosts.clone(),
-        });
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_id().clone()),
         });
-        let router = create_mesh_admin_router(legacy_state, bridge_state);
+        let router = create_mesh_admin_router(bridge_state);
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, router).await {
                 tracing::error!("mesh admin server error: {}", e);
@@ -699,38 +721,21 @@ impl MeshAdminAgent {
 
 /// Build the Axum router for the mesh admin HTTP server.
 ///
-/// Exposes two route families:
-/// - **Legacy, structured endpoints** under `/v1/hosts/...`
-///   (host/proc/actor detail and tree dump), backed by
-///   `MeshAdminState`.
-/// - A **reference-based bridge** at `/v1/{*reference}` that resolves
-///   any opaque reference string into a `NodePayload` by messaging
-///   `MeshAdminAgent` via `BridgeState`.
-///
-/// The legacy routes are mounted first and are more specific, so they
-/// take precedence over the wildcard bridge route when paths overlap.
-fn create_mesh_admin_router(
-    legacy_state: Arc<MeshAdminState>,
-    bridge_state: Arc<BridgeState>,
-) -> Router {
-    let legacy_routes = Router::new()
-        .route("/v1/hosts", get(list_hosts))
-        .route("/v1/hosts/{host_addr}", get(get_host))
-        .route("/v1/hosts/{host_addr}/procs/{proc_name}", get(get_proc))
-        .route(
-            "/v1/hosts/{host_addr}/procs/{proc_name}/{actor_name}",
-            get(get_actor),
-        )
+/// Serves two routes, both backed by the introspection-based
+/// resolver:
+/// - `GET /v1/tree` — ASCII topology dump (walks the reference graph
+///   and formats the result as a human-readable tree; intended for
+///   quick `curl` inspection).
+/// - `GET /v1/{*reference}` — JSON `NodePayload` for a single
+///   reference (the primary API used by the TUI and programmatic
+///   clients).
+fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
+    Router::new()
+        // `/v1/tree` is more specific than the wildcard and takes
+        // precedence in Axum's router.
         .route("/v1/tree", get(tree_dump))
-        .with_state(legacy_state);
-
-    let bridge_routes = Router::new()
         .route("/v1/{*reference}", get(resolve_reference_bridge))
-        .with_state(bridge_state);
-
-    // Legacy routes are more specific and take precedence over the
-    // wildcard bridge route.
-    legacy_routes.merge(bridge_routes)
+        .with_state(bridge_state)
 }
 
 /// Resolve an opaque reference string to a `NodePayload` via the
@@ -784,273 +789,199 @@ async fn resolve_reference_bridge(
     }
 }
 
-// Legacy
+/// Timeout for the tree dump fan-out. Kept short so that slow or dead
+/// hosts don't block the response.
+const TREE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Response from the `/v1/hosts` endpoint. Wraps the list of
-/// responsive hosts with metadata about the overall mesh state.
-#[derive(Debug, Serialize, Deserialize)]
-struct MeshHostsResponse {
-    /// Total number of hosts in the mesh.
-    total: usize,
-    /// Hosts that responded within the fan-out timeout.
-    hosts: Vec<HostSummary>,
-    /// Addresses of hosts that were unreachable or timed out.
-    unreachable: Vec<String>,
-}
-
-/// GET /v1/hosts -- list all hosts in the mesh, fanning out to each
-/// host agent.
+/// `GET /v1/tree` — ASCII topology dump.
 ///
-/// Each host is queried in parallel. Hosts that don't respond within
-/// `FANOUT_TIMEOUT` are reported in the `unreachable` field rather
-/// than blocking the response.
+/// Walks the reference graph starting from `"root"`, resolving each
+/// host and its proc children, and formats the result as a
+/// human-readable ASCII tree suitable for quick `curl` inspection.
+/// Each line includes a clickable URL for drilling into that node via
+/// the reference API. Built on top of the same
+/// `ResolveReferenceMessage` protocol used by the TUI.
 ///
-/// Actor message calls are spawned as background tasks so that if the
-/// timeout fires, the reply port remains alive — preventing
-/// "undeliverable message" crashes on the remote actor.
-async fn list_hosts(
-    State(state): State<Arc<MeshAdminState>>,
-) -> Result<Json<MeshHostsResponse>, ApiError> {
+/// Output format:
+/// ```text
+/// unix:@hash  ->  http://127.0.0.1:port/v1/...
+/// ├── service  ->  http://127.0.0.1:port/v1/...
+/// │   ├── agent[0]  ->  http://127.0.0.1:port/v1/...
+/// │   └── client[0]  ->  http://127.0.0.1:port/v1/...
+/// ├── local  ->  http://127.0.0.1:port/v1/...
+/// └── philosophers_0  ->  http://127.0.0.1:port/v1/...
+///     ├── agent[0]  ->  http://127.0.0.1:port/v1/...
+///     └── philosopher[0]  ->  http://127.0.0.1:port/v1/...
+/// ```
+async fn tree_dump(
+    State(state): State<Arc<BridgeState>>,
+    headers: axum::http::header::HeaderMap,
+) -> Result<String, ApiError> {
     let cx = global_root_client();
-    let total = state.hosts.len();
-    let futures: Vec<_> = state
-        .hosts
-        .iter()
-        .map(|(addr, agent)| {
-            let addr = addr.clone();
-            let agent = agent.clone();
-            // Spawn the actor call so the reply port survives timeout.
-            let task = tokio::spawn(async move { agent.get_host_details(cx).await });
-            async move {
-                let resp = RealClock.timeout(FANOUT_TIMEOUT, task).await;
-                (addr, resp)
-            }
-        })
-        .collect();
 
-    let results = futures::future::join_all(futures).await;
-    let mut hosts = Vec::new();
-    let mut unreachable = Vec::new();
-    for (addr, result) in results {
-        match result {
-            Ok(Ok(Ok(response))) => {
-                if let Some(json) = response.json {
-                    if let Ok(details) = serde_json::from_str::<HostDetails>(&json) {
-                        hosts.push(HostSummary {
-                            addr: details.addr,
-                            num_procs: details.procs.len(),
-                        });
-                        continue;
-                    }
-                }
-                // Host responded but no details; include with zero procs.
-                hosts.push(HostSummary { addr, num_procs: 0 });
-            }
-            _ => {
-                tracing::warn!("failed to query host {} within fan-out timeout", addr);
-                unreachable.push(addr);
-            }
-        }
-    }
-    Ok(Json(MeshHostsResponse {
-        total,
-        hosts,
-        unreachable,
-    }))
-}
+    // Build base URL from the Host header for clickable links.
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+    let base_url = format!("{}://{}", scheme, host);
 
-/// GET /v1/hosts/{host_addr} -- details for a single host.
-async fn get_host(
-    State(state): State<Arc<MeshAdminState>>,
-    Path(host_addr): Path<String>,
-) -> Result<Json<HostDetails>, ApiError> {
-    let agent = state.hosts.get(&host_addr).ok_or_else(|| {
-        ApiError::not_found(
-            "host not found",
-            Some(serde_json::json!({ "addr": host_addr })),
+    // Resolve root.
+    let root_resp = RealClock
+        .timeout(
+            TREE_TIMEOUT,
+            state.admin_ref.resolve(cx, "root".to_string()),
         )
-    })?;
-    let cx = global_root_client();
-    let agent = agent.clone();
-    let task = tokio::spawn(async move { agent.get_host_details(cx).await });
-    let response = RealClock
-        .timeout(SINGLE_HOST_TIMEOUT, task)
         .await
         .map_err(|_| ApiError {
             code: "gateway_timeout".to_string(),
-            message: "timed out querying host agent".to_string(),
+            message: "timed out resolving root".to_string(),
             details: None,
         })?
         .map_err(|e| ApiError {
             code: "internal_error".to_string(),
-            message: format!("task join error: {}", e),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to query host agent: {}", e),
+            message: format!("failed to resolve root: {}", e),
             details: None,
         })?;
-    match response.json {
-        Some(json) => {
-            let details: HostDetails = serde_json::from_str(&json).map_err(|e| ApiError {
-                code: "internal_error".to_string(),
-                message: format!("failed to parse host details: {}", e),
-                details: None,
-            })?;
-            Ok(Json(details))
-        }
-        None => Err(ApiError::not_found("host returned no details", None)),
-    }
-}
 
-/// GET /v1/hosts/{host_addr}/procs/{proc_name} -- details for a proc on a host.
-async fn get_proc(
-    State(state): State<Arc<MeshAdminState>>,
-    Path((host_addr, proc_name)): Path<(String, String)>,
-) -> Result<Json<ProcDetails>, ApiError> {
-    let agent = state.hosts.get(&host_addr).ok_or_else(|| {
-        ApiError::not_found(
-            "host not found",
-            Some(serde_json::json!({ "addr": host_addr })),
-        )
+    let root = root_resp.0.map_err(|e| ApiError {
+        code: "internal_error".to_string(),
+        message: e,
+        details: None,
     })?;
-    let cx = global_root_client();
-    let agent = agent.clone();
-    let pn = proc_name.clone();
-    let task = tokio::spawn(async move { agent.get_proc_details(cx, pn).await });
-    let response = RealClock
-        .timeout(SINGLE_HOST_TIMEOUT, task)
-        .await
-        .map_err(|_| ApiError {
-            code: "gateway_timeout".to_string(),
-            message: "timed out querying host agent".to_string(),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("task join error: {}", e),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to query proc details: {}", e),
-            details: None,
-        })?;
-    match response.json {
-        Some(json) => {
-            let details: ProcDetails = serde_json::from_str(&json).map_err(|e| ApiError {
-                code: "internal_error".to_string(),
-                message: format!("failed to parse proc details: {}", e),
-                details: None,
-            })?;
-            Ok(Json(details))
-        }
-        None => Err(ApiError::not_found(
-            "proc not found",
-            Some(serde_json::json!({ "proc_name": proc_name })),
-        )),
-    }
-}
 
-/// GET /v1/hosts/{host_addr}/procs/{proc_name}/{actor_name} -- details for an actor.
-async fn get_actor(
-    State(state): State<Arc<MeshAdminState>>,
-    Path((host_addr, proc_name, actor_name)): Path<(String, String, String)>,
-) -> Result<Json<ActorDetails>, ApiError> {
-    let agent = state.hosts.get(&host_addr).ok_or_else(|| {
-        ApiError::not_found(
-            "host not found",
-            Some(serde_json::json!({ "addr": host_addr })),
-        )
-    })?;
-    let cx = global_root_client();
-    let agent = agent.clone();
-    let pn = proc_name.clone();
-    let an = actor_name.clone();
-    let task = tokio::spawn(async move { agent.get_actor_details(cx, pn, an).await });
-    let response = RealClock
-        .timeout(SINGLE_HOST_TIMEOUT, task)
-        .await
-        .map_err(|_| ApiError {
-            code: "gateway_timeout".to_string(),
-            message: "timed out querying host agent".to_string(),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("task join error: {}", e),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to query actor details: {}", e),
-            details: None,
-        })?;
-    match response.json {
-        Some(json) => {
-            let details: ActorDetails = serde_json::from_str(&json).map_err(|e| ApiError {
-                code: "internal_error".to_string(),
-                message: format!("failed to parse actor details: {}", e),
-                details: None,
-            })?;
-            Ok(Json(details))
-        }
-        None => Err(ApiError::not_found(
-            "actor not found",
-            Some(serde_json::json!({
-                "proc_name": proc_name,
-                "actor_name": actor_name,
-            })),
-        )),
-    }
-}
-
-/// GET /v1/tree -- ASCII tree of the entire mesh topology.
-async fn tree_dump(State(state): State<Arc<MeshAdminState>>) -> Result<String, ApiError> {
-    let cx = global_root_client();
-    let futures: Vec<_> = state
-        .hosts
-        .iter()
-        .map(|(addr, agent)| {
-            let addr = addr.clone();
-            let agent = agent.clone();
-            let task = tokio::spawn(async move { agent.get_host_details(cx).await });
-            async move {
-                let resp = RealClock.timeout(FANOUT_TIMEOUT, task).await;
-                (addr, resp)
-            }
-        })
-        .collect();
-
-    let results = futures::future::join_all(futures).await;
     let mut output = String::new();
-    for (addr, result) in results {
-        match result {
-            Ok(Ok(Ok(response))) => {
-                if let Some(json) = response.json {
-                    if let Ok(details) = serde_json::from_str::<HostDetails>(&json) {
-                        output.push_str(&format!("{}\n", details.addr));
-                        for (i, proc_entry) in details.procs.iter().enumerate() {
-                            let connector = if i == details.procs.len() - 1 {
+
+    // Resolve each host, its proc children, and their actor children.
+    for host_ref in &root.children {
+        let resp = RealClock
+            .timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, host_ref.clone()))
+            .await;
+
+        let payload = match resp {
+            Ok(Ok(r)) => r.0.ok(),
+            _ => None,
+        };
+
+        match payload {
+            Some(host_node) => {
+                // Host header: show the addr from NodeProperties::Host
+                // if available, otherwise fall back to the reference
+                // string.
+                let header = match &host_node.properties {
+                    NodeProperties::Host { addr, .. } => addr.clone(),
+                    _ => host_ref.clone(),
+                };
+                let host_url = format!("{}/v1/{}", base_url, urlencoding::encode(host_ref));
+                output.push_str(&format!("{}  ->  {}\n", header, host_url));
+
+                // Proc children with box-drawing connectors.
+                let num_procs = host_node.children.len();
+                for (i, proc_ref) in host_node.children.iter().enumerate() {
+                    let is_last_proc = i == num_procs - 1;
+                    let proc_connector = if is_last_proc {
+                        "└── "
+                    } else {
+                        "├── "
+                    };
+                    let proc_name = derive_tree_label(proc_ref);
+                    let proc_url = format!("{}/v1/{}", base_url, urlencoding::encode(proc_ref));
+                    output.push_str(&format!(
+                        "{}{}  ->  {}\n",
+                        proc_connector, proc_name, proc_url
+                    ));
+
+                    // Resolve the proc to get its actor children.
+                    let proc_resp = RealClock
+                        .timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, proc_ref.clone()))
+                        .await;
+                    let proc_payload = match proc_resp {
+                        Ok(Ok(r)) => r.0.ok(),
+                        _ => None,
+                    };
+                    if let Some(proc_node) = proc_payload {
+                        let num_actors = proc_node.children.len();
+                        let child_prefix = if is_last_proc { "    " } else { "│   " };
+                        for (j, actor_ref) in proc_node.children.iter().enumerate() {
+                            let actor_connector = if j == num_actors - 1 {
                                 "└── "
                             } else {
                                 "├── "
                             };
-                            output.push_str(&format!("{}{}\n", connector, proc_entry.name));
+                            let actor_label = derive_actor_label(actor_ref);
+                            let actor_url =
+                                format!("{}/v1/{}", base_url, urlencoding::encode(actor_ref));
+                            output.push_str(&format!(
+                                "{}{}{}  ->  {}\n",
+                                child_prefix, actor_connector, actor_label, actor_url
+                            ));
                         }
-                        output.push('\n');
-                        continue;
                     }
                 }
-                output.push_str(&format!("{} (no details)\n\n", addr));
+                output.push('\n');
             }
             _ => {
-                output.push_str(&format!("{} (unreachable)\n\n", addr));
+                output.push_str(&format!("{} (unreachable)\n\n", host_ref));
             }
         }
     }
     Ok(output)
+}
+
+/// Derive a short display label from a reference string for the ASCII
+/// tree.
+///
+/// Extracts the proc name — the meaningful identifier for tree
+/// display — from the various reference formats emitted by
+/// `HostMeshAgent`'s children list:
+///
+/// - System proc ref `"[system] unix:@hash,service"` → `"service"`
+/// - ProcMeshAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
+///   `"my_proc"`
+/// - Bare ProcId `"unix:@hash,my_proc"` → `"my_proc"`
+///
+/// Note: `ActorId::Display` for `ProcId::Direct` uses commas as
+/// separators (`proc_id,actor_name[idx]`), not slashes.
+fn derive_tree_label(reference: &str) -> String {
+    // System proc refs: "[system] transport!addr,name" → name.
+    if let Some(proc_id_str) = parse_system_proc_ref(reference) {
+        if let Some((_addr, name)) = proc_id_str.rsplit_once(',') {
+            return name.to_string();
+        }
+        return proc_id_str.to_string();
+    }
+    // ActorId (Direct): "transport!addr,proc_name,actor[idx]"
+    // ProcId (Direct): "transport!addr,proc_name"
+    // In both cases, split on ',' and take the second segment (the
+    // proc name).
+    let parts: Vec<&str> = reference.splitn(3, ',').collect();
+    match parts.len() {
+        // "addr,proc_name,actor[idx]" → proc_name
+        3 => parts[1].to_string(),
+        // "addr,proc_name" → proc_name
+        2 => parts[1].to_string(),
+        _ => reference.to_string(),
+    }
+}
+
+/// Derive a short display label for an actor reference.
+///
+/// Actor references are `ActorId` strings in the format
+/// `"transport!addr,proc_name,actor_name[idx]"`. This extracts the
+/// actor name with index (e.g. `"philosopher[0]"`).
+fn derive_actor_label(reference: &str) -> String {
+    let parts: Vec<&str> = reference.splitn(3, ',').collect();
+    match parts.len() {
+        // "addr,proc_name,actor[idx]" → actor[idx]
+        3 => parts[2].to_string(),
+        // "addr,name" → name
+        2 => parts[1].to_string(),
+        _ => reference.to_string(),
+    }
 }
 
 #[cfg(test)]

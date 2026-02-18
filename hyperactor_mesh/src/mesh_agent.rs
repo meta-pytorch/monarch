@@ -75,45 +75,6 @@ pub enum StopActorResult {
 }
 wirevalue::register_type!(StopActorResult);
 
-/// Response to admin introspection queries.
-///
-/// The admin response types (`ProcDetails`, `ActorDetails`) contain
-/// `serde_json::Value` which doesn't implement `Named`, so we serialize
-/// them to JSON strings for transport over actor messaging.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
-pub struct AdminQueryResponse {
-    /// JSON-serialized response, or None if the queried entity was not found.
-    pub json: Option<String>,
-}
-wirevalue::register_type!(AdminQueryResponse);
-
-/// Messages for querying admin introspection data from a child proc's
-/// `ProcMeshAgent` via actor messaging.
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    Handler,
-    HandleClient,
-    RefClient,
-    Named
-)]
-pub(crate) enum AdminQueryMessage {
-    /// Query details about the proc managed by this agent.
-    GetProcDetails {
-        #[reply]
-        reply: OncePortRef<AdminQueryResponse>,
-    },
-    /// Query details about a specific actor by name.
-    GetActorDetails {
-        actor_name: String,
-        #[reply]
-        reply: OncePortRef<AdminQueryResponse>,
-    },
-}
-
 #[derive(
     Debug,
     Clone,
@@ -245,7 +206,6 @@ struct ActorInstanceState {
 #[hyperactor::export(
     handlers=[
         MeshAgentMessage,
-        AdminQueryMessage,
         ActorSupervisionEvent,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
         resource::Stop { cast = true },
@@ -547,29 +507,6 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
                 "status unavailable: agent in invalid state"
             )),
         }
-    }
-}
-
-#[async_trait]
-#[hyperactor::forward(AdminQueryMessage)]
-impl AdminQueryMessageHandler for ProcMeshAgent {
-    async fn get_proc_details(
-        &mut self,
-        _cx: &Context<Self>,
-    ) -> Result<AdminQueryResponse, anyhow::Error> {
-        let details = hyperactor::admin::query_proc_details(&self.proc);
-        let json = serde_json::to_string(&details)?;
-        Ok(AdminQueryResponse { json: Some(json) })
-    }
-
-    async fn get_actor_details(
-        &mut self,
-        _cx: &Context<Self>,
-        actor_name: String,
-    ) -> Result<AdminQueryResponse, anyhow::Error> {
-        let details = hyperactor::admin::query_actor_details(&self.proc, &actor_name);
-        let json = details.map(|d| serde_json::to_string(&d)).transpose()?;
-        Ok(AdminQueryResponse { json })
     }
 }
 
