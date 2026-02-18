@@ -53,25 +53,29 @@ class ProcessJob(JobTrait):
 
         self._tmpdir = tempfile.mkdtemp(prefix="monarch_process_job_")
 
-        for mesh_name, count in self._meshes.items():
-            for i in range(count):
-                host_key = f"{mesh_name}_{i}"
-                addr = f"ipc://{self._tmpdir}/{host_key}"
-                env = {**os.environ}
-                if "FB_XAR_INVOKED_NAME" in os.environ:
-                    env["PYTHONPATH"] = ":".join(sys.path)
-                proc = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-c",
-                        "from monarch.actor import run_worker_loop_forever; "
-                        f'run_worker_loop_forever(address="{addr}", '
-                        'ca="trust_all_connections")',
-                    ],
-                    env=env,
-                    start_new_session=True,
-                )
-                self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+        try:
+            for mesh_name, count in self._meshes.items():
+                for i in range(count):
+                    host_key = f"{mesh_name}_{i}"
+                    addr = f"ipc://{self._tmpdir}/{host_key}"
+                    env = {**os.environ}
+                    if "FB_XAR_INVOKED_NAME" in os.environ:
+                        env["PYTHONPATH"] = ":".join(sys.path)
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            "from monarch.actor import run_worker_loop_forever; "
+                            f'run_worker_loop_forever(address="{addr}", '
+                            'ca="trust_all_connections")',
+                        ],
+                        env=env,
+                        start_new_session=True,
+                    )
+                    self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+        except Exception:
+            self._kill()
+            raise
 
     def _state(self) -> JobState:
         if not self._pids_active():

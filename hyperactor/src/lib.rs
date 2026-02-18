@@ -70,7 +70,6 @@
 pub mod accum;
 pub mod actor;
 pub mod actor_local;
-pub mod admin;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
@@ -78,6 +77,7 @@ pub mod config;
 pub mod context;
 pub mod host;
 mod init;
+pub mod introspect;
 pub mod mailbox;
 pub mod message;
 pub mod metrics;
