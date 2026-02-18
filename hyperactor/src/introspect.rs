@@ -132,6 +132,24 @@ pub struct NodePayload {
 }
 wirevalue::register_type!(NodePayload);
 
+/// Context for introspection query - what aspect of the actor to
+/// describe.
+///
+/// Infrastructure actors (e.g., ProcMeshAgent, HostMeshAgent)
+/// have dual nature: they manage entities (Proc, Host) while also
+/// being actors themselves. IntrospectView allows callers to
+/// specify which aspect to query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub enum IntrospectView {
+    /// Return managed-entity properties (Proc, Host, etc.) for
+    /// infrastructure actors.
+    Entity,
+    /// Return standard actor properties (status, messages_processed,
+    /// flight_recorder).
+    Actor,
+}
+wirevalue::register_type!(IntrospectView);
+
 /// Introspection query sent to any actor.
 ///
 /// `Query` asks the actor to describe itself. `QueryChild` asks the
@@ -143,6 +161,8 @@ wirevalue::register_type!(NodePayload);
 pub enum IntrospectMessage {
     /// "Describe yourself."
     Query {
+        /// View context - Entity or Actor.
+        view: IntrospectView,
         /// Reply port receiving the actor's self-description.
         reply: OncePortRef<NodePayload>,
     },
@@ -184,7 +204,7 @@ pub struct RecordedEvent {
 /// This is the default introspection response for any actor — it
 /// reports only framework-owned state. Used by
 /// [`default_handle_introspect`](crate::actor::default_handle_introspect).
-pub(crate) fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
+pub fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
     let actor_id = cell.actor_id();
     let status = cell.status().borrow().clone();
 
