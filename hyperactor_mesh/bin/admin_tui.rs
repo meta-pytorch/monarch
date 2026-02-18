@@ -274,6 +274,28 @@ impl Cursor {
         }
     }
 
+    /// Page down by `amount`. Returns true if position changed.
+    fn page_down(&mut self, amount: usize) -> bool {
+        let new_pos = (self.pos + amount).min(self.len.saturating_sub(1));
+        if self.pos != new_pos {
+            self.pos = new_pos;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Page up by `amount`. Returns true if position changed.
+    fn page_up(&mut self, amount: usize) -> bool {
+        let new_pos = self.pos.saturating_sub(amount);
+        if self.pos != new_pos {
+            self.pos = new_pos;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Update length and clamp position to remain valid.
     ///
     /// Used after tree mutations (refresh, collapse) to maintain the
@@ -348,6 +370,16 @@ impl NodeType {
             NodeProperties::Proc { .. } => NodeType::Proc,
             NodeProperties::Actor { .. } => NodeType::Actor,
             NodeProperties::Error { .. } => NodeType::Actor,
+        }
+    }
+
+    /// Short human-readable label for display.
+    fn label(&self) -> &'static str {
+        match self {
+            NodeType::Root => "root",
+            NodeType::Host => "host",
+            NodeType::Proc => "proc",
+            NodeType::Actor => "actor",
         }
     }
 }
@@ -438,6 +470,16 @@ impl ColorScheme {
             stat_value: Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
+        }
+    }
+
+    /// Return the style for a given node type.
+    fn node_style(&self, node_type: NodeType) -> Style {
+        match node_type {
+            NodeType::Root => self.node_root,
+            NodeType::Host => self.node_host,
+            NodeType::Proc => self.node_proc,
+            NodeType::Actor => self.node_actor,
         }
     }
 }
@@ -707,12 +749,7 @@ impl App {
 
     /// Extract a payload from FetchState if Ready, otherwise None.
     fn get_cached_payload(&self, reference: &str) -> Option<&NodePayload> {
-        self.fetch_cache
-            .get(reference)
-            .and_then(|state| match state {
-                FetchState::Ready { value, .. } => Some(value),
-                _ => None,
-            })
+        get_cached_payload(&self.fetch_cache, reference)
     }
 
     /// Return the indices of `self.tree` that are currently visible.
@@ -792,10 +829,9 @@ impl App {
 
         // Build tree recursively from root's children.
         let mut root_children = Vec::new();
-        let mut sorted_children = root_payload.children.clone();
-        sorted_children.sort_by(|a, b| natural_ref_cmp(a, b));
+        let sorted = sorted_children(&root_payload);
 
-        for child_ref in &sorted_children {
+        for child_ref in &sorted {
             if let Some(child_node) = build_tree_node(
                 &self.client,
                 &self.base_url,
@@ -887,8 +923,7 @@ impl App {
         };
 
         // Build children from payload.
-        let mut children = payload.children.clone();
-        children.sort_by(|a, b| natural_ref_cmp(a, b));
+        let children = sorted_children(&payload);
 
         let is_proc_or_actor = matches!(
             payload.properties,
@@ -981,8 +1016,6 @@ impl App {
         }
     }
 
-    /// Fetch SKILL.md from the `/SKILL.md` endpoint if not already cached.
-    /// Fetch SKILL.md from the `/SKILL.md` endpoint if not already cached.
     /// Adjust scroll offset to ensure cursor remains visible within
     /// the viewport.
     ///
@@ -1058,21 +1091,20 @@ impl App {
                 }
             }
             KeyCode::PageDown => {
-                // Page down (also Ctrl+V for Emacs compatibility)
-                let page_size = 10;
-                let new_pos =
-                    (self.cursor.pos() + page_size).min(self.cursor.len().saturating_sub(1));
-                self.cursor.set_pos(new_pos);
-                self.ensure_cursor_visible();
-                KeyResult::DetailChanged
+                if self.cursor.page_down(10) {
+                    self.ensure_cursor_visible();
+                    KeyResult::DetailChanged
+                } else {
+                    KeyResult::None
+                }
             }
             KeyCode::PageUp => {
-                // Page up (also Alt+V for Emacs compatibility)
-                let page_size = 10;
-                let new_pos = self.cursor.pos().saturating_sub(page_size);
-                self.cursor.set_pos(new_pos);
-                self.ensure_cursor_visible();
-                KeyResult::DetailChanged
+                if self.cursor.page_up(10) {
+                    self.ensure_cursor_visible();
+                    KeyResult::DetailChanged
+                } else {
+                    KeyResult::None
+                }
             }
             KeyCode::Tab => {
                 // Expand selected node; lazily fetch children.
@@ -1101,6 +1133,8 @@ impl App {
                     && let Some(node) = find_at_depth_from_root_mut(root, &reference, depth)
                 {
                     node.expanded = false;
+                    let rows = self.visible_rows();
+                    self.cursor.update_len(rows.len());
                     return KeyResult::DetailChanged;
                 }
                 KeyResult::None
@@ -1126,37 +1160,39 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Page down (Ctrl+D, vi-style)
-                let page_size = 10;
-                let new_pos =
-                    (self.cursor.pos() + page_size).min(self.cursor.len().saturating_sub(1));
-                self.cursor.set_pos(new_pos);
-                self.ensure_cursor_visible();
-                KeyResult::DetailChanged
+                if self.cursor.page_down(10) {
+                    self.ensure_cursor_visible();
+                    KeyResult::DetailChanged
+                } else {
+                    KeyResult::None
+                }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Page up (Ctrl+U, vi-style)
-                let page_size = 10;
-                let new_pos = self.cursor.pos().saturating_sub(page_size);
-                self.cursor.set_pos(new_pos);
-                self.ensure_cursor_visible();
-                KeyResult::DetailChanged
+                if self.cursor.page_up(10) {
+                    self.ensure_cursor_visible();
+                    KeyResult::DetailChanged
+                } else {
+                    KeyResult::None
+                }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Page down (Ctrl+V, Emacs-style)
-                let page_size = 10;
-                let new_pos =
-                    (self.cursor.pos() + page_size).min(self.cursor.len().saturating_sub(1));
-                self.cursor.set_pos(new_pos);
-                self.ensure_cursor_visible();
-                KeyResult::DetailChanged
+                if self.cursor.page_down(10) {
+                    self.ensure_cursor_visible();
+                    KeyResult::DetailChanged
+                } else {
+                    KeyResult::None
+                }
             }
             KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::ALT) => {
-                // Page up (Alt+V, Emacs-style - may not work in all terminals)
-                let page_size = 10;
-                let new_pos = self.cursor.pos().saturating_sub(page_size);
-                self.cursor.set_pos(new_pos);
-                self.ensure_cursor_visible();
-                KeyResult::DetailChanged
+                // Page up (Alt+V, Emacs-style)
+                if self.cursor.page_up(10) {
+                    self.ensure_cursor_visible();
+                    KeyResult::DetailChanged
+                } else {
+                    KeyResult::None
+                }
             }
             _ => KeyResult::None,
         }
@@ -1589,10 +1625,9 @@ fn build_tree_node<'a>(
                 NodeProperties::Proc { .. } | NodeProperties::Actor { .. }
             );
 
-            let mut sorted_children = payload.children.clone();
-            sorted_children.sort_by(|a, b| natural_ref_cmp(a, b));
+            let sorted = sorted_children(&payload);
 
-            for child_ref in &sorted_children {
+            for child_ref in &sorted {
                 if is_proc_or_actor {
                     // Lazy: create placeholder for unexpanded children,
                     // But recursively build expanded ones.
@@ -1739,6 +1774,13 @@ fn natural_ref_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         }
         _ => a.cmp(b),
     }
+}
+
+/// Clone and sort a payload's children by natural reference order.
+fn sorted_children(payload: &NodePayload) -> Vec<String> {
+    let mut children = payload.children.clone();
+    children.sort_by(|a, b| natural_ref_cmp(a, b));
+    children
 }
 
 /// Parse a trailing bracketed numeric index from a reference string.
@@ -2082,18 +2124,8 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let mut line2_spans = vec![];
 
     if let Some((node_type, label)) = selection {
-        let type_str = match node_type {
-            NodeType::Root => "root",
-            NodeType::Host => "host",
-            NodeType::Proc => "proc",
-            NodeType::Actor => "actor",
-        };
-        let type_style = match node_type {
-            NodeType::Root => app.scheme.node_root,
-            NodeType::Host => app.scheme.node_host,
-            NodeType::Proc => app.scheme.node_proc,
-            NodeType::Actor => app.scheme.node_actor,
-        };
+        let type_str = node_type.label();
+        let type_style = app.scheme.node_style(node_type);
         line2_spans.extend(vec![
             Span::styled("▸ ", app.scheme.stat_selection),
             Span::styled(type_str, type_style),
@@ -2171,12 +2203,7 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             let style = if vis_idx == app.cursor.pos() {
                 app.scheme.stat_selection.add_modifier(Modifier::BOLD)
             } else {
-                match node.node_type {
-                    NodeType::Root => app.scheme.node_root,
-                    NodeType::Host => app.scheme.node_host,
-                    NodeType::Proc => app.scheme.node_proc,
-                    NodeType::Actor => app.scheme.node_actor,
-                }
+                app.scheme.node_style(node.node_type)
             };
 
             let marker = if vis_idx == app.cursor.pos() {
@@ -2308,6 +2335,14 @@ fn render_node_detail(
     }
 }
 
+/// Build a key-value detail line with a gray label and raw value.
+fn detail_line<'a>(label: &'a str, value: impl Into<String>) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(label, Style::default().fg(Color::Gray)),
+        Span::raw(value.into()),
+    ])
+}
+
 /// Render the right-pane detail view for the mesh root node.
 ///
 /// Shows a simple summary (host count) and then lists the root’s
@@ -2330,22 +2365,10 @@ fn render_root_detail(
     let uptime_str = format_uptime(started_at);
 
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Hosts: ", Style::default().fg(Color::Gray)),
-            Span::raw(num_hosts.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Started by: ", Style::default().fg(Color::Gray)),
-            Span::raw(started_by),
-        ]),
-        Line::from(vec![
-            Span::styled("Uptime: ", Style::default().fg(Color::Gray)),
-            Span::raw(&uptime_str),
-        ]),
-        Line::from(vec![
-            Span::styled("Started at: ", Style::default().fg(Color::Gray)),
-            Span::raw(format_local_time(started_at)),
-        ]),
+        detail_line("Hosts: ", num_hosts.to_string()),
+        detail_line("Started by: ", started_by),
+        detail_line("Uptime: ", &uptime_str),
+        detail_line("Started at: ", format_local_time(started_at)),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2377,14 +2400,8 @@ fn render_host_detail(
         .border_style(scheme.border);
 
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Address: ", Style::default().fg(Color::Gray)),
-            Span::raw(addr),
-        ]),
-        Line::from(vec![
-            Span::styled("Procs: ", Style::default().fg(Color::Gray)),
-            Span::raw(num_procs.to_string()),
-        ]),
+        detail_line("Address: ", addr),
+        detail_line("Procs: ", num_procs.to_string()),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2421,14 +2438,8 @@ fn render_proc_detail(
         .border_style(scheme.border);
 
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Name: ", Style::default().fg(Color::Gray)),
-            Span::raw(proc_name),
-        ]),
-        Line::from(vec![
-            Span::styled("Actors: ", Style::default().fg(Color::Gray)),
-            Span::raw(num_actors.to_string()),
-        ]),
+        detail_line("Name: ", proc_name),
+        detail_line("Actors: ", num_actors.to_string()),
         Line::default(),
     ];
     for (i, actor) in payload.children.iter().enumerate() {
@@ -2468,7 +2479,7 @@ fn render_actor_detail(
     last_message_handler: Option<&str>,
     total_processing_time_us: u64,
     flight_recorder_json: Option<&str>,
-    _scheme: &ColorScheme,
+    scheme: &ColorScheme,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2479,7 +2490,7 @@ fn render_actor_detail(
     let info_block = Block::default()
         .title("Actor Details")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
+        .border_style(scheme.border);
 
     let info = Paragraph::new(vec![
         Line::from(vec![
@@ -2493,35 +2504,16 @@ fn render_actor_detail(
                 }),
             ),
         ]),
-        Line::from(vec![
-            Span::styled("Type: ", Style::default().fg(Color::Gray)),
-            Span::raw(actor_type),
-        ]),
-        Line::from(vec![
-            Span::styled("Messages: ", Style::default().fg(Color::Gray)),
-            Span::raw(messages_processed.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Processing time: ", Style::default().fg(Color::Gray)),
-            Span::raw(
-                humantime::format_duration(std::time::Duration::from_micros(
-                    total_processing_time_us,
-                ))
+        detail_line("Type: ", actor_type),
+        detail_line("Messages: ", messages_processed.to_string()),
+        detail_line(
+            "Processing time: ",
+            humantime::format_duration(std::time::Duration::from_micros(total_processing_time_us))
                 .to_string(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Created: ", Style::default().fg(Color::Gray)),
-            Span::raw(created_at),
-        ]),
-        Line::from(vec![
-            Span::styled("Last handler: ", Style::default().fg(Color::Gray)),
-            Span::raw(last_message_handler.unwrap_or("-")),
-        ]),
-        Line::from(vec![
-            Span::styled("Children: ", Style::default().fg(Color::Gray)),
-            Span::raw(payload.children.len().to_string()),
-        ]),
+        ),
+        detail_line("Created: ", created_at),
+        detail_line("Last handler: ", last_message_handler.unwrap_or("-")),
+        detail_line("Children: ", payload.children.len().to_string()),
     ])
     .block(info_block);
     frame.render_widget(info, chunks[0]);
@@ -2530,7 +2522,7 @@ fn render_actor_detail(
     let recorder_block = Block::default()
         .title("Flight Recorder")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Gray));
+        .border_style(scheme.border);
 
     let recorded_events: Vec<RecordedEvent> = flight_recorder_json
         .and_then(|json| serde_json::from_str(json).ok())
