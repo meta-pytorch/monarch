@@ -1703,7 +1703,6 @@ impl BootstrapProcManager {
                 Err(_) => {
                     // exit_rx sender was dropped without sending - launcher error.
                     let _ = handle.mark_failed("exit_rx sender dropped unexpectedly");
-                    crate::admin_proxy::deregister_remote_proc(&proc_id.to_string());
                     tracing::error!(
                         name = "ProcStatus",
                         status = "Exited::ChannelDropped",
@@ -1713,10 +1712,6 @@ impl BootstrapProcManager {
                     return;
                 }
             };
-
-            // Deregister from the admin proxy so the proc no longer
-            // appears in proxied admin queries.
-            crate::admin_proxy::deregister_remote_proc(&proc_id.to_string());
 
             // Collect stderr tail from StreamFwder if we captured stdio.
             // The launcher may also provide stderr_tail in exit_result;
@@ -1961,11 +1956,9 @@ impl ProcManager for BootstrapProcManager {
 
         // Handle callback from child proc when it confirms bootstrap.
         let h = handle.clone();
-        let proxy_proc_id = proc_id.to_string();
         tokio::spawn(async move {
             match callback_rx.recv().await {
                 Ok((addr, agent)) => {
-                    crate::admin_proxy::register_remote_proc(proxy_proc_id, agent.clone());
                     let _ = h.mark_ready(addr, agent);
                 }
                 Err(e) => {
