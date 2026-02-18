@@ -9,7 +9,11 @@
 //! One-way, multi-process, typed communication channels. These are used
 //! to send messages between mailboxes residing in different processes.
 
-#![allow(dead_code)] // Allow until this is used outside of tests.
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
 
 use core::net::SocketAddr;
 use std::fmt;
@@ -170,6 +174,7 @@ pub trait Rx<M: RemoteMessage> {
     fn addr(&self) -> ChannelAddr;
 }
 
+#[allow(dead_code)] // Not used outside tests.
 struct MpscTx<M: RemoteMessage> {
     tx: mpsc::UnboundedSender<M>,
     addr: ChannelAddr,
@@ -177,6 +182,7 @@ struct MpscTx<M: RemoteMessage> {
 }
 
 impl<M: RemoteMessage> MpscTx<M> {
+    #[allow(dead_code)] // Not used outside tests.
     pub fn new(tx: mpsc::UnboundedSender<M>, addr: ChannelAddr) -> (Self, watch::Sender<TxStatus>) {
         let (sender, receiver) = watch::channel(TxStatus::Active);
         (
@@ -215,6 +221,7 @@ impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
     }
 }
 
+#[allow(dead_code)] // Not used outside tests.
 struct MpscRx<M: RemoteMessage> {
     rx: mpsc::UnboundedReceiver<M>,
     addr: ChannelAddr,
@@ -223,6 +230,7 @@ struct MpscRx<M: RemoteMessage> {
 }
 
 impl<M: RemoteMessage> MpscRx<M> {
+    #[allow(dead_code)] // Not used outside tests.
     pub fn new(
         rx: mpsc::UnboundedReceiver<M>,
         addr: ChannelAddr,

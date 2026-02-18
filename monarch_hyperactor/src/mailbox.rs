@@ -31,7 +31,7 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
 use pyo3::IntoPyObjectExt;
@@ -130,7 +130,7 @@ impl PyMailbox {
             self.inner.actor_id().clone(),
             port_id,
             message,
-            Attrs::new(),
+            Flattrs::new(),
         );
         let return_handle = self
             .inner

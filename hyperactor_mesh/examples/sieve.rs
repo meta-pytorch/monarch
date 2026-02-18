@@ -13,28 +13,43 @@
 //! using dynamically spawned actors to concurrently filter candidates.
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use clap::Parser;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::PortRef;
+use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
-use hyperactor_config::Attrs;
-use hyperactor_mesh::Mesh;
-use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::LocalAllocator;
-use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
+use ndslice::View;
+use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
+
+#[derive(Parser)]
+#[command(name = "sieve")]
+struct Args {
+    /// Number of primes to find.
+    #[arg(long, default_value_t = 100)]
+    num_primes: usize,
+
+    /// Delay between candidate sends (ms). Increase to avoid flooding
+    /// the sieve and spawning excessive actors when prime reports
+    /// arrive slowly.
+    #[arg(long, default_value_t = 1)]
+    send_interval_ms: u64,
+}
 
 /// Candidate number submitted to the sieve.
 ///
@@ -78,20 +93,26 @@ pub struct SieveActor {
 #[async_trait]
 impl Handler<NextNumber> for SieveActor {
     async fn handle(&mut self, cx: &Context<Self>, msg: NextNumber) -> Result<()> {
-        if !msg.number.is_multiple_of(self.prime) {
-            match &self.next {
-                Some(next) => {
-                    next.send(cx, msg)?;
-                }
-                None => {
-                    msg.prime_collector.send(cx, msg.number)?;
+        if msg.number.is_multiple_of(self.prime) {
+            return Ok(());
+        }
+        match &self.next {
+            Some(next) => {
+                next.send(cx, msg)?;
+            }
+            None => {
+                tracing::info!(
+                    prime = self.prime,
+                    discovered = msg.number,
+                    "new prime discovered, spawning child"
+                );
+                msg.prime_collector.send(cx, msg.number)?;
 
-                    self.next = Some(
-                        SieveActor::new(SieveParams { prime: msg.number }, Attrs::default())
-                            .await?
-                            .spawn(cx)?,
-                    );
-                }
+                self.next = Some(
+                    SieveActor::new(SieveParams { prime: msg.number }, Flattrs::default())
+                        .await?
+                        .spawn(cx)?,
+                );
             }
         }
         Ok(())
@@ -105,7 +126,7 @@ impl RemoteSpawn for SieveActor {
     type Params = SieveParams;
 
     /// Creates a sieve actor for `prime`.
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
         Ok(Self {
             prime: params.prime,
             next: None,
@@ -115,48 +136,97 @@ impl RemoteSpawn for SieveActor {
 
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
-    let alloc = LocalAllocator
-        .allocate(AllocSpec {
-            extent: extent! { replica = 1 },
-            constraints: Default::default(),
-            proc_name: None,
-            transport: ChannelTransport::Local,
-            proc_allocation_mode: Default::default(),
-        })
-        .await?;
+    hyperactor::initialize_with_current_runtime();
+    let args = Args::parse();
 
-    let mesh = ProcMesh::allocate(alloc).await?;
-
+    let mut host_mesh = HostMesh::local().await?;
     let instance = global_root_client();
 
+    // Start the mesh admin agent.
+    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin_proc".to_string())?;
+    let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
+    println!("Mesh admin server listening on http://{}", mesh_admin_addr);
+    println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);
+    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
+    println!(
+        "  - API docs:      curl http://{}/SKILL.md",
+        mesh_admin_addr
+    );
+    println!(
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}",
+        mesh_admin_addr
+    );
+    println!();
+
+    // TODO: put an indicatif spinner here
+    println!("Starts in 5 seconds.");
+    RealClock.sleep(Duration::from_secs(5)).await;
+    println!("Starting...");
+
+    let proc_mesh = host_mesh
+        .spawn(instance, "sieve", extent!(replica = 1))
+        .await?;
+
     let sieve_params = SieveParams { prime: 2 };
-    let sieve_mesh: RootActorMesh<SieveActor> =
-        mesh.spawn(&instance, "sieve", &sieve_params).await?;
+    let sieve_mesh: hyperactor_mesh::ActorMesh<SieveActor> =
+        proc_mesh.spawn(&instance, "sieve", &sieve_params).await?;
     let sieve_head = sieve_mesh.get(0).unwrap();
 
-    let mut primes = vec![2];
-    let mut candidate = 3;
-
-    let (prime_collector_tx, mut prime_collector_rx) = mesh.client().open_port();
+    let (prime_collector_tx, mut prime_collector_rx) = instance.open_port();
     let prime_collector_ref = prime_collector_tx.bind();
 
-    while primes.len() < 100 {
-        sieve_head.send(
-            mesh.client(),
-            NextNumber {
-                number: candidate,
-                prime_collector: prime_collector_ref.clone(),
-            },
-        )?;
-        while let Ok(Some(prime)) = prime_collector_rx.try_recv() {
-            primes.push(prime);
+    // Run the sieve computation in a spawned task so the admin HTTP
+    // server remains responsive throughout.
+    let compute = tokio::spawn(async move {
+        // Keep the port handle alive so incoming primes can be delivered.
+        let _prime_collector_tx = prime_collector_tx;
+        let mut primes = vec![2u64];
+        let mut candidate = 3u64;
+
+        let mut tick = tokio::time::interval(Duration::from_millis(args.send_interval_ms));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        while primes.len() < args.num_primes {
+            tokio::select! {
+                biased;
+
+                Ok(prime) = prime_collector_rx.recv() => {
+                    primes.push(prime);
+                }
+
+                _ = tick.tick() => {
+                    sieve_head
+                        .send(
+                            instance,
+                            NextNumber {
+                                number: candidate,
+                                prime_collector: prime_collector_ref.clone(),
+                            },
+                        )
+                        .unwrap();
+                    candidate += 1;
+                }
+            }
         }
-        candidate += 1;
-    }
+        println!(
+            "Sent {} candidates to find {} primes.",
+            candidate - 3,
+            primes.len()
+        );
+        primes.sort();
+        primes
+    });
 
-    while let Ok(Some(_)) = prime_collector_rx.try_recv() {}
+    let primes = compute.await.expect("compute task panicked");
 
-    primes.sort();
-    println!("Primes : {:?}", primes);
+    println!("Found {} primes: {:?}", primes.len(), primes);
+    println!("Press Ctrl+C to exit.");
+    tokio::signal::ctrl_c().await?;
+
+    // Clean shutdown: stop all hosts and child processes before
+    // exiting so that Drop has nothing left to do and C++ static
+    // destructors run in the right order.
+    host_mesh.shutdown(instance).await?;
+
     Ok(ExitCode::SUCCESS)
 }

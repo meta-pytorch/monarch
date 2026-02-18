@@ -15,6 +15,7 @@
 //! Data flows directly Rust-to-Rust via PortRef for efficiency.
 
 pub mod database_scanner;
+mod entity_dispatcher;
 pub mod query_engine;
 mod record_batch_sink;
 
@@ -22,6 +23,7 @@ pub use database_scanner::DatabaseScanner;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+pub use entity_dispatcher::EntityDispatcher;
 use hyperactor::Bind;
 use hyperactor::Unbind;
 use pyo3::prelude::*;
@@ -48,6 +50,14 @@ pub struct QueryResponse {
 // ============================================================================
 // Serialization helpers
 // ============================================================================
+
+/// Helper to convert SystemTime to microseconds since Unix epoch.
+pub(crate) fn timestamp_to_micros(timestamp: &std::time::SystemTime) -> i64 {
+    timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as i64
+}
 
 pub(crate) fn serialize_schema(schema: &SchemaRef) -> anyhow::Result<Vec<u8>> {
     let batch = RecordBatch::new_empty(schema.clone());

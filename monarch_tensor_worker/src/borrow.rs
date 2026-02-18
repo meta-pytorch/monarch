@@ -15,7 +15,6 @@ use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
-use hyperactor_config::Attrs;
 use tokio::sync::Mutex;
 use torch_sys_cuda::cuda::Event;
 
@@ -178,6 +177,7 @@ mod tests {
     use anyhow::Result;
     use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessage;
@@ -209,7 +209,7 @@ mod tests {
                         device_index: None,
                         controller_actor: controller_ref,
                     },
-                    Attrs::default(),
+                    Flattrs::default(),
                 )
                 .await?,
             )
@@ -364,7 +364,7 @@ mod tests {
                         device_index: None,
                         controller_actor: controller_ref,
                     },
-                    Attrs::default(),
+                    Flattrs::default(),
                 )
                 .await
                 .unwrap(),

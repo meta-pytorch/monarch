@@ -32,7 +32,7 @@ use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::mesh_agent::ProcMeshAgent;
 use crate::shortuuid::ShortUuid;
 
 enum Action {
