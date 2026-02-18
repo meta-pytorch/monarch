@@ -56,27 +56,11 @@ mod protocol {
 
     use crate::actor::PythonMessage;
 
-    /// Reject exit-result messages that carry `pending_pickle_state`.
+    /// Reject exit-result messages that carry deferred pickling state.
     ///
-    /// Exit results are expected to be **fully materialized** Python
-    /// objects (dataclass or dict) that have already been pickled
-    /// into `msg.message`. If `pending_pickle_state` is present, the
-    /// sender attempted to use the "deferred pickling" path
-    /// (typically used for large payloads), which is not supported
-    /// for proc-exit reporting.
-    ///
-    /// Returns `Ok(())` when the message is safe to decode, or a
-    /// protocol error (`ProcLauncherError::Other`) when the message
-    /// violates this contract.
-    pub(super) fn reject_pending_pickle(msg: &PythonMessage) -> Result<(), ProcLauncherError> {
-        if msg.pending_pickle_state.is_some() {
-            return Err(ProcLauncherError::Other(
-                "Exit results must be sent without pending pickle; ensure you use \
-                 exit_port.send(result) with a fully materialized dataclass/dict \
-                 and no large tensor payloads."
-                    .into(),
-            ));
-        }
+    /// PendingPickle support has been removed; messages are always
+    /// fully materialized, so this is now a no-op.
+    pub(super) fn reject_pending_pickle(_msg: &PythonMessage) -> Result<(), ProcLauncherError> {
         Ok(())
     }
 }
@@ -720,7 +704,6 @@ impl ProcLauncher for ActorProcLauncher {
                 response_port: Some(EitherPortRef::Once(PythonOncePortRef::from(bound_port))),
             },
             message: pickled_args.into(),
-            pending_pickle_state: None,
         };
 
         self.spawner
@@ -801,7 +784,6 @@ impl ProcLauncher for ActorProcLauncher {
                 response_port: None,
             },
             message: pickled.into(),
-            pending_pickle_state: None,
         };
 
         self.spawner
@@ -843,7 +825,6 @@ impl ProcLauncher for ActorProcLauncher {
                 response_port: None,
             },
             message: pickled.into(),
-            pending_pickle_state: None,
         };
 
         self.spawner
@@ -860,29 +841,16 @@ mod tests {
     // the protocol check.
     #[test]
     fn test_reject_pending_pickle_ok() {
-        // A "normal" exit-result message: no pending pickle state
-        // means the protocol constraint is satisfied and the message
-        // should be accepted.
+        // PendingPickle support has been removed; all messages are now
+        // fully materialized. This test just confirms the no-op check
+        // passes.
         let msg = PythonMessage {
             kind: PythonMessageKind::Result { rank: Some(0) },
             message: vec![].into(),
-            pending_pickle_state: None,
         };
         assert!(protocol::reject_pending_pickle(&msg).is_ok());
     }
 
-    // We intentionally omit the negative test (pending_pickle_state =
-    // Some(_)).
-    //
-    // Constructing a real `PendingPickleState` from this module isn't
-    // possible because its constructor is private, and we don't want
-    // to add test-only backdoors just to manufacture an invalid
-    // message.
-    //
-    // The error branch is a simple `is_some()` check and is
-    // additionally exercised by higher-level tests that observe the
-    // end-to-end behavior when a spawner attempts to send an exit
-    // result with pending pickle state.
     //
     // (If we ever make `PendingPickleState` constructible here, we
     // should add the negative unit test back.)

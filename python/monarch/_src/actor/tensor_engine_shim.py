@@ -32,8 +32,7 @@ if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
     from monarch._src.actor.actor_mesh import Port
 
-from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
+from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 
 P = ParamSpec("P")
 F = TypeVar("F", bound=Callable[..., Any])
@@ -70,22 +69,18 @@ def shim(
 
 
 @shim(module="monarch.mesh_controller")
-def create_actor_message(
+def create_actor_message_kind(
     method_name: "MethodSpecifier",
     proc_mesh: "Optional[Any]",
-    args_kwargs_tuple: Buffer,
     refs: "Sequence[Any]",
     port: "Optional[Port[Any]]",
-    pending_pickle_state: Optional[PendingPickleState],
 ) -> "Any": ...
 
 
 @shim(module="monarch.mesh_controller")
 def actor_rref(
     endpoint: Any,
-    args_kwargs_tuple: Buffer,
-    refs: Sequence[Any],
-    pending_pickle_state: Optional[PendingPickleState],
+    pickling_state: Optional[PicklingState],
 ) -> Any: ...
 
 

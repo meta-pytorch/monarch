@@ -65,8 +65,9 @@ pub fn get_tokio_runtime<'l>() -> std::sync::MappedRwLockReadGuard<'l, tokio::ru
         );
     }
 
-    // Downgrade write lock to read lock and return the reference
-    let read_guard = std::sync::RwLockWriteGuard::downgrade(write_guard);
+    // Drop write lock and re-acquire as read lock
+    drop(write_guard);
+    let read_guard = INSTANCE.read().unwrap();
     RwLockReadGuard::map(read_guard, |lock: &Option<tokio::runtime::Runtime>| {
         lock.as_ref().unwrap()
     })
