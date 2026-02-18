@@ -9,6 +9,12 @@
 //! This module defines a proc allocator interface as well as a multi-process
 //! (local) allocator, [`ProcessAllocator`].
 
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
+
 pub mod local;
 pub mod process;
 pub mod remoteprocess;
@@ -42,7 +48,7 @@ use typeuri::Named;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::assign::Ranks;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::mesh_agent::ProcMeshAgent;
 use crate::shortuuid::ShortUuid;
 
 /// Errors that occur during allocation operations.
@@ -636,9 +642,9 @@ pub(crate) mod testing {
     use super::*;
     use crate::alloc::test_utils::TestActor;
     use crate::alloc::test_utils::Wait;
-    use crate::proc_mesh::default_transport;
-    use crate::proc_mesh::mesh_agent::GspawnResult;
-    use crate::proc_mesh::mesh_agent::MeshAgentMessageClient;
+    use crate::mesh_agent::GspawnResult;
+    use crate::mesh_agent::MeshAgentMessageClient;
+    use crate::transport::default_transport;
 
     #[macro_export]
     macro_rules! alloc_test_suite {

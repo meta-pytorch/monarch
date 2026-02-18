@@ -17,7 +17,7 @@ path = "tests/fuzz_reshape_selection.rs"
 anyhow = "1.0.98"
 cityhasher = "0.1.0"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
-enum-as-inner = "0.6.0"
+enum-as-inner = "0.6.1"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 itertools = "0.14.0"
 nom = "8"

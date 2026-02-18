@@ -64,6 +64,11 @@ use crate::RemoteMessage;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#[allow(unused_assignments)]
 mod client;
 mod framed;
 use client::dial;
@@ -211,6 +216,7 @@ pub enum ClientError {
 
 /// Tells whether the address is a 'net' address. These currently have different semantics
 /// from local transports.
+#[allow(dead_code)] // Not used outside tests.
 pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
     match addr.transport() {
         ChannelTransport::Tcp(_) => true,
@@ -1633,6 +1639,7 @@ mod tests {
             self.receiver_storage.clone()
         }
 
+        #[allow(dead_code)] // Not used outside tests.
         fn source(&self) -> ChannelAddr {
             // Use a dummy address as a placeholder.
             ChannelAddr::Local(u64::MAX)

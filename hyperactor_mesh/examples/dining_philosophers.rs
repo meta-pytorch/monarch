@@ -14,29 +14,39 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use clap::Parser;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
+use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::admin;
+use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
-use hyperactor_config::Attrs;
+use hyperactor_config::Flattrs;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::extent;
-use hyperactor_mesh::proc_mesh::global_root_client;
-use hyperactor_mesh::v1::ActorMesh;
-use hyperactor_mesh::v1::ActorMeshRef;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
+use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
 use typeuri::Named;
+
+/// Command-line arguments for the dining philosophers example.
+#[derive(Parser)]
+#[command(name = "dining_philosophers")]
+struct Args {
+    /// Run all procs in-process rather than as separate OS processes.
+    #[arg(long)]
+    in_process: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum ChopstickStatus {
@@ -94,7 +104,7 @@ impl Actor for PhilosopherActor {}
 impl RemoteSpawn for PhilosopherActor {
     type Params = PhilosopherActorParams;
 
-    async fn new(params: Self::Params, _environment: Attrs) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             chopsticks: (ChopstickStatus::None, ChopstickStatus::None),
             rank: 0, // will be set upon dining start
@@ -241,27 +251,41 @@ impl Waiter {
 async fn main() -> Result<ExitCode> {
     hyperactor::initialize_with_current_runtime();
 
-    // Option: run as a local process mesh
-    // let host_mesh = HostMesh::process(extent!(hosts = 1), BootstrapCommand::current().unwrap())
-    //     .await
-    //     .unwrap();
+    let args = Args::parse();
 
-    let host_mesh = HostMesh::local().await?;
+    let host_mesh = if args.in_process {
+        HostMesh::local_in_process().await?
+    } else {
+        HostMesh::local().await?
+    };
 
     let group_size = 5;
     let instance = global_root_client();
 
-    // Start the admin HTTP server in a background task
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let admin_addr = listener.local_addr()?;
-    println!("Admin server listening on http://{}", admin_addr);
-    println!("  - List procs:    curl http://{}/", admin_addr);
-    println!("  - Actor tree:    curl http://{}/tree", admin_addr);
-    tokio::spawn(async move {
-        if let Err(e) = admin::serve(listener).await {
-            tracing::error!("admin server error: {}", e);
-        }
-    });
+    // Start the mesh admin agent, which aggregates admin state
+    // across all hosts and serves an HTTP API.
+    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin_proc".to_string())?;
+    let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
+    println!("Mesh admin server listening on http://{}", mesh_admin_addr);
+    println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);
+    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
+    println!(
+        "  - API docs:      curl http://{}/SKILL.md",
+        mesh_admin_addr
+    );
+    println!(
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}",
+        mesh_admin_addr
+    );
+    let host_addr = &host_mesh.hosts()[0];
+    println!(
+        "  - Hyper list:    buck2 run fbcode//monarch/hyper:hyper -- list {}",
+        host_addr
+    );
+    println!(
+        "  - Hyper show:    buck2 run fbcode//monarch/hyper:hyper -- show {},<proc_name>  (use a name from list)",
+        host_addr
+    );
 
     let proc_mesh = host_mesh
         .spawn(instance, "philosophers", extent!(replica = group_size))
