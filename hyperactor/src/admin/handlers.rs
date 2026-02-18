@@ -30,7 +30,6 @@ use super::responses::ProcSummary;
 use super::responses::RecordedEvent;
 use super::responses::ReferenceInfo;
 use super::tree::format_proc_tree_with_urls;
-use super::tree::url_encode_path;
 use crate::ActorId;
 use crate::ProcId;
 use crate::proc::InstanceCell;
@@ -283,7 +282,7 @@ pub async fn get_host(
         .proc_names()
         .into_iter()
         .map(|name| {
-            let url = format!("{}/procs/{}", base_url, url_encode_path(&name));
+            let url = format!("{}/procs/{}", base_url, urlencoding::encode(&name));
             HostProcEntry {
                 name,
                 num_actors: 0,
