@@ -64,14 +64,14 @@ use crate::resource::ProcSpec;
 /// These refs appear in `NodePayload.children` for `HostMeshAgent` so
 /// that the navigation layer can distinguish non-addressable system
 /// procs from addressable actor references.
-const SYSTEM_REF_PREFIX: &str = "[system] ";
+pub(crate) const SYSTEM_REF_PREFIX: &str = "[system] ";
 
 /// Format the synthetic reference string for a system-owned proc.
 ///
 /// The returned string is intended to be placed in
 /// `NodePayload.children` and later round-tripped through
 /// [`parse_system_proc_ref`].
-fn system_proc_ref(proc_id: &str) -> String {
+pub(crate) fn system_proc_ref(proc_id: &str) -> String {
     format!("{SYSTEM_REF_PREFIX}{proc_id}")
 }
 
@@ -80,7 +80,7 @@ fn system_proc_ref(proc_id: &str) -> String {
 ///
 /// Returns the proc-id portion if `s` uses the [`SYSTEM_REF_PREFIX`]
 /// convention.
-fn parse_system_proc_ref(s: &str) -> Option<&str> {
+pub(crate) fn parse_system_proc_ref(s: &str) -> Option<&str> {
     s.strip_prefix(SYSTEM_REF_PREFIX)
 }
 
@@ -264,7 +264,7 @@ impl Actor for HostMeshAgent {
                 }
 
                 let num_procs = children.len();
-                reply.send(
+                if let Err(e) = reply.send(
                     cx,
                     NodePayload {
                         identity: cx.self_id().to_string(),
@@ -272,24 +272,25 @@ impl Actor for HostMeshAgent {
                         children,
                         parent: None,
                     },
-                )?;
+                ) {
+                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
+                }
             }
             IntrospectMessage::QueryChild { child_ref, reply } => {
-                // Only system procs are non-addressable children.
-                let ref_str = child_ref.to_string();
-                let proc = if let Some(proc_id_str) = parse_system_proc_ref(&ref_str) {
-                    let host = self.host.as_ref().expect("host present");
-                    let system_id = host.system_proc().proc_id().to_string();
-                    let local_id = host.local_proc().proc_id().to_string();
-                    if proc_id_str == system_id {
-                        Some(host.system_proc())
-                    } else if proc_id_str == local_id {
-                        Some(host.local_proc())
-                    } else {
-                        None
+                use hyperactor::reference::Reference;
+
+                let proc = match &child_ref {
+                    Reference::Proc(proc_id) => {
+                        let host = self.host.as_ref().expect("host present");
+                        if *proc_id == *host.system_proc().proc_id() {
+                            Some(host.system_proc())
+                        } else if *proc_id == *host.local_proc().proc_id() {
+                            Some(host.local_proc())
+                        } else {
+                            None
+                        }
                     }
-                } else {
-                    None
+                    _ => None,
                 };
 
                 let payload = match proc {
@@ -298,7 +299,7 @@ impl Actor for HostMeshAgent {
                         let children: Vec<String> =
                             actors.iter().map(|id| id.to_string()).collect();
                         NodePayload {
-                            identity: ref_str,
+                            identity: child_ref.to_string(),
                             properties: NodeProperties::Proc {
                                 proc_name: proc.proc_id().to_string(),
                                 num_actors: actors.len(),
@@ -318,7 +319,9 @@ impl Actor for HostMeshAgent {
                         parent: None,
                     },
                 };
-                reply.send(cx, payload)?;
+                if let Err(e) = reply.send(cx, payload) {
+                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+                }
             }
         }
         Ok(())

@@ -369,6 +369,11 @@ impl Proc {
         let (instance, mut actor_loop_receivers, work_rx) =
             Instance::new(self.clone(), actor_id.clone(), false, parent);
 
+        // Bind IntrospectMessage so that every actor is externally
+        // introspectable, even if the caller does not call
+        // `handle.bind()`.
+        instance.inner.ports.bind::<IntrospectMessage>();
+
         // Notify telemetry sinks of actor creation
         {
             use std::collections::hash_map::DefaultHasher;
