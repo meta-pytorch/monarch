@@ -16,6 +16,7 @@ use super::*;
 use crate::Data;
 
 /// Create a new local channel, returning its two ends.
+#[allow(dead_code)] // Not used outside tests.
 pub fn new<M: RemoteMessage>() -> (impl Tx<M>, impl Rx<M>) {
     let (tx, rx) = mpsc::unbounded_channel::<M>();
     let (mpsc_tx, status_sender) = MpscTx::new(tx, ChannelAddr::Local(0));

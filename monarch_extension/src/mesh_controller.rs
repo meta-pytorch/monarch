@@ -37,9 +37,9 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::supervision::MeshFailure;
-use hyperactor_mesh::v1::actor_mesh::ActorMesh;
-use hyperactor_mesh::v1::proc_mesh::ProcMeshRef;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
 use monarch_hyperactor::buffers::Buffer;
@@ -62,9 +62,9 @@ use monarch_messages::worker::WorkerParams;
 use monarch_tensor_worker::AssignRankMessage;
 use monarch_tensor_worker::WorkerActor;
 use ndslice::Slice;
-use ndslice::View;
 use ndslice::ViewExt;
 use ndslice::selection::ReifySlice;
+use ndslice::view::Ranked;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -101,22 +101,15 @@ where
 impl _Controller {
     #[new]
     fn new(py: Python, client: PyInstance, py_proc_mesh: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let (proc_mesh_ref, rank_map) = {
-            // Here, also extract a rank map. We have to look
-            // up which ids correspond with which ranks.
-            //
-            // This should be fixed up for the true v1 support,
-            // possibly by having the workers send back their ranks
-            // directly.
-            let proc_mesh = py_proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
-            let rank_map = proc_mesh
-                .iter()
-                .map(|(point, proc)| (proc.proc_id().clone(), point.rank()))
-                .collect();
-            (proc_mesh, Some(rank_map))
-        };
+        let proc_mesh = py_proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
 
-        let region = proc_mesh_ref.region();
+        // Build rank map from proc ids to ranks.
+        let rank_map: HashMap<ProcId, usize> = proc_mesh
+            .iter()
+            .map(|(point, proc)| (proc.proc_id().clone(), point.rank()))
+            .collect();
+
+        let region = Ranked::region(&proc_mesh);
         let slice = region.slice();
         if !slice.is_contiguous() || slice.offset() != 0 {
             return Err(PyValueError::new_err(
@@ -129,7 +122,7 @@ impl _Controller {
             signal_safe_block_on(py, async move {
                 let controller_handle = client.spawn(
                     MeshControllerActor::new(MeshControllerActorParams {
-                        proc_mesh_ref,
+                        proc_mesh_ref: proc_mesh,
                         id,
                         rank_map,
                     })
@@ -684,13 +677,13 @@ struct MeshControllerActor {
     id: usize,
     debugger_active: Option<ActorRef<DebuggerActor>>,
     debugger_paused: VecDeque<ActorRef<DebuggerActor>>,
-    rank_map: Option<HashMap<ProcId, usize>>,
+    rank_map: HashMap<ProcId, usize>,
 }
 
 struct MeshControllerActorParams {
     proc_mesh_ref: ProcMeshRef,
     id: usize,
-    rank_map: Option<HashMap<ProcId, usize>>,
+    rank_map: HashMap<ProcId, usize>,
 }
 
 impl MeshControllerActor {
@@ -701,8 +694,7 @@ impl MeshControllerActor {
             rank_map,
         }: MeshControllerActorParams,
     ) -> Self {
-        let region = proc_mesh_ref.region();
-        let world_size = region.slice().len();
+        let world_size = Ranked::region(&proc_mesh_ref).num_ranks();
         MeshControllerActor {
             proc_mesh_ref,
             workers: None,
@@ -807,8 +799,7 @@ impl MeshControllerActor {
 impl Actor for MeshControllerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         let controller_actor_ref: ActorRef<ControllerActor> = this.bind();
-        let region = self.proc_mesh_ref.region();
-        let world_size = region.slice().len();
+        let world_size = Ranked::region(&self.proc_mesh_ref).num_ranks();
         let param = WorkerParams {
             world_size,
             // Rank assignment is consistent with proc indices.
@@ -848,12 +839,10 @@ impl MeshControllerActor {
         if actor_id.proc_id().is_ranked() {
             actor_id.rank()
         } else {
-            self.rank_map
-                .as_ref()
-                .expect("direct-addressed workers should have a rank map")
+            *self
+                .rank_map
                 .get(actor_id.proc_id())
                 .expect("rank map should contain worker")
-                .clone()
         }
     }
 }
@@ -911,7 +900,9 @@ impl Handler<ClientToControllerMessage> for MeshControllerActor {
         match message {
             ClientToControllerMessage::Send { slices, message } => {
                 let workers = self.workers();
-                let sel = workers.region().slice().reify_slices(slices)?;
+                let sel = Ranked::region(workers.deref())
+                    .slice()
+                    .reify_slices(slices)?;
                 workers.cast_for_tensor_engine_only_do_not_use(this, sel, message)?;
             }
             ClientToControllerMessage::Node {

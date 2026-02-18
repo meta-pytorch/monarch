@@ -16,7 +16,7 @@ use std::time::SystemTime;
 use derivative::Derivative;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use indenter::indented;
 use serde::Deserialize;
 use serde::Serialize;
@@ -41,7 +41,7 @@ pub struct ActorSupervisionEvent {
     pub actor_status: ActorStatus,
     /// If this event is associated with a message, the message headers.
     #[derivative(PartialEq = "ignore")]
-    pub message_headers: Option<Attrs>,
+    pub message_headers: Option<Flattrs>,
 }
 wirevalue::register_type!(ActorSupervisionEvent);
 
@@ -51,7 +51,7 @@ impl ActorSupervisionEvent {
         actor_id: ActorId,
         display_name: Option<String>,
         actor_status: ActorStatus,
-        message_headers: Option<Attrs>,
+        message_headers: Option<Flattrs>,
     ) -> Self {
         Self {
             actor_id,

@@ -13,10 +13,11 @@ Unlike the hello_world example which uses fake demo data, this example:
 
 1. Starts telemetry with use_fake_data=False
 2. Spawns actors that do work (generating real tracing events)
-3. Queries the spans, span_events, and events tables
+3. Queries the spans, span_events, events, and actors tables
 
 The RecordBatchSink automatically captures tracing events and stores them
-in queryable Arrow tables.
+in queryable Arrow tables. Actor creation events are captured separately
+via the ActorEventSink.
 
 Usage:
     python distributed_telemetry_real_data.py
@@ -146,6 +147,20 @@ def main() -> None:
                WHERE table_name = 'events'
                ORDER BY ordinal_position""",
         ),
+        (
+            "Schema of 'actors' table",
+            """SELECT column_name, data_type, is_nullable
+               FROM information_schema.columns
+               WHERE table_name = 'actors'
+               ORDER BY ordinal_position""",
+        ),
+        (
+            "Schema of 'actor_meshes' table",
+            """SELECT column_name, data_type, is_nullable
+               FROM information_schema.columns
+               WHERE table_name = 'actor_meshes'
+               ORDER BY ordinal_position""",
+        ),
         # Show available spans
         ("Count of spans", "SELECT COUNT(*) as total_spans FROM spans"),
         (
@@ -153,6 +168,11 @@ def main() -> None:
             "SELECT COUNT(*) as total_span_events FROM span_events",
         ),
         ("Count of events", "SELECT COUNT(*) as total_events FROM events"),
+        ("Count of actors", "SELECT COUNT(*) as total_actors FROM actors"),
+        (
+            "Count of actor meshes",
+            "SELECT COUNT(*) as total_actor_meshes FROM actor_meshes",
+        ),
         # Show span details
         (
             "Spans by target",
@@ -202,6 +222,36 @@ def main() -> None:
                FROM events
                ORDER BY timestamp_us DESC
                LIMIT 10""",
+        ),
+        # Sample of actors
+        (
+            "Sample actors",
+            """SELECT id, mesh_id, rank, full_name, timestamp_us
+               FROM actors
+               ORDER BY timestamp_us DESC
+               LIMIT 10""",
+        ),
+        # Actors by name pattern
+        (
+            "Actors by name",
+            """SELECT full_name, rank
+               FROM actors
+               ORDER BY full_name""",
+        ),
+        # Sample of actor meshes
+        (
+            "Sample actor meshes",
+            """SELECT id, class, given_name, full_name, shape_json, parent_view_json, timestamp_us
+               FROM actor_meshes
+               ORDER BY timestamp_us DESC
+               LIMIT 10""",
+        ),
+        # Actor meshes by name pattern
+        (
+            "Actor meshes by name",
+            """SELECT given_name, class, shape_json, parent_view_json
+               FROM actor_meshes
+               ORDER BY given_name""",
         ),
     ]
 
