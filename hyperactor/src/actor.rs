@@ -222,7 +222,8 @@ pub fn default_handle_introspect<A: Actor>(
     use crate::introspect::default_actor_payload;
 
     match msg {
-        IntrospectMessage::Query { reply } => {
+        IntrospectMessage::Query { view: _, reply } => {
+            // Regular actors always return Actor properties, ignoring view.
             let payload = default_actor_payload(cx.cell());
             if let Err(e) = reply.send(cx, payload) {
                 tracing::debug!("introspect reply failed (querier gone?): {e}");
@@ -1728,6 +1729,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_query_default_payload() {
         use crate::introspect::IntrospectMessage;
+        use crate::introspect::IntrospectView;
         use crate::introspect::NodePayload;
         use crate::introspect::NodeProperties;
 
@@ -1742,6 +1744,7 @@ mod tests {
             .send(
                 &client,
                 IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
                     reply: reply_port.bind(),
                 },
             )
@@ -1820,6 +1823,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_override() {
         use crate::introspect::IntrospectMessage;
+        use crate::introspect::IntrospectView;
         use crate::introspect::NodePayload;
         use crate::introspect::NodeProperties;
 
@@ -1835,7 +1839,7 @@ mod tests {
                 msg: IntrospectMessage,
             ) -> Result<(), anyhow::Error> {
                 match msg {
-                    IntrospectMessage::Query { reply } => {
+                    IntrospectMessage::Query { view: _, reply } => {
                         reply.send(
                             cx,
                             NodePayload {
@@ -1868,6 +1872,7 @@ mod tests {
             .send(
                 &client,
                 IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
                     reply: reply_port.bind(),
                 },
             )
@@ -1892,6 +1897,7 @@ mod tests {
     #[tokio::test]
     async fn test_introspect_query_supervision_child() {
         use crate::introspect::IntrospectMessage;
+        use crate::introspect::IntrospectView;
         use crate::introspect::NodePayload;
         use crate::introspect::NodeProperties;
 
@@ -1916,6 +1922,7 @@ mod tests {
             .send(
                 &client,
                 IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
                     reply: reply_port.bind(),
                 },
             )
@@ -1938,6 +1945,7 @@ mod tests {
             .send(
                 &client,
                 IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
                     reply: reply_port.bind(),
                 },
             )

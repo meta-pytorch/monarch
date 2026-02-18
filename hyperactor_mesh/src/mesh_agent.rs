@@ -300,34 +300,40 @@ impl Actor for ProcMeshAgent {
         msg: hyperactor::introspect::IntrospectMessage,
     ) -> Result<(), anyhow::Error> {
         use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectView;
         use hyperactor::introspect::NodePayload;
         use hyperactor::introspect::NodeProperties;
 
         match msg {
-            IntrospectMessage::Query { reply } => {
-                let all_actors = self.proc.all_actor_ids();
-                // Exclude ourselves — ProcMeshAgent is an
-                // infrastructure actor spawned into the proc it
-                // manages.
-                let children: Vec<String> = all_actors
-                    .into_iter()
-                    .filter(|id| id != cx.self_id())
-                    .map(|id| id.to_string())
-                    .collect();
+            IntrospectMessage::Query { view, reply } => {
+                let payload = match view {
+                    IntrospectView::Entity => {
+                        // Return Proc properties.
+                        let all_actors = self.proc.all_actor_ids();
+                        // Include all actors in the proc, including
+                        // ProcMeshAgent itself (consistent with
+                        // HostMeshAgent behavior).
+                        let children: Vec<String> =
+                            all_actors.into_iter().map(|id| id.to_string()).collect();
 
-                if let Err(e) = reply.send(
-                    cx,
-                    NodePayload {
-                        identity: cx.self_id().to_string(),
-                        properties: NodeProperties::Proc {
-                            proc_name: self.proc.proc_id().to_string(),
-                            num_actors: children.len(),
-                            is_system: false,
-                        },
-                        children,
-                        parent: None,
-                    },
-                ) {
+                        NodePayload {
+                            identity: cx.self_id().to_string(),
+                            properties: NodeProperties::Proc {
+                                proc_name: self.proc.proc_id().to_string(),
+                                num_actors: children.len(),
+                                is_system: false,
+                            },
+                            children,
+                            parent: None,
+                        }
+                    }
+                    IntrospectView::Actor => {
+                        // Return Actor properties using default.
+                        cx.introspect_payload()
+                    }
+                };
+
+                if let Err(e) = reply.send(cx, payload) {
                     tracing::debug!("introspect Query reply failed (querier gone?): {e}");
                 }
             }
