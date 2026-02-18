@@ -41,6 +41,17 @@ py_global!(flatten, "monarch._src.actor.pickle", "flatten");
 // cloudpickle module for serialization
 py_global!(cloudpickle, "cloudpickle", "cloudpickle");
 
+// Importing monarch._src.actor.pickle applies a monkeypatch to cloudpickle
+// that injects RemoteImportLoader into pickled function globals, enabling
+// source loading for pickle-by-value code on remote hosts (needed for
+// debugger and tracebacks). We access this before pickling to ensure
+// the monkeypatch is applied.
+py_global!(
+    pickle_monkeypatch,
+    "monarch._src.actor.pickle",
+    "_function_getstate"
+);
+
 // Shared class for pickling PyShared values
 py_global!(
     shared_class,
@@ -488,6 +499,9 @@ pub fn pickle(
     allow_pending_pickles: bool,
     allow_tensor_engine_references: bool,
 ) -> PyResult<PicklingState> {
+    // Ensure the cloudpickle monkeypatch for RemoteImportLoader is applied.
+    pickle_monkeypatch(py);
+
     let active = ActivePicklingState::new(allow_pending_pickles, allow_tensor_engine_references);
     let buffer = Py::new(py, Buffer::default())?;
 
