@@ -387,13 +387,19 @@ impl Actor for MeshAdminAgent {
         Ok(())
     }
 
-    /// Swallow undeliverable bounces instead of crashing.
+    /// Swallow undeliverable message bounces instead of crashing.
     ///
-    /// The admin agent sends IntrospectMessage to actors that may have
-    /// exited or whose ports are not bound.  When the reply bounces
-    /// back as `Undeliverable`, the default `bail!()` implementation
-    /// would kill this agent — taking down the entire admin HTTP
-    /// server.  We log and move on.
+    /// The admin agent sends `IntrospectMessage` to actors that may
+    /// not have the introspection port bound (e.g. actors spawned
+    /// via `cx.spawn()` whose `#[export]` list does not include it).
+    /// When the message cannot be delivered, the routing layer
+    /// bounces an `Undeliverable` back to the sender. The default
+    /// `Actor::handle_undeliverable_message` calls `bail!()`, which
+    /// would kill this admin agent and — via supervision cascade —
+    /// take down the entire admin process with `exit(1)`.
+    ///
+    /// Since the admin agent is best-effort infrastructure, an
+    /// undeliverable introspection probe is not a fatal error.
     async fn handle_undeliverable_message(
         &mut self,
         _cx: &Instance<Self>,
@@ -413,6 +419,12 @@ impl Actor for MeshAdminAgent {
 /// admin agent stays alive when the HTTP caller disconnects.
 #[async_trait]
 impl Handler<MeshAdminMessage> for MeshAdminAgent {
+    /// Dispatches `MeshAdminMessage` variants.
+    ///
+    /// Reply-send failures are swallowed because a dropped receiver
+    /// (e.g. the HTTP bridge timed out) is not an error — the caller
+    /// simply went away. Propagating the failure would crash the admin
+    /// agent and take down the entire process.
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -436,6 +448,13 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
 /// admin agent stays alive when the HTTP caller disconnects.
 #[async_trait]
 impl Handler<ResolveReferenceMessage> for MeshAdminAgent {
+    /// Dispatches `ResolveReferenceMessage` variants.
+    ///
+    /// The inner `resolve_reference` call never returns `Err` to the
+    /// handler — failures are captured in the response payload.
+    /// Reply-send failures are swallowed for the same reason as
+    /// `MeshAdminMessage`: a dropped receiver means the caller (HTTP
+    /// bridge) went away, which must not crash the admin agent.
     async fn handle(
         &mut self,
         cx: &Context<Self>,
