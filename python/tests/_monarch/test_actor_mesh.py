@@ -13,7 +13,6 @@ import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
-    PythonMessage,
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
@@ -168,9 +167,9 @@ def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
 async def cast_to_call(
     actor_mesh: PythonActorMesh,
     instance: Instance,
-    message: PythonMessage,
+    message: PendingMessage,
 ) -> None:
-    actor_mesh.cast(message, "all", instance._as_rust())
+    actor_mesh.cast_unresolved(message, "all", instance._as_rust())
 
 
 async def verify_cast_to_call(
@@ -183,9 +182,10 @@ async def verify_cast_to_call(
     port_ref = handle.bind()
 
     # Now send the real message
-    message = PythonMessage(
+    state = monarch_pickle("ping")
+    message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
-        _to_frozen_buffer(pickle.dumps("ping")),
+        state,
     )
     await cast_to_call(actor_mesh, instance, message)
 

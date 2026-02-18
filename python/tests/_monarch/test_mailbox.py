@@ -225,12 +225,13 @@ async def test_reducer() -> None:
     handle, receiver = ins._mailbox.open_accum_port(accumulator)
     port_ref = handle.bind()
 
-    actor_mesh.cast(
-        PythonMessage(
+    state = monarch_pickle("start")
+    actor_mesh.cast_unresolved(
+        PendingMessage(
             PythonMessageKind.CallMethod(
                 MethodSpecifier.ReturnsResponse("echo"), port_ref
             ),
-            _to_frozen_buffer(pickle.dumps("start")),
+            state,
         ),
         "all",
         ins._as_rust(),

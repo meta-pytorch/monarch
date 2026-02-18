@@ -8,7 +8,6 @@
 
 import multiprocessing
 import os
-import pickle
 import signal
 import time
 from typing import Any, Callable, cast, Coroutine, Iterable, Type, TYPE_CHECKING
