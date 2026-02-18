@@ -267,11 +267,12 @@ async fn main() -> Result<ExitCode> {
     let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin".to_string())?;
     let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
     println!("Mesh admin server listening on http://{}", mesh_admin_addr);
+    println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);
+    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
     println!(
-        "  - List hosts:    curl http://{}/v1/hosts",
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- http://{}",
         mesh_admin_addr
     );
-    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
 
     let proc_mesh = host_mesh
         .spawn(instance, "philosophers", extent!(replica = group_size))
