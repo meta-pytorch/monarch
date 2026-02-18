@@ -46,6 +46,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
+use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::admin::ActorDetails;
@@ -55,8 +56,10 @@ use hyperactor::admin::HostSummary;
 use hyperactor::admin::ProcDetails;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::NodePayload;
 use hyperactor::introspect::NodeProperties;
+use hyperactor::mailbox::open_once_port;
 use hyperactor::reference::Reference;
 use serde::Deserialize;
 use serde::Serialize;
@@ -66,6 +69,8 @@ use typeuri::Named;
 use crate::global_root_client;
 use crate::host_mesh::host_admin::HostAdminQueryMessageClient;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
+use crate::host_mesh::mesh_agent::parse_system_proc_ref;
+use crate::host_mesh::mesh_agent::system_proc_ref;
 
 /// Timeout for fan-out queries that hit every host in the mesh.
 /// Kept short so that a few slow or dead hosts don't block the entire
@@ -288,48 +293,77 @@ impl Actor for MeshAdminAgent {
         tracing::info!("mesh admin server listening on http://{}", addr);
         Ok(())
     }
-}
 
-#[async_trait]
-#[hyperactor::forward(MeshAdminMessage)]
-impl MeshAdminMessageHandler for MeshAdminAgent {
-    /// Returns the socket address the admin HTTP server is listening
-    /// on (if started).
+    /// Swallow undeliverable bounces instead of crashing.
     ///
-    /// This is populated during `init()` after binding the listener.
-    /// If the agent hasn't been initialized yet (or failed to bind),
-    /// the address is `None`.
-    async fn get_admin_addr(
+    /// The admin agent sends IntrospectMessage to actors that may have
+    /// exited or whose ports are not bound.  When the reply bounces
+    /// back as `Undeliverable`, the default `bail!()` implementation
+    /// would kill this agent — taking down the entire admin HTTP
+    /// server.  We log and move on.
+    async fn handle_undeliverable_message(
         &mut self,
-        _cx: &Context<Self>,
-    ) -> Result<MeshAdminAddrResponse, anyhow::Error> {
-        Ok(MeshAdminAddrResponse {
-            addr: self.admin_addr.map(|a| a.to_string()),
-        })
+        _cx: &Instance<Self>,
+        hyperactor::mailbox::Undeliverable(envelope): hyperactor::mailbox::Undeliverable<
+            hyperactor::mailbox::MessageEnvelope,
+        >,
+    ) -> Result<(), anyhow::Error> {
+        tracing::debug!(
+            "admin agent: undeliverable message to {} (port not bound?), ignoring",
+            envelope.dest(),
+        );
+        Ok(())
     }
 }
 
+/// Manual Handler impl — swallows `reply.send()` failures so the
+/// admin agent stays alive when the HTTP caller disconnects.
 #[async_trait]
-#[hyperactor::forward(ResolveReferenceMessage)]
-impl ResolveReferenceMessageHandler for MeshAdminAgent {
-    /// Resolves an opaque reference string into a `NodePayload` for
-    /// TUI/HTTP consumers.
-    ///
-    /// Important: this handler never returns `Err`, because a handler
-    /// error would crash the actor. Instead, failures are surfaced as
-    /// `ResolveReferenceResponse(Err(..))`.
-    async fn resolve(
+impl Handler<MeshAdminMessage> for MeshAdminAgent {
+    async fn handle(
         &mut self,
         cx: &Context<Self>,
-        reference_string: String,
-    ) -> Result<ResolveReferenceResponse, anyhow::Error> {
-        // Errors are returned in the response, never as Err —
-        // returning Err from a handler crashes the actor.
-        Ok(ResolveReferenceResponse(
-            self.resolve_reference(cx, &reference_string)
-                .await
-                .map_err(|e| format!("{:#}", e)),
-        ))
+        msg: MeshAdminMessage,
+    ) -> Result<(), anyhow::Error> {
+        match msg {
+            MeshAdminMessage::GetAdminAddr { reply } => {
+                let resp = MeshAdminAddrResponse {
+                    addr: self.admin_addr.map(|a| a.to_string()),
+                };
+                if let Err(e) = reply.send(cx, resp) {
+                    tracing::debug!("GetAdminAddr reply failed (caller gone?): {e}");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Manual Handler impl — swallows `reply.send()` failures so the
+/// admin agent stays alive when the HTTP caller disconnects.
+#[async_trait]
+impl Handler<ResolveReferenceMessage> for MeshAdminAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: ResolveReferenceMessage,
+    ) -> Result<(), anyhow::Error> {
+        match msg {
+            ResolveReferenceMessage::Resolve {
+                reference_string,
+                reply,
+            } => {
+                let response = ResolveReferenceResponse(
+                    self.resolve_reference(cx, &reference_string)
+                        .await
+                        .map_err(|e| format!("{:#}", e)),
+                );
+                if let Err(e) = reply.send(cx, response) {
+                    tracing::debug!("Resolve reply failed (caller gone?): {e}");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -354,6 +388,14 @@ impl MeshAdminAgent {
     ) -> Result<NodePayload, anyhow::Error> {
         if reference_string == "root" {
             return Ok(self.build_root_payload());
+        }
+
+        // System proc refs are non-addressable children of a
+        // HostMeshAgent. They use the "[system] <proc_id>" format
+        // which does not parse as a Reference, so intercept them
+        // before attempting Reference::from_str.
+        if parse_system_proc_ref(reference_string).is_some() {
+            return self.resolve_system_proc_node(cx, reference_string).await;
         }
 
         let reference: Reference = reference_string
@@ -399,89 +441,111 @@ impl MeshAdminAgent {
     /// Resolve a `HostMeshAgent` actor reference into a host-level
     /// `NodePayload`.
     ///
-    /// Host nodes are identified by the `HostMeshAgent`’s `ActorId`,
-    /// but their payload is derived by querying that agent for
-    /// `HostDetails` and translating the result into a stable,
-    /// navigable shape for the TUI/HTTP clients.
-    ///
-    /// Children are emitted as `ProcId` reference strings for every
-    /// proc on the host: system/local procs are returned as plain
-    /// `ProcId` strings (with the `[system] ` prefix stripped), while
-    /// user procs are synthesized as `"{host_addr},{proc_name}"` to
-    /// match the `ProcId::Direct` textual format. The navigation
-    /// parent is `"root"`.
+    /// Sends `IntrospectMessage::Query` directly to the
+    /// `HostMeshAgent`, which returns a `NodePayload` with
+    /// `NodeProperties::Host` and the host's children. The resolver
+    /// overrides `parent` to `"root"` since the host agent
+    /// doesn't know its position in the navigation tree.
     async fn resolve_host_node(
         &self,
         cx: &Context<'_, Self>,
         actor_id: &ActorId,
     ) -> Result<NodePayload, anyhow::Error> {
-        let host_addr = self
-            .host_agents_by_actor_id
-            .get(actor_id)
-            .ok_or_else(|| anyhow::anyhow!("host agent not found for {}", actor_id))?;
+        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+        introspect_port.send(
+            cx,
+            IntrospectMessage::Query {
+                reply: reply_handle.bind(),
+            },
+        )?;
+
+        let mut payload = RealClock
+            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out querying host agent"))?
+            .map_err(|e| anyhow::anyhow!("failed to receive host introspection: {}", e))?;
+
+        payload.parent = Some("root".to_string());
+        Ok(payload)
+    }
+
+    /// Resolve a system proc reference (e.g. `"[system]
+    /// tcp!127.0.0.1:12345,system"`) into a proc-level `NodePayload`.
+    ///
+    /// System procs are non-addressable children of a
+    /// `HostMeshAgent`. The resolver strips the `"[system] "` prefix,
+    /// parses the embedded `ProcId`, finds the owning
+    /// `HostMeshAgent`, and sends `IntrospectMessage::QueryChild`
+    /// with `Reference::Proc` so the host can answer on the proc's
+    /// behalf.
+    async fn resolve_system_proc_node(
+        &self,
+        cx: &Context<'_, Self>,
+        reference_string: &str,
+    ) -> Result<NodePayload, anyhow::Error> {
+        let proc_id_str = parse_system_proc_ref(reference_string)
+            .ok_or_else(|| anyhow::anyhow!("not a system proc reference: {}", reference_string))?;
+        let proc_id: ProcId = proc_id_str.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "invalid proc id in system ref '{}': {}",
+                reference_string,
+                e
+            )
+        })?;
+        let host_addr = match &proc_id {
+            ProcId::Direct(addr, _) => addr.to_string(),
+            ProcId::Ranked(world_id, _) => {
+                return Err(anyhow::anyhow!(
+                    "ranked proc references not yet supported: {}",
+                    world_id
+                ));
+            }
+        };
 
         let agent = self
             .hosts
-            .get(host_addr)
+            .get(&host_addr)
             .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
-        let response = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, agent.get_host_details(cx))
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying host agent"))?
-            .map_err(|e| anyhow::anyhow!("failed to query host agent: {}", e))?;
 
-        let json = response
-            .json
-            .ok_or_else(|| anyhow::anyhow!("host returned no details"))?;
-        let details: HostDetails = serde_json::from_str(&json)?;
-
-        // Build children: ProcId strings for each proc on this host.
-        let children: Vec<String> = details
-            .procs
-            .iter()
-            .map(|p| {
-                if let Some(proc_id_str) = p.name.strip_prefix("[system] ") {
-                    // System procs already have a ProcId string after
-                    // the prefix.
-                    proc_id_str.to_string()
-                } else {
-                    // User procs: construct ProcId::Direct string as
-                    // "addr,name".
-                    format!("{},{}", host_addr, p.name)
-                }
-            })
-            .collect();
-
-        Ok(NodePayload {
-            identity: actor_id.to_string(),
-            properties: NodeProperties::Host {
-                addr: details.addr,
-                num_procs: details.procs.len(),
+        let child_ref = Reference::Proc(proc_id);
+        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(agent.actor_id());
+        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+        introspect_port.send(
+            cx,
+            IntrospectMessage::QueryChild {
+                child_ref,
+                reply: reply_handle.bind(),
             },
-            children,
-            parent: Some("root".to_string()),
-        })
+        )?;
+
+        let mut payload = RealClock
+            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out querying system proc"))?
+            .map_err(|e| anyhow::anyhow!("failed to receive system proc introspection: {}", e))?;
+
+        // Override the identity to match the child reference string
+        // from the host's children list, so that the TUI can
+        // correlate navigated nodes with their parent's child
+        // entries.
+        payload.identity = reference_string.to_string();
+        Ok(payload)
     }
 
     /// Resolve a `ProcId` reference into a proc-level `NodePayload`.
     ///
-    /// This looks up the owning host via the proc's `ProcId::Direct`
-    /// address, queries the corresponding `HostMeshAgent` for
-    /// `ProcDetails`, and converts that into a `NodePayload` with
-    /// `NodeProperties::Proc`.
-    ///
-    /// The `is_system` flag is inferred by retrying the lookup using
-    /// the host-admin convention for system/local procs (`"[system]
-    /// <proc_id>"`) when the plain proc-name query returns no JSON.
-    /// Children are the proc’s actor IDs (already serialized as full
-    /// `ActorId` strings), and `parent` is set to the host-agent
-    /// `ActorId` string for the owning host.
+    /// First tries `IntrospectMessage::QueryChild` against the owning
+    /// `HostMeshAgent` (system procs). If that returns an error
+    /// payload, falls back to sending `IntrospectMessage::Query` to
+    /// the conventional `ProcMeshAgent` actor (`<proc_id>/agent[0]`)
+    /// for user procs.
     async fn resolve_proc_node(
         &self,
         cx: &Context<'_, Self>,
         proc_id: &ProcId,
     ) -> Result<NodePayload, anyhow::Error> {
-        let (host_addr, proc_name) = match proc_id {
+        let (host_addr, _proc_name) = match proc_id {
             ProcId::Direct(addr, name) => (addr.to_string(), name.clone()),
             ProcId::Ranked(world_id, _rank) => {
                 return Err(anyhow::anyhow!(
@@ -496,138 +560,140 @@ impl MeshAdminAgent {
             .get(&host_addr)
             .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
 
-        // Find the host agent ActorId for parent.
-        let host_agent_id = agent.actor_id().to_string();
+        // Try as a system proc first (QueryChild to the host agent).
+        let child_ref = Reference::Proc(proc_id.clone());
+        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(agent.actor_id());
+        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+        introspect_port.send(
+            cx,
+            IntrospectMessage::QueryChild {
+                child_ref,
+                reply: reply_handle.bind(),
+            },
+        )?;
 
-        let response = RealClock
-            .timeout(
-                SINGLE_HOST_TIMEOUT,
-                agent.get_proc_details(cx, proc_name.clone()),
-            )
+        let payload = RealClock
+            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| anyhow::anyhow!("timed out querying proc details"))?
-            .map_err(|e| anyhow::anyhow!("failed to query proc details: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to receive proc introspection: {}", e))?;
 
-        // If the plain name lookup failed, this may be a system/
-        // infrastructure proc. HostAdminQueryMessage::GetProcDetails
-        // expects the "[system] <proc_id>" format for those.
-        let is_system;
-        let response = if response.json.is_some() {
-            is_system = false;
-            response
-        } else {
-            is_system = true;
-            let system_name = format!("[system] {}", proc_id);
-            RealClock
-                .timeout(SINGLE_HOST_TIMEOUT, agent.get_proc_details(cx, system_name))
-                .await
-                .map_err(|_| anyhow::anyhow!("timed out querying system proc details"))?
-                .map_err(|e| anyhow::anyhow!("failed to query system proc details: {}", e))?
-        };
+        // If the host recognized the proc, use its response directly.
+        if !matches!(payload.properties, NodeProperties::Error { .. }) {
+            return Ok(payload);
+        }
 
-        let json = response
-            .json
-            .ok_or_else(|| anyhow::anyhow!("proc not found: {}", proc_name))?;
-        let details: ProcDetails = serde_json::from_str(&json)?;
-
-        Ok(NodePayload {
-            identity: proc_id.to_string(),
-            properties: NodeProperties::Proc {
-                proc_name: details.proc_name,
-                num_actors: details.actors.len(),
-                is_system,
+        // Fall back to querying the ProcMeshAgent directly (user
+        // procs). The conventional ProcMeshAgent ActorId is
+        // <proc_id>/agent[0].
+        let mesh_agent_id = proc_id.actor_id("agent", 0);
+        let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
+        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+        agent_port.send(
+            cx,
+            IntrospectMessage::Query {
+                reply: reply_handle.bind(),
             },
-            // ProcDetails.actors contains full ActorId.to_string() values.
-            children: details.actors,
-            parent: Some(host_agent_id),
-        })
+        )?;
+
+        let mut payload = RealClock
+            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out querying proc mesh agent"))?
+            .map_err(|e| {
+                anyhow::anyhow!("failed to receive proc mesh agent introspection: {}", e)
+            })?;
+
+        // Set parent to the host agent.
+        let host_agent_id = agent.actor_id().to_string();
+        payload.parent = Some(host_agent_id);
+        Ok(payload)
     }
 
     /// Resolve a non-host-agent `ActorId` reference into an
     /// actor-level `NodePayload`.
     ///
-    /// Determines the owning proc/host from `actor_id.proc_id()`,
-    /// routes the request to the corresponding `HostMeshAgent`, and
-    /// fetches `ActorDetails` to populate `NodeProperties::Actor`
-    /// (status/type/metrics plus an optional serialized flight
-    /// recorder).
+    /// Sends `IntrospectMessage::Query` directly to the target actor
+    /// via `PortRef::attest_message_port`. The blanket handler
+    /// returns a `NodePayload` with `NodeProperties::Actor` (or a
+    /// domain-specific override like `NodeProperties::Proc` for
+    /// `ProcMeshAgent`).
     ///
-    /// The query uses the full `ActorId` string for an exact match
-    /// (avoiding ambiguous name-only resolution), and if the initial
-    /// lookup returns no JSON it retries using the system-proc naming
-    /// convention (`"[system] <proc_id>"`) to support actors living
-    /// under infrastructure procs. The returned payload links
-    /// `parent` to the proc node (`proc_id.to_string()`) and uses
-    /// `ActorDetails.children` as the next-hop references.
+    /// The resolver sets `parent` based on the actor's position
+    /// in the topology: if the actor lives in a system proc, the
+    /// parent is the system proc ref; otherwise it's the
+    /// `ProcMeshAgent` ActorId.
     async fn resolve_actor_node(
         &self,
         cx: &Context<'_, Self>,
         actor_id: &ActorId,
     ) -> Result<NodePayload, anyhow::Error> {
-        let proc_id = actor_id.proc_id();
-        let (host_addr, proc_name) = match proc_id {
-            ProcId::Direct(addr, name) => (addr.to_string(), name.clone()),
-            ProcId::Ranked(world_id, _rank) => {
-                return Err(anyhow::anyhow!(
-                    "ranked proc references not yet supported: {}",
-                    world_id
-                ));
-            }
-        };
-
-        let agent = self
-            .hosts
-            .get(&host_addr)
-            .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
-        // Pass the full ActorId string so that query_actor_details can
-        // do an exact match via ActorId::from_str, rather than falling
-        // back to a name-only match which may pick the wrong actor.
-        let actor_name = actor_id.to_string();
-        let response = RealClock
-            .timeout(
-                SINGLE_HOST_TIMEOUT,
-                agent.get_actor_details(cx, proc_name.clone(), actor_name.clone()),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying actor details"))?
-            .map_err(|e| anyhow::anyhow!("failed to query actor details: {}", e))?;
-
-        // If the plain name lookup failed, this may be an actor in a
-        // system/infrastructure proc. Retry with the "[system] " prefix.
-        let response = if response.json.is_some() {
-            response
-        } else {
-            let system_proc_name = format!("[system] {}", proc_id);
-            RealClock
-                .timeout(
-                    SINGLE_HOST_TIMEOUT,
-                    agent.get_actor_details(cx, system_proc_name, actor_name),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("timed out querying system actor details"))?
-                .map_err(|e| anyhow::anyhow!("failed to query system actor details: {}", e))?
-        };
-
-        let json = response
-            .json
-            .ok_or_else(|| anyhow::anyhow!("actor not found: {}", actor_id))?;
-        let details: ActorDetails = serde_json::from_str(&json)?;
-
-        Ok(NodePayload {
-            identity: actor_id.to_string(),
-            properties: NodeProperties::Actor {
-                actor_status: details.actor_status,
-                actor_type: details.actor_type,
-                messages_processed: details.messages_processed,
-                created_at: details.created_at,
-                last_message_handler: details.last_message_handler,
-                total_processing_time_us: details.total_processing_time_us,
-                flight_recorder: serde_json::to_string(&details.flight_recorder).ok(),
+        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+        introspect_port.send(
+            cx,
+            IntrospectMessage::Query {
+                reply: reply_handle.bind(),
             },
-            // ActorDetails.children contains full ActorId.to_string() values.
-            children: details.children,
-            parent: Some(proc_id.to_string()),
-        })
+        )?;
+
+        let mut payload = RealClock
+            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
+            .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?;
+
+        // Set parent based on topology. If the actor returns Proc
+        // properties (ProcMeshAgent override), its parent is the host
+        // agent. Otherwise, it's a regular actor and its parent is
+        // the proc.
+        let proc_id = actor_id.proc_id();
+        match &payload.properties {
+            NodeProperties::Proc { .. } => {
+                // ProcMeshAgent: parent is the host agent.
+                let host_addr = match proc_id {
+                    ProcId::Direct(addr, _) => addr.to_string(),
+                    _ => proc_id.to_string(),
+                };
+                if let Some(agent) = self.hosts.get(&host_addr) {
+                    payload.parent = Some(agent.actor_id().to_string());
+                }
+            }
+            _ => {
+                // Regular actor: parent is the proc. We use the
+                // system proc ref format if the proc is a known
+                // system/local proc, otherwise the ProcMeshAgent
+                // ActorId.
+                let host_addr = match proc_id {
+                    ProcId::Direct(addr, _) => Some(addr.to_string()),
+                    _ => None,
+                };
+
+                // Check if this is a system proc by seeing if the
+                // host lists it as a system proc child.
+                let is_system = host_addr
+                    .as_ref()
+                    .and_then(|addr| self.hosts.get(addr))
+                    .map(|agent| {
+                        // If the actor's proc is the same proc the
+                        // host agent lives in (system proc) or any
+                        // other known infrastructure proc, treat it
+                        // as system.
+                        agent.actor_id().proc_id() == proc_id
+                    })
+                    .unwrap_or(false);
+
+                if is_system {
+                    payload.parent = Some(system_proc_ref(&proc_id.to_string()));
+                } else {
+                    // User proc: parent is ProcMeshAgent.
+                    let mesh_agent_id = proc_id.actor_id("agent", 0).to_string();
+                    payload.parent = Some(mesh_agent_id);
+                }
+            }
+        }
+
+        Ok(payload)
     }
 }
 
