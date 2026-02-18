@@ -25,33 +25,13 @@ pub fn format_proc_tree_with_urls(proc: &Proc, base_url: Option<&str>) -> String
     render_tree(&nodes, base_url)
 }
 
-/// URL-encode a string for use in a URL path component.
-pub(super) fn url_encode_path(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for c in s.chars() {
-        match c {
-            // Unreserved characters (RFC 3986)
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
-                result.push(c);
-            }
-            // Encode everything else
-            _ => {
-                for byte in c.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
-                }
-            }
-        }
-    }
-    result
-}
-
 /// Renders a list of (actor_id, depth) pairs as an ASCII tree.
 fn render_tree(nodes: &[(ActorId, usize)], base_url: Option<&str>) -> String {
     let mut output = String::new();
     for (i, (actor_id, depth)) in nodes.iter().enumerate() {
         let url_suffix = base_url
             .map(|base| {
-                let encoded = url_encode_path(&actor_id.to_string());
+                let encoded = urlencoding::encode(&actor_id.to_string()).into_owned();
                 format!("  ->  {}/{}", base.trim_end_matches('/'), encoded)
             })
             .unwrap_or_default();
@@ -87,14 +67,5 @@ mod tests {
         let nodes: Vec<(ActorId, usize)> = Vec::new();
         let result = render_tree(&nodes, None);
         assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_url_encode_path() {
-        assert_eq!(url_encode_path("simple"), "simple");
-        assert_eq!(url_encode_path("with[brackets]"), "with%5Bbrackets%5D");
-        assert_eq!(url_encode_path("with,comma"), "with%2Ccomma");
-        assert_eq!(url_encode_path("with@at"), "with%40at");
-        assert_eq!(url_encode_path("with:colon"), "with%3Acolon");
     }
 }

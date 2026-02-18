@@ -391,4 +391,60 @@ mod tests {
 
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
+
+    /// Regression test: `query_actor_details` must use the full ActorId
+    /// string for exact matching, not just the actor name component.
+    ///
+    /// A root actor and its child share the same `name()` but differ
+    /// in pid. Passing the full ActorId string (which includes the pid)
+    /// must return the correct actor. Prior to the fix,
+    /// `resolve_actor_node` passed `actor_id.name()` (e.g. "worker")
+    /// which could match the wrong actor.
+    #[tokio::test]
+    async fn test_query_actor_details_uses_full_actor_id() {
+        let proc = Proc::local();
+
+        // Create a root instance named "worker" (pid=0).
+        let (root_instance, _root_handle) = proc.instance("worker").unwrap();
+        let root_id = root_instance.self_id().clone();
+        assert_eq!(root_id.name(), "worker");
+        assert_eq!(root_id.pid(), 0);
+
+        // Create a child instance (pid=1). It shares name() == "worker"
+        // with its parent but has a different full ActorId string.
+        let (child_instance, _child_handle) = root_instance.child().unwrap();
+        let child_id = child_instance.self_id().clone();
+        assert_eq!(child_id.name(), "worker");
+        assert_eq!(child_id.pid(), 1);
+        assert_ne!(root_id, child_id);
+
+        // Querying with the child's full ActorId string must return the
+        // child, not the root.
+        let child_details =
+            query_actor_details(&proc, &child_id.to_string()).expect("child lookup failed");
+        assert_eq!(
+            child_details.parent,
+            Some(root_id.to_string()),
+            "expected child's parent to be the root actor"
+        );
+
+        // Querying with the root's full ActorId string must return the
+        // root, not the child.
+        let root_details =
+            query_actor_details(&proc, &root_id.to_string()).expect("root lookup failed");
+        assert_eq!(
+            root_details.parent, None,
+            "root actor should have no parent"
+        );
+        assert!(
+            root_details.children.contains(&child_id.to_string()),
+            "root actor should list the child among its children"
+        );
+
+        // Name-only fallback still works (backward compatibility).
+        let name_details = query_actor_details(&proc, "worker").expect("name-only lookup failed");
+        // Should return something (either root or child, but the
+        // important thing is it doesn't fail).
+        assert_eq!(name_details.actor_type, "()");
+    }
 }
