@@ -528,6 +528,7 @@ impl ProcMesh {
     }
 
     /// Detach the proc mesh from the lifetime of `self`, and return its reference.
+    #[allow(unused)]
     #[cfg(test)]
     pub(crate) fn detach(self) -> ProcMeshRef {
         // This also keeps the ProcMeshAllocation::Allocated alloc task alive.
@@ -1153,7 +1154,7 @@ impl ProcMeshRef {
 
             hyperactor_telemetry::notify_actor_mesh_created(hyperactor_telemetry::ActorMeshEvent {
                 id: mesh_id_hash,
-                timestamp: std::time::SystemTime::now(),
+                timestamp: RealClock.system_time_now(),
                 class: actor_type,
                 given_name: name_str.clone(),
                 full_name: name_str,

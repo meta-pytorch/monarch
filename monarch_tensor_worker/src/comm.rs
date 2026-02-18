@@ -19,7 +19,6 @@ use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
 use hyperactor::forward;
 use hyperactor::mailbox::OncePortHandle;
-use hyperactor_config::Flattrs;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;

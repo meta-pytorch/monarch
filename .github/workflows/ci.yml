@@ -19,6 +19,10 @@ jobs:
     name: Build CUDA
     uses: ./.github/workflows/build-cuda.yml
 
+  build-rocm:
+    name: Build ROCm
+    uses: ./.github/workflows/build-rocm.yml
+
   build-cpu:
     name: Build CPU
     uses: ./.github/workflows/build-cpu.yml

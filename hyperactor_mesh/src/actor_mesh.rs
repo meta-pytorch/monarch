@@ -127,6 +127,7 @@ impl<A: Referable> ActorMesh<A> {
     }
 
     /// Detach this mesh from the lifetime of `self`, and return its reference.
+    #[allow(dead_code)]
     pub(crate) fn detach(self) -> ActorMeshRef<A> {
         self.current_ref.clone()
     }

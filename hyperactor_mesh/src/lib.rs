@@ -14,6 +14,11 @@
 #![feature(get_disjoint_mut_helpers)]
 #![feature(exact_size_is_empty)]
 #![feature(async_fn_track_caller)]
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
 
 pub mod actor_mesh;
 pub mod admin_proxy;
