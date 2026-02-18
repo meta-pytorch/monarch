@@ -159,9 +159,6 @@ struct ProcState {
 
 impl Drop for ProcState {
     fn drop(&mut self) {
-        // Deregister from admin server.
-        crate::admin::deregister_proc_by_id(&self.proc_id);
-
         // We only want log ProcStatus::Dropped when ProcState is dropped,
         // rather than Proc is dropped. This is because we need to wait for
         // Proc::inner's ref count becomes 0.
@@ -216,7 +213,7 @@ impl Proc {
             status = "Created"
         );
 
-        let proc = Self {
+        Self {
             inner: Arc::new(ProcState {
                 proc_id,
                 proc_muxer: MailboxMuxer::new(),
@@ -226,12 +223,7 @@ impl Proc {
                 supervision_coordinator_port: OnceLock::new(),
                 clock,
             }),
-        };
-
-        // Auto-register with admin server using a weak reference.
-        crate::admin::register_proc(&proc);
-
-        proc
+        }
     }
 
     /// Set the supervision coordinator's port for this proc. Return Err if it is

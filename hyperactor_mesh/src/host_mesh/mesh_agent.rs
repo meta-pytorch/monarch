@@ -53,7 +53,6 @@ use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
-use crate::host_mesh::host_admin::HostAdminQueryMessage;
 use crate::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
@@ -166,7 +165,6 @@ pub(crate) struct ProcCreationState {
         resource::GetRankStatus { cast = true },
         resource::List,
         ShutdownHost,
-        HostAdminQueryMessage
     ]
 )]
 pub struct HostMeshAgent {
