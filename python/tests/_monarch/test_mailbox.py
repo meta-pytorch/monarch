@@ -26,6 +26,11 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.allocator import LocalAllocator
 
@@ -40,6 +45,13 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._src.actor.actor_mesh import context, Instance
+
+
+def _to_frozen_buffer(data: bytes) -> FrozenBuffer:
+    """Helper to convert bytes to FrozenBuffer."""
+    buf = Buffer()
+    buf.write(data)
+    return buf.freeze()
 
 
 S = TypeVar("S")
@@ -58,7 +70,7 @@ class Reducer(Generic[U]):
         l: U = cast(U, pickle.loads(left.message))
         r: U = cast(U, pickle.loads(right.message))
         result: U = self._reduce_f(l, r)
-        return PythonMessage(left.kind, pickle.dumps(result))
+        return PythonMessage(left.kind, _to_frozen_buffer(pickle.dumps(result)))
 
 
 @final
@@ -79,7 +91,7 @@ class Accumulator(Generic[S, U]):
         s: S = cast(S, pickle.loads(state.message))
         u: U = cast(U, pickle.loads(update.message))
         result: S = self._accumulate_f(s, u)
-        return PythonMessage(state.kind, pickle.dumps(result))
+        return PythonMessage(state.kind, _to_frozen_buffer(pickle.dumps(result)))
 
     @property
     def initial_state(self) -> PythonMessage:
@@ -87,7 +99,7 @@ class Accumulator(Generic[S, U]):
             PythonMessageKind.CallMethod(
                 MethodSpecifier.ReturnsResponse(" @Accumulator.initial_state"), None
             ),
-            pickle.dumps(self._initial_state),
+            _to_frozen_buffer(pickle.dumps(self._initial_state)),
         )
 
     @property
@@ -137,7 +149,7 @@ async def test_accumulator() -> None:
                 PythonMessageKind.CallMethod(
                     MethodSpecifier.ReturnsResponse("test_accumulator"), None
                 ),
-                pickle.dumps(value),
+                _to_frozen_buffer(pickle.dumps(value)),
             ),
         )
 
@@ -184,9 +196,10 @@ async def test_reducer() -> None:
     proc_mesh_task = allocate()
 
     # Create an explicit init message
-    init_message = PythonMessage(
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
-        pickle.dumps(None),
+        init_state,
     )
 
     # Use spawn_async with the explicit init message
@@ -212,12 +225,13 @@ async def test_reducer() -> None:
     handle, receiver = ins._mailbox.open_accum_port(accumulator)
     port_ref = handle.bind()
 
-    actor_mesh.cast(
-        PythonMessage(
+    state = monarch_pickle("start")
+    actor_mesh.cast_unresolved(
+        PendingMessage(
             PythonMessageKind.CallMethod(
                 MethodSpecifier.ReturnsResponse("echo"), port_ref
             ),
-            pickle.dumps("start"),
+            state,
         ),
         "all",
         ins._as_rust(),

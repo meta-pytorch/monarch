@@ -39,11 +39,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import (
-    PendingPickle,
-    PythonTask,
-    Shared,
-)
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
 from monarch._src.actor.actor_mesh import (
     _Actor,
@@ -67,7 +63,6 @@ from monarch._src.actor.device_utils import _local_device_count
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
-from monarch._src.actor.pickle import is_pending_pickle_allowed
 from monarch._src.actor.shape import MeshTrait
 from monarch.tools.config.environment import CondaEnvironment
 from monarch.tools.config.workspace import Workspace
@@ -638,13 +633,8 @@ class ProcMesh(MeshTrait):
         )
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
-        return ProcMesh._from_initialized_hy_proc_mesh, (
-            self._proc_mesh.poll()
-            or (
-                PendingPickle(self._proc_mesh)
-                if is_pending_pickle_allowed()
-                else self._proc_mesh.block_on()
-            ),
+        return ProcMesh, (
+            self._proc_mesh,
             self._host_mesh,
             self._region,
             self._root_region,

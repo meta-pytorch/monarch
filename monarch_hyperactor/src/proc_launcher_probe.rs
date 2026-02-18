@@ -28,6 +28,8 @@ use crate::actor_mesh::PythonActorMesh;
 use crate::context::PyInstance;
 use crate::mailbox::EitherPortRef;
 use crate::mailbox::PythonOncePortRef;
+use crate::pickle::PendingMessage;
+use crate::pickle::PicklingState;
 use crate::pytokio::PyPythonTask;
 
 /// Report describing what Rust received on the port.
@@ -54,10 +56,6 @@ pub struct ProbeReport {
     /// the message kind (if any).
     #[pyo3(get)]
     pub rank: Option<usize>,
-
-    /// Whether the message carried a pending pickle state.
-    #[pyo3(get)]
-    pub pending_pickle_state_present: Option<bool>,
 
     /// Length in bytes of the raw message payload.
     #[pyo3(get)]
@@ -87,7 +85,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 /// This function:
 /// 1. Opens a `OncePort<PythonMessage>` from the given mailbox.
 /// 2. Sends a `CallMethod(ExplicitPort)` message to `method_name` via
-///    `actor_mesh_inner.cast(...)`.
+///    `actor_mesh_inner.cast_unresolved(...)`.
 /// 3. Awaits the first message received on the port.
 /// 4. Returns a `ProbeReport` describing what Rust observed.
 ///
@@ -100,17 +98,17 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 /// - `instance`: The calling context's Rust instance handle.
 /// - `mailbox`: The mailbox used to allocate the response port.
 /// - `method_name`: Name of the Python endpoint to invoke.
-/// - `pickled_args`: Opaque serialized argument payload for the call.
+/// - `pickling_state`: The pickled arguments wrapped in a PicklingState.
 ///
 /// Returns:
 /// An awaitable task yielding a `ProbeReport`.
 #[pyfunction]
-#[pyo3(signature = (actor_mesh_inner, instance, method_name, pickled_args))]
+#[pyo3(signature = (actor_mesh_inner, instance, method_name, pickling_state))]
 pub(crate) fn probe_exit_port_via_mesh(
     actor_mesh_inner: &PythonActorMesh,
     instance: &PyInstance,
     method_name: String,
-    pickled_args: Vec<u8>,
+    pickling_state: PyRefMut<'_, PicklingState>,
 ) -> PyResult<PyPythonTask> {
     // Open a OncePort<PythonMessage> - this is what ActorProcLauncher
     // does
@@ -119,22 +117,20 @@ pub(crate) fn probe_exit_port_via_mesh(
         .get_inner()
         .open_once_port::<PythonMessage>();
 
-    // Build the PythonMessage with ExplicitPort
+    // Build the PythonMessageKind with ExplicitPort
     let bound_port = exit_port.bind();
-    let message = PythonMessage {
-        kind: PythonMessageKind::CallMethod {
-            name: MethodSpecifier::ExplicitPort {
-                name: method_name.clone(),
-            },
-            response_port: Some(EitherPortRef::Once(PythonOncePortRef::from(bound_port))),
+    let kind = PythonMessageKind::CallMethod {
+        name: MethodSpecifier::ExplicitPort {
+            name: method_name.clone(),
         },
-        message: pickled_args.into(),
-        pending_pickle_state: None,
+        response_port: Some(EitherPortRef::Once(PythonOncePortRef::from(bound_port))),
     };
 
-    // Cast to all actors in the mesh (should be just 1 for sliced
-    // mesh)
-    actor_mesh_inner.cast(&message, "all", instance)?;
+    // Create a PendingMessage using py_new which takes PyRefMut
+    let mut pending_message = PendingMessage::py_new(kind, pickling_state)?;
+
+    // Cast to all actors in the mesh using cast_unresolved
+    actor_mesh_inner.cast_unresolved(&mut pending_message, "all", instance)?;
 
     // Return an awaitable task that receives the result
     PyPythonTask::new(async move {
@@ -157,7 +153,6 @@ pub(crate) fn probe_exit_port_via_mesh(
             received_type: "PythonMessage".to_string(),
             kind: Some(kind),
             rank,
-            pending_pickle_state_present: Some(msg.pending_pickle_state.is_some()),
             payload_len: payload.len(),
             payload_bytes: payload,
             error: None,

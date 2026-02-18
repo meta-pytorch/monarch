@@ -14,11 +14,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     HostMesh as HyHostMesh,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import (
-    PendingPickle,
-    PythonTask,
-    Shared,
-)
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
 from monarch._src.actor.allocator import (
@@ -28,7 +24,6 @@ from monarch._src.actor.allocator import (
     ProcessAllocator,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.pickle import is_pending_pickle_allowed
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch.tools.config.workspace import Workspace
@@ -260,16 +255,12 @@ class HostMesh(MeshTrait):
         )
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
-        return HostMesh._from_initialized_hy_host_mesh, (
-            self._hy_host_mesh.poll()
-            or (
-                PendingPickle(self._hy_host_mesh)
-                if is_pending_pickle_allowed()
-                else self._hy_host_mesh.block_on()
-            ),
+        return HostMesh, (
+            self._hy_host_mesh,
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
+            None,
         )
 
     @property

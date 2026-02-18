@@ -34,6 +34,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     PortRef,
@@ -1305,9 +1306,11 @@ class UndeliverableMessageSender(Actor):
             port=1234,
         )
         port_ref = PortRef(port_id)
+        buf = Buffer()
+        buf.write(b"123")
         port_ref.send(
             actor_instance._as_rust(),
-            PythonMessage(PythonMessageKind.Result(None), b"123"),
+            PythonMessage(PythonMessageKind.Result(None), buf.freeze()),
         )
 
 
