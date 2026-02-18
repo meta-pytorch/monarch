@@ -138,6 +138,7 @@ def spawn_procs_on_this_host(per_host: dict[str, int]) -> ProcMesh:
     return this_host().spawn_procs(per_host)
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -165,6 +166,7 @@ async def test_actor_exception(mesh, actor_class, num_procs) -> None:
     await proc.stop()
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -192,6 +194,7 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
     proc.stop().get()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
@@ -234,6 +237,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     await proc.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
@@ -278,6 +282,7 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
     proc.stop().get()
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -627,6 +632,7 @@ class Manager(Actor):
         return await self.workers.work.call_one()
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_errors_propagated() -> None:
     p_mesh = spawn_procs_on_this_host({"gpus": 1})
@@ -728,6 +734,7 @@ class Intermediate(Actor):
         return True
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
@@ -762,6 +769,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     await proc.stop()
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -810,6 +818,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
         await proc.stop()
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "error_actor_cls",
@@ -866,6 +875,7 @@ class FaultActor(Actor):
         return None
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(180)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_sigsegv_handling():
@@ -906,6 +916,7 @@ async def test_sigsegv_handling():
         await procs.stop()
 
 
+@pytest.mark.forked
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -939,6 +950,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
             await proc.spawn("immediate", Intermediate).initialized
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_actor_mesh_stop() -> None:
@@ -1044,6 +1056,7 @@ async def test_supervision_with_sending_error() -> None:
     )
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_slice_supervision() -> None:
@@ -1096,6 +1109,7 @@ async def test_slice_supervision() -> None:
         await pm.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_mesh_slices_inherit_parent_errors() -> None:
@@ -1214,6 +1228,7 @@ class ErrorActorWithSupervise(ErrorActor):
         return self.should_handle
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_handled():
@@ -1245,6 +1260,7 @@ async def test_supervise_callback_handled():
     await second_mesh.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_without_await_handled():
@@ -1276,6 +1292,7 @@ async def test_supervise_callback_without_await_handled():
     await second_mesh.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_with_mesh_ref():
@@ -1320,6 +1337,7 @@ async def test_supervise_callback_with_mesh_ref():
     await second_mesh.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_when_procs_killed():
@@ -1348,6 +1366,7 @@ async def test_supervise_callback_when_procs_killed():
     await second_mesh.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_supervise_callback_unhandled():
@@ -1381,6 +1400,7 @@ async def test_supervise_callback_unhandled():
 
 # This test takes up to 3 minutes to run because the timeout on controller
 # unreachable is 120 seconds.
+@pytest.mark.forked
 @pytest.mark.timeout(180)
 async def test_actor_mesh_supervision_controller_dead() -> None:
     """Tests what happens when the owner of an actor crashes ungracefully, and
@@ -1414,6 +1434,7 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
     await second_mesh.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(60)
 async def test_actor_abort() -> None:
     class AbortActor(Actor):
@@ -1451,6 +1472,7 @@ async def test_actor_abort() -> None:
             await pm.stop()
 
 
+@pytest.mark.forked
 @pytest.mark.timeout(500)
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.
