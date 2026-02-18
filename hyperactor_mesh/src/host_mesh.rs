@@ -507,9 +507,14 @@ impl HostMesh {
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
         let controller = HostMeshController::new(mesh.deref().clone());
-        controller
+        let controller_handle = controller
             .spawn(cx)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        // Bind the actor's well-known ports (Signal, IntrospectMessage,
+        // Undeliverable). Without this, the controller's mailbox has no
+        // port entries and messages (including introspection queries)
+        // are returned as undeliverable.
+        let _: hyperactor::ActorRef<HostMeshController> = controller_handle.bind();
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
@@ -1065,9 +1070,14 @@ impl HostMeshRef {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
-            controller
+            let controller_handle = controller
                 .spawn(cx)
                 .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            // Bind the actor's well-known ports (Signal, IntrospectMessage,
+            // Undeliverable). Without this, the controller's mailbox has no
+            // port entries and messages (including introspection queries)
+            // are returned as undeliverable.
+            let _: hyperactor::ActorRef<ProcMeshController> = controller_handle.bind();
         }
         mesh
     }
@@ -1096,7 +1106,11 @@ impl HostMeshRef {
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
-        let agent_handle = proc.spawn("mesh_admin", MeshAdminAgent::new(hosts))?;
+        let root_client_id = crate::global_root_client().self_id().clone();
+        let agent_handle = proc.spawn(
+            "mesh_admin",
+            MeshAdminAgent::new(hosts, Some(root_client_id)),
+        )?;
         let agent_ref = agent_handle.bind::<MeshAdminAgent>();
 
         let response = agent_ref.get_admin_addr(cx).await?;

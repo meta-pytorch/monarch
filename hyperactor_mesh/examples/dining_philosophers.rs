@@ -264,7 +264,7 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.
-    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin".to_string())?;
+    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin_proc".to_string())?;
     let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
     println!("Mesh admin server listening on http://{}", mesh_admin_addr);
     println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);

@@ -10,8 +10,9 @@
 //! walking.
 //!
 //! This module defines `MeshAdminAgent`, an actor that exposes a
-//! uniform, reference-based HTTP API over an entire host mesh. Every addressable entity in the mesh is represented as a
-//! `NodePayload` and resolved via an opaque reference string.
+//! uniform, reference-based HTTP API over an entire host mesh. Every
+//! addressable entity in the mesh is represented as a `NodePayload`
+//! and resolved via an opaque reference string.
 //!
 //! Incoming HTTP requests are bridged into the actor message loop
 //! using `ResolveReferenceMessage`, ensuring that all topology
@@ -20,6 +21,51 @@
 //! proc, and actor details, then normalizes them into a single
 //! tree-shaped model (`NodeProperties` + children references)
 //! suitable for topology-agnostic clients such as the admin TUI.
+//!
+//! # Introspection visibility policy
+//!
+//! Admin tooling only displays **introspectable** nodes: entities
+//! that are reachable via actor messaging and respond to
+//! [`IntrospectMessage`]. Infrastructure procs that are
+//! **non-routable** are intentionally **opaque** to introspection and
+//! are omitted from the navigation graph.
+//!
+//! ## Definitions
+//!
+//! **Routable** — an entity is routable if the system can address it
+//! via the routing layer and successfully deliver a message to it
+//! using a `Reference` / `ActorId` (i.e., there exists a live mailbox
+//! sender reachable through normal routing). Practical test: "can I
+//! send `IntrospectMessage::Query` to it and get a reply?"
+//!
+//! **Non-routable** — an entity is non-routable if it has no
+//! externally reachable mailbox sender in the routing layer, so
+//! message delivery is impossible by construction (even if you know
+//! its name). Examples: `hyperactor_runtime[0]`, `mailbox_server[N]`,
+//! `local[N]` — these use `PanickingMailboxSender` and are never
+//! bound to the router.
+//!
+//! **Introspectable** — tooling can obtain a `NodePayload` for this
+//! node by sending `IntrospectMessage` to a routable actor.
+//!
+//! **Opaque** — the node exists but is not introspectable via
+//! messaging; tooling cannot observe it through the introspection
+//! protocol.
+//!
+//! ## Proc visibility
+//!
+//! A proc is not directly introspected; actors are. Tooling
+//! synthesizes proc-level nodes by grouping introspectable actors by
+//! `ProcId`.
+//!
+//! A proc is visible iff there exists at least one actor on that proc
+//! whose `ActorId` is deliverable via the routing layer (i.e., the
+//! actor has a bound mailbox sender reachable through normal routing)
+//! and responds to `IntrospectMessage`.
+//!
+//! The rule is: **if an entity is routable via the mesh routing layer
+//! (i.e., tooling can deliver `IntrospectMessage::Query` to one of its
+//! actors), then it is introspectable and appears in the admin graph.**
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -234,13 +280,25 @@ pub struct MeshAdminAgent {
     /// in clients like the TUI.
     host_agents_by_actor_id: HashMap<ActorId, String>,
 
+    /// `ActorId` of the process-global root client (`client[0]` on
+    /// `mesh_root_client_proc`), exposed as a first-class child of the
+    /// root node. Routable and introspectable via the blanket
+    /// `Handler<IntrospectMessage>`.
+    root_client_actor_id: Option<ActorId>,
+
+    /// This agent's own `ActorId`, captured during `init`. Used to
+    /// include the admin proc as a visible node in the introspection
+    /// tree (the principle: "if you can send it a message, you can
+    /// introspect it").
+    self_actor_id: Option<ActorId>,
+
     /// Bound address of the admin HTTP server once started in `init`.
     admin_addr: Option<std::net::SocketAddr>,
 }
 
 impl MeshAdminAgent {
     /// Construct a `MeshAdminAgent` from a list of `(host_addr,
-    /// host_agent_ref)` pairs.
+    /// host_agent_ref)` pairs and an optional root client `ActorId`.
     ///
     /// Builds both:
     /// - `hosts`: the forward map used to route admin queries to the
@@ -250,9 +308,16 @@ impl MeshAdminAgent {
     ///   resolve them as `NodeProperties::Host` rather than as
     ///   generic actors.
     ///
+    /// When `root_client_actor_id` is `Some`, the root client appears
+    /// as a first-class child of the root node in the introspection
+    /// tree.
+    ///
     /// The HTTP listen address is initialized to `None` and populated
     /// during `init()` after the server socket is bound.
-    pub fn new(hosts: Vec<(String, ActorRef<HostMeshAgent>)>) -> Self {
+    pub fn new(
+        hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
+        root_client_actor_id: Option<ActorId>,
+    ) -> Self {
         let host_agents_by_actor_id: HashMap<ActorId, String> = hosts
             .iter()
             .map(|(addr, agent_ref)| (agent_ref.actor_id().clone(), addr.clone()))
@@ -260,6 +325,8 @@ impl MeshAdminAgent {
         Self {
             hosts: hosts.into_iter().collect(),
             host_agents_by_actor_id,
+            root_client_actor_id,
+            self_actor_id: None,
             admin_addr: None,
         }
     }
@@ -270,6 +337,8 @@ impl std::fmt::Debug for MeshAdminAgent {
         f.debug_struct("MeshAdminAgent")
             .field("hosts", &self.hosts.keys().collect::<Vec<_>>())
             .field("host_agents", &self.host_agents_by_actor_id.len())
+            .field("root_client_actor_id", &self.root_client_actor_id)
+            .field("self_actor_id", &self.self_actor_id)
             .field("admin_addr", &self.admin_addr)
             .finish()
     }
@@ -298,6 +367,8 @@ impl Actor for MeshAdminAgent {
     /// listen address is stored in `admin_addr` so it can be returned
     /// via `GetAdminAddr`.
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        self.self_actor_id = Some(this.self_id().clone());
+
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         self.admin_addr = Some(addr);
@@ -428,6 +499,9 @@ impl MeshAdminAgent {
             Reference::Actor(actor_id) if self.host_agents_by_actor_id.contains_key(actor_id) => {
                 self.resolve_host_node(cx, actor_id).await
             }
+            Reference::Proc(proc_id) if self.standalone_proc_anchor(proc_id).is_some() => {
+                self.resolve_standalone_proc_node(cx, proc_id).await
+            }
             Reference::Proc(proc_id) => self.resolve_proc_node(cx, proc_id).await,
             Reference::Actor(actor_id) => self.resolve_actor_node(cx, actor_id).await,
             _ => Err(anyhow::anyhow!(
@@ -437,19 +511,44 @@ impl MeshAdminAgent {
         }
     }
 
+    /// Returns the known actors on standalone procs — procs not
+    /// managed by any host but whose actors are routable and
+    /// introspectable. Each proc appears as a root child; the
+    /// actor is the "anchor" used to discover the proc's contents.
+    fn standalone_proc_actors(&self) -> impl Iterator<Item = &ActorId> {
+        self.root_client_actor_id
+            .iter()
+            .chain(self.self_actor_id.iter())
+    }
+
+    /// If `proc_id` belongs to a standalone proc, return the anchor
+    /// actor on that proc. Returns `None` for host-managed procs.
+    fn standalone_proc_anchor(&self, proc_id: &ProcId) -> Option<&ActorId> {
+        self.standalone_proc_actors()
+            .find(|actor_id| *actor_id.proc_id() == *proc_id)
+    }
+
+    /// Returns true if `actor_id` lives on a standalone proc.
+    fn is_standalone_proc_actor(&self, actor_id: &ActorId) -> bool {
+        self.standalone_proc_actors()
+            .any(|a| *a.proc_id() == *actor_id.proc_id())
+    }
+
     /// Construct the synthetic root node for the reference tree.
     ///
     /// The root is not a real actor/proc; it's a convenience node
     /// that anchors navigation. Its children are the configured
-    /// `HostMeshAgent` actor IDs (as reference strings), and its
-    /// properties summarize the mesh at a glance (currently just
-    /// `num_hosts`).
+    /// `HostMeshAgent` actor IDs (as reference strings) plus any
+    /// standalone procs (root client proc, admin proc).
     fn build_root_payload(&self) -> NodePayload {
-        let children: Vec<String> = self
+        let mut children: Vec<String> = self
             .hosts
             .values()
             .map(|agent| agent.actor_id().to_string())
             .collect();
+        for actor_id in self.standalone_proc_actors() {
+            children.push(actor_id.proc_id().to_string());
+        }
         NodePayload {
             identity: "root".to_string(),
             properties: NodeProperties::Root {
@@ -632,6 +731,73 @@ impl MeshAdminAgent {
         Ok(payload)
     }
 
+    /// Resolve a standalone proc into a proc-level `NodePayload`.
+    ///
+    /// Standalone procs (e.g. `mesh_root_client_proc`, the admin
+    /// proc) are not managed by any `HostMeshAgent`, so
+    /// `resolve_proc_node` cannot resolve them. Instead, we query the
+    /// anchor actor on the proc for its introspection data, collect
+    /// its supervision children, and build a synthetic proc node.
+    ///
+    /// Special case: when the anchor actor is this agent itself, we
+    /// build the children list directly (just `[self]`) to avoid a
+    /// self-deadlock — the actor loop cannot process an
+    /// `IntrospectMessage` it sends to itself while handling a
+    /// resolve request.
+    async fn resolve_standalone_proc_node(
+        &self,
+        cx: &Context<'_, Self>,
+        proc_id: &ProcId,
+    ) -> Result<NodePayload, anyhow::Error> {
+        let actor_id = self
+            .standalone_proc_anchor(proc_id)
+            .ok_or_else(|| anyhow::anyhow!("no anchor actor for standalone proc {}", proc_id))?;
+
+        let children = if self.self_actor_id.as_ref() == Some(actor_id) {
+            // Self-proc: we are the only actor; no message needed.
+            vec![actor_id.to_string()]
+        } else {
+            // Query the anchor actor for its supervision children.
+            let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+            let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+            introspect_port.send(
+                cx,
+                IntrospectMessage::Query {
+                    reply: reply_handle.bind(),
+                },
+            )?;
+
+            let actor_payload = RealClock
+                .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out querying anchor actor on {}", proc_id))?
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to receive anchor actor introspection: {}", e)
+                })?;
+
+            // Anchor actor + its supervision children.
+            let mut children = vec![actor_id.to_string()];
+            children.extend(actor_payload.children);
+            children
+        };
+
+        let proc_name = match proc_id {
+            ProcId::Direct(_, name) => name.clone(),
+            _ => proc_id.to_string(),
+        };
+
+        Ok(NodePayload {
+            identity: proc_id.to_string(),
+            properties: NodeProperties::Proc {
+                proc_name,
+                num_actors: children.len(),
+                is_system: false,
+            },
+            children,
+            parent: Some("root".to_string()),
+        })
+    }
+
     /// Resolve a non-host-agent `ActorId` reference into an
     /// actor-level `NodePayload`.
     ///
@@ -650,20 +816,34 @@ impl MeshAdminAgent {
         cx: &Context<'_, Self>,
         actor_id: &ActorId,
     ) -> Result<NodePayload, anyhow::Error> {
-        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
-        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-        introspect_port.send(
-            cx,
-            IntrospectMessage::Query {
-                reply: reply_handle.bind(),
-            },
-        )?;
+        // Self-resolution: we cannot send IntrospectMessage to our
+        // own actor loop while handling a resolve request (deadlock).
+        // Use introspect_payload() to snapshot our own state
+        // directly.
+        let mut payload = if self.self_actor_id.as_ref() == Some(actor_id) {
+            cx.introspect_payload()
+        } else {
+            let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+            let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+            introspect_port.send(
+                cx,
+                IntrospectMessage::Query {
+                    reply: reply_handle.bind(),
+                },
+            )?;
 
-        let mut payload = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
-            .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?;
+            RealClock
+                .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
+                .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?
+        };
+
+        // Actors on standalone procs: parent is the proc.
+        if self.is_standalone_proc_actor(actor_id) {
+            payload.parent = Some(actor_id.proc_id().to_string());
+            return Ok(payload);
+        }
 
         // Set parent based on topology. If the actor returns Proc
         // properties (ProcMeshAgent override), its parent is the host
@@ -856,10 +1036,12 @@ async fn tree_dump(
 
     let mut output = String::new();
 
-    // Resolve each host, its proc children, and their actor children.
-    for host_ref in &root.children {
+    // Resolve each root child. Hosts get the full host→proc→actor
+    // subtree; non-host children (e.g. the root client actor) are
+    // rendered as single leaf lines.
+    for child_ref in &root.children {
         let resp = RealClock
-            .timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, host_ref.clone()))
+            .timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, child_ref.clone()))
             .await;
 
         let payload = match resp {
@@ -868,20 +1050,18 @@ async fn tree_dump(
         };
 
         match payload {
-            Some(host_node) => {
-                // Host header: show the addr from NodeProperties::Host
-                // if available, otherwise fall back to the reference
-                // string.
-                let header = match &host_node.properties {
+            Some(node) if matches!(node.properties, NodeProperties::Host { .. }) => {
+                // Host header: show the addr from NodeProperties::Host.
+                let header = match &node.properties {
                     NodeProperties::Host { addr, .. } => addr.clone(),
-                    _ => host_ref.clone(),
+                    _ => child_ref.clone(),
                 };
-                let host_url = format!("{}/v1/{}", base_url, urlencoding::encode(host_ref));
+                let host_url = format!("{}/v1/{}", base_url, urlencoding::encode(child_ref));
                 output.push_str(&format!("{}  ->  {}\n", header, host_url));
 
                 // Proc children with box-drawing connectors.
-                let num_procs = host_node.children.len();
-                for (i, proc_ref) in host_node.children.iter().enumerate() {
+                let num_procs = node.children.len();
+                for (i, proc_ref) in node.children.iter().enumerate() {
                     let is_last_proc = i == num_procs - 1;
                     let proc_connector = if is_last_proc {
                         "└── "
@@ -924,8 +1104,41 @@ async fn tree_dump(
                 }
                 output.push('\n');
             }
+            Some(node) if matches!(node.properties, NodeProperties::Proc { .. }) => {
+                // Non-host proc (e.g. root client proc). Render as a
+                // proc-level subtree with its actor children.
+                let proc_name = match &node.properties {
+                    NodeProperties::Proc { proc_name, .. } => proc_name.clone(),
+                    _ => child_ref.clone(),
+                };
+                let proc_url = format!("{}/v1/{}", base_url, urlencoding::encode(child_ref));
+                output.push_str(&format!("{}  ->  {}\n", proc_name, proc_url));
+
+                let num_actors = node.children.len();
+                for (j, actor_ref) in node.children.iter().enumerate() {
+                    let actor_connector = if j == num_actors - 1 {
+                        "└── "
+                    } else {
+                        "├── "
+                    };
+                    let actor_label = derive_actor_label(actor_ref);
+                    let actor_url = format!("{}/v1/{}", base_url, urlencoding::encode(actor_ref));
+                    output.push_str(&format!(
+                        "{}{}  ->  {}\n",
+                        actor_connector, actor_label, actor_url
+                    ));
+                }
+                output.push('\n');
+            }
+            Some(_node) => {
+                // Non-host root child (e.g. root client actor).
+                // Render as a single leaf line.
+                let label = derive_actor_label(child_ref);
+                let url = format!("{}/v1/{}", base_url, urlencoding::encode(child_ref));
+                output.push_str(&format!("{}  ->  {}\n\n", label, url));
+            }
             _ => {
-                output.push_str(&format!("{} (unreachable)\n\n", host_ref));
+                output.push_str(&format!("{} (unreachable)\n\n", child_ref));
             }
         }
     }
@@ -992,6 +1205,15 @@ mod tests {
 
     use super::*;
 
+    /// Minimal introspectable actor for tests. The `#[export]`
+    /// attribute generates `Named + Referable + Binds` so that
+    /// `handle.bind()` registers the `IntrospectMessage` port for
+    /// remote delivery.
+    #[derive(Debug)]
+    #[hyperactor::export(handlers = [])]
+    struct TestIntrospectableActor;
+    impl Actor for TestIntrospectableActor {}
+
     // Verifies that MeshAdminAgent::build_root_payload constructs the
     // expected root node: identity/root metadata, correct Root
     // properties (num_hosts), and child links populated with the
@@ -1010,10 +1232,10 @@ mod tests {
         let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
         let ref2: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id2.clone());
 
-        let agent = MeshAdminAgent::new(vec![
-            ("host_a".to_string(), ref1),
-            ("host_b".to_string(), ref2),
-        ]);
+        let agent = MeshAdminAgent::new(
+            vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
+            None,
+        );
 
         let payload = agent.build_root_payload();
         assert_eq!(payload.identity, "root");
@@ -1068,7 +1290,7 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 "mesh_admin",
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())]),
+                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1088,10 +1310,15 @@ mod tests {
         assert_eq!(root.identity, "root");
         assert_eq!(root.properties, NodeProperties::Root { num_hosts: 1 });
         assert_eq!(root.parent, None);
-        assert_eq!(root.children.len(), 1);
+        assert_eq!(root.children.len(), 2); // host + admin proc
 
         // -- 5. Resolve the host child --
-        let host_child_ref_str = &root.children[0];
+        let host_agent_id_str = host_agent_ref.actor_id().to_string();
+        let host_child_ref_str = root
+            .children
+            .iter()
+            .find(|c| **c == host_agent_id_str)
+            .expect("root children should contain the host agent");
         let host_resp = admin_ref
             .resolve(&client, host_child_ref_str.clone())
             .await
@@ -1225,7 +1452,7 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 "mesh_admin",
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())]),
+                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1305,5 +1532,155 @@ mod tests {
             "should have resolved at least one system proc"
         );
         assert!(found_user, "should have resolved the user proc");
+    }
+
+    // Verifies that build_root_payload includes the root client
+    // proc ID in the children list when provided, alongside the
+    // host children.
+    #[test]
+    fn test_build_root_payload_with_root_client() {
+        let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
+        let proc1 = ProcId::Direct(ChannelAddr::Tcp(addr1), "host1".to_string());
+        let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
+        let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
+
+        let client_proc_id =
+            ProcId::Direct(ChannelAddr::Tcp(addr1), "mesh_root_client_proc".to_string());
+        let client_actor_id = client_proc_id.actor_id("client", 0);
+
+        let agent = MeshAdminAgent::new(
+            vec![("host_a".to_string(), ref1)],
+            Some(client_actor_id.clone()),
+        );
+
+        let payload = agent.build_root_payload();
+        assert_eq!(payload.properties, NodeProperties::Root { num_hosts: 1 });
+        // Should have 2 children: one host + one root client proc.
+        assert_eq!(payload.children.len(), 2);
+        assert!(payload.children.contains(&actor_id1.to_string()));
+        assert!(payload.children.contains(&client_proc_id.to_string()));
+    }
+
+    // Verifies that resolving the root client ActorId via the
+    // resolver returns a NodePayload with parent = "root",
+    // confirming that the root client is treated as a first-class
+    // child of root.
+    #[tokio::test]
+    async fn test_resolve_root_client_actor() {
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::host::Host;
+        use hyperactor::host::LocalProcManager;
+
+        use crate::host_mesh::mesh_agent::HostAgentMode;
+        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::mesh_agent::ProcMeshAgent;
+
+        // Stand up a local in-process Host with a HostMeshAgent.
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+        let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
+        let host_addr = host.addr().clone();
+        let system_proc = host.system_proc().clone();
+        let host_agent_handle = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .unwrap();
+        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_addr_str = host_addr.to_string();
+
+        // Create a genuinely introspectable root client actor.
+        // proc.spawn() starts the message loop; handle.bind()
+        // registers the IntrospectMessage port for remote delivery.
+        let root_client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "root_client".to_string()).unwrap();
+        let _root_client_supervision = ProcSupervisionCoordinator::set(&root_client_proc)
+            .await
+            .unwrap();
+        let root_client_handle = root_client_proc
+            .spawn("client", TestIntrospectableActor)
+            .unwrap();
+        let root_client_ref: ActorRef<TestIntrospectableActor> = root_client_handle.bind();
+        let root_client_actor_id = root_client_ref.actor_id().clone();
+
+        // Spawn MeshAdminAgent with the root client ActorId.
+        let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
+        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
+        let admin_handle = admin_proc
+            .spawn(
+                "mesh_admin",
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    Some(root_client_actor_id.clone()),
+                ),
+            )
+            .unwrap();
+        let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
+
+        // Client for sending messages.
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _handle) = client_proc.instance("client").unwrap();
+
+        // Resolve "root" — should include the root client proc in children.
+        let root_resp = admin_ref
+            .resolve(&client, "root".to_string())
+            .await
+            .unwrap();
+        let root = root_resp.0.unwrap();
+        let root_client_proc_id = root_client_actor_id.proc_id().to_string();
+        assert!(
+            root.children.contains(&root_client_proc_id),
+            "root children {:?} should contain root client proc {}",
+            root.children,
+            root_client_proc_id
+        );
+
+        // Resolve the root client proc — should return Proc properties
+        // with parent = "root" and the root client actor as a child.
+        let proc_resp = admin_ref
+            .resolve(&client, root_client_proc_id.clone())
+            .await
+            .unwrap();
+        let proc_node = proc_resp.0.unwrap();
+        assert!(
+            matches!(proc_node.properties, NodeProperties::Proc { .. }),
+            "expected Proc properties, got {:?}",
+            proc_node.properties
+        );
+        assert_eq!(
+            proc_node.parent,
+            Some("root".to_string()),
+            "root client proc parent should be 'root'"
+        );
+        assert!(
+            proc_node
+                .children
+                .contains(&root_client_actor_id.to_string()),
+            "proc children {:?} should contain root client actor {}",
+            proc_node.children,
+            root_client_actor_id
+        );
+
+        // Resolve the root client ActorId — should return Actor
+        // properties with parent = the proc.
+        let client_resp = admin_ref
+            .resolve(&client, root_client_actor_id.to_string())
+            .await
+            .unwrap();
+        let client_node = client_resp.0.unwrap();
+        assert!(
+            matches!(client_node.properties, NodeProperties::Actor { .. }),
+            "expected Actor properties, got {:?}",
+            client_node.properties
+        );
+        assert_eq!(
+            client_node.parent,
+            Some(root_client_proc_id),
+            "root client parent should be the proc"
+        );
     }
 }
