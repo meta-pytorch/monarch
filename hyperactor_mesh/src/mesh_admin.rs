@@ -294,6 +294,12 @@ pub struct MeshAdminAgent {
 
     /// Bound address of the admin HTTP server once started in `init`.
     admin_addr: Option<std::net::SocketAddr>,
+
+    /// When the mesh was started (ISO-8601 timestamp).
+    started_at: String,
+
+    /// Username who started the mesh.
+    started_by: String,
 }
 
 impl MeshAdminAgent {
@@ -322,12 +328,21 @@ impl MeshAdminAgent {
             .iter()
             .map(|(addr, agent_ref)| (agent_ref.actor_id().clone(), addr.clone()))
             .collect();
+
+        // Capture start time and username
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let started_by = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "unknown".to_string());
+
         Self {
             hosts: hosts.into_iter().collect(),
             host_agents_by_actor_id,
             root_client_actor_id,
             self_actor_id: None,
             admin_addr: None,
+            started_at,
+            started_by,
         }
     }
 }
@@ -340,6 +355,8 @@ impl std::fmt::Debug for MeshAdminAgent {
             .field("root_client_actor_id", &self.root_client_actor_id)
             .field("self_actor_id", &self.self_actor_id)
             .field("admin_addr", &self.admin_addr)
+            .field("started_at", &self.started_at)
+            .field("started_by", &self.started_by)
             .finish()
     }
 }
@@ -572,6 +589,8 @@ impl MeshAdminAgent {
             identity: "root".to_string(),
             properties: NodeProperties::Root {
                 num_hosts: self.hosts.len(),
+                started_at: self.started_at.clone(),
+                started_by: self.started_by.clone(),
             },
             children,
             parent: None,
@@ -1282,7 +1301,10 @@ mod tests {
         let payload = agent.build_root_payload();
         assert_eq!(payload.identity, "root");
         assert_eq!(payload.parent, None);
-        assert_eq!(payload.properties, NodeProperties::Root { num_hosts: 2 });
+        assert!(matches!(
+            payload.properties,
+            NodeProperties::Root { num_hosts: 2, .. }
+        ));
         assert_eq!(payload.children.len(), 2);
         // Children should be the actor ID strings.
         assert!(payload.children.contains(&actor_id1.to_string()));
@@ -1350,7 +1372,10 @@ mod tests {
             .unwrap();
         let root = root_resp.0.unwrap();
         assert_eq!(root.identity, "root");
-        assert_eq!(root.properties, NodeProperties::Root { num_hosts: 1 });
+        assert!(matches!(
+            root.properties,
+            NodeProperties::Root { num_hosts: 1, .. }
+        ));
         assert_eq!(root.parent, None);
         assert_eq!(root.children.len(), 2); // host + admin proc
 
@@ -1596,7 +1621,10 @@ mod tests {
         );
 
         let payload = agent.build_root_payload();
-        assert_eq!(payload.properties, NodeProperties::Root { num_hosts: 1 });
+        assert!(matches!(
+            payload.properties,
+            NodeProperties::Root { num_hosts: 1, .. }
+        ));
         // Should have 2 children: one host + one root client proc.
         assert_eq!(payload.children.len(), 2);
         assert!(payload.children.contains(&actor_id1.to_string()));
