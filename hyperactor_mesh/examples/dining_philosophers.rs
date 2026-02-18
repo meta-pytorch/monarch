@@ -273,6 +273,15 @@ async fn main() -> Result<ExitCode> {
         "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- http://{}",
         mesh_admin_addr
     );
+    let host_addr = &host_mesh.hosts()[0];
+    println!(
+        "  - Hyper list:    buck2 run fbcode//monarch/hyper:hyper -- list {}",
+        host_addr
+    );
+    println!(
+        "  - Hyper show:    buck2 run fbcode//monarch/hyper:hyper -- show {},<proc_name>  (use a name from list)",
+        host_addr
+    );
 
     let proc_mesh = host_mesh
         .spawn(instance, "philosophers", extent!(replica = group_size))
