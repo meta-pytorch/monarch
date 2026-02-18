@@ -61,7 +61,11 @@ explicit = true
 [tool.uv.sources]
 # Override with: uv sync --extra-index-url https://download.pytorch.org/whl/nightly/{platform} e.g.
 # uv sync --extra-index-url https://download.pytorch.org/whl/nightly/cu128
-torch = { index = "pytorch-cu128" }
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'"  },
+    # MacOS cannot have cuda symbols, so default to CPU.
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+]
 
 # Configure uv for torch nightly builds
 [tool.uv]

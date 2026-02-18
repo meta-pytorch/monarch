@@ -8,13 +8,15 @@
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
 from monarch._src.actor.bootstrap import attach_to_workers
+from monarch._src.actor.future import Future
 from monarch._src.job.job import JobState, JobTrait, ProcessState
 
 logger = logging.getLogger(__name__)
@@ -77,7 +79,7 @@ class ProcessJob(JobTrait):
 
         host_meshes = {}
         for mesh_name, count in self._meshes.items():
-            workers = [
+            workers: List[Union[str, Future[str]]] = [
                 self._host_to_pid[f"{mesh_name}_{i}"].channel for i in range(count)
             ]
             host_meshes[mesh_name] = attach_to_workers(
@@ -106,9 +108,15 @@ class ProcessJob(JobTrait):
         return True
 
     def _kill(self) -> None:
+        # Use SIGTERM to allow worker processes to shut down gracefully.
+        # The HostMesh objects are not stored here (they're returned to callers),
+        # so we rely on the worker processes handling SIGTERM for clean shutdown.
         for p in self._host_to_pid.values():
             try:
                 os.kill(p.pid, signal.SIGTERM)
             except OSError:
                 pass
         self._host_to_pid.clear()
+        if self._tmpdir is not None:
+            shutil.rmtree(self._tmpdir, ignore_errors=True)
+            self._tmpdir = None

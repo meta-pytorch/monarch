@@ -170,16 +170,15 @@ pub struct GlobalClientActor {
 impl GlobalClientActor {
     fn run(mut self, instance: &'static Instance<Self>) -> JoinHandle<()> {
         tokio::spawn(async move {
+            #[allow(unused_labels)]
             let err = 'messages: loop {
                 tokio::select! {
                     work = self.work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut self, instance).await {
                             for supervision_event in self.supervision_rx.drain() {
-                                tracing::warn!(
-                                    %supervision_event,
-                                    "global root client absorbed child supervision event (during error drain)",
-                                );
+                                instance.handle_supervision_event(&mut self, supervision_event).await
+                                    .expect("GlobalClientActor::handle_supervision_event is infallible");
                             }
                             let kind = ActorErrorKind::processing(err);
                             break ActorError {
@@ -192,16 +191,8 @@ impl GlobalClientActor {
                         // TODO: do we need any signal handling for the root client?
                     }
                     Ok(supervision_event) = self.supervision_rx.recv() => {
-                        // The global root client is the root of the
-                        // supervision tree: there is no parent to
-                        // escalate to.  Child-actor failures (e.g.
-                        // ActorMeshControllers detecting dead procs
-                        // after mesh teardown) are expected and must
-                        // not crash the process.
-                        tracing::warn!(
-                            %supervision_event,
-                            "global root client absorbed child supervision event",
-                        );
+                        instance.handle_supervision_event(&mut self, supervision_event).await
+                            .expect("GlobalClientActor::handle_supervision_event is infallible");
                     }
                 };
             };
@@ -238,6 +229,22 @@ impl GlobalClientActor {
 /// `ProcMesh` allocation completes), we log and drop the event.
 #[async_trait]
 impl Actor for GlobalClientActor {
+    /// The global root client is the root of the supervision tree:
+    /// there is no parent to escalate to. Child-actor failures (e.g.
+    /// ActorMeshControllers detecting dead procs after mesh teardown)
+    /// are expected and must not crash the process.
+    async fn handle_supervision_event(
+        &mut self,
+        _this: &Instance<Self>,
+        event: &ActorSupervisionEvent,
+    ) -> Result<bool, anyhow::Error> {
+        tracing::warn!(
+            %event,
+            "global root client absorbed child supervision event",
+        );
+        Ok(true)
+    }
+
     async fn handle_undeliverable_message(
         &mut self,
         cx: &Instance<Self>,
@@ -381,6 +388,8 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::PortId;
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
     use hyperactor::id;
     use hyperactor_config::Flattrs;
     use ndslice::extent;
@@ -450,18 +459,19 @@ mod tests {
 
         // The handler runs asynchronously via work_rx; wait for the
         // forwarded event with our marker.
-        let event = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let ev = sink_rx.recv().await.expect("sink channel closed");
-                if ev.actor_id == marker {
-                    return ev;
+        let event = RealClock
+            .timeout(Duration::from_secs(5), async {
+                loop {
+                    let ev = sink_rx.recv().await.expect("sink channel closed");
+                    if ev.actor_id == marker {
+                        return ev;
+                    }
+                    // Discard stale events from other tests sharing the
+                    // global sink.
                 }
-                // Discard stale events from other tests sharing the
-                // global sink.
-            }
-        })
-        .await
-        .expect("timed out waiting for supervision event");
+            })
+            .await
+            .expect("timed out waiting for supervision event");
 
         assert_eq!(
             event.actor_id, marker,
@@ -487,16 +497,17 @@ mod tests {
         inject_undeliverable(client, marker.clone());
 
         // B should receive our marked event.
-        let event = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let ev = sink_b_rx.recv().await.expect("sink B channel closed");
-                if ev.actor_id == marker {
-                    return ev;
+        let event = RealClock
+            .timeout(Duration::from_secs(5), async {
+                loop {
+                    let ev = sink_b_rx.recv().await.expect("sink B channel closed");
+                    if ev.actor_id == marker {
+                        return ev;
+                    }
                 }
-            }
-        })
-        .await
-        .expect("timed out waiting for supervision event on sink B");
+            })
+            .await
+            .expect("timed out waiting for supervision event on sink B");
         assert_eq!(event.actor_id, marker);
     }
 
@@ -515,7 +526,7 @@ mod tests {
         inject_undeliverable(client, id!(no_sink[0].marker_actor));
 
         // Give the async handler time to run.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        RealClock.sleep(Duration::from_millis(100)).await;
 
         // The global client must still be alive and usable.
         // Verify by installing a new sink and sending another
@@ -526,16 +537,17 @@ mod tests {
         let marker = id!(no_sink_recovery[0].marker_actor);
         inject_undeliverable(client, marker.clone());
 
-        let event = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let ev = sink_rx.recv().await.expect("sink channel closed");
-                if ev.actor_id == marker {
-                    return ev;
+        let event = RealClock
+            .timeout(Duration::from_secs(5), async {
+                loop {
+                    let ev = sink_rx.recv().await.expect("sink channel closed");
+                    if ev.actor_id == marker {
+                        return ev;
+                    }
                 }
-            }
-        })
-        .await
-        .expect("timed out: global client crashed or stopped processing");
+            })
+            .await
+            .expect("timed out: global client crashed or stopped processing");
         assert_eq!(event.actor_id, marker);
     }
 }
