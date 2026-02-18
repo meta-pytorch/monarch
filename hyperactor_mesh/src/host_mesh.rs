@@ -1078,6 +1078,11 @@ impl HostMeshRef {
         &self.name
     }
 
+    /// The host references (channel addresses) in rank order.
+    pub fn hosts(&self) -> &[HostRef] {
+        &self.ranks
+    }
+
     /// Spawn a [`MeshAdminAgent`] on `proc` and return its HTTP address.
     ///
     /// The agent aggregates admin state across all hosts in this mesh,
