@@ -40,6 +40,7 @@ name = "actor_mesh_benchmarks"
 path = "benches/main.rs"
 
 [dependencies]
+algebra = { version = "0.0.0", path = "../algebra" }
 anyhow = "1.0.98"
 async-trait = "0.1.86"
 axum = { version = "0.8", features = ["macros", "ws"] }
