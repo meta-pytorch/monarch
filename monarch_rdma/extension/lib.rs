@@ -12,8 +12,7 @@ use std::ops::Deref;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::ProcId;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::ActorMesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
@@ -329,7 +328,7 @@ impl PyRdmaBuffer {
 #[pyclass(name = "_RdmaManager", module = "monarch._rust_bindings.rdma")]
 pub struct PyRdmaManager {
     #[allow(dead_code)] // field never read
-    inner: SharedCell<RootActorMesh<'static, RdmaManagerActor>>,
+    inner: ActorMesh<RdmaManagerActor>,
     device: String,
 }
 
@@ -356,15 +355,12 @@ impl PyRdmaManager {
 
         let proc_mesh = proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
         PyPythonTask::new(async move {
-            let actor_mesh: hyperactor_mesh::v1::ActorMesh<RdmaManagerActor> = proc_mesh
+            let actor_mesh: ActorMesh<RdmaManagerActor> = proc_mesh
                 // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
                 // TODO - make IbverbsConfig configurable
                 .spawn_service(client.deref(), "rdma_manager", &None)
                 .await
                 .map_err(|err| PyException::new_err(err.to_string()))?;
-
-            let actor_mesh = RootActorMesh::from(actor_mesh);
-            let actor_mesh = SharedCell::from(actor_mesh);
 
             Ok(Some(PyRdmaManager {
                 inner: actor_mesh,

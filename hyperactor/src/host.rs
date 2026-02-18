@@ -257,7 +257,7 @@ impl<M: ProcManager> Host<M> {
 
         self.router
             .bind(proc_id.clone().into(), ready.addr().clone());
-        self.procs.insert(name);
+        self.procs.insert(name.clone());
 
         Ok((proc_id, ready.agent_ref().clone()))
     }

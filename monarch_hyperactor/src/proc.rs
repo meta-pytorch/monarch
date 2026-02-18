@@ -32,7 +32,6 @@ use pyo3::types::PyType;
 
 use crate::actor::PythonActor;
 use crate::actor::PythonActorHandle;
-use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 
 /// Wrapper around a proc that provides utilities to implement a python actor.
@@ -77,11 +76,6 @@ impl PyProc {
         self.inner.proc_id().to_string()
     }
 
-    fn attach(&self, name: String) -> PyResult<PyMailbox> {
-        let mailbox = self.inner.attach(&name)?;
-        Ok(PyMailbox { inner: mailbox })
-    }
-
     fn destroy<'py>(
         &mut self,
         timeout_in_secs: u64,
@@ -116,7 +110,7 @@ impl PyProc {
             Ok(PythonActorHandle {
                 inner: proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type)?,
+                    PythonActor::new(pickled_type, None, None)?,
                 )?,
             })
         })
@@ -135,7 +129,7 @@ impl PyProc {
             inner: signal_safe_block_on(py, async move {
                 proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type)?,
+                    PythonActor::new(pickled_type, None, None)?,
                 )
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,

@@ -30,10 +30,11 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
 use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbound;
+use hyperactor::ordering::SeqInfo;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
@@ -483,7 +484,7 @@ impl<A: Referable> ActorMeshRef<A> {
         } else {
             for (point, actor) in self.iter() {
                 let create_rank = point.rank();
-                let mut headers = Attrs::new();
+                let mut headers = Flattrs::new();
                 headers.set(
                     multicast::CAST_ORIGINATING_SENDER,
                     cx.instance().self_id().clone(),
@@ -524,7 +525,7 @@ impl<A: Referable> ActorMeshRef<A> {
         M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
     {
         let cast_mesh_shape = view::Ranked::region(self).into();
-        let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+        let actor_mesh_id = ActorMeshId(self.name.clone());
         match &self.proc_mesh.root_region {
             Some(root_region) => {
                 let root_mesh_shape = root_region.into();
@@ -571,10 +572,14 @@ impl<A: Referable> ActorMeshRef<A> {
         // without worrying about rollback.
         {
             let sequencer = cx.instance().sequencer();
-            let seqs = actor_ids
-                .map_into(|actor_id| sequencer.assign_seq(&actor_id.port_id(M::port())).seq);
+            let seqs = actor_ids.map_into(|actor_id| {
+                match sequencer.assign_seq(&actor_id.port_id(M::port())) {
+                    SeqInfo::Session { seq, session_id: _ } => seq,
+                    _ => panic!("infallible because assign_seq always returns session"),
+                }
+            });
 
-            let mut headers = Attrs::new();
+            let mut headers = Flattrs::new();
             headers.set(
                 multicast::CAST_ORIGINATING_SENDER,
                 cx.instance().self_id().clone(),
@@ -582,7 +587,7 @@ impl<A: Referable> ActorMeshRef<A> {
             // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
             // v0 transition. Should be removed once supervision is migrated
             // and ActorMeshId is deleted.
-            let actor_mesh_id = ActorMeshId::V1(self.name.clone());
+            let actor_mesh_id = ActorMeshId(self.name.clone());
             headers.set(CAST_ACTOR_MESH_ID, actor_mesh_id);
             let cast_message = CastMessageV1::new::<A, M>(
                 cx.instance().self_id().clone(),
