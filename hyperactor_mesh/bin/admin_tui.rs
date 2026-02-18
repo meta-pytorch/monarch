@@ -2179,8 +2179,14 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 }
             };
 
+            let marker = if vis_idx == app.cursor.pos() {
+                "▸ "
+            } else {
+                "  "
+            };
+
             ListItem::new(Line::from(Span::styled(
-                format!("{}{}{}{}", indent, connector, fold, node.label),
+                format!("{}{}{}{}{}", marker, indent, connector, fold, node.label),
                 style,
             )))
         })
