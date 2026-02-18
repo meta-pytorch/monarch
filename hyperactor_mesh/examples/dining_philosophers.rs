@@ -270,7 +270,7 @@ async fn main() -> Result<ExitCode> {
     println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);
     println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
     println!(
-        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- http://{}",
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}",
         mesh_admin_addr
     );
     let host_addr = &host_mesh.hosts()[0];

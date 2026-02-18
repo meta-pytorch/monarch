@@ -47,8 +47,8 @@ use hyperactor::ProcId;
 use hyperactor::admin::RecordedEvent;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor_mesh::mesh_admin::NodePayload;
-use hyperactor_mesh::mesh_admin::NodeProperties;
+use hyperactor::introspect::NodePayload;
+use hyperactor::introspect::NodeProperties;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use ratatui::Terminal;
@@ -121,6 +121,7 @@ impl NodeType {
             NodeProperties::Host { .. } => NodeType::Host,
             NodeProperties::Proc { .. } => NodeType::Proc,
             NodeProperties::Actor { .. } => NodeType::Actor,
+            NodeProperties::Error { .. } => NodeType::Actor,
         }
     }
 }
@@ -619,6 +620,9 @@ fn derive_label(payload: &NodePayload) -> String {
             Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
             Err(_) => payload.identity.clone(),
         },
+        NodeProperties::Error { code, message } => {
+            format!("[error] {}: {}", code, message)
+        }
     }
 }
 
@@ -1064,6 +1068,13 @@ fn render_node_detail(frame: &mut ratatui::Frame<'_>, area: Rect, payload: &Node
                 *total_processing_time_us,
                 flight_recorder.as_deref(),
             );
+        }
+        NodeProperties::Error { code, message } => {
+            let text = format!("Error: {} — {}", code, message);
+            let paragraph = Paragraph::new(text)
+                .block(Block::default().borders(Borders::ALL).title("Error"))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(paragraph, area);
         }
     }
 }
