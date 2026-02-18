@@ -55,6 +55,8 @@ use hyperactor::admin::HostSummary;
 use hyperactor::admin::ProcDetails;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::introspect::NodePayload;
+use hyperactor::introspect::NodeProperties;
 use hyperactor::reference::Reference;
 use serde::Deserialize;
 use serde::Serialize;
@@ -122,109 +124,6 @@ pub enum MeshAdminMessage {
     },
 }
 wirevalue::register_type!(MeshAdminMessage);
-
-/// Typed properties for each kind of node in the mesh topology.
-///
-/// `NodePayload` is intentionally uniform across node kinds; this
-/// enum carries the variant-specific metadata for each addressable
-/// entity (root/host/proc/actor).
-///
-/// Kept "wire-friendly" (no `serde_json::Value`) so it can be encoded
-/// via wirevalue's bincode path, while the HTTP layer can still
-/// expose structured JSON via `Serialize`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
-pub enum NodeProperties {
-    /// Synthetic mesh root node (not a real actor/proc).
-    Root {
-        /// Number of hosts registered with the mesh admin agent.
-        num_hosts: usize,
-    },
-
-    /// A host in the mesh, represented by its `HostMeshAgent`.
-    Host {
-        /// Host address (e.g. `127.0.0.1:12345`).
-        addr: String,
-        /// Number of procs currently reported on this host.
-        num_procs: usize,
-    },
-
-    /// Properties describing a proc running on a host.
-    ///
-    /// Includes a human-readable proc name, actor count, and a flag
-    /// indicating whether the proc is system/infrastructure-owned
-    /// (for example the host’s `[system]` or local proc) versus a
-    /// user-created proc.
-    Proc {
-        /// Human-readable proc identifier (as reported by the host
-        /// admin surface).
-        ///
-        /// For direct procs this is typically the proc's name;
-        /// clients may display a shortened form, but this value is
-        /// the canonical label carried in the payload.
-        proc_name: String,
-        /// Number of actors currently hosted by this proc.
-        ///
-        /// Used for quick, non-recursive summary rendering in clients
-        /// (e.g. the tree view).
-        num_actors: usize,
-        /// Whether this proc is infrastructure-owned rather than user-created.
-        ///
-        /// `#[serde(default)]` preserves backwards compatibility with older
-        /// payloads that didn’t include this field.
-        #[serde(default)]
-        is_system: bool,
-    },
-
-    /// Runtime metadata for a single actor instance.
-    ///
-    /// Captures lifecycle state, activity metrics, and optional
-    /// flight-recorder telemetry used by admin tooling and the TUI to
-    /// display actor health, behavior, and recent execution history.
-    Actor {
-        /// Current lifecycle/status of the actor (e.g. "Running",
-        /// "Stopped").
-        actor_status: String,
-        /// Concrete actor type name (useful for debugging and UI
-        /// display).
-        actor_type: String,
-        /// Total number of messages processed by this actor so far.
-        messages_processed: u64,
-        /// Actor creation time, as an ISO-8601 timestamp string.
-        created_at: String,
-        /// Name of the most recent message handler run by the actor,
-        /// if known.
-        last_message_handler: Option<String>,
-        /// Cumulative time spent processing messages, in
-        /// microseconds.
-        total_processing_time_us: u64,
-        /// Serialized flight-recorder events for the actor, if
-        /// enabled/available.
-        ///
-        /// Stored as a JSON string to keep `NodeProperties`
-        /// wire-friendly for `wirevalue` while still allowing the UI
-        /// to render structured events.
-        flight_recorder: Option<String>,
-    },
-}
-wirevalue::register_type!(NodeProperties);
-
-/// Uniform response for any node in the mesh topology.
-///
-/// Every addressable entity (root, host, proc, actor) is represented
-/// as a `NodePayload`. The client navigates the mesh by fetching a
-/// node and following its `children` references.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
-pub struct NodePayload {
-    /// Canonical reference string for this node.
-    pub identity: String,
-    /// Node-specific metadata (type, status, metrics, etc.).
-    pub properties: NodeProperties,
-    /// Reference strings the client can GET next to descend the tree.
-    pub children: Vec<String>,
-    /// Parent node reference for upward navigation.
-    pub parent: Option<String>,
-}
-wirevalue::register_type!(NodePayload);
 
 /// Newtype wrapper around `Result<NodePayload, String>` for the
 /// resolve reply port (`OncePortRef` requires `Named`).
@@ -575,7 +474,7 @@ impl MeshAdminAgent {
     /// the host-admin convention for system/local procs (`"[system]
     /// <proc_id>"`) when the plain proc-name query returns no JSON.
     /// Children are the proc’s actor IDs (already serialized as full
-    /// `ActorId` strings), and `nav_parent` is set to the host-agent
+    /// `ActorId` strings), and `parent` is set to the host-agent
     /// `ActorId` string for the owning host.
     async fn resolve_proc_node(
         &self,
@@ -658,8 +557,7 @@ impl MeshAdminAgent {
     /// lookup returns no JSON it retries using the system-proc naming
     /// convention (`"[system] <proc_id>"`) to support actors living
     /// under infrastructure procs. The returned payload links
-    /// `nav_parent` to the proc node (`proc_id.to_string()`), sets
-    /// `supervisor` from `ActorDetails.parent`, and uses
+    /// `parent` to the proc node (`proc_id.to_string()`) and uses
     /// `ActorDetails.children` as the next-hop references.
     async fn resolve_actor_node(
         &self,
