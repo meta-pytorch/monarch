@@ -148,6 +148,9 @@ struct TreeNode {
     /// Whether the backing payload reports any children (controls
     /// fold arrow rendering).
     has_children: bool,
+    /// Whether this node's own payload has been fetched (as opposed to
+    /// being a placeholder derived from a parent's children list).
+    fetched: bool,
 }
 
 // Application state
@@ -199,6 +202,8 @@ enum KeyResult {
     DetailChanged,
     /// A filter/view setting changed; full tree refresh needed.
     NeedsRefresh,
+    /// Lazily expand the node at the given tree index.
+    ExpandNode(usize),
 }
 
 impl App {
@@ -210,7 +215,10 @@ impl App {
     fn new(addr: &str) -> Self {
         Self {
             base_url: format!("http://{}", addr),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             should_quit: false,
             tree: Vec::new(),
             selected: 0,
@@ -265,20 +273,7 @@ impl App {
     /// /v1/{reference}`. Returns a parsed `NodePayload` on success,
     /// or a human-readable error string on failure.
     async fn fetch_node(&self, reference: &str) -> Result<NodePayload, String> {
-        let url = format!("{}/v1/{}", self.base_url, urlencoding::encode(reference));
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-        if resp.status().is_success() {
-            resp.json::<NodePayload>()
-                .await
-                .map_err(|e| format!("Parse error: {}", e))
-        } else {
-            Err(format!("HTTP {}", resp.status()))
-        }
+        fetch_node_raw(&self.client, &self.base_url, reference).await
     }
 
     /// Refresh the in-memory topology model by re-walking the
@@ -298,14 +293,18 @@ impl App {
             .map(|n| n.reference.clone())
             .collect();
 
-        // Save current selection's reference to restore position.
-        let selected_key = self
+        // Save current selection's reference and depth to restore
+        // position.  Depth is needed to disambiguate when the same
+        // reference appears at multiple depths (e.g. an actor shown
+        // both as a proc child and as a supervision child).
+        let (selected_key, selected_depth) = self
             .selected_tree_index()
             .and_then(|idx| self.tree.get(idx))
-            .map(|n| n.reference.clone());
+            .map(|n| (Some(n.reference.clone()), Some(n.depth)))
+            .unwrap_or((None, None));
 
         // Fetch root.
-        let root = match self.fetch_node("root").await {
+        let root = match fetch_node_raw(&self.client, &self.base_url, "root").await {
             Ok(payload) => payload,
             Err(e) => {
                 self.error = Some(format!("Failed to connect: {}", e));
@@ -314,31 +313,64 @@ impl App {
         };
 
         let mut tree = Vec::new();
-        let mut cache = HashMap::new();
+        // Preserve the existing cache across refreshes so that
+        // previously fetched nodes keep their labels and payloads.
+        let mut cache = std::mem::take(&mut self.node_cache);
+        let mut visited = HashSet::new();
         cache.insert("root".to_string(), root.clone());
+        visited.insert("root".to_string());
 
         // Build tree recursively from root's children (skip root node
         // itself — hosts stay at depth 0, matching the old layout).
         let mut root_children = root.children.clone();
         root_children.sort_by(|a, b| natural_ref_cmp(a, b));
         for child_ref in &root_children {
-            self.build_subtree(&mut tree, &mut cache, child_ref, 0, &expanded_keys)
-                .await;
+            build_subtree(
+                &self.client,
+                &self.base_url,
+                self.show_system_procs,
+                &mut tree,
+                &mut cache,
+                &mut visited,
+                child_ref,
+                0,
+                &expanded_keys,
+            )
+            .await;
         }
 
         self.tree = tree;
+
+        // Prune stale cache entries that no longer appear in the tree.
+        let live_refs: HashSet<&str> = self.tree.iter().map(|n| n.reference.as_str()).collect();
+        cache.retain(|k, _| k == "root" || live_refs.contains(k.as_str()));
         self.node_cache = cache;
         self.last_refresh = chrono::Local::now().format("%H:%M:%S").to_string();
 
-        // Restore selection position.
+        // Restore selection position.  Prefer matching at the same
+        // depth so that duplicate references (e.g. an actor appearing
+        // as both a proc child at depth 1 and a supervision child at
+        // depth 2) don't cause the cursor to jump between them on
+        // each refresh.
         let visible = self.visible_indices();
         if let Some(ref key) = selected_key {
-            if let Some(pos) = visible.iter().position(|&idx| {
-                self.tree
-                    .get(idx)
-                    .map(|n| n.reference == *key)
-                    .unwrap_or(false)
-            }) {
+            let depth_match = selected_depth.and_then(|d| {
+                visible.iter().position(|&idx| {
+                    self.tree
+                        .get(idx)
+                        .map(|n| n.reference == *key && n.depth == d)
+                        .unwrap_or(false)
+                })
+            });
+            let any_match = || {
+                visible.iter().position(|&idx| {
+                    self.tree
+                        .get(idx)
+                        .map(|n| n.reference == *key)
+                        .unwrap_or(false)
+                })
+            };
+            if let Some(pos) = depth_match.or_else(any_match) {
                 self.selected = pos;
             }
         }
@@ -347,107 +379,149 @@ impl App {
             self.selected = visible.len() - 1;
         }
 
-        // Update detail from cache for current selection.
+        // Update detail from cache for current selection. Evict the
+        // selected node first so we fetch a fresh payload — placeholder
+        // nodes are not re-fetched by build_subtree, so their cached
+        // data would be stale.
+        if let Some(idx) = self.selected_tree_index() {
+            if let Some(node) = self.tree.get(idx) {
+                self.node_cache.remove(&node.reference);
+            }
+        }
         self.update_selected_detail().await;
     }
 
-    /// Recursively expand a reference into a flattened `TreeNode`
-    /// list.
+    /// Lazily expand a single node by fetching its children and
+    /// inserting them into the flat tree immediately after the parent.
     ///
-    /// Fetches `reference` from the admin API, appends a
-    /// corresponding `TreeNode` to `tree`, caches the full
-    /// `NodePayload` in `cache`, and (if the node is marked expanded
-    /// in `expanded_keys`) recurses into its children until
-    /// `MAX_TREE_DEPTH` is reached.
-    ///
-    /// Notes:
-    /// - Uses `cache` as a visited set to avoid cycles / duplicate
-    ///   display when the same reference appears under multiple parents
-    ///   (only the first occurrence is shown).
-    /// - Applies view filtering (e.g. hide `is_system` procs unless
-    ///   enabled) before inserting.
-    /// - Returns a boxed future so callers can build the tree with
-    ///   async recursion without an explicit `async fn` recursive
-    ///   signature.
-    fn build_subtree<'a>(
-        &'a self,
-        tree: &'a mut Vec<TreeNode>,
-        cache: &'a mut HashMap<String, NodePayload>,
-        reference: &'a str,
-        depth: usize,
-        expanded_keys: &'a HashSet<String>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            // Depth guard.
-            if depth >= MAX_TREE_DEPTH {
-                return;
-            }
+    /// If the node's payload is already cached, uses it; otherwise
+    /// fetches from the admin API. For Proc parents, actor children
+    /// are inserted as placeholders (the main lazy-fetching win).
+    /// For all other parents (Root, Host), children are eagerly
+    /// fetched so labels and system-proc filtering work immediately.
+    /// Any previously inserted children (from a prior expand) are
+    /// removed first to avoid duplicates.
+    async fn expand_node(&mut self, tree_idx: usize) {
+        let reference = self.tree[tree_idx].reference.clone();
+        let depth = self.tree[tree_idx].depth;
 
-            // If already visited, skip silently. A node can appear in
-            // multiple parents' children lists (e.g. sieve actors); we
-            // only display it under the first parent encountered.
-            if cache.contains_key(reference) {
-                return;
-            }
+        // Remove any existing children of this node (from a prior
+        // expand before a collapse).
+        let remove_start = tree_idx + 1;
+        let mut remove_end = remove_start;
+        while remove_end < self.tree.len() && self.tree[remove_end].depth > depth {
+            remove_end += 1;
+        }
+        if remove_start < remove_end {
+            self.tree.drain(remove_start..remove_end);
+        }
 
-            let payload = match self.fetch_node(reference).await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-
-            // Filter: skip system procs when hidden.
-            if let NodeProperties::Proc { is_system, .. } = payload.properties {
-                if !self.show_system_procs && is_system {
+        // Fetch the node's payload if not already cached.
+        let payload = if let Some(cached) = self.node_cache.get(&reference) {
+            cached.clone()
+        } else {
+            match fetch_node_raw(&self.client, &self.base_url, &reference).await {
+                Ok(p) => {
+                    self.node_cache.insert(reference.clone(), p.clone());
+                    p
+                }
+                Err(e) => {
+                    self.error = Some(format!("Expand failed: {}", e));
                     return;
                 }
             }
+        };
 
-            let label = derive_label(&payload);
-            let node_type = NodeType::from_properties(&payload.properties);
-            let has_children = !payload.children.is_empty();
+        // Update the parent node with real data now that we have
+        // the payload.
+        self.tree[tree_idx].fetched = true;
+        self.tree[tree_idx].has_children = !payload.children.is_empty();
+        self.tree[tree_idx].label = derive_label(&payload);
+        self.tree[tree_idx].node_type = NodeType::from_properties(&payload.properties);
 
-            tree.push(TreeNode {
-                label,
-                depth,
-                reference: reference.to_string(),
-                node_type,
-                expanded: expanded_keys.contains(reference),
-                has_children,
-            });
+        if payload.children.is_empty() {
+            return;
+        }
 
-            cache.insert(reference.to_string(), payload.clone());
+        let mut children = payload.children.clone();
+        children.sort_by(|a, b| natural_ref_cmp(a, b));
 
-            // Only recurse into children when the node is expanded.
-            // Collapsed nodes still show the fold arrow via has_children.
-            if expanded_keys.contains(reference) {
-                let mut children = payload.children.clone();
-                children.sort_by(|a, b| natural_ref_cmp(a, b));
+        let is_proc_parent = matches!(payload.properties, NodeProperties::Proc { .. });
+        let is_actor_parent = matches!(payload.properties, NodeProperties::Actor { .. });
 
-                if matches!(payload.properties, NodeProperties::Proc { .. }) {
-                    for child_ref in &children {
-                        if expanded_keys.contains(child_ref.as_str()) {
-                            self.build_subtree(tree, cache, child_ref, depth + 1, expanded_keys)
-                                .await;
-                        } else {
-                            let label = derive_label_from_ref(child_ref);
-                            tree.push(TreeNode {
-                                label,
-                                depth: depth + 1,
-                                reference: child_ref.clone(),
-                                node_type: NodeType::Actor,
-                                expanded: false,
-                                has_children: true,
-                            });
+        let mut child_nodes = Vec::new();
+        for child_ref in &children {
+            if is_proc_parent || is_actor_parent {
+                // Proc/Actor children: use placeholders — this is the
+                // main lazy-fetching win (potentially thousands of
+                // actors, or deep supervision chains).
+                // Use cached payload when available so that
+                // `has_children` is accurate (avoids a false "▶").
+                if let Some(cached_child) = self.node_cache.get(child_ref.as_str()) {
+                    child_nodes.push(TreeNode {
+                        label: derive_label(cached_child),
+                        depth: depth + 1,
+                        reference: child_ref.clone(),
+                        node_type: NodeType::from_properties(&cached_child.properties),
+                        expanded: false,
+                        has_children: !cached_child.children.is_empty(),
+                        fetched: true,
+                    });
+                } else {
+                    child_nodes.push(TreeNode {
+                        label: derive_label_from_ref(child_ref),
+                        depth: depth + 1,
+                        reference: child_ref.clone(),
+                        node_type: NodeType::Actor,
+                        expanded: false,
+                        has_children: true,
+                        fetched: false,
+                    });
+                }
+            } else {
+                // Root/Host parents: eagerly fetch each child so
+                // labels and system-proc filtering are correct
+                // immediately.  The child count at these levels is
+                // small (hosts ≈ 1-10, procs ≈ 5-50).
+                let child_payload = if let Some(cached) = self.node_cache.get(child_ref.as_str()) {
+                    Some(cached.clone())
+                } else {
+                    match fetch_node_raw(&self.client, &self.base_url, child_ref).await {
+                        Ok(p) => {
+                            self.node_cache.insert(child_ref.clone(), p.clone());
+                            Some(p)
+                        }
+                        Err(e) => {
+                            self.error =
+                                Some(format!("Child fetch failed for {}: {}", child_ref, e));
+                            None
                         }
                     }
-                } else {
-                    for child_ref in &children {
-                        self.build_subtree(tree, cache, child_ref, depth + 1, expanded_keys)
-                            .await;
+                };
+
+                if let Some(cp) = child_payload {
+                    // Apply system proc filtering.
+                    if let NodeProperties::Proc { is_system, .. } = cp.properties {
+                        if !self.show_system_procs && is_system {
+                            continue;
+                        }
                     }
+                    child_nodes.push(TreeNode {
+                        label: derive_label(&cp),
+                        depth: depth + 1,
+                        reference: child_ref.clone(),
+                        node_type: NodeType::from_properties(&cp.properties),
+                        expanded: false,
+                        has_children: !cp.children.is_empty(),
+                        fetched: true,
+                    });
                 }
             }
-        })
+        }
+
+        // Insert children right after the parent in the flat tree.
+        let insert_pos = tree_idx + 1;
+        self.tree.splice(insert_pos..insert_pos, child_nodes);
     }
 
     /// Update the right-hand detail pane for the currently selected
@@ -538,42 +612,53 @@ impl App {
                 }
             }
             KeyCode::Tab => {
-                // Expand selected node; triggers refresh to fetch children.
+                // Expand selected node; lazily fetch children.
                 if let Some(&tree_idx) = visible.get(self.selected) {
                     if let Some(node) = self.tree.get_mut(tree_idx) {
                         if node.has_children && !node.expanded {
                             node.expanded = true;
-                            return KeyResult::NeedsRefresh;
+                            return KeyResult::ExpandNode(tree_idx);
                         }
                     }
                 }
                 KeyResult::None
             }
             KeyCode::BackTab => {
-                // Collapse selected node
+                // Collapse selected node and remove its descendants
+                // from the flat tree so a later re-expand re-inserts
+                // fresh children.
                 if let Some(&tree_idx) = visible.get(self.selected) {
-                    if let Some(node) = self.tree.get_mut(tree_idx) {
-                        if node.has_children && node.expanded {
-                            node.expanded = false;
-                            return KeyResult::DetailChanged;
+                    let should_collapse = self
+                        .tree
+                        .get(tree_idx)
+                        .map(|n| n.has_children && n.expanded)
+                        .unwrap_or(false);
+                    if should_collapse {
+                        let depth = self.tree[tree_idx].depth;
+                        self.tree[tree_idx].expanded = false;
+                        let remove_start = tree_idx + 1;
+                        let mut remove_end = remove_start;
+                        while remove_end < self.tree.len() && self.tree[remove_end].depth > depth {
+                            remove_end += 1;
                         }
+                        self.tree.drain(remove_start..remove_end);
+                        return KeyResult::DetailChanged;
                     }
                 }
                 KeyResult::None
             }
-            KeyCode::Char('e') => {
-                // Expand all; triggers refresh to fetch all children.
-                for node in &mut self.tree {
-                    if node.has_children {
-                        node.expanded = true;
-                    }
-                }
-                KeyResult::NeedsRefresh
-            }
             KeyCode::Char('c') => {
-                // Collapse all (plain 'c'; Ctrl+C is handled above)
+                // Collapse all (plain 'c'; Ctrl+C is handled above).
+                // Remove all non-root-level nodes from the tree so
+                // visible_indices() only returns top-level rows.
+                // This avoids leaving a large stale tree in memory
+                // and ensures re-expansion re-fetches fresh data.
                 for node in &mut self.tree {
                     node.expanded = false;
+                }
+                self.tree.retain(|n| n.depth == 0);
+                if !self.tree.is_empty() && self.selected >= self.tree.len() {
+                    self.selected = self.tree.len() - 1;
                 }
                 KeyResult::DetailChanged
             }
@@ -584,6 +669,250 @@ impl App {
             }
             _ => KeyResult::None,
         }
+    }
+}
+
+// Tree-building infrastructure (free functions)
+//
+// Extracted from `App` methods so that `refresh()` can pass disjoint
+// borrows of `App` fields (client, base_url, show_system_procs) to
+// the tree builder without conflicting with `&mut self.node_cache`.
+
+/// Fetch a single node payload from the admin API.
+///
+/// Free-function form of `App::fetch_node` so callers that hold
+/// partial borrows of `App` can avoid borrowing all of `&self`.
+async fn fetch_node_raw(
+    client: &reqwest::Client,
+    base_url: &str,
+    reference: &str,
+) -> Result<NodePayload, String> {
+    let url = format!("{}/v1/{}", base_url, urlencoding::encode(reference));
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+    if resp.status().is_success() {
+        resp.json::<NodePayload>()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))
+    } else {
+        Err(format!("HTTP {}", resp.status()))
+    }
+}
+
+/// Recursively expand a reference into a flattened `TreeNode` list.
+///
+/// Fetches `reference` from the admin API, appends a corresponding
+/// `TreeNode` to `tree`, caches the full `NodePayload` in `cache`,
+/// and (if the node is marked expanded in `expanded_keys`) recurses
+/// into its children until `MAX_TREE_DEPTH` is reached.
+///
+/// Notes:
+/// - Uses `visited` to avoid cycles / duplicate display when the same
+///   reference appears under multiple parents (only the first
+///   occurrence is shown).
+/// - Applies view filtering (e.g. hide `is_system` procs unless
+///   enabled) before inserting.
+/// - Returns a boxed future for async recursion.
+/// - Unexpanded children of Proc nodes are inserted as placeholders
+///   without an HTTP fetch (the main lazy-fetching optimisation).
+fn build_subtree<'a>(
+    client: &'a reqwest::Client,
+    base_url: &'a str,
+    show_system_procs: bool,
+    tree: &'a mut Vec<TreeNode>,
+    cache: &'a mut HashMap<String, NodePayload>,
+    visited: &'a mut HashSet<String>,
+    reference: &'a str,
+    depth: usize,
+    expanded_keys: &'a HashSet<String>,
+) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        // Depth guard.
+        if depth >= MAX_TREE_DEPTH {
+            return;
+        }
+
+        // If already visited, skip silently. A node can appear in
+        // multiple parents' children lists (e.g. sieve actors); we
+        // only display it under the first parent encountered.
+        if visited.contains(reference) {
+            return;
+        }
+        visited.insert(reference.to_string());
+
+        let payload = match fetch_node_raw(client, base_url, reference).await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        // Filter: skip system procs when hidden.
+        if let NodeProperties::Proc { is_system, .. } = payload.properties {
+            if !show_system_procs && is_system {
+                return;
+            }
+        }
+
+        let label = derive_label(&payload);
+        let node_type = NodeType::from_properties(&payload.properties);
+        let has_children = !payload.children.is_empty();
+
+        tree.push(TreeNode {
+            label,
+            depth,
+            reference: reference.to_string(),
+            node_type,
+            expanded: expanded_keys.contains(reference),
+            has_children,
+            fetched: true,
+        });
+
+        cache.insert(reference.to_string(), payload.clone());
+
+        // Only recurse into children when the node is expanded.
+        // Collapsed nodes still show the fold arrow via has_children.
+        if expanded_keys.contains(reference) {
+            let mut children = payload.children.clone();
+            children.sort_by(|a, b| natural_ref_cmp(a, b));
+
+            if matches!(payload.properties, NodeProperties::Proc { .. }) {
+                // Proc children (actors): bypass `visited` so every
+                // proc child always gets its canonical depth-1 slot.
+                // Expanded children are handled inline (not via
+                // recursive `build_subtree`) and their supervision
+                // children are then recursed into normally — `visited`
+                // prevents an actor from appearing as a supervision
+                // child under more than one sibling, but does NOT
+                // prevent the dual appearance (depth-1 proc child +
+                // depth-2 supervision child) that the user expects.
+                for child_ref in &children {
+                    if expanded_keys.contains(child_ref.as_str()) {
+                        // Fetch and add this child directly.
+                        let child_payload = match fetch_node_raw(client, base_url, child_ref).await
+                        {
+                            Ok(p) => p,
+                            Err(_) => {
+                                // Fall through to placeholder on
+                                // fetch failure.
+                                tree.push(TreeNode {
+                                    label: derive_label_from_ref(child_ref),
+                                    depth: depth + 1,
+                                    reference: child_ref.clone(),
+                                    node_type: NodeType::Actor,
+                                    expanded: false,
+                                    has_children: true,
+                                    fetched: false,
+                                });
+                                continue;
+                            }
+                        };
+
+                        let parent_label = derive_label(&child_payload);
+                        tree.push(TreeNode {
+                            label: parent_label.clone(),
+                            depth: depth + 1,
+                            reference: child_ref.clone(),
+                            node_type: NodeType::from_properties(&child_payload.properties),
+                            expanded: true,
+                            has_children: !child_payload.children.is_empty(),
+                            fetched: true,
+                        });
+
+                        cache.insert(child_ref.clone(), child_payload.clone());
+
+                        // Add supervision children as placeholders
+                        // rather than recursively fetching them.
+                        // This avoids O(N) HTTP requests per refresh
+                        // when many actors are expanded (e.g. sieve
+                        // with 500+ actors in a chain).
+                        let mut grandchildren = child_payload.children.clone();
+                        grandchildren.sort_by(|a, b| natural_ref_cmp(a, b));
+                        for gc_ref in &grandchildren {
+                            if let Some(cached_gc) = cache.get(gc_ref.as_str()) {
+                                tree.push(TreeNode {
+                                    label: derive_label(cached_gc),
+                                    depth: depth + 2,
+                                    reference: gc_ref.clone(),
+                                    node_type: NodeType::from_properties(&cached_gc.properties),
+                                    expanded: false,
+                                    has_children: !cached_gc.children.is_empty(),
+                                    fetched: true,
+                                });
+                            } else {
+                                tree.push(TreeNode {
+                                    label: derive_label_from_ref(gc_ref),
+                                    depth: depth + 2,
+                                    reference: gc_ref.clone(),
+                                    node_type: NodeType::Actor,
+                                    expanded: false,
+                                    has_children: true,
+                                    fetched: false,
+                                });
+                            }
+                        }
+                    } else {
+                        // Unexpanded placeholder.  Use cached payload
+                        // when available so that `has_children` and
+                        // the label are accurate (avoids a false "▶"
+                        // fold arrow on actors without children, and
+                        // prevents bouncing between placeholder and
+                        // fetched states across refreshes).
+                        if let Some(cached) = cache.get(child_ref.as_str()) {
+                            tree.push(TreeNode {
+                                label: derive_label(cached),
+                                depth: depth + 1,
+                                reference: child_ref.clone(),
+                                node_type: NodeType::from_properties(&cached.properties),
+                                expanded: false,
+                                has_children: !cached.children.is_empty(),
+                                fetched: true,
+                            });
+                        } else {
+                            tree.push(TreeNode {
+                                label: derive_label_from_ref(child_ref),
+                                depth: depth + 1,
+                                reference: child_ref.clone(),
+                                node_type: NodeType::Actor,
+                                expanded: false,
+                                has_children: true,
+                                fetched: false,
+                            });
+                        }
+                    }
+                }
+            } else {
+                for child_ref in &children {
+                    build_subtree(
+                        client,
+                        base_url,
+                        show_system_procs,
+                        tree,
+                        cache,
+                        visited,
+                        child_ref,
+                        depth + 1,
+                        expanded_keys,
+                    )
+                    .await;
+                }
+            }
+        }
+    })
+}
+
+/// Infer the expected child node type from a parent's properties.
+///
+/// Used when creating placeholder `TreeNode`s for children that
+/// haven't been fetched yet (e.g. during `expand_node`).
+fn infer_child_node_type(parent_props: &NodeProperties) -> NodeType {
+    match parent_props {
+        NodeProperties::Root { .. } => NodeType::Host,
+        NodeProperties::Host { .. } => NodeType::Proc,
+        NodeProperties::Proc { .. } => NodeType::Actor,
+        NodeProperties::Actor { .. } => NodeType::Actor,
+        NodeProperties::Error { .. } => NodeType::Actor,
     }
 }
 
@@ -831,6 +1160,10 @@ async fn run_app(
                             }
                             KeyResult::NeedsRefresh => {
                                 app.refresh().await;
+                            }
+                            KeyResult::ExpandNode(idx) => {
+                                app.expand_node(idx).await;
+                                app.update_selected_detail().await;
                             }
                             KeyResult::None => {}
                         }
@@ -1332,7 +1665,7 @@ fn render_actor_detail(
 /// UI with a top border so it reads like a persistent status/help
 /// footer.
 fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect) {
-    let help = "q: quit | j/k: navigate | g/G: top/bottom | Tab/Shift-Tab: expand/collapse | e/c: expand/collapse all | s: system procs";
+    let help = "q: quit | j/k: navigate | g/G: top/bottom | Tab/Shift-Tab: expand/collapse | c: collapse all | s: system procs";
     let footer = Paragraph::new(help)
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::TOP));
