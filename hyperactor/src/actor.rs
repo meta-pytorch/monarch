@@ -1964,4 +1964,171 @@ mod tests {
         parent_handle.drain_and_stop("test").unwrap();
         parent_handle.await;
     }
+
+    /// A freshly spawned actor that has received no user messages
+    /// reports `actor_status == "idle"` (post-initialization) and
+    /// `last_message_handler == None` — the introspect handler does
+    /// not leak through (one-behind invariant, fresh-actor case).
+    #[tokio::test]
+    async fn test_introspect_fresh_actor_status() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::IntrospectView;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, _rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_fresh", actor).unwrap();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx.recv().await.unwrap();
+
+        match &payload.properties {
+            NodeProperties::Actor {
+                actor_status,
+                last_message_handler,
+                ..
+            } => {
+                assert_eq!(actor_status, "idle");
+                assert_eq!(last_message_handler, &None);
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    /// After processing a user message, the introspect payload reports
+    /// the user message's handler and post-completion status — not
+    /// the introspect handler itself (one-behind invariant,
+    /// after-user-traffic case).
+    #[tokio::test]
+    async fn test_introspect_after_user_message() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::IntrospectView;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_after_msg", actor).unwrap();
+
+        // Send a user message and wait for it to be processed.
+        handle.send(&client, 42u64).unwrap();
+        let _ = rx.recv().await.unwrap();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx.recv().await.unwrap();
+
+        match &payload.properties {
+            NodeProperties::Actor {
+                actor_status,
+                last_message_handler,
+                ..
+            } => {
+                assert_eq!(actor_status, "idle");
+                let handler = last_message_handler
+                    .as_deref()
+                    .expect("should have a handler");
+                assert!(
+                    !handler.contains("IntrospectMessage"),
+                    "handler should be the user message handler, not introspect; got: {}",
+                    handler
+                );
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    /// Two consecutive introspect queries: the second reports the
+    /// first introspect handler. This confirms the mechanism is
+    /// purely "one behind" — introspection is not hidden from
+    /// the history.
+    #[tokio::test]
+    async fn test_introspect_consecutive_queries() {
+        use crate::introspect::IntrospectMessage;
+        use crate::introspect::IntrospectView;
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, _rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_consec", actor).unwrap();
+
+        // First introspect query — just to advance the snapshot.
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let _ = reply_rx.recv().await.unwrap();
+
+        // Second introspect query — should see the first one.
+        let (reply_port2, reply_rx2) = client.open_once_port::<NodePayload>();
+        handle
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port2.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx2.recv().await.unwrap();
+
+        match &payload.properties {
+            NodeProperties::Actor {
+                actor_status,
+                last_message_handler,
+                ..
+            } => {
+                assert_eq!(actor_status, "idle");
+                let handler = last_message_handler
+                    .as_deref()
+                    .expect("should have a handler");
+                assert!(
+                    handler.contains("IntrospectMessage"),
+                    "second introspect should see the first introspect handler; got: {}",
+                    handler
+                );
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
 }
