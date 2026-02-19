@@ -513,7 +513,6 @@ class ProcMesh(MeshTrait):
         supervision_display_name = (
             f"{str(instance)}.<{Class.__module__}.{Class.__name__} {name}>"
         )
-        mesh._inner.start_supervision(instance._as_rust(), supervision_display_name)
 
         instance._add_child(mesh)
         return cast(TActor, mesh)
