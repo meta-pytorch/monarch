@@ -54,7 +54,7 @@ use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::shape::PyExtent;
 use crate::shape::PyShape;
-use crate::supervision::PySupervisionMonitor;
+use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 use crate::value_mesh::PyValueMesh;
 
@@ -242,7 +242,7 @@ fn supervision_error_to_pyerr(err: PyErr, qualified_endpoint_name: &Option<Strin
 
 async fn collect_value(
     rx: &mut PortReceiver<PythonMessage>,
-    supervision_monitor: &Option<PySupervisionMonitor>,
+    supervision_monitor: &Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: &Option<String>,
 ) -> PyResult<(Part, Option<usize>)> {
@@ -316,7 +316,7 @@ async fn collect_valuemesh(
     extent: Extent,
     mut rx: PortReceiver<PythonMessage>,
     method_name: String,
-    supervision_monitor: Option<PySupervisionMonitor>,
+    supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
 ) -> PyResult<Py<PyAny>> {
@@ -373,7 +373,7 @@ async fn collect_valuemesh(
 fn value_collector(
     mut receiver: PortReceiver<PythonMessage>,
     method_name: String,
-    supervision_monitor: Option<PySupervisionMonitor>,
+    supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
     adverb: EndpointAdverb,
@@ -414,7 +414,7 @@ fn value_collector(
 pub struct PyValueStream {
     receiver: Arc<tokio::sync::Mutex<PortReceiver<PythonMessage>>>,
     /// Supervisor for monitoring actor health during streaming.
-    supervision_monitor: Option<PySupervisionMonitor>,
+    supervision_monitor: Option<Arc<dyn Supervisable>>,
     instance: Instance<PythonActor>,
     remaining: AtomicUsize,
     method_name: String,
@@ -506,7 +506,7 @@ pub(crate) trait Endpoint {
     ) -> PyResult<()>;
 
     /// Get the supervision_monitor for this endpoint (if any).
-    fn get_supervision_monitor(&self) -> Option<PySupervisionMonitor>;
+    fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>>;
 
     /// Get the qualified endpoint name for error messages (if any).
     fn get_qualified_name(&self) -> Option<String>;
@@ -759,7 +759,7 @@ impl Endpoint for ActorEndpoint {
         self.inner.cast(message, selection, instance)
     }
 
-    fn get_supervision_monitor(&self) -> Option<PySupervisionMonitor> {
+    fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {
         Some(self.inner.get_supervision_monitor())
     }
 
@@ -1018,7 +1018,7 @@ impl Endpoint for Remote {
         Ok(())
     }
 
-    fn get_supervision_monitor(&self) -> Option<PySupervisionMonitor> {
+    fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {
         None // Remote endpoints don't have supervision_monitors
     }
 
