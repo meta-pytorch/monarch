@@ -182,6 +182,35 @@ impl PyHostMesh {
         PyPythonTask::new(mesh_impl)
     }
 
+    /// Spawn a MeshAdminAgent and return its HTTP address as a string.
+    ///
+    /// If `bind_addr` is provided, the admin proc binds to that address
+    /// (parsed as a `ChannelAddr`). Otherwise, the globally configured
+    /// default transport is used.
+    fn _spawn_admin(
+        &self,
+        instance: &PyInstance,
+        bind_addr: Option<String>,
+    ) -> PyResult<PyPythonTask> {
+        let host_mesh = self.mesh_ref()?.clone();
+        let instance = instance.clone();
+        PyPythonTask::new(async move {
+            let addr = match bind_addr {
+                Some(s) => s
+                    .parse::<hyperactor::channel::ChannelAddr>()
+                    .map_err(|e| PyException::new_err(e.to_string()))?,
+                None => default_bind_spec().binding_addr(),
+            };
+            let admin_proc = Proc::direct(addr, "mesh_admin_proc".to_string())
+                .map_err(|e| PyException::new_err(e.to_string()))?;
+            let host_mesh_addr = host_mesh
+                .spawn_admin(instance.deref(), &admin_proc)
+                .await
+                .map_err(|e| PyException::new_err(e.to_string()))?;
+            Ok(host_mesh_addr.to_string())
+        })
+    }
+
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
         Ok(Self::new_ref(
             self.mesh_ref()?.sliced(region.as_inner().clone()),

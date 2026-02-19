@@ -31,6 +31,20 @@
 //! Actors that own non-addressable children, or that want to publish
 //! domain-specific [`NodeProperties`] (e.g. `Host` or `Proc`),
 //! override [`Actor::handle_introspect`].
+//!
+//! # Pre-dispatch snapshot (one-behind invariant)
+//!
+//! [`default_actor_payload`] reports `actor_status` and
+//! `last_message_handler` from a *pre-dispatch snapshot* — the values
+//! captured immediately before the current handler began executing.
+//! The running handler therefore never sees itself in the payload.
+//!
+//! This is a purely mechanical "one behind" guarantee: consecutive
+//! introspect queries *will* reveal each other (the second query
+//! reports the first introspect handler), and introspection is not
+//! otherwise hidden from the history. For a freshly spawned actor
+//! with no prior messages, the snapshot reports post-initialization
+//! state (`idle`) and no last handler.
 
 use std::time::SystemTime;
 
@@ -132,6 +146,24 @@ pub struct NodePayload {
 }
 wirevalue::register_type!(NodePayload);
 
+/// Context for introspection query - what aspect of the actor to
+/// describe.
+///
+/// Infrastructure actors (e.g., ProcMeshAgent, HostMeshAgent)
+/// have dual nature: they manage entities (Proc, Host) while also
+/// being actors themselves. IntrospectView allows callers to
+/// specify which aspect to query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub enum IntrospectView {
+    /// Return managed-entity properties (Proc, Host, etc.) for
+    /// infrastructure actors.
+    Entity,
+    /// Return standard actor properties (status, messages_processed,
+    /// flight_recorder).
+    Actor,
+}
+wirevalue::register_type!(IntrospectView);
+
 /// Introspection query sent to any actor.
 ///
 /// `Query` asks the actor to describe itself. `QueryChild` asks the
@@ -143,6 +175,8 @@ wirevalue::register_type!(NodePayload);
 pub enum IntrospectMessage {
     /// "Describe yourself."
     Query {
+        /// View context - Entity or Actor.
+        view: IntrospectView,
         /// Reply port receiving the actor's self-description.
         reply: OncePortRef<NodePayload>,
     },
@@ -184,9 +218,17 @@ pub struct RecordedEvent {
 /// This is the default introspection response for any actor — it
 /// reports only framework-owned state. Used by
 /// [`default_handle_introspect`](crate::actor::default_handle_introspect).
-pub(crate) fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
+///
+/// Status and last-handler are taken from the *previous* values
+/// (before the current handler started), so the introspect query
+/// doesn't report itself. This avoids the Heisenberg problem where
+/// observing the actor always shows "processing IntrospectMessage".
+pub fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
     let actor_id = cell.actor_id();
-    let status = cell.status().borrow().clone();
+    // Use prev_status / prev_last_message_handler so the introspect
+    // handler doesn't report itself.
+    let status = cell.prev_status();
+    let last_handler = cell.prev_last_message_handler();
 
     let children: Vec<String> = cell
         .child_actor_ids()
@@ -223,7 +265,7 @@ pub(crate) fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
             actor_type: cell.actor_type_name().to_string(),
             messages_processed: cell.num_processed_messages(),
             created_at: format_timestamp(cell.created_at()),
-            last_message_handler: cell.last_message_handler().map(|info| info.to_string()),
+            last_message_handler: last_handler.map(|info| info.to_string()),
             total_processing_time_us: cell.total_processing_time_us(),
             flight_recorder,
         },

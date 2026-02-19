@@ -696,7 +696,7 @@ impl App {
         }
     }
 
-    /// Controlled mutation API - single entry point for tree modifications.
+    // Controlled mutation API - single entry point for tree modifications.
 
     /// Replace the entire tree structure.
     fn set_tree(&mut self, tree: Option<TreeNode>) {
