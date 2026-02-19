@@ -658,8 +658,14 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 // make the proc failure the cause. It is a hack to try to determine
                 // the correct status based on process exit status.
                 let actor_status = match state.state.and_then(|s| s.proc_status) {
+                    Some(ProcStatus::Stopped { exit_code: 0, .. }) => {
+                        ActorStatus::Stopped("process exited cleanly".to_string())
+                    }
                     Some(ProcStatus::Stopped { exit_code, .. }) => {
-                        ActorStatus::Stopped(format!("process exited with code {}", exit_code))
+                        ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                            "process exited with non-zero code {}",
+                            exit_code
+                        )))
                     }
                     // Conservatively treat lack of status as stopped
                     None => ActorStatus::Stopped("no status received from process".to_string()),

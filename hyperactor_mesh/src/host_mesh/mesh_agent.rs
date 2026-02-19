@@ -8,9 +8,16 @@
 
 //! The mesh agent actor that manages a host.
 
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
+
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
@@ -47,10 +54,69 @@ use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
-use crate::host_mesh::host_admin::HostAdminQueryMessage;
 use crate::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
+
+/// Prefix used for synthetic child references representing
+/// system-owned procs.
+///
+/// These refs appear in `NodePayload.children` for `HostMeshAgent` so
+/// that the navigation layer can distinguish non-addressable system
+/// procs from addressable actor references.
+pub(crate) const SYSTEM_REF_PREFIX: &str = "[system] ";
+
+/// Format the synthetic reference string for a system-owned proc.
+///
+/// The returned string is intended to be placed in
+/// `NodePayload.children` and later round-tripped through
+/// [`parse_system_proc_ref`].
+pub(crate) fn system_proc_ref(proc_id: &str) -> String {
+    format!("{SYSTEM_REF_PREFIX}{proc_id}")
+}
+
+/// Parse a synthetic system-proc reference previously produced by
+/// [`system_proc_ref`].
+///
+/// Returns the proc-id portion if `s` uses the [`SYSTEM_REF_PREFIX`]
+/// convention.
+pub(crate) fn parse_system_proc_ref(s: &str) -> Option<&str> {
+    s.strip_prefix(SYSTEM_REF_PREFIX)
+}
+
+/// Typed host-node identifier for mesh admin navigation.
+///
+/// Wraps an [`ActorId`] (the `HostMeshAgent`'s actor id) and
+/// serializes with a `host:` prefix so that the admin resolver can
+/// distinguish host-level references from plain actor references.
+/// The same `HostMeshAgent` `ActorId` can appear as both a host
+/// (from root's children) and as an actor (from a proc's children);
+/// `HostId` makes the host case unambiguous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostId(pub ActorId);
+
+/// Prefix used by [`HostId`] for display/parse round-tripping.
+const HOST_ID_PREFIX: &str = "host:";
+
+impl fmt::Display for HostId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{HOST_ID_PREFIX}{}", self.0)
+    }
+}
+
+impl FromStr for HostId {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let inner = s
+            .strip_prefix(HOST_ID_PREFIX)
+            .ok_or_else(|| anyhow::anyhow!("not a host reference: {}", s))?;
+        let actor_id: ActorId = inner
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid actor id in host ref '{}': {}", s, e))?;
+        Ok(HostId(actor_id))
+    }
+}
 
 pub(crate) type ProcManagerSpawnFuture =
     Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
@@ -134,7 +200,6 @@ pub(crate) struct ProcCreationState {
         resource::GetRankStatus { cast = true },
         resource::List,
         ShutdownHost,
-        HostAdminQueryMessage
     ]
 )]
 pub struct HostMeshAgent {
@@ -180,6 +245,126 @@ impl Actor for HostMeshAgent {
                 host.serve();
             }
         };
+        Ok(())
+    }
+
+    /// Host-level introspection override.
+    ///
+    /// `HostMeshAgent` is the "host node" in the introspection graph:
+    /// on `Query` it returns `NodeProperties::Host` and lists its
+    /// immediate children as: (1) two non-addressable system procs
+    /// (system + local), and (2) one addressable `ProcMeshAgent`
+    /// actor per successfully created user proc.
+    ///
+    /// System procs are emitted as synthetic child references
+    /// prefixed with `"[system] "` because they are not actors and
+    /// cannot receive `IntrospectMessage` directly. When the caller
+    /// follows one of these references, it sends
+    /// `IntrospectMessage::QueryChild` back to this `HostMeshAgent`,
+    /// which resolves the proc locally and replies with a
+    /// `NodeProperties::Proc` payload whose `children` are the proc's
+    /// actor ids.
+    async fn handle_introspect(
+        &mut self,
+        cx: &Instance<Self>,
+        msg: hyperactor::introspect::IntrospectMessage,
+    ) -> Result<(), anyhow::Error> {
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectView;
+        use hyperactor::introspect::NodePayload;
+        use hyperactor::introspect::NodeProperties;
+
+        match msg {
+            IntrospectMessage::Query { view, reply } => {
+                let payload = match view {
+                    IntrospectView::Entity => {
+                        // Return Host properties.
+                        let host = self.host.as_ref().expect("host present");
+                        let addr = host.addr().to_string();
+
+                        // Children: system procs + user proc mesh agents.
+                        let mut children = Vec::new();
+
+                        // System procs are prefixed with "[system] " so the
+                        // resolver can distinguish them.
+                        let system_proc_id = host.system_proc().proc_id().to_string();
+                        children.push(system_proc_ref(&system_proc_id));
+                        let local_proc_id = host.local_proc().proc_id().to_string();
+                        children.push(system_proc_ref(&local_proc_id));
+
+                        // User procs: ProcIds from successful creations.
+                        for state in self.created.values() {
+                            if let Ok((proc_id, _agent_ref)) = &state.created {
+                                children.push(proc_id.to_string());
+                            }
+                        }
+
+                        let num_procs = children.len();
+                        NodePayload {
+                            identity: cx.self_id().to_string(),
+                            properties: NodeProperties::Host { addr, num_procs },
+                            children,
+                            parent: None,
+                        }
+                    }
+                    IntrospectView::Actor => {
+                        // Return Actor properties using default.
+                        cx.introspect_payload()
+                    }
+                };
+
+                if let Err(e) = reply.send(cx, payload) {
+                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
+                }
+            }
+            IntrospectMessage::QueryChild { child_ref, reply } => {
+                use hyperactor::reference::Reference;
+
+                let proc = match &child_ref {
+                    Reference::Proc(proc_id) => {
+                        let host = self.host.as_ref().expect("host present");
+                        if *proc_id == *host.system_proc().proc_id() {
+                            Some(host.system_proc())
+                        } else if *proc_id == *host.local_proc().proc_id() {
+                            Some(host.local_proc())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                let payload = match proc {
+                    Some(proc) => {
+                        let actors = proc.all_actor_ids();
+                        let children: Vec<String> =
+                            actors.iter().map(|id| id.to_string()).collect();
+                        NodePayload {
+                            identity: child_ref.to_string(),
+                            properties: NodeProperties::Proc {
+                                proc_name: proc.proc_id().to_string(),
+                                num_actors: actors.len(),
+                                is_system: true,
+                            },
+                            children,
+                            parent: Some(cx.self_id().to_string()),
+                        }
+                    }
+                    None => NodePayload {
+                        identity: String::new(),
+                        properties: NodeProperties::Error {
+                            code: "not_found".into(),
+                            message: format!("unknown child reference: {}", child_ref,),
+                        },
+                        children: vec![],
+                        parent: None,
+                    },
+                };
+                if let Err(e) = reply.send(cx, payload) {
+                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+                }
+            }
+        }
         Ok(())
     }
 }

@@ -141,6 +141,15 @@ import argparse
 import asyncio
 import textwrap
 
+from kubernetes.client import (
+    V1Container,
+    V1EmptyDirVolumeSource,
+    V1EnvVar,
+    V1PodSpec,
+    V1ResourceRequirements,
+    V1Volume,
+    V1VolumeMount,
+)
 from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT
 from monarch.config import configure
 from monarch.job.kubernetes import KubernetesJob
@@ -184,8 +193,8 @@ _TRAIN_SCRIPT_CONTENT = textwrap.dedent("""\
 """)
 
 
-def build_gpu_pod_spec(gpus_per_host: int) -> dict:
-    """Build a PodSpec with GPU resources and shared memory for NCCL.
+def build_gpu_pod_spec(gpus_per_host: int) -> V1PodSpec:
+    """Build a V1PodSpec with GPU resources and shared memory for NCCL.
 
     The bootstrap command writes train.py to the worker filesystem
     before starting the Monarch worker loop, so the SPMDActor can
@@ -197,27 +206,30 @@ def build_gpu_pod_spec(gpus_per_host: int) -> dict:
         f"pathlib.Path({TRAIN_SCRIPT!r}).write_text({_TRAIN_SCRIPT_CONTENT!r})\n"
         + _WORKER_BOOTSTRAP_SCRIPT
     )
-    return {
-        "containers": [
-            {
-                "name": "worker",
-                "image": "ghcr.io/meta-pytorch/monarch:latest",
-                "command": ["python", "-u", "-c", bootstrap],
-                "env": [{"name": "MONARCH_PORT", "value": "26600"}],
-                "resources": {
-                    "limits": {"nvidia.com/gpu": str(gpus_per_host)},
-                    "requests": {"nvidia.com/gpu": str(gpus_per_host)},
-                },
-                "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
-            }
+    gpu_resources = {"nvidia.com/gpu": str(gpus_per_host)}
+    return V1PodSpec(
+        containers=[
+            V1Container(
+                name="worker",
+                image="ghcr.io/meta-pytorch/monarch:latest",
+                command=["python", "-u", "-c", bootstrap],
+                env=[V1EnvVar(name="MONARCH_PORT", value="26600")],
+                resources=V1ResourceRequirements(
+                    limits=gpu_resources,
+                    requests=gpu_resources,
+                ),
+                volume_mounts=[
+                    V1VolumeMount(name="dshm", mount_path="/dev/shm"),
+                ],
+            )
         ],
-        "volumes": [
-            {
-                "name": "dshm",
-                "emptyDir": {"medium": "Memory", "sizeLimit": "16Gi"},
-            }
+        volumes=[
+            V1Volume(
+                name="dshm",
+                empty_dir=V1EmptyDirVolumeSource(medium="Memory", size_limit="16Gi"),
+            )
         ],
-    }
+    )
 
 
 # %%

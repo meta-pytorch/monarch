@@ -56,7 +56,9 @@ use crate::bootstrap::BootstrapCommand;
 mod native;
 pub(crate) use native::NativeProcLauncher;
 
+#[cfg(target_os = "linux")]
 mod systemd;
+#[cfg(target_os = "linux")]
 pub(crate) use systemd::SystemdProcLauncher;
 
 /// Result of launching a proc.

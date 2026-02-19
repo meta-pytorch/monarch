@@ -51,6 +51,25 @@ class HostMesh:
         """
         ...
 
+    def _spawn_admin(
+        self,
+        instance: Instance,
+        bind_addr: str | None = None,
+    ) -> PythonTask[str]:
+        """
+        Spawn a MeshAdminAgent on this host mesh and return its HTTP address.
+
+        The admin agent aggregates topology across all hosts and serves
+        an HTTP API on an ephemeral port.
+
+        Arguments:
+        - `instance`: The actor instance used to spawn the admin agent.
+        - `bind_addr`: Optional binding address for the admin proc
+          (e.g. ``"tcp:0.0.0.0:0"``). If not provided, uses the
+          globally configured default transport.
+        """
+        ...
+
     def sliced(self, region: Region) -> "HostMesh":
         """
         Slice this mesh into a new mesh with the given region.
