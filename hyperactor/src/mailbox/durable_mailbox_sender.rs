@@ -16,6 +16,7 @@ use super::*;
 struct DurableMailboxSender(Buffer<MessageEnvelope>);
 
 impl DurableMailboxSender {
+    #[allow(dead_code)]
     fn new(
         write_ahead_log: impl MessageLog<MessageEnvelope> + 'static,
         inner: impl MailboxSender + 'static,
@@ -62,6 +63,7 @@ impl DurableMailboxSender {
         Self(sequencer)
     }
 
+    #[allow(dead_code)]
     async fn flush(&mut self) -> Result<(), watch::error::RecvError> {
         self.0.flush().await
     }

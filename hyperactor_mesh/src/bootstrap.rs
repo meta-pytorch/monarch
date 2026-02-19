@@ -54,7 +54,6 @@ use hyperactor::mailbox::MailboxServer;
 use hyperactor::proc::Proc;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
-use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global::override_or_global;
@@ -81,6 +80,7 @@ use crate::proc_launcher::ProcExitResult;
 use crate::proc_launcher::ProcLauncher;
 use crate::proc_launcher::ProcLauncherError;
 use crate::proc_launcher::StdioHandling;
+#[cfg(target_os = "linux")]
 use crate::proc_launcher::SystemdProcLauncher;
 use crate::proc_launcher::format_process_name;
 use crate::resource;
@@ -1520,6 +1520,7 @@ pub(crate) enum LauncherKind {
     Native,
     /// Spawn via transient `systemd --user` units and observe via
     /// D-Bus.
+    #[cfg(target_os = "linux")]
     Systemd,
 }
 
@@ -1531,16 +1532,24 @@ impl FromStr for LauncherKind {
     /// Accepted values (case-insensitive, surrounding whitespace
     /// ignored):
     /// - `""` or `"native"` → [`LauncherKind::Native`]
-    /// - `"systemd"` → [`LauncherKind::Systemd`]
+    /// - `"systemd"` → [`LauncherKind::Systemd`] (Linux only)
     ///
     /// Returns [`io::ErrorKind::InvalidInput`] for any other string.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "native" => Ok(Self::Native),
+            #[cfg(target_os = "linux")]
             "systemd" => Ok(Self::Systemd),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown proc launcher kind {other:?}; expected 'native' or 'systemd'"),
+                format!(
+                    "unknown proc launcher kind {other:?}; expected 'native'{}",
+                    if cfg!(target_os = "linux") {
+                        " or 'systemd'"
+                    } else {
+                        ""
+                    }
+                ),
             )),
         }
     }
@@ -1657,6 +1666,7 @@ impl BootstrapProcManager {
             tracing::info!(kind = ?kind, config_value = %kind_str, "using default proc launcher");
             match kind {
                 LauncherKind::Native => Arc::new(NativeProcLauncher::new()),
+                #[cfg(target_os = "linux")]
                 LauncherKind::Systemd => Arc::new(SystemdProcLauncher::new()),
             }
         })
@@ -1699,7 +1709,6 @@ impl BootstrapProcManager {
                 Err(_) => {
                     // exit_rx sender was dropped without sending - launcher error.
                     let _ = handle.mark_failed("exit_rx sender dropped unexpectedly");
-                    crate::admin_proxy::deregister_remote_proc(&proc_id.to_string());
                     tracing::error!(
                         name = "ProcStatus",
                         status = "Exited::ChannelDropped",
@@ -1709,10 +1718,6 @@ impl BootstrapProcManager {
                     return;
                 }
             };
-
-            // Deregister from the admin proxy so the proc no longer
-            // appears in proxied admin queries.
-            crate::admin_proxy::deregister_remote_proc(&proc_id.to_string());
 
             // Collect stderr tail from StreamFwder if we captured stdio.
             // The launcher may also provide stderr_tail in exit_result;
@@ -1957,11 +1962,9 @@ impl ProcManager for BootstrapProcManager {
 
         // Handle callback from child proc when it confirms bootstrap.
         let h = handle.clone();
-        let proxy_proc_id = proc_id.to_string();
         tokio::spawn(async move {
             match callback_rx.recv().await {
                 Ok((addr, agent)) => {
-                    crate::admin_proxy::register_remote_proc(proxy_proc_id, agent.clone());
                     let _ = h.mark_ready(addr, agent);
                 }
                 Err(e) => {
@@ -2367,6 +2370,7 @@ mod tests {
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
     use hyperactor::id;
+    use hyperactor_config::Flattrs;
     use ndslice::Extent;
     use ndslice::ViewExt;
     use ndslice::extent;
@@ -3311,7 +3315,7 @@ mod tests {
     /// Same as `bootstrap_canonical_simple` but using the systemd
     /// launcher backend.
     #[tokio::test]
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     async fn bootstrap_canonical_simple_systemd_launcher() {
         // Acquire exclusive config lock and select systemd launcher.
         let config = hyperactor_config::global::lock();

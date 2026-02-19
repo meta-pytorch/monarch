@@ -59,6 +59,7 @@ from monarch._src.actor.proc_mesh import (
     HyProcMesh,
 )
 from monarch._src.job.job import LoginJob, ProcessState
+from monarch._src.job.process import ProcessJob
 from monarch.actor import (
     Accumulator,
     Actor,
@@ -1563,6 +1564,19 @@ def test_login_job():
         j.kill()
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
+def test_process_job():
+    job = ProcessJob({"hosts": 2})
+    state = job.state(cached_path=None)
+
+    hello = state.hosts.spawn_procs().spawn("hello", Hello)
+    r = hello.doit.call().get()
+    for _, v in r.items():
+        assert v == "hello!"
+
+    job.kill()
+
+
 _global_foo = None
 
 
@@ -1913,6 +1927,8 @@ def test_graceful_shutdown_no_unacked_messages() -> None:
     """Stopping a proc mesh should not leave unacknowledged messages."""
     env = os.environ.copy()
     env["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT"] = "2s"
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        env["PYTHONPATH"] = ":".join(sys.path)
     result = subprocess.run(
         [sys.executable, "-c", _GRACEFUL_SHUTDOWN_WORKER],
         env=env,

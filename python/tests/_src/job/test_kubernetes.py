@@ -157,7 +157,9 @@ class TestAddMesh(unittest.TestCase):
 
     def test_pod_spec_marks_provisioned(self) -> None:
         job = self._make_job()
-        spec = {"containers": [{"name": "w", "image": "img"}]}
+        spec = V1PodSpec(
+            containers=[V1Container(name="w", image="img")],
+        )
         job.add_mesh("workers", num_replicas=1, pod_spec=spec)
         self.assertTrue(job._meshes["workers"]["provisioned"])
         self.assertEqual(job._meshes["workers"]["pod_spec"], spec)
@@ -177,7 +179,7 @@ class TestAddMesh(unittest.TestCase):
                 "workers",
                 num_replicas=1,
                 image_spec=ImageSpec("img"),
-                pod_spec={"containers": []},
+                pod_spec=V1PodSpec(containers=[]),
             )
 
     def test_label_selector_forbidden_with_provisioning(self) -> None:
@@ -234,12 +236,14 @@ class TestCreate(unittest.TestCase):
         # Should not raise.
         job._create(None)
 
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
     @patch("monarch._src.job.kubernetes.config.load_incluster_config")
     def test_create_creates_crd_for_provisioned_mesh(
         self,
         mock_load_config: MagicMock,
         mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
     ) -> None:
         job = self._make_job()
         job.add_mesh(
@@ -248,6 +252,20 @@ class TestCreate(unittest.TestCase):
 
         mock_api = MagicMock()
         mock_custom_api_cls.return_value = mock_api
+
+        # ApiClient.sanitize_for_serialization converts V1PodSpec to dict
+        mock_api_client = MagicMock()
+        mock_api_client_cls.return_value = mock_api_client
+        mock_api_client.sanitize_for_serialization.return_value = {
+            "containers": [
+                {
+                    "name": "worker",
+                    "image": "myimage:latest",
+                    "command": ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+                    "env": [{"name": "MONARCH_PORT", "value": "9999"}],
+                }
+            ]
+        }
 
         job._create(None)
 
@@ -265,12 +283,14 @@ class TestCreate(unittest.TestCase):
         )
         self.assertEqual(body["spec"]["port"], 9999)
 
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
     @patch("monarch._src.job.kubernetes.config.load_incluster_config")
     def test_create_patches_on_conflict(
         self,
         mock_load_config: MagicMock,
         mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
     ) -> None:
         job = self._make_job()
         job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
@@ -285,12 +305,14 @@ class TestCreate(unittest.TestCase):
 
         mock_api.patch_namespaced_custom_object.assert_called_once()
 
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
     @patch("monarch._src.job.kubernetes.config.load_incluster_config")
     def test_create_skips_attach_only_meshes(
         self,
         mock_load_config: MagicMock,
         mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
     ) -> None:
         job = self._make_job()
         job.add_mesh("attach", num_replicas=1)
@@ -334,23 +356,21 @@ class TestBuildWorkerPodSpec(unittest.TestCase):
         spec = KubernetesJob._build_worker_pod_spec(
             ImageSpec("myimage:latest"), port=26600
         )
-        self.assertEqual(len(spec["containers"]), 1)
-        container = spec["containers"][0]
-        self.assertEqual(container["name"], "worker")
-        self.assertEqual(container["image"], "myimage:latest")
+        self.assertEqual(len(spec.containers), 1)
+        container = spec.containers[0]
+        self.assertEqual(container.name, "worker")
+        self.assertEqual(container.image, "myimage:latest")
         self.assertEqual(
-            container["command"], ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT]
+            container.command, ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT]
         )
-        self.assertEqual(
-            container["env"],
-            [{"name": "MONARCH_PORT", "value": "26600"}],
-        )
-        self.assertNotIn("resources", container)
+        self.assertEqual(len(container.env), 1)
+        self.assertEqual(container.env[0].name, "MONARCH_PORT")
+        self.assertEqual(container.env[0].value, "26600")
+        self.assertIsNone(container.resources)
 
     def test_custom_port_in_env(self) -> None:
         spec = KubernetesJob._build_worker_pod_spec(ImageSpec("img"), port=9999)
-        env = spec["containers"][0]["env"]
-        self.assertEqual(env[0]["value"], "9999")
+        self.assertEqual(spec.containers[0].env[0].value, "9999")
 
     def test_resources_set(self) -> None:
         spec = KubernetesJob._build_worker_pod_spec(
@@ -360,10 +380,10 @@ class TestBuildWorkerPodSpec(unittest.TestCase):
             ),
             port=26600,
         )
-        container = spec["containers"][0]
+        container = spec.containers[0]
         expected = {"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": "2"}
-        self.assertEqual(container["resources"]["requests"], expected)
-        self.assertEqual(container["resources"]["limits"], expected)
+        self.assertEqual(container.resources.requests, expected)
+        self.assertEqual(container.resources.limits, expected)
 
 
 class TestIsPodWorkerReady(unittest.TestCase):
