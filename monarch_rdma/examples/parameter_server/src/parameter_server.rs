@@ -50,9 +50,9 @@
 //!
 //! To run the tests:
 //!
-//! $ buck2 test @//mode/opt  //monarch/monarch_rdma/examples:parameter_server
+//! $ buck2 test @//mode/opt //monarch/monarch_rdma/examples/parameter_server:parameter_server
 //! or
-//! $ buck2 run @//mode/opt  //monarch/monarch_rdma/examples:parameter_server-unittest
+//! $ buck2 run @//mode/opt //monarch/monarch_rdma/examples/parameter_server:parameter_server-unittest
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -71,10 +71,9 @@ use hyperactor::context::Mailbox as _;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::ProcessAllocator;
+use hyperactor_mesh::Bootstrap;
+use hyperactor_mesh::HostMeshRef;
+use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::global_root_client;
 use monarch_rdma::IbverbsConfig;
@@ -476,26 +475,23 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
 
     let instance = global_root_client();
 
-    let mut alloc = ProcessAllocator::new(Command::new(
+    let mut command = Command::new(
         buck_resources::get("monarch/monarch_rdma/examples/parameter_server/bootstrap").unwrap(),
-    ));
+    );
+    let host_addr = ChannelTransport::Unix.any();
+    let boot = Bootstrap::Host {
+        addr: host_addr.clone(),
+        command: None, // use current binary
+        config: None,
+        exit_on_shutdown: false,
+    };
+    boot.to_env(&mut command);
+    command.kill_on_drop(true);
+    let _child = command.spawn().unwrap();
 
-    let ps_proc_mesh = ProcMesh::allocate(
-        instance,
-        Box::new(
-            alloc
-                .allocate(AllocSpec {
-                    extent: extent! {replica=1, host=1, gpu=1},
-                    constraints: Default::default(),
-                    proc_name: None,
-                    transport: ChannelTransport::Unix,
-                    proc_allocation_mode: Default::default(),
-                })
-                .await?,
-        ),
-        "ps",
-    )
-    .await?;
+    let host_mesh_ref = HostMeshRef::from_hosts(Name::new("test").unwrap(), vec![host_addr]);
+    let host_mesh = HostMesh::take(host_mesh_ref).await?;
+    let ps_proc_mesh = host_mesh.spawn(instance, "ps", extent!(gpu = 1)).await?;
 
     tracing::info!(
         "creating parameter server's RDMA manager with config: {}",
@@ -513,22 +509,9 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
 
     // Create a proc mesh for workers, where each worker is assigned to its own GPU.
     tracing::info!("creating worker proc mesh ({} workers)...", num_workers);
-    let worker_proc_mesh = ProcMesh::allocate(
-        instance,
-        Box::new(
-            alloc
-                .allocate(AllocSpec {
-                    extent: extent! {replica=1, host=1, gpu=num_workers},
-                    constraints: Default::default(),
-                    proc_name: None,
-                    transport: ChannelTransport::Unix,
-                    proc_allocation_mode: Default::default(),
-                })
-                .await?,
-        ),
-        "workers",
-    )
-    .await?;
+    let worker_proc_mesh = host_mesh
+        .spawn(instance, "workers", extent!(gpu = num_workers))
+        .await?;
 
     tracing::info!(
         "creating worker's RDMA manager with config: {}",
@@ -614,6 +597,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         }
         ps_actor.send(instance, Log {}).unwrap();
     }
+    let _ = host_mesh.shutdown(instance).await;
     Ok(())
 }
 
