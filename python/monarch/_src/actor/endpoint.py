@@ -7,7 +7,6 @@
 # pyre-strict
 
 import functools
-from abc import ABC, abstractmethod
 from typing import (
     Any,
     Awaitable,
@@ -21,39 +20,26 @@ from typing import (
     Optional,
     overload,
     ParamSpec,
+    Protocol,
     Tuple,
     TYPE_CHECKING,
     TypeVar,
     Union,
 )
 
-from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
-from monarch._rust_bindings.monarch_hyperactor.endpoint import (
-    stream_collector,
-    value_collector,
-    valuemesh_collector,
+from monarch._rust_bindings.monarch_hyperactor.shape import (
+    Extent,  # noqa: F401 re-exports
 )
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 from monarch._src.actor.future import Future
-from monarch._src.actor.metrics import (
-    endpoint_broadcast_error_counter,
-    endpoint_broadcast_throughput_counter,
-)
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
 
 T = TypeVar("T")
 
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.mailbox import (
-        OncePortReceiver as HyOncePortReceiver,
-        OncePortRef,
-        PortReceiver as HyPortReceiver,
-        PortRef,
-    )
-    from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
     from monarch._src.actor.actor_mesh import ActorMesh, Port, ValueMesh
+    from monarch._src.actor.future import Future
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -64,30 +50,7 @@ Selection = Literal["all", "choose"]
 Propagator = Union[None, Literal["cached", "inspect", "mocked"], Callable[..., Any]]
 
 
-class Endpoint(ABC, Generic[P, R]):
-    def __init__(self, propagator: Propagator) -> None:
-        self._propagator_arg = propagator
-        self._cache: Dict[Any, Any] = {}
-
-    def _get_method_name(self) -> str:
-        """
-        Extract method name from this endpoint's method specifier.
-
-        Returns:
-            The method name, or "unknown" if not available
-        """
-        call_name = self._call_name()
-        if isinstance(call_name, MethodSpecifier):
-            return call_name.name
-        else:
-            # could happen for class Remote https://fburl.com/code/4ny98bul
-            return "unknown"
-
-    @abstractmethod
-    def _get_extent(self) -> Extent:
-        pass
-
-    @abstractmethod
+class Endpoint(Protocol[P, R]):
     def _send(
         self,
         args: Tuple[Any, ...],
@@ -104,111 +67,25 @@ class Endpoint(ABC, Generic[P, R]):
         For ActorEndpoints this will be the actor_meshes size. For free-function endpoints,
         this will be the size of the currently active proc_mesh.
         """
-        pass
+        ...
 
-    @abstractmethod
-    def _call_name(self) -> MethodSpecifier:
+    def _call_name(self) -> Any:
         """
         Something to use in InputChecker to represent calling this thingy.
         """
-        pass
+        ...
 
-    def _supervise(
-        self, r: "HyPortReceiver | HyOncePortReceiver"
-    ) -> "HyPortReceiver | HyOncePortReceiver":
-        return r
-
-    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
-        """
-        Returns a Supervisor for monitoring actor health during endpoint calls.
-        Override in subclasses to provide supervision for actor meshes.
-        """
-        return None
-
-    def _full_name(self) -> str | None:
-        """
-        Returns the full name of the endpoint for error messages.
-        Override in subclasses to provide a meaningful name.
-        """
-        return None
-
-    # the following are all 'adverbs' or different ways to handle the
-    # return values of this endpoint. Adverbs should only ever take *args, **kwargs
-    # of the original call. If we want to add syntax sugar for something that needs additional
-    # arguments, it should be implemented as function indepdendent of endpoint like `send`
-    # and `Accumulator`
     def choose(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
-        from monarch._src.actor.actor_mesh import context
-
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
-        method_name: str = self._get_method_name()
-        actor_instance = context().actor_instance
+        ...
 
-        port_ref, task = value_collector(
-            method_name,
-            self._get_supervision_monitor(),
-            actor_instance._as_rust(),
-            self._full_name(),
-            "choose",
-        )
+    def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]: ...
 
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=port_ref, selection="choose")
-
-        return Future(coro=task)
-
-    def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
-        from monarch._src.actor.actor_mesh import context
-
-        method_name: str = self._get_method_name()
-
-        extent = self._get_extent()
-        if extent.nelements != 1:
-            raise ValueError(
-                f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
-            )
-
-        actor_instance = context().actor_instance
-
-        port_ref, task = value_collector(
-            method_name,
-            self._get_supervision_monitor(),
-            actor_instance._as_rust(),
-            self._full_name(),
-            "call_one",
-        )
-
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=port_ref, selection="choose")
-
-        return Future(coro=task)
-
-    def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        from monarch._src.actor.actor_mesh import context
-
-        method_name: str = self._get_method_name()
-        instant_event(f"calling {method_name} message")
-
-        extent: Extent = self._get_extent()
-
-        actor_instance = context().actor_instance
-
-        port_ref, task = valuemesh_collector(
-            extent,
-            method_name,
-            self._get_supervision_monitor(),
-            actor_instance._as_rust(),
-            self._full_name(),
-        )
-
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=port_ref)
-
-        return cast("Future[ValueMesh[R]]", Future(coro=task))
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]": ...
 
     def stream(self, *args: P.args, **kwargs: P.kwargs) -> Iterator[Future[R]]:
         """
@@ -217,27 +94,7 @@ class Endpoint(ABC, Generic[P, R]):
         This enables processing results from multiple actors incrementally as
         they become available. Returns an iterator of Future values.
         """
-        from monarch._src.actor.actor_mesh import context
-
-        method_name: str = self._get_method_name()
-
-        extent: Extent = self._get_extent()
-
-        actor_instance = context().actor_instance
-
-        port_ref, value_stream = stream_collector(
-            extent,
-            method_name,
-            self._get_supervision_monitor(),
-            actor_instance._as_rust(),
-            self._full_name(),
-        )
-
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=port_ref)
-
-        # pyre-ignore[7]: ValueStream is Iterator[Future[Any]], R is erased at runtime
-        return value_stream
+        ...
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """
@@ -247,67 +104,9 @@ class Endpoint(ABC, Generic[P, R]):
         In other words, the return of this method does not guarrantee the
         delivery of the message.
         """
-        from monarch._src.actor.actor_mesh import send
+        ...
 
-        method_name: str = self._get_method_name()
-        instant_event(f"broadcasting {method_name} message")
-        attributes = {
-            "method": method_name,
-            "actor_count": 0,  # broadcast doesn't track specific count
-        }
-        try:
-            # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-            send(self, args, kwargs)
-            endpoint_broadcast_throughput_counter.add(1, attributes=attributes)
-        except Exception:
-            endpoint_broadcast_error_counter.add(1, attributes=attributes)
-            raise
-
-    @abstractmethod
-    def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R: ...
-
-    def rref(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        return self._rref(args, kwargs)
-
-    def _propagate(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        fake_args: Tuple[Any, ...],
-        fake_kwargs: Dict[str, Any],
-    ) -> Any:
-        return _do_propagate(
-            self._propagator_arg,
-            args,
-            kwargs,
-            fake_args,
-            fake_kwargs,
-            self._cache,
-            resolvable=getattr(self, "_resolvable", None),
-        )
-
-    def _fetch_propagate(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        fake_args: Tuple[Any, ...],
-        fake_kwargs: Dict[str, Any],
-    ) -> Any:
-        if self._propagator_arg is None:
-            return  # no propgator provided, so we just assume no mutations
-        return self._propagate(args, kwargs, fake_args, fake_kwargs)
-
-    def _pipe_propagate(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        fake_args: Tuple[Any, ...],
-        fake_kwargs: Dict[str, Any],
-    ) -> Any:
-        if not callable(self._propagator_arg):
-            raise ValueError("Must specify explicit callable for pipe")
-        return self._propagate(args, kwargs, fake_args, fake_kwargs)
+    def rref(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
 
 
 def _do_propagate(
