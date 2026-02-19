@@ -67,7 +67,7 @@ Propagator = Union[None, Literal["cached", "inspect", "mocked"], Callable[..., A
 class Endpoint(ABC, Generic[P, R]):
     def __init__(self, propagator: Propagator) -> None:
         self._propagator_arg = propagator
-        self._cache: Optional[Dict[Any, Any]] = None
+        self._cache: Dict[Any, Any] = {}
 
     def _get_method_name(self) -> str:
         """
@@ -277,21 +277,15 @@ class Endpoint(ABC, Generic[P, R]):
         fake_args: Tuple[Any, ...],
         fake_kwargs: Dict[str, Any],
     ) -> Any:
-        if self._propagator_arg is None or self._propagator_arg == "cached":
-            if self._cache is None:
-                self._cache = {}
-            resolvable = getattr(self, "_resolvable", None)
-            if resolvable is None:
-                raise NotImplementedError(
-                    "Cached propagation is not implemented for actor endpoints."
-                )
-            return _cached_propagation(self._cache, resolvable, args, kwargs)
-        elif self._propagator_arg == "inspect":
-            return None
-        elif self._propagator_arg == "mocked":
-            raise NotImplementedError("mocked propagation")
-        else:
-            return fake_call(self._propagator_arg, *fake_args, **fake_kwargs)
+        return _do_propagate(
+            self._propagator_arg,
+            args,
+            kwargs,
+            fake_args,
+            fake_kwargs,
+            self._cache,
+            resolvable=getattr(self, "_resolvable", None),
+        )
 
     def _fetch_propagate(
         self,
@@ -314,6 +308,29 @@ class Endpoint(ABC, Generic[P, R]):
         if not callable(self._propagator_arg):
             raise ValueError("Must specify explicit callable for pipe")
         return self._propagate(args, kwargs, fake_args, fake_kwargs)
+
+
+def _do_propagate(
+    propagator_arg: Propagator,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+    fake_args: Tuple[Any, ...],
+    fake_kwargs: Dict[str, Any],
+    cache: Dict[Any, Any],
+    resolvable: Optional[Any] = None,
+) -> Any:
+    if propagator_arg is None or propagator_arg == "cached":
+        if resolvable is None:
+            raise NotImplementedError(
+                "Cached propagation is not implemented for actor endpoints."
+            )
+        return _cached_propagation(cache, resolvable, args, kwargs)
+    elif propagator_arg == "inspect":
+        return None
+    elif propagator_arg == "mocked":
+        raise NotImplementedError("mocked propagation")
+    else:
+        return fake_call(propagator_arg, *fake_args, **fake_kwargs)
 
 
 class EndpointProperty(Generic[P, R]):
