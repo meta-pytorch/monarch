@@ -527,14 +527,6 @@ impl ProcMesh {
         mesh
     }
 
-    /// Detach the proc mesh from the lifetime of `self`, and return its reference.
-    #[allow(unused)]
-    #[cfg(test)]
-    pub(crate) fn detach(self) -> ProcMeshRef {
-        // This also keeps the ProcMeshAllocation::Allocated alloc task alive.
-        self.current_ref.clone()
-    }
-
     /// Stop this mesh gracefully.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let region = self.region.clone();
@@ -1326,6 +1318,7 @@ mod tests {
     use ndslice::extent;
     use timed_test::async_timed_test;
 
+    use crate::host_mesh::HostMesh;
     use crate::resource::RankedValues;
     use crate::resource::Status;
     use crate::testactor;
@@ -1360,10 +1353,15 @@ mod tests {
 
         let instance = testing::instance();
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            testactor::assert_mesh_shape(proc_mesh.spawn(instance, "test", &()).await.unwrap())
-                .await;
-        }
+        let hm = testing::host_mesh(4).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 2))
+            .await
+            .unwrap();
+        let actor_mesh = proc_mesh.spawn(instance, "test", &()).await.unwrap();
+        testactor::assert_mesh_shape(actor_mesh).await;
+
+        let _ = HostMesh::take(hm).shutdown(instance).await;
     }
 
     #[tokio::test]
@@ -1373,20 +1371,25 @@ mod tests {
 
         let instance = testing::instance();
 
-        for proc_mesh in testing::proc_meshes(&instance, extent!(replicas = 4, hosts = 2)).await {
-            let err = proc_mesh
-                .spawn::<testactor::FailingCreateTestActor, Instance<testing::TestRootClient>>(
-                    instance,
-                    "testfail",
-                    &(),
-                )
-                .await
-                .unwrap_err();
-            let statuses = err.into_actor_spawn_error().unwrap();
-            assert_eq!(
-                statuses,
-                RankedValues::from((0..8, Status::Failed("test failure".to_string()))),
-            );
-        }
+        let hm = testing::host_mesh(4).await;
+        let proc_mesh = hm
+            .spawn(&instance, "test", extent!(gpus = 2))
+            .await
+            .unwrap();
+        let err = proc_mesh
+            .spawn::<testactor::FailingCreateTestActor, Instance<testing::TestRootClient>>(
+                instance,
+                "testfail",
+                &(),
+            )
+            .await
+            .unwrap_err();
+        let statuses = err.into_actor_spawn_error().unwrap();
+        assert_eq!(
+            statuses,
+            RankedValues::from((0..8, Status::Failed("test failure".to_string()))),
+        );
+
+        let _ = HostMesh::take(hm).shutdown(instance).await;
     }
 }
