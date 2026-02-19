@@ -88,7 +88,7 @@ typeuri = { version = "0.0.0", path = "../typeuri" }
 urlencoding = "2.1.0"
 uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
-zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
+zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "blocking-api", "p2p", "tokio"], default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
