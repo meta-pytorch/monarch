@@ -1802,8 +1802,8 @@ mod tests {
 
         let instance = testing::instance();
 
-        let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = proc_meshes.get(1).unwrap();
+        let mut hm = testing::host_mesh(2).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1839,5 +1839,7 @@ mod tests {
                 .unwrap(),
             Duration::from_mins(1)
         );
+
+        let _ = hm.shutdown(instance).await;
     }
 }
