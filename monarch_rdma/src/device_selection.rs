@@ -10,6 +10,7 @@
 //! the best available RDMA NICs based on PCI topology distance.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -164,7 +165,7 @@ impl PCIDevice {
 /// Resolve all symlinks in a path (equivalent to Python's os.path.realpath)
 fn realpath(path: &Path) -> Result<std::path::PathBuf, std::io::Error> {
     let mut current = path.to_path_buf();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
 
     loop {
         if seen.contains(&current) {
@@ -236,7 +237,7 @@ pub fn parse_pci_topology() -> Result<HashMap<String, PCIDevice>, std::io::Error
         devices: &mut HashMap<String, PCIDevice>,
         parent_addresses: &HashMap<String, Option<String>>,
         pci_addr: &str,
-        visited: &mut std::collections::HashSet<String>,
+        visited: &mut HashSet<String>,
     ) {
         if visited.contains(pci_addr) {
             return;
@@ -254,7 +255,7 @@ pub fn parse_pci_topology() -> Result<HashMap<String, PCIDevice>, std::io::Error
         }
     }
 
-    let mut visited = std::collections::HashSet::new();
+    let mut visited = HashSet::new();
     for pci_addr in devices.keys().cloned().collect::<Vec<_>>() {
         visited.clear();
         build_parent_chain(&mut devices, &parent_addresses, &pci_addr, &mut visited);
@@ -379,10 +380,131 @@ pub fn get_nic_pci_address(nic_name: &str) -> Option<String> {
     None
 }
 
-/// Step 1: Parse device string into prefix and postfix
-/// Step 2: Get PCI address from compute device
-/// Step 3: Get PCI address for all RDMA NIC devices
-/// Step 4: Calculate PCI distances and return closest RDMA NIC device
+/// Checks if all devices share the same link layer type.
+///
+/// This is simple check for validating that a set of RDMA devices are on the same network
+/// fabric. Mixed link layers (e.g., some InfiniBand, some Ethernet) typically indicate
+/// a configuration issue or devices from different network tiers.
+///
+/// Note that this function only checks the **link layer type** (InfiniBand vs Ethernet), not the
+/// actual network topology or configuration. Specifically, it **cannot distinguish** situations where
+/// the network topology has both frontend and backend ethernet (both reported as "Ethernet") which
+/// is unfortunately deployment specific.
+///
+/// # Arguments
+///
+/// * `devices` - Slice of RDMA devices to check
+///
+/// # Returns
+///
+/// `true` if all devices use the same link layer (or list is empty), `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use monarch_rdma::device_selection::devices_share_link_layer;
+/// use monarch_rdma::device_selection::get_gpu_affinity_devices;
+///
+/// let gpu_devices = get_gpu_affinity_devices();
+/// if !devices_share_link_layer(&gpu_devices) {
+///     tracing::warn!("GPU affinity devices have mixed link layers");
+/// }
+/// ```
+pub fn devices_share_link_layer(devices: &[RdmaDevice]) -> bool {
+    if devices.is_empty() {
+        return true;
+    }
+
+    // Check: All devices should use the same link layer
+    let link_layers: HashSet<String> = devices
+        .iter()
+        .flat_map(|dev| dev.ports())
+        .map(|port| port.link_layer().to_string())
+        .collect();
+
+    link_layers.len() <= 1
+}
+
+/// Retrieves RDMA devices that have GPU affinity (used for GPU-to-GPU communication).
+///
+/// This function identifies which RDMA devices are used by GPUs for high-speed
+/// communication by examining the deduced GPU-to-RDMA device mappings. These devices are
+/// typically on high-bandwidth networks suitable for GPU workloads.
+///
+/// # Design Note: Frontend vs Backend Device Detection
+///
+/// Distinguishing between "frontend" and "backend" RDMA devices through ibverbs alone
+/// is challenging, as these are deployment-specific organizational concepts rather than
+/// standardized ibverbs attributes. While some hardware configurations show different
+/// link layers (InfiniBand for backend, Ethernet for frontend) or MTU settings, these
+/// patterns are not universal across all deployments.
+///
+/// This function takes a pragmatic approach: **we assume that GPU devices, by design,
+/// are correctly paired with backend (high-speed) NICs**. Since GPUs are used for
+/// high-bandwidth workloads, the device selection algorithm naturally prefers the
+/// fastest available network infrastructure.
+///
+/// We primarily use this function for **CPU-to-device placement**, ensuring that CPU
+/// memory operations use the same high-speed network fabric as GPU operations. This
+/// maintains consistency and avoids mixing frontend/backend networks within a single
+/// training job.
+///
+/// For validation, use `devices_share_link_layer()` to detect potential misconfigurations
+/// such as mixed link layer types.
+///
+/// # Returns
+///
+/// A vector of `RdmaDevice` structures representing devices with GPU affinity.
+/// Returns an empty vector if no GPUs are available.
+///
+/// # Examples
+///
+/// ```
+/// use monarch_rdma::device_selection::get_gpu_affinity_devices;
+///
+/// // Get devices that GPUs use (assumed to be backend/high-speed network)
+/// let gpu_devices = get_gpu_affinity_devices();
+/// for device in gpu_devices {
+///     println!("GPU affinity device: {}", device.name());
+/// }
+/// ```
+pub fn get_gpu_affinity_devices() -> Vec<RdmaDevice> {
+    // Get GPU to RDMA device mappings
+    let gpu_mapping = create_cuda_to_rdma_mapping();
+
+    // Extract unique device names from GPU mappings
+    let gpu_device_names: HashSet<String> =
+        gpu_mapping.values().map(|dev| dev.name().clone()).collect();
+
+    if gpu_device_names.is_empty() {
+        return Vec::new();
+    }
+
+    // Filter all devices to only include GPU-affinity ones
+    crate::ibverbs_primitives::get_all_devices()
+        .into_iter()
+        .filter(|dev| gpu_device_names.contains(dev.name()))
+        .collect()
+}
+
+/// Selects the optimal RDMA device based on a device hint string.
+///
+/// # Device Selection Strategy
+///
+/// - **NIC selection** (`nic:mlx5_0`): Direct device lookup by name
+/// - **CUDA selection** (`cuda:0`):
+///   1. Get PCI address of CUDA device
+///   2. Calculate PCI distances to all rdma devices
+///   3. Return closest RDMA device
+/// - **CPU selection** (`cpu:0`):
+///   1. Get PCI address of CPU/NUMA node
+///   2. Get GPU-affinity devices (assuming these access the high-speed network)
+///   3. Calculate PCI distances ONLY among GPU-affinity devices
+///   4. Return closest GPU-affinity device
+///   5. Validates link layer consistency and warns on misconfigurations
+///
+/// The CPU path ensures that CPU memory operations use the same high-speed network
+/// fabric as GPU operations, avoiding mixing frontend/backend networks.
 pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevice> {
     let device_hint = device_hint?;
 
@@ -395,12 +517,9 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
                 .into_iter()
                 .find(|dev| dev.name() == &postfix)
         }
-        "cuda" | "cpu" => {
-            let source_pci_addr = match prefix.as_str() {
-                "cuda" => get_cuda_pci_address(&postfix)?,
-                "cpu" => get_numa_pci_address(&postfix)?,
-                _ => unreachable!(),
-            };
+        "cuda" => {
+            // CUDA: Use all devices for distance calculation
+            let source_pci_addr = get_cuda_pci_address(&postfix)?;
             let rdma_devices = get_all_rdma_devices();
             if rdma_devices.is_empty() {
                 return RdmaDevice::first_available();
@@ -427,6 +546,94 @@ pub fn select_optimal_rdma_device(device_hint: Option<&str>) -> Option<RdmaDevic
             }
 
             // Fallback
+            RdmaDevice::first_available()
+        }
+        "cpu" => {
+            // CPU: Use only GPU-affinity devices (high-speed network)
+            let source_pci_addr = get_numa_pci_address(&postfix)?;
+
+            // Get GPU-affinity devices and their PCI addresses
+            let gpu_affinity_devices = get_gpu_affinity_devices();
+
+            if gpu_affinity_devices.is_empty() {
+                tracing::warn!(
+                    "No GPU affinity devices found for CPU device selection, falling back to all devices"
+                );
+                return RdmaDevice::first_available();
+            }
+
+            // Sanity check: Warn if GPU-affinity devices have mixed link layers
+            if !devices_share_link_layer(&gpu_affinity_devices) {
+                let link_layers: HashSet<String> = gpu_affinity_devices
+                    .iter()
+                    .flat_map(|dev| dev.ports())
+                    .map(|port| port.link_layer().to_string())
+                    .collect();
+
+                tracing::warn!(
+                    "GPU affinity devices have mixed link layers: {:?}",
+                    link_layers
+                );
+                tracing::warn!("This may indicate a configuration issue.");
+                tracing::warn!("Device details:");
+                for device in &gpu_affinity_devices {
+                    for port in device.ports() {
+                        tracing::warn!(
+                            "  {} port {}: {}",
+                            device.name(),
+                            port.port_num(),
+                            port.link_layer()
+                        );
+                    }
+                }
+                // TODO: Decide on fallback strategy - for now, continue with selection
+            }
+
+            // Build list of GPU-affinity device names and their PCI addresses
+            let all_rdma_devices = get_all_rdma_devices();
+            let gpu_device_names: HashSet<String> = gpu_affinity_devices
+                .iter()
+                .map(|dev| dev.name().clone())
+                .collect();
+
+            // Filter to only GPU-affinity devices for distance calculation
+            let gpu_rdma_devices: Vec<(String, String)> = all_rdma_devices
+                .into_iter()
+                .filter(|(name, _)| gpu_device_names.contains(name))
+                .collect();
+
+            if gpu_rdma_devices.is_empty() {
+                tracing::warn!("No GPU affinity devices found in RDMA device list");
+                return RdmaDevice::first_available();
+            }
+
+            let pci_devices = parse_pci_topology().ok()?;
+            let source_device = pci_devices.get(&source_pci_addr)?;
+
+            let rdma_names: Vec<String> = gpu_rdma_devices
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect();
+            let rdma_pci_devices: Vec<PCIDevice> = gpu_rdma_devices
+                .iter()
+                .filter_map(|(_, addr)| pci_devices.get(addr).cloned())
+                .collect();
+
+            if let Some(closest_idx) = source_device.find_closest(&rdma_pci_devices) {
+                if let Some(optimal_name) = rdma_names.get(closest_idx) {
+                    for device in gpu_affinity_devices {
+                        if *device.name() == *optimal_name {
+                            return Some(device);
+                        }
+                    }
+                }
+            }
+
+            // Fallback
+            tracing::warn!(
+                "Could not find optimal GPU affinity device for CPU {}, falling back",
+                postfix
+            );
             RdmaDevice::first_available()
         }
         _ => {
@@ -466,7 +673,7 @@ pub fn create_cuda_to_rdma_mapping() -> HashMap<String, RdmaDevice> {
 
 /// Resolves RDMA device using auto-detection logic when needed
 ///
-/// This function applies auto-detection for default devices, but otherwise  
+/// This function applies auto-detection for default devices, but otherwise
 /// returns the device as-is. The main device selection logic happens in
 /// `select_optimal_rdma_device` and `IbverbsConfig::with_device_hint`.
 ///
@@ -522,7 +729,7 @@ mod tests {
     /// Detect if we're running on GT20 hardware by checking for expected RDMA device configuration
     fn is_gt20_hardware() -> bool {
         let rdma_devices = get_all_rdma_devices();
-        let device_names: std::collections::HashSet<String> =
+        let device_names: HashSet<String> =
             rdma_devices.iter().map(|(name, _)| name.clone()).collect();
 
         // GT20 hardware should have these specific RDMA devices
@@ -783,5 +990,80 @@ mod tests {
         println!("\n✓ GT20 hardware test completed");
 
         // we can't gaurantee that the test will always match given test infra but is good for diagnostic purposes / tracking.
+    }
+
+    #[test]
+    fn test_get_gpu_affinity_devices() {
+        // This test verifies that get_gpu_affinity_devices returns devices
+        // that match GPU selections and performs sanity checks
+        let all_devices = crate::ibverbs_primitives::get_all_devices();
+        let gpu_affinity_devices = get_gpu_affinity_devices();
+
+        println!("Total devices: {}", all_devices.len());
+        println!("GPU affinity devices: {}", gpu_affinity_devices.len());
+
+        if all_devices.is_empty() {
+            println!("Skipping test: No RDMA devices available");
+            return;
+        }
+
+        // GPU affinity devices should be a subset of all devices
+        assert!(gpu_affinity_devices.len() <= all_devices.len());
+
+        // All GPU affinity device names should exist in the full device list
+        let all_device_names: HashSet<String> =
+            all_devices.iter().map(|d| d.name().clone()).collect();
+
+        for gpu_dev in &gpu_affinity_devices {
+            assert!(
+                all_device_names.contains(gpu_dev.name()),
+                "GPU affinity device {} not found in all devices",
+                gpu_dev.name()
+            );
+            println!("  GPU affinity device: {}", gpu_dev.name());
+        }
+
+        // If GPUs are available, verify affinity devices match GPU selections
+        let gpu_mapping = create_cuda_to_rdma_mapping();
+        if !gpu_mapping.is_empty() {
+            let gpu_device_names: HashSet<String> =
+                gpu_mapping.values().map(|d| d.name().clone()).collect();
+
+            let affinity_device_names: HashSet<String> = gpu_affinity_devices
+                .iter()
+                .map(|d| d.name().clone())
+                .collect();
+
+            assert_eq!(
+                gpu_device_names, affinity_device_names,
+                "GPU affinity devices should match GPU-selected devices"
+            );
+
+            // Test the devices_share_link_layer function
+            let share_link_layer = devices_share_link_layer(&gpu_affinity_devices);
+            println!("  Devices share link layer: {}", share_link_layer);
+        } else {
+            println!("  No GPUs found, GPU affinity devices should be empty");
+            assert!(gpu_affinity_devices.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_devices_share_link_layer() {
+        // Test empty devices
+        assert!(devices_share_link_layer(&[]));
+
+        // Test with real devices if available
+        let gpu_affinity_devices = get_gpu_affinity_devices();
+        if !gpu_affinity_devices.is_empty() {
+            println!(
+                "Testing link layer check with {} devices",
+                gpu_affinity_devices.len()
+            );
+            let result = devices_share_link_layer(&gpu_affinity_devices);
+            println!("  Devices share link layer: {}", result);
+        } else {
+            println!("No GPU affinity devices available for link layer test");
+        }
     }
 }
