@@ -253,6 +253,30 @@ def main() -> None:
                FROM actor_meshes
                ORDER BY given_name""",
         ),
+        # Actor status events schema
+        (
+            "Schema of 'actor_status_events' table",
+            """SELECT column_name, data_type, is_nullable
+               FROM information_schema.columns
+               WHERE table_name = 'actor_status_events'
+               ORDER BY ordinal_position""",
+        ),
+        # Actor status events by status
+        (
+            "Actor status transitions",
+            """SELECT new_status, COUNT(*) as count
+               FROM actor_status_events
+               GROUP BY new_status
+               ORDER BY count DESC""",
+        ),
+        # Actor status events joined with actors
+        (
+            "Actor status timeline",
+            """SELECT a.full_name, s.new_status, s.prev_status, s.reason
+               FROM actor_status_events s
+               JOIN actors a ON s.actor_id = a.full_name
+               ORDER BY s.timestamp_us""",
+        ),
     ]
 
     for title, sql in queries:
