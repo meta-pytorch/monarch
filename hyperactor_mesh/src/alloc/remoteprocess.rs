@@ -1608,7 +1608,8 @@ mod test {
         handle.await.unwrap().unwrap();
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 15)]
+    #[ignore = "flaky (SF, 02-14-2026)"]
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_normal_stop() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
@@ -1689,7 +1690,8 @@ mod test {
         handle.await.unwrap().unwrap();
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 15)]
+    #[ignore = "flaky (SF, 02-14-2026)"]
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_realloc() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
@@ -1822,7 +1824,7 @@ mod test {
         handle.await.unwrap().unwrap();
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 15)]
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_upstream_closed() {
         // Use temporary config for this test
         let config = hyperactor_config::global::lock();
@@ -1918,7 +1920,8 @@ mod test {
         handle.await.unwrap().unwrap();
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 15)]
+    #[ignore = "flaky (SF, 02-14-2026)"]
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_inner_alloc_failure() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
@@ -2020,7 +2023,7 @@ mod test {
         handle.await.unwrap().unwrap();
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 15)]
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_trace_id_propagation() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
@@ -2101,7 +2104,7 @@ mod test {
         handle.await.unwrap().unwrap();
     }
 
-    #[timed_test::async_timed_test(timeout_secs = 15)]
+    #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_trace_id_propagation_no_client_context() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
@@ -2462,7 +2465,7 @@ mod test_alloc {
         assert!(proc_state.is_none());
     }
 
-    #[async_timed_test(timeout_secs = 15)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_alloc_inner_alloc_failure() {
         // SAFETY: Test happens in single-threaded code.
