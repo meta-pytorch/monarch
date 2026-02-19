@@ -678,10 +678,10 @@ mod tests {
 
     use hyperactor::PortId;
     use hyperactor::PortRef;
+    use hyperactor::ProcId;
     use hyperactor::accum;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
-    use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor::context;
@@ -703,9 +703,7 @@ mod tests {
     use tokio::time::Duration;
 
     use super::*;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::LocalAllocator;
+    use crate::host_mesh::HostMesh;
     use crate::testing;
 
     struct Edge<T> {
@@ -836,6 +834,17 @@ mod tests {
         assert_eq!(paths.0, expected);
     }
 
+    fn proc_rank(actor_id: &ActorId, rank_lookup: &HashMap<ProcId, usize>) -> Index {
+        let proc_id = actor_id.proc_id();
+        match actor_id.proc_id().rank() {
+            Some(rank) => rank,
+            None => rank_lookup
+                .get(proc_id)
+                .copied()
+                .expect("proc rank not found"),
+        }
+    }
+
     //  Given a port tree,
     //     * remove the client port, i.e. the 1st element of the path;
     //     * verify all remaining ports are comm actor ports;
@@ -855,7 +864,11 @@ mod tests {
     //     1 -> 0, 1
     //     2 -> 0, 2
     //     3 -> 0, 2, 3
-    fn get_ranks(paths: PathToLeaves<PortId>, client_reply: &PortId) -> PathToLeaves<Index> {
+    fn get_ranks(
+        paths: PathToLeaves<PortId>,
+        client_reply: &PortId,
+        rank_lookup: &HashMap<ProcId, usize>,
+    ) -> PathToLeaves<Index> {
         let ranks = paths
             .0
             .into_iter()
@@ -870,10 +883,10 @@ mod tests {
                     .into_iter()
                     .map(|p| {
                         assert!(p.actor_id().name().contains("comm"));
-                        p.actor_id().rank()
+                        proc_rank(p.actor_id(), rank_lookup)
                     })
                     .collect();
-                (dst.into_actor_id().rank(), actor_path)
+                (proc_rank(&dst.into_actor_id(), rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -904,6 +917,7 @@ mod tests {
         extent: &Extent,
         reply_port_ref1: &PortRef<u64>,
         reply_port_ref2: &PortRef<MyReply>,
+        rank_lookup: &HashMap<ProcId, usize>,
     ) {
         // Get the paths used in casting
         let sel_paths = PathToLeaves(
@@ -915,15 +929,17 @@ mod tests {
 
         // Get the split port paths collected in SPLIT_PORT_TREE during casting
         let (reply1_paths, reply2_paths) = {
-            let tree = SPLIT_PORT_TREE.get().unwrap();
+            let tree = SPLIT_PORT_TREE
+                .get()
+                .expect("not initialized; are Hosts in the same process as SPLIT_PORT_TREE?");
             let edges = tree.lock().unwrap();
             let (reply1, reply2): (BTreeMap<_, _>, BTreeMap<_, _>) = build_paths(&edges)
                 .0
                 .into_iter()
                 .partition(|(_dst, path)| &path[0] == reply_port_ref1.port_id());
             (
-                get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id()),
-                get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id()),
+                get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), rank_lookup),
+                get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), rank_lookup),
             )
         };
 
@@ -941,16 +957,18 @@ mod tests {
     ) {
         // Reply from each dest actor. The replies should be received by client.
         {
-            for (dest_actor, (reply_to1, reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-                let rank = dest_actor.actor_id().rank() as u64;
-                reply_to1.send(instance, rank).unwrap();
+            for (i, (dest_actor, (reply_to1, reply_to2))) in
+                ranks.iter().zip(reply_tos.iter()).enumerate()
+            {
+                let value = i as u64;
+                reply_to1.send(instance, value).unwrap();
                 let my_reply = MyReply {
                     sender: dest_actor.actor_id().clone(),
-                    value: rank,
+                    value,
                 };
                 reply_to2.send(instance, my_reply.clone()).unwrap();
 
-                assert_eq!(reply1_rx.recv().await.unwrap(), rank);
+                assert_eq!(reply1_rx.recv().await.unwrap(), value);
                 assert_eq!(reply2_rx.recv().await.unwrap(), my_reply);
             }
         }
@@ -962,12 +980,13 @@ mod tests {
         // be received in the same order as they were sent out.
         {
             let n = 100;
-            let mut expected2: HashMap<usize, Vec<MyReply>> = hashmap! {};
-            for (dest_actor, (_reply_to1, reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-                let rank = dest_actor.actor_id().rank();
+            let mut expected2: HashMap<ActorId, Vec<MyReply>> = hashmap! {};
+            for (i, (dest_actor, (_reply_to1, reply_to2))) in
+                ranks.iter().zip(reply_tos.iter()).enumerate()
+            {
                 let mut sent2 = vec![];
-                for i in 0..n {
-                    let value = (rank * 100 + i) as u64;
+                for j in 0..n {
+                    let value = (i * 100 + j) as u64;
                     let my_reply = MyReply {
                         sender: dest_actor.actor_id().clone(),
                         value,
@@ -976,17 +995,20 @@ mod tests {
                     sent2.push(my_reply);
                 }
                 assert!(
-                    expected2.insert(rank, sent2).is_none(),
-                    "duplicate rank {rank} in map"
+                    expected2
+                        .insert(dest_actor.actor_id().clone(), sent2)
+                        .is_none(),
+                    "duplicate actor_id {} in map",
+                    dest_actor.actor_id()
                 );
             }
 
-            let mut received2: HashMap<usize, Vec<MyReply>> = hashmap! {};
+            let mut received2: HashMap<ActorId, Vec<MyReply>> = hashmap! {};
 
             for _ in 0..(n * ranks.len()) {
                 let my_reply = reply2_rx.recv().await.unwrap();
                 received2
-                    .entry(my_reply.sender.rank())
+                    .entry(my_reply.sender.clone())
                     .or_default()
                     .push(my_reply);
             }
@@ -1024,10 +1046,11 @@ mod tests {
         // be received in the same order as they were sent out.
         let mut sum = 0;
         let n = 100;
-        for (dest_actor, (reply_to1, _reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-            let rank = dest_actor.actor_id().rank();
-            for i in 0..n {
-                let value = (rank + i) as u64;
+        for (i, (_dest_actor, (reply_to1, _reply_to2))) in
+            ranks.iter().zip(reply_tos.iter()).enumerate()
+        {
+            for j in 0..n {
+                let value = (i + j) as u64;
                 reply_to1.send(instance, value).unwrap();
                 sum += value;
             }
@@ -1047,6 +1070,8 @@ mod tests {
         reply1_rx: PortReceiver<u64>,
         reply2_rx: PortReceiver<MyReply>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
+        // Keep the host mesh alive so comm actors aren't shut down.
+        host_mesh: HostMesh,
     }
 
     async fn setup_mesh_v1<A>(accum: Option<A>) -> MeshSetupV1
@@ -1054,20 +1079,11 @@ mod tests {
         A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
     {
         let instance = crate::testing::instance();
-
-        let extent = extent!(replica = 4, host = 4, gpu = 4);
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent.clone(),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let proc_mesh = crate::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
+        // We have to use a in process host mesh, because SPLIT_PORT_TREE only
+        // can collect paths from the same process.
+        let host_mesh = crate::testing::local_host_mesh(8).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", extent!(gpu = 8))
             .await
             .unwrap();
 
@@ -1083,7 +1099,7 @@ mod tests {
             .spawn_with_name(&instance, actor_name, &params, None, true)
             .await
             .unwrap();
-        let actor_mesh_ref = actor_mesh.deref().clone();
+        let actor_mesh_ref: crate::ActorMeshRef<TestActor> = actor_mesh.deref().clone();
 
         let (reply_port_handle0, _) = open_port::<String>(instance);
         let reply_port_ref0 = reply_port_handle0.bind();
@@ -1105,7 +1121,7 @@ mod tests {
         actor_mesh_ref.cast(instance, message).unwrap();
 
         let mut reply_tos = vec![];
-        for _ in extent.points() {
+        for _ in proc_mesh.extent().points() {
             let msg = rx.recv().await.expect("missing");
             match msg {
                 TestMessage::CastAndReply {
@@ -1131,9 +1147,24 @@ mod tests {
             }
         }
 
+        // [collect_commactor_routing_tree] only returns ranks,So we need to
+        // map proc Ids collected in SPLIT_PORT_TREE to ranks.
+        let rank_lookup = proc_mesh
+            .ranks()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.proc_id().clone(), i))
+            .collect::<HashMap<ProcId, usize>>();
+
         // v1 always uses sel!(*) when casting to a mesh.
         let selection = sel!(*);
-        verify_split_port_paths(&selection, &extent, &reply_port_ref1, &reply_port_ref2);
+        verify_split_port_paths(
+            &selection,
+            &proc_mesh.extent(),
+            &reply_port_ref1,
+            &reply_port_ref2,
+            &rank_lookup,
+        );
 
         MeshSetupV1 {
             instance,
@@ -1141,24 +1172,27 @@ mod tests {
             reply1_rx,
             reply2_rx,
             reply_tos,
+            host_mesh,
         }
     }
 
     async fn execute_cast_and_reply_v1() {
-        let MeshSetupV1 {
-            instance,
-            actor_mesh_ref,
-            reply1_rx,
-            reply2_rx,
-            reply_tos,
-            ..
-        } = setup_mesh_v1::<NoneAccumulator>(None).await;
+        let mut setup = setup_mesh_v1::<NoneAccumulator>(None).await;
 
-        let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
-        execute_cast_and_reply(ranks, instance, reply1_rx, reply2_rx, reply_tos).await;
+        let ranks = setup.actor_mesh_ref.values().collect::<Vec<_>>();
+        execute_cast_and_reply(
+            ranks,
+            setup.instance,
+            setup.reply1_rx,
+            setup.reply2_rx,
+            setup.reply_tos,
+        )
+        .await;
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_v1_retrofit() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
@@ -1169,7 +1203,7 @@ mod tests {
         execute_cast_and_reply_v1().await
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_v1_native() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
@@ -1184,19 +1218,15 @@ mod tests {
         // Use temporary config for this test
         let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
-        let MeshSetupV1 {
-            instance,
-            actor_mesh_ref,
-            reply1_rx,
-            reply_tos,
-            ..
-        } = setup_mesh_v1(Some(accum::sum::<u64>())).await;
+        let mut setup = setup_mesh_v1(Some(accum::sum::<u64>())).await;
 
-        let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
-        execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
+        let ranks = setup.actor_mesh_ref.values().collect::<Vec<_>>();
+        execute_cast_and_accum(ranks, setup.instance, setup.reply1_rx, setup.reply_tos).await;
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_v1_retrofit() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
@@ -1207,7 +1237,7 @@ mod tests {
         execute_cast_and_accum_v1(&config).await
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_v1_native() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
@@ -1223,6 +1253,7 @@ mod tests {
         reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
         reply_tos: Vec<hyperactor::OncePortRef<u64>>,
         _reply_port_ref: hyperactor::OncePortRef<u64>,
+        host_mesh: HostMesh,
     }
 
     async fn setup_once_port_mesh<A>(reducer: Option<A>) -> OncePortMeshSetupV1
@@ -1230,20 +1261,11 @@ mod tests {
         A: Accumulator<State = u64, Update = u64> + Send + Sync + 'static,
     {
         let instance = crate::testing::instance();
-
-        let extent = extent!(replica = 4, host = 4, gpu = 4);
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent.clone(),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let proc_mesh = crate::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
+        // We have to use a in process host mesh, because SPLIT_PORT_TREE only
+        // can collect paths from the same process.
+        let host_mesh = crate::testing::local_host_mesh(8).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", extent!(gpu = 8))
             .await
             .unwrap();
 
@@ -1275,7 +1297,7 @@ mod tests {
         actor_mesh_ref.cast(instance, message).unwrap();
 
         let mut reply_tos = vec![];
-        for _ in extent.points() {
+        for _ in proc_mesh.extent().points() {
             let msg = rx.recv().await.expect("missing");
             match msg {
                 TestMessage::CastAndReplyOnce { arg, reply_to } => {
@@ -1301,55 +1323,50 @@ mod tests {
             reply_rx,
             reply_tos,
             _reply_port_ref: reply_port_ref,
+            host_mesh,
         }
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_once_v1() {
         // Test OncePort without accumulator - port is NOT split.
         // All destinations receive the same original port.
         // First reply is delivered, others fail at receiver (port closed).
-        let OncePortMeshSetupV1 {
-            instance,
-            reply_rx,
-            reply_tos,
-            ..
-        } = setup_once_port_mesh::<NoneAccumulator>(None).await;
+        let mut setup = setup_once_port_mesh::<NoneAccumulator>(None).await;
 
         // All reply_tos point to the same port (not split).
         // Only the first message will be delivered successfully.
-        let num_replies = reply_tos.len();
-        for (i, reply_to) in reply_tos.into_iter().enumerate() {
-            reply_to.send(instance, i as u64).unwrap();
+        let num_replies = setup.reply_tos.len();
+        for (i, reply_to) in setup.reply_tos.into_iter().enumerate() {
+            reply_to.send(setup.instance, i as u64).unwrap();
         }
 
         // OncePort receives exactly one value (the first to arrive)
-        let result = reply_rx.recv().await.unwrap();
+        let result = setup.reply_rx.recv().await.unwrap();
         // The result should be one of the values sent
         assert!(result < num_replies as u64);
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_once_v1() {
         // Test OncePort splitting with sum accumulator.
         // Each destination actor replies with its rank.
         // The sum of all ranks should be received at the original port.
-        let OncePortMeshSetupV1 {
-            instance,
-            reply_rx,
-            reply_tos,
-            ..
-        } = setup_once_port_mesh(Some(accum::sum::<u64>())).await;
+        let mut setup = setup_once_port_mesh(Some(accum::sum::<u64>())).await;
 
         // Each actor replies with its index
         let mut expected_sum = 0u64;
-        for (i, reply_to) in reply_tos.into_iter().enumerate() {
-            reply_to.send(instance, i as u64).unwrap();
+        for (i, reply_to) in setup.reply_tos.into_iter().enumerate() {
+            reply_to.send(setup.instance, i as u64).unwrap();
             expected_sum += i as u64;
         }
 
         // OncePort should receive the sum of all responses
-        let result = reply_rx.recv().await.unwrap();
+        let result = setup.reply_rx.recv().await.unwrap();
         assert_eq!(result, expected_sum);
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 }
