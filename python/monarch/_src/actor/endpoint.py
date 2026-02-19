@@ -17,9 +17,8 @@ from typing import (
     Concatenate,
     Coroutine,
     Dict,
-    Generator,
     Generic,
-    List,
+    Iterator,
     Literal,
     Optional,
     overload,
@@ -32,6 +31,7 @@ from typing import (
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.endpoint import (
+    stream_collector,
     value_collector,
     valuemesh_collector,
 )
@@ -41,8 +41,6 @@ from monarch._src.actor.future import Future
 from monarch._src.actor.metrics import (
     endpoint_broadcast_error_counter,
     endpoint_broadcast_throughput_counter,
-    endpoint_stream_latency_histogram,
-    endpoint_stream_throughput_counter,
 )
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
 from opentelemetry.metrics import Counter, Histogram
@@ -299,45 +297,34 @@ class Endpoint(ABC, Generic[P, R]):
 
         return cast("Future[ValueMesh[R]]", Future(coro=task))
 
-    def stream(
-        self, *args: P.args, **kwargs: P.kwargs
-    ) -> Generator[Future[R], None, None]:
+    def stream(self, *args: P.args, **kwargs: P.kwargs) -> Iterator[Future[R]]:
         """
-        Broadcasts to all actors and yields their responses as a stream / generator.
+        Broadcasts to all actors and yields their responses as a stream.
 
         This enables processing results from multiple actors incrementally as
-        they become available. Returns an async generator of response values.
+        they become available. Returns an iterator of Future values.
         """
-        # Track throughput at method entry
-        method_name: str = self._get_method_name()
-        endpoint_stream_throughput_counter.add(1, attributes={"method": method_name})
+        from monarch._src.actor.actor_mesh import context
 
-        p, r_port = self._port()
-        start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=p._port_ref)
-        r: "PortReceiver[R]" = r_port
+        method_name: str = self._get_method_name()
 
         extent: Extent = self._get_extent()
 
-        # Note: stream doesn't track errors per-yield since errors propagate to caller
-        latency_decorator: Any = self._with_telemetry(
-            start_time,
-            endpoint_stream_latency_histogram,
-            endpoint_broadcast_error_counter,  # Placeholder, errors not tracked per-yield
-            extent.nelements,
+        actor_instance = context().actor_instance
+
+        port_ref, value_stream = stream_collector(
+            extent,
+            method_name,
+            self._get_supervision_monitor(),
+            actor_instance._as_rust(),
+            self._full_name(),
         )
 
-        def _stream() -> Generator[Future[R], None, None]:
-            for _ in range(extent.nelements):
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref)
 
-                @latency_decorator
-                async def receive() -> R:
-                    return await r._recv()
-
-                yield Future(coro=receive())
-
-        return _stream()
+        # pyre-ignore[7]: ValueStream is Iterator[Future[Any]], R is erased at runtime
+        return value_stream
 
     def broadcast(self, *args: P.args, **kwargs: P.kwargs) -> None:
         """
