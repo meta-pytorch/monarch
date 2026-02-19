@@ -160,6 +160,33 @@ class HostMesh(MeshTrait):
             True,
         )
 
+    def _spawn_admin(self, bind_addr: Optional[str] = None) -> "Future[str]":
+        """
+        Spawn a MeshAdminAgent on this host mesh and return its HTTP address.
+
+        The admin agent aggregates topology across all hosts and serves
+        an HTTP API. Use the returned address to connect the admin TUI::
+
+            addr = await host_mesh._spawn_admin()
+            # buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {addr}
+
+        Args:
+            bind_addr: Optional binding address for the admin proc
+                (e.g. ``"tcp:0.0.0.0:0"``). If not provided, uses the
+                globally configured default transport.
+
+        Returns:
+            Future[str]: The admin HTTP address (e.g. ``"127.0.0.1:12345"``).
+        """
+
+        async def task() -> str:
+            hy_mesh = await self._hy_host_mesh
+            return await hy_mesh._spawn_admin(
+                context().actor_instance._as_rust(), bind_addr
+            )
+
+        return Future(coro=task())
+
     def _spawn_nonblocking(
         self,
         name: str,
