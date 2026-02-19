@@ -94,7 +94,7 @@ zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
 itertools = "0.14.0"
 maplit = "1.0"
-proptest = "1.5"
+proptest = "1.10.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [features]

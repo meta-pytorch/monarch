@@ -22,7 +22,7 @@ hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 itertools = "0.14.0"
 nom = "8"
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
-proptest = "1.5"
+proptest = "1.10.0"
 quote = "1.0.44"
 rand = { version = "0.9", features = ["small_rng"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
