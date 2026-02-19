@@ -20,7 +20,7 @@ clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 digest = "0.10"
 filetime = "0.2.27"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.32", features = ["async-await", "compat"] }
 globset = { version = "0.4.13", features = ["serde1"] }
 ignore = "0.4"
 itertools = "0.14.0"
