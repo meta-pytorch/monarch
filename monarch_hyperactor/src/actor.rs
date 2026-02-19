@@ -111,8 +111,14 @@ impl std::fmt::Display for MethodSpecifier {
 
 #[pymethods]
 impl MethodSpecifier {
-    #[getter]
-    fn name(&self) -> &str {
+    #[getter(name)]
+    fn py_name(&self) -> &str {
+        self.name()
+    }
+}
+
+impl MethodSpecifier {
+    pub(crate) fn name(&self) -> &str {
         match self {
             MethodSpecifier::ReturnsResponse { name } => name,
             MethodSpecifier::ExplicitPort { name } => name,
