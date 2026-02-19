@@ -1914,9 +1914,9 @@ def test_graceful_shutdown_no_unacked_messages() -> None:
     env = os.environ.copy()
     env["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT"] = "2s"
     if "FB_XAR_INVOKED_NAME" in os.environ:
-        pytest.skip(
+        pytest.skip(  # pyre-ignore[29]: pytest.skip is callable
             "fbcode subprocess doesn't work right..."
-        )  # pyre-ignore[29]: pytest.skip is callable
+        )
     result = subprocess.run(
         [sys.executable, "-c", _GRACEFUL_SHUTDOWN_WORKER],
         env=env,
