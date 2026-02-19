@@ -314,7 +314,7 @@ pub struct ActorEvent {
 pub fn notify_actor_created(event: ActorEvent) {
     if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
         if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(&EntityEvent::Actor(event)) {
+            if let Err(e) = d.dispatch(EntityEvent::Actor(event)) {
                 tracing::error!("Failed to dispatch actor event: {:?}", e);
             }
         }
@@ -348,7 +348,7 @@ pub struct ActorMeshEvent {
 pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
     if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
         if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(&EntityEvent::ActorMesh(event)) {
+            if let Err(e) = d.dispatch(EntityEvent::ActorMesh(event)) {
                 tracing::error!("Failed to dispatch actor mesh event: {}", e);
             }
         }
@@ -376,7 +376,7 @@ pub struct ActorStatusEvent {
 pub fn notify_actor_status_changed(event: ActorStatusEvent) {
     if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
         if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(&EntityEvent::ActorStatus(event)) {
+            if let Err(e) = d.dispatch(EntityEvent::ActorStatus(event)) {
                 tracing::error!("Failed to dispatch actor status event: {:?}", e);
             }
         }
@@ -419,7 +419,7 @@ pub enum EntityEvent {
 ///
 /// struct MyEntityDispatcher;
 /// impl EntityEventDispatcher for MyEntityDispatcher {
-///     fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error> {
+///     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
 ///         match event {
 ///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
 ///             EntityEvent::ActorMesh(mesh) => println!("Mesh: {}", mesh.full_name),
@@ -433,7 +433,7 @@ pub enum EntityEvent {
 /// ```
 pub trait EntityEventDispatcher: Send + Sync {
     /// Dispatch an entity event to the appropriate handler.
-    fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error>;
+    fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error>;
 }
 
 /// Set the dispatcher to receive all entity events.
