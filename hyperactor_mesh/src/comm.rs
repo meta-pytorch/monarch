@@ -705,6 +705,7 @@ mod tests {
     use super::*;
     use crate::HostMeshRef;
     use crate::host_mesh::HostMesh;
+    use crate::test_utils::local_host_mesh;
     use crate::testing;
 
     struct Edge<T> {
@@ -1085,7 +1086,7 @@ mod tests {
         let instance = crate::testing::instance();
         // We have to use a in process host mesh, because SPLIT_PORT_TREE only
         // can collect paths from the same process.
-        let host_mesh = crate::testing::local_host_mesh(8).await;
+        let host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", extent!(gpu = 8))
             .await
@@ -1271,7 +1272,7 @@ mod tests {
         let instance = crate::testing::instance();
         // We have to use a in process host mesh, because SPLIT_PORT_TREE only
         // can collect paths from the same process.
-        let host_mesh = crate::testing::local_host_mesh(8).await;
+        let host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", extent!(gpu = 8))
             .await

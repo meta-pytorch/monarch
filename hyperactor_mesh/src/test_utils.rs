@@ -12,6 +12,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Unbind;
+use hyperactor::channel::ChannelTransport;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -36,4 +37,30 @@ impl Handler<EmptyMessage> for EmptyActor {
     async fn handle(&mut self, _: &Context<Self>, _: EmptyMessage) -> Result<(), anyhow::Error> {
         Ok(())
     }
+}
+
+/// Create a local in-process host mesh with `n` hosts, all running in
+/// the current process using `Local` channel transport.
+///
+/// This is similar to [`HostMesh::local_in_process`] but supports
+/// multiple hosts. All hosts use [`LocalProcManager`] with
+/// [`ChannelTransport::Local`], so there is no IPC overhead.
+///
+/// # Examples
+///
+/// ```ignore
+/// let host_mesh = test_utils::local_host_mesh(4).await;
+/// let proc_mesh = host_mesh
+///     .spawn(instance, "test", ndslice::extent!(gpu = 8))
+///     .await
+///     .unwrap();
+/// // ... do something with the proc mesh ...
+/// // shutdown the host mesh.
+/// let _ = HostMesh::take(host_mesh).shutdown(&instance).await;
+/// ```
+pub async fn local_host_mesh(n: usize) -> crate::HostMeshRef {
+    let addrs = (0..n).map(|_| ChannelTransport::Local.any()).collect();
+    crate::host_mesh::HostMesh::local_n_in_process(addrs)
+        .await
+        .unwrap()
 }
