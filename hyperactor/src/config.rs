@@ -26,7 +26,6 @@ use typeuri::Named;
 /// Stores a PEM-encoded value, either specified directly or read from a file.
 #[derive(Clone, Debug, Serialize, Named)]
 #[named("hyperactor::config::Pem")]
-#[serde(tag = "type", content = "value")]
 pub enum Pem {
     /// Raw PEM value stored directly.
     Value(Vec<u8>),
@@ -43,7 +42,6 @@ impl<'de> Deserialize<'de> for Pem {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(tag = "type", content = "value")]
         enum PemDeserialize {
             Value(Vec<u8>),
             File(PathBuf),
