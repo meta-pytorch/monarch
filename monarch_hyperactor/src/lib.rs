@@ -39,6 +39,7 @@ pub mod selection;
 pub mod shape;
 pub mod supervision;
 pub mod telemetry;
+pub mod testing;
 mod testresource;
 pub mod value_mesh;
 
