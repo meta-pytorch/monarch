@@ -68,6 +68,7 @@ use tracing::Level;
 use typeuri::Named;
 
 use crate::config::MESH_PROC_LAUNCHER_KIND;
+use crate::host_mesh::mesh_agent::HOST_AGENT;
 use crate::host_mesh::mesh_agent::HostAgentMode;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::logging::OutputTarget;
@@ -315,7 +316,7 @@ pub async fn host(
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
-        "agent",
+        HOST_AGENT,
         HostMeshAgent::new(HostAgentMode::Process {
             host,
             exit_on_shutdown,
@@ -2376,6 +2377,7 @@ mod tests {
     use crate::alloc::Allocator;
     use crate::alloc::ProcessAllocator;
     use crate::host_mesh::HostMesh;
+    use crate::mesh_agent::PROC_AGENT;
     use crate::testactor;
     use crate::testing;
 
@@ -2605,6 +2607,7 @@ mod tests {
 
         use super::super::*;
         use super::any_addr_for_test;
+        use crate::mesh_agent::PROC_AGENT;
         use crate::proc_launcher::LaunchOptions;
         use crate::proc_launcher::LaunchResult;
         use crate::proc_launcher::ProcLauncher;
@@ -2742,7 +2745,7 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = ActorId(proc_id.clone(), "agent".into(), 0);
+            let actor_id = ActorId(proc_id.clone(), PROC_AGENT.into(), 0);
             let agent_ref: ActorRef<ProcMeshAgent> = ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
             assert!(h.mark_ready(addr, agent_ref));
@@ -2760,7 +2763,7 @@ mod tests {
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = ActorId(proc_id.clone(), "agent".into(), 0);
+            let actor_id = ActorId(proc_id.clone(), PROC_AGENT.into(), 0);
             let agent: ActorRef<ProcMeshAgent> = ActorRef::attest(actor_id);
             // Running -> Ready
             assert!(h.mark_ready(addr, agent));
@@ -2894,7 +2897,7 @@ mod tests {
         let started_at = RealClock.system_time_now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = ActorId(proc_id.clone(), "agent".into(), 0);
+        let actor_id = ActorId(proc_id.clone(), PROC_AGENT.into(), 0);
         let agent_ref: ActorRef<ProcMeshAgent> = ActorRef::attest(actor_id);
 
         // Pick any addr to carry in Ready (what the child would have
@@ -2938,7 +2941,7 @@ mod tests {
         let started_at = RealClock.system_time_now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent =
-            ActorRef::attest(ProcId::Direct(addr.clone(), "proc".into()).actor_id("agent", 0));
+            ActorRef::attest(ProcId::Direct(addr.clone(), "proc".into()).actor_id(PROC_AGENT, 0));
 
         let st = ProcStatus::Ready {
             started_at,
@@ -2974,7 +2977,7 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: ActorRef::attest(
                     ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "x".into())
-                        .actor_id("agent", 0),
+                        .actor_id(PROC_AGENT, 0),
                 ),
             },
             ProcStatus::Killed {
@@ -3003,7 +3006,7 @@ mod tests {
         // Synthesize Ready data
         let addr = any_addr_for_test();
         let agent: ActorRef<ProcMeshAgent> =
-            ActorRef::attest(ActorId(proc_id.clone(), "agent".into(), 0));
+            ActorRef::attest(ActorId(proc_id.clone(), PROC_AGENT.into(), 0));
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
@@ -3231,7 +3234,7 @@ mod tests {
         //     stores the `BootstrapProcManager` for later spawns.
         //
         // (3) Install HostMeshAgent (still no new OS process).
-        //     `host.system_proc().spawn::<HostMeshAgent>("agent",
+        //     `host.system_proc().spawn::<HostMeshAgent>("host_agent",
         //     host).await?` creates the HostMeshAgent actor in that
         //     service proc.
         //

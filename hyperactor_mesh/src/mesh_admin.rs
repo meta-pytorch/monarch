@@ -120,10 +120,12 @@ use tokio::net::TcpListener;
 use typeuri::Named;
 
 use crate::global_root_client;
+use crate::host_mesh::mesh_agent::HOST_AGENT;
 use crate::host_mesh::mesh_agent::HostId;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::host_mesh::mesh_agent::parse_system_proc_ref;
 use crate::host_mesh::mesh_agent::system_proc_ref;
+use crate::mesh_agent::PROC_AGENT;
 
 /// Timeout for targeted queries that hit a single, specific host.
 /// Longer than the fan-out timeout because the caller explicitly chose
@@ -776,7 +778,7 @@ impl MeshAdminAgent {
         // Fall back to querying the ProcMeshAgent directly (user
         // procs). The conventional ProcMeshAgent ActorId is
         // <proc_id>/agent[0].
-        let mesh_agent_id = proc_id.actor_id("agent", 0);
+        let mesh_agent_id = proc_id.actor_id(PROC_AGENT, 0);
         let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
         let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
         agent_port.send(
@@ -1386,7 +1388,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(HOST_AGENT, HostMeshAgent::new(HostAgentMode::Local(host)))
             .unwrap();
         let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
@@ -1466,7 +1468,7 @@ mod tests {
             panic!("expected Proc properties, got {:?}", proc_node.properties);
         }
         assert_eq!(proc_node.parent, Some(host_child_ref_str.clone()));
-        // The system proc should have at least the "agent" actor.
+        // The system proc should have at least the "host_agent" actor.
         assert!(
             !proc_node.children.is_empty(),
             "proc should have at least one actor child"
@@ -1541,7 +1543,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(HOST_AGENT, HostMeshAgent::new(HostAgentMode::Local(host)))
             .unwrap();
         let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
@@ -1693,7 +1695,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(HOST_AGENT, HostMeshAgent::new(HostAgentMode::Local(host)))
             .unwrap();
         let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
@@ -1848,7 +1850,7 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(HOST_AGENT, HostMeshAgent::new(HostAgentMode::Local(host)))
             .unwrap();
         let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
