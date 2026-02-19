@@ -44,7 +44,6 @@ use crate::actor::PythonActor;
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
 use crate::context::PyInstance;
-use crate::mailbox::EitherPortRef;
 use crate::proc::PyActorId;
 use crate::pytokio::PendingPickle;
 use crate::pytokio::PyPythonTask;
@@ -62,6 +61,7 @@ py_global!(
     "monarch._src.actor.pickle",
     "is_pending_pickle_allowed"
 );
+py_global!(_pickle, "monarch._src.actor.actor_mesh", "_pickle");
 
 /// Trait defining the common interface for actor mesh, mesh ref and actor mesh implementations.
 /// This corresponds to the Python ActorMeshProtocol ABC.
@@ -284,19 +284,19 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 mesh.await?.cast(message, selection, &instance)
             }
             .await;
-            if let (Some(p), Err(pyerr)) = (port, result) {
+            if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
                 let _ = monarch_with_gil(|py: Python<'_>| {
-                    let port_ref = match p {
-                        EitherPortRef::Once(p) => p.into_bound_py_any(py),
-                        EitherPortRef::Unbounded(p) => p.into_bound_py_any(py),
-                    }
-                    .unwrap();
-                    let port = py
-                        .import("monarch._src.actor.actor_mesh")
-                        .unwrap()
-                        .call_method1("Port", (port_ref, instance, 0))
+                    port_ref
+                        .send(
+                            &instance.into_instance(),
+                            PythonMessage::new(
+                                PythonMessageKind::Exception { rank: Some(0) },
+                                _pickle(py).call1((pyerr,))?,
+                                None,
+                            )?,
+                        )
+                        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
                         .unwrap();
-                    port.call_method1("exception", (pyerr.value(py),)).unwrap();
                     Ok::<_, PyErr>(())
                 })
                 .await;
