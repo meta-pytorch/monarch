@@ -7,7 +7,6 @@
 # pyre-strict
 
 import functools
-import time
 from abc import ABC, abstractmethod
 from typing import (
     Any,
@@ -15,7 +14,6 @@ from typing import (
     Callable,
     cast,
     Concatenate,
-    Coroutine,
     Dict,
     Generic,
     Iterator,
@@ -43,51 +41,8 @@ from monarch._src.actor.metrics import (
     endpoint_broadcast_throughput_counter,
 )
 from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call
-from opentelemetry.metrics import Counter, Histogram
 
 T = TypeVar("T")
-
-
-def _observe_latency_and_error(
-    coro: Coroutine[Any, Any, T],
-    start_time_ns: int,
-    histogram: Histogram,
-    error_counter: Counter,
-    method_name: str,
-    actor_count: int,
-) -> Coroutine[Any, Any, T]:
-    """
-    Observe and record latency and errors of an async operation.
-
-    Args:
-        coro: The coroutine to observe
-        histogram: The histogram to record latency metrics to
-        error_counter: The counter to record error metrics to
-        method_name: Name of the method being called
-        actor_count: Number of actors involved in the call
-
-    Returns:
-        A wrapped coroutine that records error and latency metrics
-    """
-
-    async def _wrapper() -> T:
-        error_occurred = False
-        try:
-            return await coro
-        except Exception:
-            error_occurred = True
-            raise
-        finally:
-            duration_us = int((time.monotonic_ns() - start_time_ns) / 1_000)
-            attributes = {
-                "method": method_name,
-                "actor_count": actor_count,
-            }
-            histogram.record(duration_us, attributes=attributes)
-            if error_occurred:
-                error_counter.add(1, attributes=attributes)
-
-    return _wrapper()
 
 
 if TYPE_CHECKING:
@@ -98,7 +53,7 @@ if TYPE_CHECKING:
         PortRef,
     )
     from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
-    from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh
+    from monarch._src.actor.actor_mesh import ActorMesh, Port, ValueMesh
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -132,43 +87,6 @@ class Endpoint(ABC, Generic[P, R]):
     def _get_extent(self) -> Extent:
         pass
 
-    def _with_telemetry(
-        self,
-        start_time_ns: int,
-        histogram: Histogram,
-        error_counter: Counter,
-        actor_count: int,
-    ) -> Any:
-        """
-        Decorator factory to add telemetry (latency and error tracking) to async functions.
-
-        Args:
-            histogram: The histogram to record latency metrics to
-            error_counter: The counter to record error metrics to
-            actor_count: Number of actors involved in the operation
-
-        Returns:
-            A decorator that wraps async functions with telemetry measurement
-        """
-        method_name: str = self._get_method_name()
-
-        def decorator(func: Any) -> Any:
-            @functools.wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                coro = func(*args, **kwargs)
-                return _observe_latency_and_error(
-                    coro,
-                    start_time_ns,
-                    histogram,
-                    error_counter,
-                    method_name,
-                    actor_count,
-                )
-
-            return wrapper
-
-        return decorator
-
     @abstractmethod
     def _send(
         self,
@@ -187,11 +105,6 @@ class Endpoint(ABC, Generic[P, R]):
         this will be the size of the currently active proc_mesh.
         """
         pass
-
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        from monarch._src.actor.actor_mesh import Channel
-
-        return Channel[R].open(once)
 
     @abstractmethod
     def _call_name(self) -> MethodSpecifier:
