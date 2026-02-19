@@ -56,6 +56,10 @@ impl PySupervisionMonitor {
     pub fn from_arc(inner: Arc<dyn Supervisable>) -> Self {
         Self { inner }
     }
+
+    pub async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        self.inner.supervision_event(instance).await
+    }
 }
 
 #[pymethods]
