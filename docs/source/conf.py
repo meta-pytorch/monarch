@@ -72,7 +72,7 @@ ogp_image = "https://pytorch.org/assets/images/social-share.jpg"
 
 html_theme_options = {
     "navigation_with_keys": False,
-    "show_lf_header": False,
+    "show_pytorch_org_link": False,
     "show_lf_footer": False,
     "analytics_id": "GTM-NPLPKN5G",
     "canonical_url": "https://meta-pytorch.org/monarch",
