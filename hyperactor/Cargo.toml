@@ -69,7 +69,7 @@ strum = { version = "0.27.1", features = ["derive"] }
 thiserror = "2.0.18"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.2", features = ["logging", "ring", "tls12"], default-features = false }
-tokio-stream = { version = "0.1.17", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1.18", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
