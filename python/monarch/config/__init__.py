@@ -75,6 +75,7 @@ def configure(
     actor_spawn_max_idle: str | None = None,
     get_actor_state_max_idle: str | None = None,
     supervision_watchdog_timeout: str | None = None,
+    supervision_poll_frequency: str | None = None,
     proc_stop_max_idle: str | None = None,
     get_proc_state_max_idle: str | None = None,
     actor_queue_dispatch: bool | None = None,
@@ -148,6 +149,7 @@ def configure(
             get_actor_state_max_idle: Maximum idle time for actor state queries (humantime).
             supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged
                 silence is interpreted as the controller being unreachable (humantime).
+            supervision_poll_frequency: Interval between supervision polls of actor states (humantime).
 
         Host mesh timeouts:
             proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
@@ -236,6 +238,8 @@ def configure(
         params["get_actor_state_max_idle"] = get_actor_state_max_idle
     if supervision_watchdog_timeout is not None:
         params["supervision_watchdog_timeout"] = supervision_watchdog_timeout
+    if supervision_poll_frequency is not None:
+        params["supervision_poll_frequency"] = supervision_poll_frequency
     if proc_stop_max_idle is not None:
         params["proc_stop_max_idle"] = proc_stop_max_idle
     if get_proc_state_max_idle is not None:
