@@ -8,14 +8,11 @@
 
 use anyhow::Result;
 use anyhow::anyhow;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::local::LocalAllocator;
 use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::host_mesh::HostMesh;
+use hyperactor_mesh::test_utils;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadActor;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadParams;
@@ -48,20 +45,12 @@ CONSTANT = "initial_constant"
 "#;
     fs::write(&py_file_path, initial_content).await?;
 
-    // Set up a single AutoReloadActor
-    let alloc = LocalAllocator
-        .allocate(AllocSpec {
-            extent: extent! { replica = 1 },
-            constraints: Default::default(),
-            proc_name: None,
-            transport: ChannelTransport::Local,
-            proc_allocation_mode: Default::default(),
-        })
-        .await?;
-
     let instance = global_root_client();
-
-    let proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "auto_reload_test").await?;
+    let host_mesh = test_utils::local_host_mesh(1).await;
+    let proc_mesh = host_mesh
+        .spawn(instance, "auto_reload_test", ndslice::Extent::unity())
+        .await
+        .unwrap();
     let params = AutoReloadParams {};
     let actor_mesh: ActorMesh<AutoReloadActor> = proc_mesh
         .spawn(instance, "auto_reload_test", &params)
@@ -147,5 +136,6 @@ CONSTANT = "modified_constant"
     assert_ne!(import_result, final_result);
     println!("Auto-reload test completed successfully - module was reloaded!");
 
+    let _ = HostMesh::take(host_mesh).shutdown(instance).await;
     Ok(())
 }

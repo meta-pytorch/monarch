@@ -23,7 +23,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::context;
 use hyperactor::id;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
@@ -140,53 +139,6 @@ pub fn fresh_instance() -> &'static Instance<TestRootClient> {
 pub fn instance() -> &'static Instance<TestRootClient> {
     static INSTANCE: OnceLock<&'static Instance<TestRootClient>> = OnceLock::new();
     INSTANCE.get_or_init(fresh_instance)
-}
-
-#[cfg(fbcode_build)]
-pub async fn proc_meshes<C: context::Actor>(cx: &C, extent: Extent) -> Vec<ProcMesh>
-where
-    C::A: Handler<MeshFailure>,
-{
-    let mut meshes = Vec::new();
-
-    meshes.push({
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent.clone(),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        ProcMesh::allocate(cx, Box::new(alloc), "test_local")
-            .await
-            .unwrap()
-    });
-
-    meshes.push({
-        let mut allocator = ProcessAllocator::new(Command::new(crate::testresource::get(
-            "monarch/hyperactor_mesh/bootstrap",
-        )));
-        let alloc = allocator
-            .allocate(AllocSpec {
-                extent,
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Unix,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        ProcMesh::allocate(cx, Box::new(alloc), "test_process")
-            .await
-            .unwrap()
-    });
-
-    meshes
 }
 
 /// Return different alloc implementations with the provided extent.
