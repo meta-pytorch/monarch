@@ -59,6 +59,7 @@ from monarch._src.actor.proc_mesh import (
     HyProcMesh,
 )
 from monarch._src.job.job import LoginJob, ProcessState
+from monarch._src.job.process import ProcessJob
 from monarch.actor import (
     Accumulator,
     Actor,
@@ -1561,6 +1562,19 @@ def test_login_job():
             assert v == "hello!"
 
         j.kill()
+
+
+@parametrize_config(actor_queue_dispatch={True, False})
+def test_process_job():
+    job = ProcessJob({"hosts": 2})
+    state = job.state(cached_path=None)
+
+    hello = state.hosts.spawn_procs().spawn("hello", Hello)
+    r = hello.doit.call().get()
+    for _, v in r.items():
+        assert v == "hello!"
+
+    job.kill()
 
 
 _global_foo = None
