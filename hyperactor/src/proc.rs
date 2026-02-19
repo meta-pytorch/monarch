@@ -1552,6 +1552,20 @@ impl<A: Actor> Instance<A> {
             }
         };
 
+        // Save previous status and handler before overwriting, so
+        // introspection can report what the actor was doing before the
+        // introspect query arrived.
+        *self.inner.cell.inner.pre_dispatch_status.write().unwrap() =
+            self.inner.status_tx.borrow().clone();
+        *self.inner.cell.inner.pre_dispatch_handler.write().unwrap() = self
+            .inner
+            .cell
+            .inner
+            .last_message_handler
+            .read()
+            .unwrap()
+            .clone();
+
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler_info.clone(),
@@ -1787,6 +1801,25 @@ struct InstanceCellState {
     /// Name of the last message handler invoked.
     last_message_handler: RwLock<Option<HandlerInfo>>,
 
+    /// Actor status captured immediately before the current handler
+    /// began executing.
+    ///
+    /// Introspection reads this instead of the live `status` so that
+    /// the reported state reflects what the actor was doing *before*
+    /// the introspect query arrived — not "processing
+    /// IntrospectMessage" (the Heisenberg problem). Snapshotted at
+    /// the top of each `dispatch_to_handler` call, before `status` is
+    /// overwritten with `Processing(...)`.
+    pre_dispatch_status: RwLock<ActorStatus>,
+
+    /// Message handler that was active immediately before the current
+    /// handler began executing.
+    ///
+    /// Same rationale as `pre_dispatch_status`: introspection reports
+    /// this so the last-handler field reflects the handler that ran
+    /// before the current dispatch, not the introspect handler itself.
+    pre_dispatch_handler: RwLock<Option<HandlerInfo>>,
+
     /// Total time spent processing messages, in microseconds.
     total_processing_time_us: AtomicU64,
 
@@ -1842,6 +1875,8 @@ impl InstanceCell {
                 num_processed_messages: AtomicU64::new(0),
                 created_at: RealClock.system_time_now(),
                 last_message_handler: RwLock::new(None),
+                pre_dispatch_status: RwLock::new(ActorStatus::Created),
+                pre_dispatch_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
                 ports,
@@ -2013,6 +2048,26 @@ impl InstanceCell {
     /// The last message handler invoked by this actor.
     pub fn last_message_handler(&self) -> Option<HandlerInfo> {
         self.inner.last_message_handler.read().unwrap().clone()
+    }
+
+    /// Actor status captured immediately before the current handler
+    /// began executing.
+    ///
+    /// Used by introspection to report what the actor was doing before
+    /// the introspect query arrived, not "processing
+    /// IntrospectMessage" (the Heisenberg problem).
+    pub fn prev_status(&self) -> ActorStatus {
+        self.inner.pre_dispatch_status.read().unwrap().clone()
+    }
+
+    /// Message handler that was active immediately before the current
+    /// handler began executing.
+    ///
+    /// Same rationale as [`prev_status`](Self::prev_status):
+    /// introspection reports this so the last-handler field reflects
+    /// the handler that ran before the current dispatch.
+    pub fn prev_last_message_handler(&self) -> Option<HandlerInfo> {
+        self.inner.pre_dispatch_handler.read().unwrap().clone()
     }
 
     /// Total time spent processing messages, in microseconds.

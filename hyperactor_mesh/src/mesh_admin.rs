@@ -66,6 +66,22 @@
 //! The rule is: **if an entity is routable via the mesh routing layer
 //! (i.e., tooling can deliver `IntrospectMessage::Query` to one of its
 //! actors), then it is introspectable and appears in the admin graph.**
+//!
+//! ## Navigation identity invariant
+//!
+//! Every `NodePayload` in the topology tree satisfies two properties:
+//!
+//! 1. **Identity = reference**: a node's `identity` field must equal the
+//!    reference string that was used to resolve it. If the TUI asks for
+//!    reference `R` and gets back a payload, `payload.identity == R`.
+//!
+//! 2. **Parent coherence**: a node's `parent` field must equal the
+//!    `identity` of the node it appears under. If node `P` lists `R` in
+//!    its `children`, then the payload for `R` must have
+//!    `payload.parent == Some(P.identity)`.
+//!
+//! Together these ensure that the TUI can correlate responses to tree
+//! nodes, and that upward/downward navigation is consistent.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -104,6 +120,7 @@ use tokio::net::TcpListener;
 use typeuri::Named;
 
 use crate::global_root_client;
+use crate::host_mesh::mesh_agent::HostId;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::host_mesh::mesh_agent::parse_system_proc_ref;
 use crate::host_mesh::mesh_agent::system_proc_ref;
@@ -505,6 +522,11 @@ impl MeshAdminAgent {
     /// `resolve_actor_node` to assemble a fully-populated
     /// `NodePayload` (properties + child references).
     ///
+    /// The returned payload satisfies the **navigation identity
+    /// invariant** (see module docs): `payload.identity ==
+    /// reference_string`, and `payload.parent` equals the identity of
+    /// the node this one appears under.
+    ///
     /// Note: this returns `Err` for internal use; the public
     /// `resolve` handler converts failures into
     /// `ResolveReferenceResponse(Err(..))` so the actor never crashes
@@ -527,14 +549,19 @@ impl MeshAdminAgent {
             return self.resolve_system_proc_node(cx, reference_string).await;
         }
 
+        // Host refs use the "host:<actor_id>" format so they are
+        // unambiguous from plain actor references. The same
+        // HostMeshAgent ActorId can appear both as a host (from root)
+        // and as an actor (from a proc's children list).
+        if let Ok(host_id) = reference_string.parse::<HostId>() {
+            return self.resolve_host_node(cx, &host_id.0).await;
+        }
+
         let reference: Reference = reference_string
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid reference '{}': {}", reference_string, e))?;
 
         match &reference {
-            Reference::Actor(actor_id) if self.host_agents_by_actor_id.contains_key(actor_id) => {
-                self.resolve_host_node(cx, actor_id).await
-            }
             Reference::Proc(proc_id) if self.standalone_proc_anchor(proc_id).is_some() => {
                 self.resolve_standalone_proc_node(cx, proc_id).await
             }
@@ -580,7 +607,7 @@ impl MeshAdminAgent {
         let mut children: Vec<String> = self
             .hosts
             .values()
-            .map(|agent| agent.actor_id().to_string())
+            .map(|agent| HostId(agent.actor_id().clone()).to_string())
             .collect();
         for actor_id in self.standalone_proc_actors() {
             children.push(actor_id.proc_id().to_string());
@@ -615,6 +642,7 @@ impl MeshAdminAgent {
         introspect_port.send(
             cx,
             IntrospectMessage::Query {
+                view: hyperactor::introspect::IntrospectView::Entity,
                 reply: reply_handle.bind(),
             },
         )?;
@@ -625,6 +653,7 @@ impl MeshAdminAgent {
             .map_err(|_| anyhow::anyhow!("timed out querying host agent"))?
             .map_err(|e| anyhow::anyhow!("failed to receive host introspection: {}", e))?;
 
+        payload.identity = HostId(actor_id.clone()).to_string();
         payload.parent = Some("root".to_string());
         Ok(payload)
     }
@@ -689,6 +718,8 @@ impl MeshAdminAgent {
         // correlate navigated nodes with their parent's child
         // entries.
         payload.identity = reference_string.to_string();
+        // Set parent to the host reference (host:<actor_id>).
+        payload.parent = Some(HostId(agent.actor_id().clone()).to_string());
         Ok(payload)
     }
 
@@ -751,6 +782,7 @@ impl MeshAdminAgent {
         agent_port.send(
             cx,
             IntrospectMessage::Query {
+                view: hyperactor::introspect::IntrospectView::Entity,
                 reply: reply_handle.bind(),
             },
         )?;
@@ -763,9 +795,13 @@ impl MeshAdminAgent {
                 anyhow::anyhow!("failed to receive proc mesh agent introspection: {}", e)
             })?;
 
-        // Set parent to the host agent.
-        let host_agent_id = agent.actor_id().to_string();
-        payload.parent = Some(host_agent_id);
+        // The ProcMeshAgent sets identity to its own ActorId, but the
+        // caller asked for the proc by ProcId. Override so the
+        // payload matches the reference the TUI navigated to.
+        payload.identity = proc_id.to_string();
+        // Set parent to the host reference (host:<actor_id>).
+        let host_ref = HostId(agent.actor_id().clone()).to_string();
+        payload.parent = Some(host_ref);
         Ok(payload)
     }
 
@@ -801,6 +837,7 @@ impl MeshAdminAgent {
             introspect_port.send(
                 cx,
                 IntrospectMessage::Query {
+                    view: hyperactor::introspect::IntrospectView::Actor,
                     reply: reply_handle.bind(),
                 },
             )?;
@@ -847,8 +884,8 @@ impl MeshAdminAgent {
     ///
     /// The resolver sets `parent` based on the actor's position
     /// in the topology: if the actor lives in a system proc, the
-    /// parent is the system proc ref; otherwise it's the
-    /// `ProcMeshAgent` ActorId.
+    /// parent is the system proc ref; otherwise it's the proc's
+    /// `ProcId` string.
     async fn resolve_actor_node(
         &self,
         cx: &Context<'_, Self>,
@@ -866,6 +903,7 @@ impl MeshAdminAgent {
             introspect_port.send(
                 cx,
                 IntrospectMessage::Query {
+                    view: hyperactor::introspect::IntrospectView::Actor,
                     reply: reply_handle.bind(),
                 },
             )?;
@@ -896,7 +934,7 @@ impl MeshAdminAgent {
                     _ => proc_id.to_string(),
                 };
                 if let Some(agent) = self.hosts.get(&host_addr) {
-                    payload.parent = Some(agent.actor_id().to_string());
+                    payload.parent = Some(HostId(agent.actor_id().clone()).to_string());
                 }
             }
             _ => {
@@ -926,9 +964,9 @@ impl MeshAdminAgent {
                 if is_system {
                     payload.parent = Some(system_proc_ref(&proc_id.to_string()));
                 } else {
-                    // User proc: parent is ProcMeshAgent.
-                    let mesh_agent_id = proc_id.actor_id("agent", 0).to_string();
-                    payload.parent = Some(mesh_agent_id);
+                    // User proc: parent is the proc node, whose
+                    // identity is the ProcId string.
+                    payload.parent = Some(proc_id.to_string());
                 }
             }
         }
@@ -1306,9 +1344,17 @@ mod tests {
             NodeProperties::Root { num_hosts: 2, .. }
         ));
         assert_eq!(payload.children.len(), 2);
-        // Children should be the actor ID strings.
-        assert!(payload.children.contains(&actor_id1.to_string()));
-        assert!(payload.children.contains(&actor_id2.to_string()));
+        // Children should be host: reference strings.
+        assert!(
+            payload
+                .children
+                .contains(&HostId(actor_id1.clone()).to_string())
+        );
+        assert!(
+            payload
+                .children
+                .contains(&HostId(actor_id2.clone()).to_string())
+        );
     }
 
     // End-to-end smoke test for MeshAdminAgent::resolve that walks
@@ -1380,12 +1426,13 @@ mod tests {
         assert_eq!(root.children.len(), 2); // host + admin proc
 
         // -- 5. Resolve the host child --
-        let host_agent_id_str = host_agent_ref.actor_id().to_string();
+        let _host_agent_id_str = host_agent_ref.actor_id().to_string();
+        let host_ref_str = HostId(host_agent_ref.actor_id().clone()).to_string();
         let host_child_ref_str = root
             .children
             .iter()
-            .find(|c| **c == host_agent_id_str)
-            .expect("root children should contain the host agent");
+            .find(|c| **c == host_ref_str)
+            .expect("root children should contain the host agent (as host: ref)");
         let host_resp = admin_ref
             .resolve(&client, host_child_ref_str.clone())
             .await
@@ -1428,12 +1475,10 @@ mod tests {
         // -- 7. Cross-reference: system proc child is the host agent --
         //
         // The service proc's actor (agent[0]) IS the HostMeshAgent, so
-        // it appears both as a host node (step 5) and as a child of
-        // the system proc. The `host_agents_by_actor_id` reverse index
-        // must route it to `resolve_host_node`, producing
-        // `NodeProperties::Host` — not `NodeProperties::Actor`. This
-        // is the scenario that caused the TUI's cycle detection to
-        // silently drop the node.
+        // it appears both as a host node (from root, via HostId) and
+        // as an actor (from a proc's children list, via plain ActorId).
+        // HostId in root children makes resolution unambiguous: host
+        // refs get Entity view, plain actor refs get Actor view.
 
         // The system proc must list the host agent among its children.
         let host_agent_id_str = host_agent_ref.actor_id().to_string();
@@ -1444,31 +1489,20 @@ mod tests {
             host_agent_id_str
         );
 
-        // Resolve that child reference.
+        // Resolve that child reference as a plain actor (no host: prefix).
         let xref_resp = admin_ref
             .resolve(&client, host_agent_id_str.clone())
             .await
             .unwrap();
         let xref_node = xref_resp.0.unwrap();
 
-        // It must resolve as Host, not Actor, because the reverse
-        // index identifies it as a host agent.
+        // When resolved as a plain actor reference, it must return
+        // Actor properties (not Host), because it has no host: prefix.
         assert!(
-            matches!(xref_node.properties, NodeProperties::Host { .. }),
-            "host agent child should resolve as Host, got {:?}",
+            matches!(xref_node.properties, NodeProperties::Actor { .. }),
+            "host agent child resolved as plain actor should be Actor, got {:?}",
             xref_node.properties
         );
-
-        // The identity must match the host node resolved in step 5 —
-        // same ActorId appears at both levels of the tree.
-        assert_eq!(
-            xref_node.identity, host_node.identity,
-            "cross-referenced host agent identity should match the host node from step 5"
-        );
-
-        // Sanity: same properties as the host node from step 5.
-        assert_eq!(xref_node.properties, host_node.properties);
-        assert_eq!(xref_node.children, host_node.children);
     }
 
     // Verifies MeshAdminAgent::resolve correctly sets
@@ -1545,10 +1579,8 @@ mod tests {
         RealClock.sleep(Duration::from_secs(2)).await;
 
         // Resolve the host to get its children (system + user procs).
-        let host_resp = admin_ref
-            .resolve(&client, host_agent_ref.actor_id().to_string())
-            .await
-            .unwrap();
+        let host_ref_string = HostId(host_agent_ref.actor_id().clone()).to_string();
+        let host_resp = admin_ref.resolve(&client, host_ref_string).await.unwrap();
         let host_node = host_resp.0.unwrap();
 
         // The host should have at least 3 children: system proc,
@@ -1627,7 +1659,11 @@ mod tests {
         ));
         // Should have 2 children: one host + one root client proc.
         assert_eq!(payload.children.len(), 2);
-        assert!(payload.children.contains(&actor_id1.to_string()));
+        assert!(
+            payload
+                .children
+                .contains(&HostId(actor_id1.clone()).to_string())
+        );
         assert!(payload.children.contains(&client_proc_id.to_string()));
     }
 
@@ -1779,6 +1815,103 @@ mod tests {
         assert!(
             template.contains("{base}"),
             "SKILL.md must use {{base}} placeholder for interpolation"
+        );
+    }
+
+    // Verifies the navigation identity invariant (see module docs):
+    //
+    // 1. payload.identity == reference_string used to resolve it.
+    // 2. For each child reference C of a resolved node P,
+    //    resolve(C).parent == P.identity.
+    //
+    // Walks the entire tree starting from root, checking both
+    // properties at every reachable node.
+    #[tokio::test]
+    async fn test_navigation_identity_invariant() {
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::host::Host;
+        use hyperactor::host::LocalProcManager;
+
+        use crate::host_mesh::mesh_agent::HostAgentMode;
+        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::mesh_agent::ProcMeshAgent;
+
+        // Stand up a local host with a HostMeshAgent.
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+        let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
+        let host_addr = host.addr().clone();
+        let system_proc = host.system_proc().clone();
+        let host_agent_handle = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .unwrap();
+        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_addr_str = host_addr.to_string();
+
+        // Spawn MeshAdminAgent on a separate proc.
+        let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
+        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
+        let admin_handle = admin_proc
+            .spawn(
+                "mesh_admin",
+                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None),
+            )
+            .unwrap();
+        let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
+
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _handle) = client_proc.instance("client").unwrap();
+
+        // Walk the tree breadth-first, checking the invariant at every node.
+        // Each entry is (reference_string, expected_parent_identity).
+        let mut queue: std::collections::VecDeque<(String, Option<String>)> =
+            std::collections::VecDeque::new();
+        queue.push_back(("root".to_string(), None));
+
+        let mut visited = std::collections::HashSet::new();
+        while let Some((ref_str, expected_parent)) = queue.pop_front() {
+            if !visited.insert(ref_str.clone()) {
+                continue;
+            }
+
+            let resp = admin_ref.resolve(&client, ref_str.clone()).await.unwrap();
+            let node = resp.0.unwrap();
+
+            // Invariant 1: identity matches the reference used.
+            assert_eq!(
+                node.identity, ref_str,
+                "identity mismatch: resolved '{}' but payload.identity = '{}'",
+                ref_str, node.identity
+            );
+
+            // Invariant 2: parent matches the parent node's identity.
+            assert_eq!(
+                node.parent, expected_parent,
+                "parent mismatch for '{}': expected {:?}, got {:?}",
+                ref_str, expected_parent, node.parent
+            );
+
+            // Enqueue children with this node's identity as their
+            // expected parent.
+            for child_ref in &node.children {
+                if !visited.contains(child_ref) {
+                    queue.push_back((child_ref.clone(), Some(node.identity.clone())));
+                }
+            }
+        }
+
+        // Sanity: we should have visited at least root, host, a
+        // proc, and an actor.
+        assert!(
+            visited.len() >= 4,
+            "expected at least 4 nodes in the tree, visited {}",
+            visited.len()
         );
     }
 }
