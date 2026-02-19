@@ -135,6 +135,10 @@ class Endpoint(ABC, Generic[P, R]):
             # could happen for class Remote https://fburl.com/code/4ny98bul
             return "unknown"
 
+    @abstractmethod
+    def _get_extent(self) -> Extent:
+        pass
+
     def _with_telemetry(
         self,
         start_time_ns: int,
@@ -179,7 +183,7 @@ class Endpoint(ABC, Generic[P, R]):
         kwargs: Dict[str, Any],
         port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Implements sending a message to the endpoint. The return value of the endpoint will
         be sent to port if provided. If port is not provided, the return will be dropped,
@@ -256,12 +260,13 @@ class Endpoint(ABC, Generic[P, R]):
         p, r_port = self._port(once=True)
         r: PortReceiver[R] = r_port
         start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent = self._send(args, kwargs, port=p._port_ref, selection="choose")
+        extent = self._get_extent()
         if extent.nelements != 1:
             raise ValueError(
                 f"Can only use 'call_one' on a single Actor but this actor has shape {extent}"
             )
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=p._port_ref, selection="choose")
 
         @self._with_telemetry(
             start_time,
@@ -286,7 +291,8 @@ class Endpoint(ABC, Generic[P, R]):
         p, unranked = self._port()
         r: RankedPortReceiver[R] = unranked.ranked()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p._port_ref)
+        self._send(args, kwargs, port=p._port_ref)
+        extent: Extent = self._get_extent()
 
         @self._with_telemetry(
             start_time,
@@ -328,8 +334,10 @@ class Endpoint(ABC, Generic[P, R]):
         p, r_port = self._port()
         start_time: int = time.monotonic_ns()
         # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        extent: Extent = self._send(args, kwargs, port=p._port_ref)
+        self._send(args, kwargs, port=p._port_ref)
         r: "PortReceiver[R]" = r_port
+
+        extent: Extent = self._get_extent()
 
         # Note: stream doesn't track errors per-yield since errors propagate to caller
         latency_decorator: Any = self._with_telemetry(
