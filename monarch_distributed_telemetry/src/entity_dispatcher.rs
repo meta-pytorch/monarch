@@ -64,10 +64,27 @@ pub struct ActorMesh {
     pub parent_view_json: Option<String>,
 }
 
+/// Row data for the actor_status_events table.
+/// Logged when actors change status.
+#[derive(RecordBatchRow)]
+pub struct ActorStatusEvent {
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// Actor ID as a string
+    pub actor_id: String,
+    /// New status name (e.g. "Created", "Idle", "Failed")
+    pub new_status: String,
+    /// Previous status name
+    pub prev_status: String,
+    /// Reason for the status change (e.g. error message for Failed)
+    pub reason: Option<String>,
+}
+
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
     actors_buffer: ActorBuffer,
     actor_meshes_buffer: ActorMeshBuffer,
+    actor_status_events_buffer: ActorStatusEventBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -90,6 +107,11 @@ impl EntityDispatcherInner {
             "actor_meshes",
             &self.flush_callback,
         )?;
+        Self::flush_buffer(
+            &mut self.actor_status_events_buffer,
+            "actor_status_events",
+            &self.flush_callback,
+        )?;
         Ok(())
     }
 
@@ -105,6 +127,17 @@ impl EntityDispatcherInner {
             Self::flush_buffer(
                 &mut self.actor_meshes_buffer,
                 "actor_meshes",
+                &self.flush_callback,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn flush_actor_status_events_if_full(&mut self) -> anyhow::Result<()> {
+        if self.actor_status_events_buffer.len() >= self.batch_size {
+            Self::flush_buffer(
+                &mut self.actor_status_events_buffer,
+                "actor_status_events",
                 &self.flush_callback,
             )?;
         }
@@ -135,6 +168,7 @@ impl EntityDispatcher {
         let inner = Arc::new(Mutex::new(EntityDispatcherInner {
             actors_buffer: ActorBuffer::default(),
             actor_meshes_buffer: ActorMeshBuffer::default(),
+            actor_status_events_buffer: ActorStatusEventBuffer::default(),
             batch_size,
             flush_callback,
         }));
@@ -188,6 +222,20 @@ impl EntityEventDispatcher for EntityDispatcher {
                     parent_view_json: mesh_event.parent_view_json.clone(),
                 });
                 inner.flush_actor_meshes_if_full()?;
+            }
+            EntityEvent::ActorStatus(status_event) => {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+                inner.actor_status_events_buffer.insert(ActorStatusEvent {
+                    timestamp_us: timestamp_to_micros(&status_event.timestamp),
+                    actor_id: status_event.actor_id.clone(),
+                    new_status: status_event.new_status.clone(),
+                    prev_status: status_event.prev_status.clone(),
+                    reason: status_event.reason.clone(),
+                });
+                inner.flush_actor_status_events_if_full()?;
             }
         }
         Ok(())

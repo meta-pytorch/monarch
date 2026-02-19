@@ -355,6 +355,34 @@ pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
     }
 }
 
+/// Event data for actor status changes.
+/// This is passed to EntityEventDispatcher implementations when an actor changes status.
+#[derive(Debug, Clone)]
+pub struct ActorStatusEvent {
+    /// Actor ID as a string (e.g. "proc_id/actor_name")
+    pub actor_id: String,
+    /// Timestamp when the status change occurred
+    pub timestamp: SystemTime,
+    /// The new status arm name (e.g. "Created", "Idle", "Failed")
+    pub new_status: String,
+    /// The previous status arm name
+    pub prev_status: String,
+    /// Reason for the status change (e.g. error details for Failed)
+    pub reason: Option<String>,
+}
+
+/// Notify the registered dispatcher that an actor changed status.
+/// This is called from hyperactor when an actor transitions between states.
+pub fn notify_actor_status_changed(event: ActorStatusEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(&EntityEvent::ActorStatus(event)) {
+                tracing::error!("Failed to dispatch actor status event: {:?}", e);
+            }
+        }
+    }
+}
+
 /// Unified event enum for all entity lifecycle events.
 ///
 /// This enum wraps all entity events (actors, meshes, and future event types)
@@ -363,7 +391,6 @@ pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
 ///
 /// # Future Extensions
 /// Additional variants can be added for:
-/// - `ActorStatus(ActorStatusEvent)` - actor status changes
 /// - `Message(MessageEvent)` - message sends/receives
 /// - `SentMessage(SentMessageEvent)` - outgoing message tracking
 #[derive(Debug, Clone)]
@@ -372,6 +399,8 @@ pub enum EntityEvent {
     Actor(ActorEvent),
     /// An actor mesh was created.
     ActorMesh(ActorMeshEvent),
+    /// An actor changed status.
+    ActorStatus(ActorStatusEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -394,6 +423,7 @@ pub enum EntityEvent {
 ///         match event {
 ///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
 ///             EntityEvent::ActorMesh(mesh) => println!("Mesh: {}", mesh.full_name),
+///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
 ///         }
 ///         Ok(())
 ///     }
