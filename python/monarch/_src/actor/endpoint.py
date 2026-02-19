@@ -41,9 +41,6 @@ from monarch._src.actor.metrics import (
     endpoint_call_error_counter,
     endpoint_call_latency_histogram,
     endpoint_call_throughput_counter,
-    endpoint_choose_error_counter,
-    endpoint_choose_latency_histogram,
-    endpoint_choose_throughput_counter,
     endpoint_stream_latency_histogram,
     endpoint_stream_throughput_counter,
 )
@@ -230,32 +227,28 @@ class Endpoint(ABC, Generic[P, R]):
     # arguments, it should be implemented as function indepdendent of endpoint like `send`
     # and `Accumulator`
     def choose(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
+        from monarch._src.actor.actor_mesh import context
+
         """
         Load balanced sends a message to one chosen actor and awaits a result.
 
         Load balanced RPC-style entrypoint for request/response messaging.
         """
-        # Track throughput at method entry
         method_name: str = self._get_method_name()
-        endpoint_choose_throughput_counter.add(1, attributes={"method": method_name})
+        actor_instance = context().actor_instance
 
-        p, r_port = self._port(once=True)
-        r: "PortReceiver[R]" = r_port
-        start_time: int = time.monotonic_ns()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=p._port_ref, selection="choose")
-
-        @self._with_telemetry(
-            start_time,
-            endpoint_choose_latency_histogram,
-            endpoint_choose_error_counter,
-            1,
+        port_ref, task = value_collector(
+            method_name,
+            self._get_supervision_monitor(),
+            actor_instance._as_rust(),
+            self._full_name(),
+            "choose",
         )
-        async def process() -> R:
-            result = await r.recv()
-            return result
 
-        return Future(coro=process())
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref, selection="choose")
+
+        return Future(coro=task)
 
     def call_one(self, *args: P.args, **kwargs: P.kwargs) -> Future[R]:
         from monarch._src.actor.actor_mesh import context
