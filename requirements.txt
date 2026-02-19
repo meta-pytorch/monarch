@@ -9,3 +9,4 @@ lark
 tabulate
 opentelemetry-api
 clusterscope
+kubernetes
