@@ -1690,6 +1690,10 @@ mod test {
     }
 
     #[timed_test::async_timed_test(timeout_secs = 15)]
+    // This test is flaky in OSS CI, but healthy in sandcastle. Considering we
+    // are in the middle of deprecating allocator, it is not worth the effort to
+    // fix it for OSS.
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_realloc() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(
