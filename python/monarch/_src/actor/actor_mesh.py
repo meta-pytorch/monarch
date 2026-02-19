@@ -641,7 +641,7 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
 ) -> PythonMessage:
     """
@@ -677,15 +677,13 @@ def _create_endpoint_message(
 
     if not has_ref:
         message = PythonMessage(
-            PythonMessageKind.CallMethod(
-                method_name, None if port is None else port._port_ref
-            ),
+            PythonMessageKind.CallMethod(method_name, port_ref),
             buffer,
             pending_pickle_state,
         )
     else:
         message = create_actor_message(
-            method_name, proc_mesh, buffer, objects, port, pending_pickle_state
+            method_name, proc_mesh, buffer, objects, port_ref, pending_pickle_state
         )
 
     return message
@@ -717,7 +715,7 @@ class ActorEndpoint(Endpoint[P, R]):
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
     ) -> Extent:
         """
@@ -1003,7 +1001,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):
