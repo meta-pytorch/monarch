@@ -30,7 +30,16 @@ declare_static_histogram!(
     ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM,
     "endpoint_call_one_latency_us_histogram"
 );
+// Tracks latency of endpoint choose operations in microseconds
+declare_static_histogram!(
+    ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM,
+    "endpoint_choose_latency_us_histogram"
+);
 // Tracks errors that occur during endpoint call_one operations
 declare_static_counter!(ENDPOINT_CALL_ONE_ERROR, "endpoint_call_one_error");
+// Tracks errors that occur during endpoint choose operations
+declare_static_counter!(ENDPOINT_CHOOSE_ERROR, "endpoint_choose_error");
 // Tracks throughput of endpoint call_one operations
 declare_static_counter!(ENDPOINT_CALL_ONE_THROUGHPUT, "endpoint_call_one_throughput");
+// Tracks throughput of endpoint choose operations
+declare_static_counter!(ENDPOINT_CHOOSE_THROUGHPUT, "endpoint_choose_throughput");
