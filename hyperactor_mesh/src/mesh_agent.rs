@@ -266,6 +266,10 @@ pub struct ProcMeshAgent {
     /// If record_supervision_events is true, then this will contain the list
     /// of all events that were received.
     supervision_events: HashMap<ActorId, Vec<ActorSupervisionEvent>>,
+    /// If set, the StopAll handler will send the exit code through this
+    /// channel instead of calling process::exit directly, allowing the
+    /// caller to perform graceful shutdown (e.g. draining the mailbox server).
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
 }
 
 impl ProcMeshAgent {
@@ -287,12 +291,16 @@ impl ProcMeshAgent {
             actor_states: HashMap::new(),
             record_supervision_events: false,
             supervision_events: HashMap::new(),
+            shutdown_tx: None,
         };
         let handle = proc.spawn::<Self>("mesh", agent)?;
         Ok((proc, handle))
     }
 
-    pub(crate) fn boot_v1(proc: Proc) -> Result<ActorHandle<Self>, anyhow::Error> {
+    pub(crate) fn boot_v1(
+        proc: Proc,
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
+    ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let agent = ProcMeshAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
@@ -300,6 +308,7 @@ impl ProcMeshAgent {
             actor_states: HashMap::new(),
             record_supervision_events: true,
             supervision_events: HashMap::new(),
+            shutdown_tx,
         };
         proc.spawn::<Self>("agent", agent)
     }
@@ -696,10 +705,18 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
                     stopped_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     aborted_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                 );
+                if let Some(tx) = self.shutdown_tx.take() {
+                    let _ = tx.send(0);
+                    return Ok(());
+                }
                 std::process::exit(0);
             }
             Err(e) => {
                 tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcMeshAgent: {:?}", e);
+                if let Some(tx) = self.shutdown_tx.take() {
+                    let _ = tx.send(1);
+                    return Ok(());
+                }
                 std::process::exit(1);
             }
         }

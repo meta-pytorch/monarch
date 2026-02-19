@@ -533,7 +533,8 @@ impl Bootstrap {
 
                 let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
 
-                let agent_handle = ok!(ProcMeshAgent::boot_v1(proc.clone())
+                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<i32>();
+                let agent_handle = ok!(ProcMeshAgent::boot_v1(proc.clone(), Some(shutdown_tx))
                     .map_err(|e| HostError::AgentSpawnFailure(proc_id, e)));
 
                 let span = entered.exit();
@@ -541,14 +542,19 @@ impl Bootstrap {
                 // Finally serve the proc on the same transport as the backend address,
                 // and call back.
                 let (proc_addr, proc_rx) = ok!(channel::serve(serve_addr));
-                proc.clone().serve(proc_rx);
+                let mailbox_handle = proc.clone().serve(proc_rx);
                 ok!(ok!(channel::dial(callback_addr))
                     .send((proc_addr, agent_handle.bind::<ProcMeshAgent>()))
                     .instrument(span)
                     .await
                     .map_err(ChannelError::from));
 
-                halt().await
+                // Wait for the StopAll handler to signal the exit code, then
+                // gracefully stop the mailbox server before exiting.
+                let exit_code = shutdown_rx.await.unwrap_or(1);
+                mailbox_handle.stop("process shutting down");
+                let _ = mailbox_handle.await;
+                std::process::exit(exit_code)
             }
             Bootstrap::Host {
                 addr,
