@@ -14,6 +14,8 @@ use hyperactor_telemetry::declare_static_counter;
 use hyperactor_telemetry::declare_static_histogram;
 
 // ENDPOINT METRICS
+// Tracks the size of endpoint messages in bytes
+declare_static_histogram!(ENDPOINT_MESSAGE_SIZE_HISTOGRAM, "endpoint_message_size");
 // Tracks latency of endpoint calls in microseconds
 declare_static_histogram!(
     ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM,
@@ -61,3 +63,10 @@ declare_static_histogram!(
 declare_static_counter!(ENDPOINT_STREAM_ERROR, "endpoint_stream_error");
 // Tracks throughput of endpoint stream operations
 declare_static_counter!(ENDPOINT_STREAM_THROUGHPUT, "endpoint_stream_throughput");
+// Tracks throughput of endpoint broadcast operations
+declare_static_counter!(
+    ENDPOINT_BROADCAST_THROUGHPUT,
+    "endpoint_broadcast_throughput"
+);
+// Tracks errors that occur during endpoint broadcast operations
+declare_static_counter!(ENDPOINT_BROADCAST_ERROR, "endpoint_broadcast_error");

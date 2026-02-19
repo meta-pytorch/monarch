@@ -15,11 +15,14 @@ use hyperactor::Instance;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::mailbox::PortReceiver;
+use hyperactor_mesh::sel;
 use monarch_types::py_global;
 use monarch_types::py_module_add_function;
 use ndslice::Extent;
+use ndslice::Selection;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use pyo3::types::PyTuple;
 use serde_multipart::Part;
 
 use crate::actor::PythonActor;
@@ -29,6 +32,8 @@ use crate::buffers::FrozenBuffer;
 use crate::context::PyInstance;
 use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonPortRef;
+use crate::metrics::ENDPOINT_BROADCAST_ERROR;
+use crate::metrics::ENDPOINT_BROADCAST_THROUGHPUT;
 use crate::metrics::ENDPOINT_CALL_ERROR;
 use crate::metrics::ENDPOINT_CALL_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CALL_ONE_ERROR;
@@ -49,6 +54,7 @@ use crate::supervision::SupervisionError;
 use crate::value_mesh::PyValueMesh;
 
 py_global!(pickle_unflatten, "monarch._src.actor.pickle", "unflatten");
+py_global!(get_context, "monarch._src.actor.actor_mesh", "context");
 py_global!(make_future, "monarch._src.actor.future", "Future");
 
 /// An infinite iterator that yields the same mailbox value forever.
@@ -563,6 +569,215 @@ fn py_stream_collector(
             future_class,
         },
     ))
+}
+
+fn wrap_in_future(py: Python<'_>, task: PyPythonTask) -> PyResult<Py<PyAny>> {
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("coro", task)?;
+    let future = make_future(py).call((), Some(&kwargs))?;
+    Ok(future.unbind())
+}
+
+/// Trait that defines the core operations an endpoint must provide.
+/// Both ActorEndpoint and RemoteEndpoint implement this trait.
+pub(crate) trait Endpoint {
+    /// Get the extent of the endpoint's targets.
+    fn get_extent(&self, py: Python<'_>) -> PyResult<Extent>;
+
+    /// Get the method name for this endpoint.
+    fn get_method_name(&self) -> &str;
+
+    /// Create and send a message with the given args/kwargs.
+    fn send_message<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<&PythonPortRef>,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<()>;
+
+    /// Get the supervision_monitor for this endpoint (if any).
+    fn get_supervision_monitor(&self) -> Option<PySupervisionMonitor>;
+
+    /// Get the qualified endpoint name for error messages (if any).
+    fn get_qualified_name(&self) -> Option<String>;
+
+    fn get_current_instance(&self, py: Python<'_>) -> PyResult<Instance<PythonActor>> {
+        let context = get_context(py).call0()?;
+        let py_instance: PyRef<PyInstance> = context.getattr("actor_instance")?.extract()?;
+        Ok(py_instance.clone().into_instance())
+    }
+
+    fn open_response_port(
+        &self,
+        instance: &Instance<PythonActor>,
+    ) -> (PythonPortRef, PortReceiver<PythonMessage>) {
+        let (p, receiver) = instance.mailbox_for_py().open_port::<PythonMessage>();
+        (PythonPortRef { inner: p.bind() }, receiver)
+    }
+
+    /// Call the endpoint on all actors and collect all responses into a ValueMesh.
+    fn call<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let extent = self.get_extent(py)?;
+        let method_name = self.get_method_name().to_string();
+
+        let instance = self.get_current_instance(py)?;
+        let (port_ref, receiver) = self.open_response_port(&instance);
+
+        let supervision_monitor = self.get_supervision_monitor();
+        let qualified_endpoint_name = self.get_qualified_name();
+
+        self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
+
+        let instance_for_task = instance.clone_for_py();
+        let task: PyPythonTask = PythonTask::new(async move {
+            collect_valuemesh(
+                extent,
+                receiver,
+                method_name,
+                supervision_monitor,
+                &instance_for_task,
+                qualified_endpoint_name,
+            )
+            .await
+        })?
+        .into();
+
+        wrap_in_future(py, task)
+    }
+
+    /// Load balanced sends a message to one chosen actor and awaits a result.
+    fn choose<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let method_name = self.get_method_name();
+
+        let instance = self.get_current_instance(py)?;
+        let (port_ref, receiver) = self.open_response_port(&instance);
+
+        self.send_message(py, args, kwargs, Some(&port_ref), sel!(?), &instance)?;
+
+        let task = value_collector(
+            receiver,
+            method_name.to_string(),
+            self.get_supervision_monitor(),
+            instance.clone_for_py(),
+            self.get_qualified_name(),
+            EndpointAdverb::Choose,
+        )?;
+
+        wrap_in_future(py, task)
+    }
+
+    /// Call the endpoint on exactly one actor (the mesh must have exactly one actor).
+    fn call_one<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let extent = self.get_extent(py)?;
+        let method_name = self.get_method_name();
+
+        if extent.num_ranks() != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "call_one requires exactly 1 actor, but mesh has {}",
+                extent.num_ranks()
+            )));
+        }
+
+        let instance = self.get_current_instance(py)?;
+        let (port_ref, receiver) = self.open_response_port(&instance);
+
+        self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
+
+        let task = value_collector(
+            receiver,
+            method_name.to_string(),
+            self.get_supervision_monitor(),
+            instance.clone_for_py(),
+            self.get_qualified_name(),
+            EndpointAdverb::CallOne,
+        )?;
+
+        wrap_in_future(py, task)
+    }
+
+    /// Call the endpoint on all actors and return an iterator of Futures.
+    fn stream<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let extent = self.get_extent(py)?;
+        let method_name = self.get_method_name().to_string();
+
+        let instance = self.get_current_instance(py)?;
+        let (port_ref, receiver) = self.open_response_port(&instance);
+
+        self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
+
+        let actor_count = extent.num_ranks();
+        let start = RealClock.now();
+        let supervision_monitor = self.get_supervision_monitor();
+        let qualified_endpoint_name = self.get_qualified_name();
+        let future_class = make_future(py).unbind();
+
+        let attributes = hyperactor_telemetry::kv_pairs!(
+            "method" => method_name.clone()
+        );
+        ENDPOINT_STREAM_THROUGHPUT.add(1, attributes);
+
+        let stream = PyValueStream {
+            receiver: Arc::new(tokio::sync::Mutex::new(receiver)),
+            supervision_monitor,
+            instance: instance.clone_for_py(),
+            remaining: AtomicUsize::new(actor_count),
+            method_name,
+            qualified_endpoint_name,
+            start,
+            actor_count,
+            future_class,
+        };
+
+        Ok(stream.into_pyobject(py)?.unbind().into())
+    }
+
+    /// Send a message to all actors without waiting for responses (fire-and-forget).
+    fn broadcast<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<()> {
+        let instance = self.get_current_instance(py)?;
+        let method_name = self.get_method_name();
+        let attributes = hyperactor_telemetry::kv_pairs!(
+            "method" => method_name.to_string()
+        );
+
+        match self.send_message(py, args, kwargs, None, sel!(*), &instance) {
+            Ok(()) => {
+                ENDPOINT_BROADCAST_THROUGHPUT.add(1, attributes);
+                Ok(())
+            }
+            Err(e) => {
+                ENDPOINT_BROADCAST_ERROR.add(1, attributes);
+                Err(e)
+            }
+        }
+    }
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
