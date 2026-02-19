@@ -272,3 +272,26 @@ pub async fn host_mesh(n: usize) -> HostMeshRef {
 
     HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs)
 }
+
+/// Create a local in-process host mesh with `n` hosts, all running in
+/// the current process using `Local` channel transport.
+///
+/// This is similar to [`HostMesh::local_in_process`] but supports
+/// multiple hosts. All hosts use [`LocalProcManager`] with
+/// [`ChannelTransport::Local`], so there is no IPC overhead.
+///
+/// # Examples
+///
+/// ```
+/// let host_mesh = testing::local_host_mesh(4).await;
+/// let proc_mesh = host_mesh
+///     .spawn(instance, "test", extent!(gpu = 8))
+///     .await
+///     .unwrap();
+/// ```
+pub async fn local_host_mesh(n: usize) -> crate::HostMeshRef {
+    let addrs = (0..n).map(|_| ChannelTransport::Local.any()).collect();
+    crate::host_mesh::HostMesh::local_n_in_process(addrs)
+        .await
+        .unwrap()
+}

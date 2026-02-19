@@ -318,7 +318,33 @@ impl HostMesh {
     /// This API is intended for tests, examples, and debugging.
     pub async fn local_in_process() -> crate::Result<HostMesh> {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
+        Ok(HostMesh::take(Self::local_n_in_process(vec![addr]).await?))
+    }
 
+    /// Create a local in-process host mesh with multiple hosts, where
+    /// all procs run in the current OS process using [`LocalProcManager`].
+    ///
+    /// Each address in `addrs` becomes a separate host. The resulting
+    /// mesh has `extent!(hosts = addrs.len())`.
+    ///
+    /// This API is intended for unit tests that need a multi-host mesh
+    /// within a single process.
+    pub(crate) async fn local_n_in_process(addrs: Vec<ChannelAddr>) -> crate::Result<HostMeshRef> {
+        let n = addrs.len();
+        let mut host_refs = Vec::with_capacity(n);
+        for addr in addrs {
+            host_refs.push(Self::create_in_process_host(addr).await?);
+        }
+        HostMeshRef::new(
+            Name::new("local").unwrap(),
+            extent!(hosts = n).into(),
+            host_refs,
+        )
+    }
+
+    /// Create a single in-process host at the given address, returning
+    /// a [`HostRef`] for it.
+    async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<HostRef> {
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
         let manager = LocalProcManager::new(spawn);
@@ -329,14 +355,7 @@ impl HostMesh {
             .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
-
-        let host = HostRef(addr);
-        let host_mesh_ref = HostMeshRef::new(
-            Name::new("local").unwrap(),
-            extent!(hosts = 1).into(),
-            vec![host],
-        )?;
-        Ok(HostMesh::take(host_mesh_ref))
+        Ok(HostRef(addr))
     }
 
     /// Create a new process-based host mesh. Each host is represented by a local process,
