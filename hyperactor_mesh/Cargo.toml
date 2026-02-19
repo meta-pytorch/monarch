@@ -54,7 +54,7 @@ crossterm = { version = "0.28", features = ["event-stream", "serde"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.9"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.32", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
@@ -86,7 +86,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 urlencoding = "2.1.0"
-uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.21.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
 

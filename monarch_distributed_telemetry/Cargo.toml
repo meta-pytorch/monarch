@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 anyhow = "1.0.98"
 async-trait = "0.1.86"
 datafusion = "52.1"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.32", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }

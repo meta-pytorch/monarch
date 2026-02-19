@@ -43,7 +43,7 @@ dns-lookup = "1.0"
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.9"
 fastrand = "2.1.1"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.32", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
@@ -74,7 +74,7 @@ tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 unicode-ident = "1.0.12"
-uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.21.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 valuable = { version = "0.1.1", features = ["derive"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
