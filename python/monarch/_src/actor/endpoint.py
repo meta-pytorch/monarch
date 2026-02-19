@@ -31,16 +31,16 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
-from monarch._rust_bindings.monarch_hyperactor.endpoint import value_collector
+from monarch._rust_bindings.monarch_hyperactor.endpoint import (
+    value_collector,
+    valuemesh_collector,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 from monarch._src.actor.future import Future
 from monarch._src.actor.metrics import (
     endpoint_broadcast_error_counter,
     endpoint_broadcast_throughput_counter,
-    endpoint_call_error_counter,
-    endpoint_call_latency_histogram,
-    endpoint_call_throughput_counter,
     endpoint_stream_latency_histogram,
     endpoint_stream_throughput_counter,
 )
@@ -277,42 +277,27 @@ class Endpoint(ABC, Generic[P, R]):
         return Future(coro=task)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> "Future[ValueMesh[R]]":
-        from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh
+        from monarch._src.actor.actor_mesh import context
 
-        start_time: int = time.monotonic_ns()
-        # Track throughput at method entry
         method_name: str = self._get_method_name()
         instant_event(f"calling {method_name} message")
-        endpoint_call_throughput_counter.add(1, attributes={"method": method_name})
-        p, unranked = self._port()
-        r: RankedPortReceiver[R] = unranked.ranked()
-        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
-        self._send(args, kwargs, port=p._port_ref)
+
         extent: Extent = self._get_extent()
 
-        @self._with_telemetry(
-            start_time,
-            endpoint_call_latency_histogram,
-            endpoint_call_error_counter,
-            extent.nelements,
+        actor_instance = context().actor_instance
+
+        port_ref, task = valuemesh_collector(
+            extent,
+            method_name,
+            self._get_supervision_monitor(),
+            actor_instance._as_rust(),
+            self._full_name(),
         )
-        async def process() -> "ValueMesh[R]":
-            from monarch._rust_bindings.monarch_hyperactor.shape import Shape
-            from monarch._src.actor.shape import NDSlice
 
-            results: List[R] = [None] * extent.nelements  # pyre-fixme[9]
-            for _ in range(extent.nelements):
-                rank, value = await r._recv()
-                results[rank] = value
-            call_shape = Shape(
-                extent.labels,
-                NDSlice.new_row_major(extent.sizes),
-            )
-            instant_event(f"{method_name} response received")
+        # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]
+        self._send(args, kwargs, port=port_ref)
 
-            return ValueMesh(call_shape, results)
-
-        return Future(coro=process())
+        return cast("Future[ValueMesh[R]]", Future(coro=task))
 
     def stream(
         self, *args: P.args, **kwargs: P.kwargs
