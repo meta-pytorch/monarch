@@ -63,7 +63,7 @@ declare_attrs! {
     /// subscribers if there are no failures encountered.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_SUPERVISION_POLL_FREQUENCY".to_string()),
-        None,
+        Some("supervision_poll_frequency".to_string()),
     ))
     pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(10);
 }

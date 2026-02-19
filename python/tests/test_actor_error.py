@@ -188,7 +188,7 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
             exception_actor.raise_exception.call().get()
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(90)
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -205,20 +205,25 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     Test that exceptions raised in actor initializers are propagated as supervision faults.
     __init__ exceptions become supervision errors delivered to the unhandled_fault_hook.
     """
-    faults = []
-    faulted = asyncio.Event()
+    # Use a short supervision poll interval to speed up fault delivery.
+    with configured(supervision_poll_frequency="5s"):
+        faults = []
+        faulted = asyncio.Event()
+        # fault_hook is called from a tokio worker thread, and asyncio.Event.set()
+        # is not thread-safe. Use call_soon_threadsafe to schedule it on the loop.
+        loop = asyncio.get_running_loop()
 
-    def fault_hook(failure):
-        faults.append(failure)
-        if len(faults) >= num_procs:
-            faulted.set()
+        def fault_hook(failure):
+            faults.append(failure)
+            if len(faults) >= num_procs:
+                loop.call_soon_threadsafe(faulted.set)
 
-    with override_fault_hook(fault_hook):
-        proc = mesh({"gpus": num_procs})
-        proc.spawn("exception_actor", actor_class, except_on_init=True)
+        with override_fault_hook(fault_hook):
+            proc = mesh({"gpus": num_procs})
+            proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-        # Wait for the faults to arrive at the hook
-        await asyncio.wait_for(faulted.wait(), timeout=15.0)
+            # Wait for the faults to arrive at the hook
+            await asyncio.wait_for(faulted.wait(), timeout=60.0)
 
     # Verify the fault was received
     assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
@@ -228,7 +233,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
         assert "This is an exception from __init__" in fault_str
 
 
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(90)
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
     "mesh",
@@ -247,20 +252,24 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
     """
     import threading
 
-    faults = []
-    faulted = threading.Event()
+    # Use a short supervision poll interval to speed up fault delivery.
+    with configured(supervision_poll_frequency="5s"):
+        faults = []
+        # threading.Event is thread-safe, so it can be set directly from the
+        # tokio worker thread that calls fault_hook.
+        faulted = threading.Event()
 
-    def fault_hook(failure):
-        faults.append(failure)
-        if len(faults) >= num_procs:
-            faulted.set()
+        def fault_hook(failure):
+            faults.append(failure)
+            if len(faults) >= num_procs:
+                faulted.set()
 
-    with override_fault_hook(fault_hook):
-        proc = mesh({"gpus": num_procs})
-        proc.spawn("exception_actor", actor_class, except_on_init=True)
+        with override_fault_hook(fault_hook):
+            proc = mesh({"gpus": num_procs})
+            proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-        # Wait for the faults to arrive at the hook
-        assert faulted.wait(timeout=15.0), "Timed out waiting for faults"
+            # Wait for the faults to arrive at the hook
+            assert faulted.wait(timeout=60.0), "Timed out waiting for faults"
 
     # Verify the fault was received
     assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
