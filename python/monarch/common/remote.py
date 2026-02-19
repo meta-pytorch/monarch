@@ -26,8 +26,8 @@ from typing import (
 
 import monarch.common.messages as messages
 import torch
+from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape
-from monarch._src.actor.actor_mesh import Port
 from monarch._src.actor.endpoint import Selection
 from monarch._src.actor.future import Future
 from monarch.common import _coalescing, device_mesh, stream
@@ -76,7 +76,7 @@ class Remote(Generic[P, R], Endpoint[P, R]):
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
     ) -> Extent:
         ambient_mesh = device_mesh._active
