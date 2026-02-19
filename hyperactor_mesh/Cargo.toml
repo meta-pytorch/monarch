@@ -54,7 +54,7 @@ crossterm = { version = "0.28", features = ["event-stream", "serde"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.9"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.32", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
