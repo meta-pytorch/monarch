@@ -34,16 +34,17 @@ from monarch._rust_bindings.monarch_extension.mesh_controller import _Controller
 from monarch._rust_bindings.monarch_extension.tensor_worker import Ref
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
-    PythonMessage,
     PythonMessageKind,
     UnflattenArg,
 )
-from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import PortId
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    PicklingState,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarch/monarch_extension:monarch_extension
     ActorId,
 )
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
 from monarch._src.actor.actor_mesh import Channel, Port
 from monarch._src.actor.shape import NDSlice
 from monarch.common import device_mesh, messages, stream
@@ -434,33 +435,26 @@ def _create_call_method_indirect_message(
     method_name: "MethodSpecifier",
     client: MeshClient,
     seq: Seq,
-    args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
-    pending_pickle_state: Optional[PendingPickleState],
-) -> Tuple[PythonMessage, Tuple[str, int]]:
+) -> Tuple[PythonMessageKind, Tuple[str, int]]:
     unflatten_args = [
         UnflattenArg.PyObject if isinstance(ref, Tensor) else UnflattenArg.Mailbox
         for ref in refs
     ]
     broker_id: Tuple[str, int] = client._mesh_controller.broker_id
-    actor_msg = PythonMessage(
-        PythonMessageKind.CallMethodIndirect(
-            method_name, broker_id, seq, unflatten_args
-        ),
-        args_kwargs_tuple,
-        pending_pickle_state,
+    actor_msg_kind = PythonMessageKind.CallMethodIndirect(
+        method_name, broker_id, seq, unflatten_args
     )
-    return (actor_msg, broker_id)
+
+    return (actor_msg_kind, broker_id)
 
 
-def create_actor_message(
+def create_actor_message_kind(
     method_name: MethodSpecifier,
     proc_mesh: Optional["ProcMesh"],
-    args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
-    pending_pickle_state: Optional[PendingPickleState],
-) -> PythonMessage:
+) -> PythonMessageKind:
     tensors = [ref for ref in refs if isinstance(ref, Tensor)]
     # we have some monarch references, we need to ensure their
     # proc_mesh matches that of the tensors we sent to it
@@ -483,30 +477,26 @@ def create_actor_message(
 
     client = cast(MeshClient, checker.mesh.client)
 
-    return _create_actor_message(
+    return _create_actor_message_kind(
         method_name,
-        args_kwargs_tuple,
         refs,
         port,
         client,
         checker.mesh,
         tensors,
         chosen_stream,
-        pending_pickle_state,
     )
 
 
-def _create_actor_message(
+def _create_actor_message_kind(
     method_name: MethodSpecifier,
-    args_kwargs_tuple: Buffer,
     refs: Sequence[Any],
     port: Optional[Port[Any]],
     client: MeshClient,
     mesh: DeviceMesh,
     tensors: List[Tensor],
     chosen_stream: Stream,
-    pending_pickle_state: Optional[PendingPickleState],
-) -> PythonMessage:
+) -> PythonMessageKind:
     stream_ref = chosen_stream._to_ref(client)
     fut = (port, mesh._ndslice) if port is not None else None
 
@@ -521,7 +511,7 @@ def _create_actor_message(
     # from the stream, then it will run the actor method, and send the result to response port.
 
     actor_msg, broker_id = _create_call_method_indirect_message(
-        method_name, client, ident, args_kwargs_tuple, refs, pending_pickle_state
+        method_name, client, ident, refs
     )
     worker_msg = SendResultOfActorCall(ident, broker_id, tensors, [], stream_ref)
     client.send(mesh._ndslice, worker_msg)
@@ -533,13 +523,9 @@ def _create_actor_message(
     return actor_msg
 
 
-def actor_rref(
-    endpoint,
-    args_kwargs_tuple: Buffer,
-    refs: Sequence[Any],
-    pending_pickle_state: Optional[PendingPickleState],
-):
+def actor_rref(endpoint, pickling_state: PicklingState):
     chosen_stream = stream._active
+    refs = pickling_state.tensor_engine_references()
     fake_result, dtensors, mutates, mesh = dtensor_check(
         endpoint._propagate,
         cast(ResolvableFunction, endpoint._name),
@@ -563,10 +549,13 @@ def actor_rref(
     if len(result_dtensors) == 0:
         result_msg = None
 
-    actor_msg, broker_id = _create_call_method_indirect_message(
-        endpoint._name, mesh.client, seq, args_kwargs_tuple, refs, pending_pickle_state
+    actor_msg_kind, broker_id = _create_call_method_indirect_message(
+        endpoint._name, mesh.client, seq, refs
     )
-    endpoint._actor_mesh.cast(actor_msg, "all", context().actor_instance._as_rust())
+    actor_msg = PendingMessage(actor_msg_kind, pickling_state)
+    endpoint._actor_mesh.cast_unresolved(
+        actor_msg, "all", context().actor_instance._as_rust()
+    )
     # note the device mesh has to be defined regardles so the remote functions
     # can invoke mesh.rank("...")
 

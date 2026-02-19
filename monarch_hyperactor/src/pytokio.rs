@@ -98,7 +98,6 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 
-use bytes::Bytes;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor_config::CONFIG;
@@ -118,13 +117,11 @@ use pyo3::types::PyNone;
 use pyo3::types::PyString;
 use pyo3::types::PyTuple;
 use pyo3::types::PyType;
-use serde_multipart::Part;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::buffers::Buffer;
-use crate::buffers::FrozenBuffer;
+use crate::pickle::reduce_shared;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -845,7 +842,19 @@ impl PyShared {
     /// background task has published its result into the watch
     /// channel, then returns that `Py<PyAny>` (or raises the stored
     /// Python exception).
+    ///
+    /// If the value is already available, returns immediately without
+    /// blocking. This is important for cases where `block_on` is called
+    /// from within a tokio runtime (e.g., during unpickling on a worker
+    /// thread) - we can't call `runtime.block_on()` from within a runtime.
     pub fn block_on(slf: PyRef<PyShared>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        // Check if value is already available - return immediately if so.
+        // This avoids calling into the tokio runtime when unnecessary,
+        // which is critical when called from within a tokio worker thread.
+        if let Some(value) = slf.poll()? {
+            return Ok(value);
+        }
+
         let task = slf.task()?.take_task()?;
         // Explicitly drop the reference so that if another thread attempts to borrow
         // this object mutably during signal_safe_block_on, it won't throw an exception.
@@ -897,6 +906,19 @@ impl PyShared {
             traceback: None,
         })
     }
+
+    /// Pickle protocol support for PyShared.
+    ///
+    /// This implements the pickle reduce protocol:
+    /// - If the shared is finished, pickle as (Shared.from_value, (value,))
+    /// - If pending pickles are allowed, defer pickling and return (pop_pending_pickle, ())
+    /// - Otherwise, block on the shared and pickle as (Shared.from_value, (value,))
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        reduce_shared(py, slf)
+    }
 }
 
 /// Return true if the current thread is executing within a Tokio
@@ -909,188 +931,13 @@ fn is_tokio_thread() -> bool {
     tokio::runtime::Handle::try_current().is_ok()
 }
 
-/// Marker wrapper for a `Shared` whose value will be pickled later.
-///
-/// Some message payloads are pickled as part of sending/forwarding,
-/// but certain values cannot be pickled yet because they depend on
-/// async work (represented by a `Shared`). `PendingPickle` marks
-/// those `Shared`s as *allowed* placeholders during an initial
-/// `flatten(...)` pass.
-///
-/// Later, in an async context, we await the underlying `Shared`,
-/// substitute its resolved value, and re-pickle the payload.
-///
-/// A plain `Shared` is *not* generally picklable; only `Shared`s
-/// wrapped in `PendingPickle` participate in this deferred-pickling
-/// protocol.
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.pytokio")]
-#[derive(Clone)]
-pub(crate) struct PendingPickle(Py<PyShared>);
-
-#[pymethods]
-impl PendingPickle {
-    /// Wrap an existing `Shared` as a deferred-pickling placeholder.
-    #[new]
-    pub(crate) fn new(py_shared: Py<PyShared>) -> PyResult<Self> {
-        Ok(Self(py_shared))
-    }
-}
-
-impl PendingPickle {
-    /// Convenience: create a deferred-pickling placeholder from a
-    /// Rust future.
-    ///
-    /// Spawns the future as an abortable background task and wraps
-    /// the resulting `Shared` in `PendingPickle`, making it eligible
-    /// for the deferred pickling flow.
-    pub(crate) fn from_future<F>(f: F) -> PyResult<Self>
-    where
-        F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
-    {
-        let py_shared = PyPythonTask::new(f)?.spawn_abortable()?;
-        Ok(Self(Python::attach(|py| {
-            Ok::<_, PyErr>(py_shared.into_pyobject(py)?.unbind())
-        })?))
-    }
-
-    /// Await the underlying `Shared` and return its resolved Python
-    /// value.
-    ///
-    /// Used by `PendingPickleState::resolve` to substitute resolved
-    /// values before re-pickling.
-    pub(crate) async fn result(&self) -> PyResult<Py<PyAny>> {
-        let mut task = Python::attach(|py| self.0.borrow(py).task())?;
-        task.take_task()?.await
-    }
-}
-
-// Python helper used to reconstruct an object graph from a pickled
-// buffer plus a list of “unflatten values” (including placeholders).
-py_global!(unflatten, "monarch._src.actor.pickle", "unflatten");
-
-// Python helper used to pickle an object graph, optionally using a
-// filter to replace certain values with placeholders (e.g.
-// `PendingPickle`).
-//
-// We use `flatten`/`unflatten` to support “deferred pickling”:
-// initially pickle with placeholders, then later resolve futures and
-// re-pickle with concrete values.
-py_global!(flatten, "monarch._src.actor.pickle", "flatten");
-
-/// State captured during “deferred pickling”.
-///
-/// `flatten(...)` can be called with a Python-side filter that
-/// replaces certain values with placeholders (notably
-/// `PendingPickle`, i.e. a `Shared` that will eventually produce a
-/// Python value). When that happens, `flatten` returns:
-///
-/// - a pickled payload that references an *unflatten list*, and
-/// - the corresponding `unflatten_values` list (some entries may be
-///   placeholders), plus the `flatten_filter` used to produce it.
-///
-/// `PendingPickleState` stores the pieces needed to finish the job
-/// later: resolve the placeholders (by awaiting them) and then re-run
-/// `flatten` so the final pickled payload contains the concrete
-/// values.
-#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.pytokio")]
-#[derive(Debug, Clone)]
-pub struct PendingPickleState {
-    /// The `unflatten` value list captured from the initial `flatten`
-    /// call. Some entries may be `PendingPickle` placeholders that
-    /// must be resolved.
-    unflatten_values: Vec<Py<PyAny>>,
-
-    /// The filter object originally passed to `flatten`, used when
-    /// re-pickling after placeholders have been resolved.
-    flatten_filter: Py<PyAny>,
-}
-
-#[pymethods]
-impl PendingPickleState {
-    /// Construct a deferred-pickling state object from `flatten`
-    /// outputs.
-    #[new]
-    fn new(unflatten_values: Vec<Py<PyAny>>, flatten_filter: Py<PyAny>) -> Self {
-        Self {
-            unflatten_values,
-            flatten_filter,
-        }
-    }
-}
-
-impl PendingPickleState {
-    /// Finish deferred pickling.
-    ///
-    /// Takes the "pre-pickled" payload produced by the initial
-    /// `flatten` call, awaits any `PendingPickle` placeholders stored
-    /// in `unflatten_values`, then `unflatten`s the object graph and
-    /// `flatten`s it again so the returned payload contains resolved
-    /// values.
-    pub(crate) async fn resolve(self, pickled: impl Into<Bytes>) -> PyResult<Part> {
-        let (idxs, futs): (Vec<_>, Vec<_>) = Python::attach(|py| {
-            self.unflatten_values
-                .iter()
-                .enumerate()
-                .filter_map(|(i, py_obj)| {
-                    py_obj.extract::<PendingPickle>(py).map_or(None, |pending| {
-                        Some((i, async move { pending.result().await }))
-                    })
-                })
-                .unzip()
-        });
-
-        // This really shouldn't happen. This `PendingPickleState` object
-        // shouldn't have been created if there are no futures to resolve.
-        if futs.is_empty() {
-            return Ok(Part::from(pickled.into()));
-        }
-
-        let result = futures::future::join_all(futs)
-            .await
-            .into_iter()
-            .collect::<PyResult<Vec<_>>>()?;
-
-        let mut unflatten_values = Vec::with_capacity(self.unflatten_values.len());
-        let mut fut_idx = 0;
-        for i in 0..self.unflatten_values.len() {
-            if idxs.get(fut_idx).is_some_and(|idx| *idx == i) {
-                Python::attach(|py| {
-                    unflatten_values.push(result[fut_idx].clone_ref(py));
-                });
-                fut_idx += 1;
-            } else {
-                Python::attach(|py| {
-                    unflatten_values.push(self.unflatten_values[i].clone_ref(py));
-                });
-            }
-        }
-
-        Python::attach(|py| {
-            let unpickled = unflatten(py).call1((
-                FrozenBuffer {
-                    inner: pickled.into(),
-                },
-                unflatten_values,
-            ))?;
-            let repickled = flatten(py)
-                .call1((unpickled, self.flatten_filter))?
-                .downcast_into::<PyTuple>()?;
-            let buffer = repickled.get_item(1)?.downcast_into::<Buffer>()?;
-            Ok(buffer.borrow_mut().take_part())
-        })
-    }
-}
-
 /// Register the pytokio Python bindings into the given module.
 ///
-/// This wires up the exported pyclasses (`PythonTask`, `Shared`,
-/// deferred pickling helpers) and module-level functions used by the
-/// Monarch Python layer.
+/// This wires up the exported pyclasses (`PythonTask`, `Shared`)
+/// and module-level functions used by the Monarch Python layer.
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyPythonTask>()?;
     hyperactor_mod.add_class::<PyShared>()?;
-    hyperactor_mod.add_class::<PendingPickle>()?;
-    hyperactor_mod.add_class::<PendingPickleState>()?;
     let f = wrap_pyfunction!(is_tokio_thread, hyperactor_mod)?;
     f.setattr(
         "__module__",
