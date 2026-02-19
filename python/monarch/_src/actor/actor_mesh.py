@@ -53,6 +53,7 @@ from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuff
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
+from monarch._rust_bindings.monarch_hyperactor.endpoint import ActorEndpoint
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -78,7 +79,6 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
-    SupervisionMonitor,
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -86,13 +86,11 @@ from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
     Endpoint,
     EndpointProperty,
-    Extent,
     NotAnEndpoint,
     Propagator,
     Selection,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.metrics import endpoint_message_size_histogram
 from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct patching
     Receiver,
 )
@@ -117,6 +115,13 @@ if TYPE_CHECKING:
         PortReceiverBase,
     )
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
+
+    def _assert_implements_endpoint(x: Endpoint[..., Any]) -> None: ...
+
+    def _check_actor_endpoint_satisfies_protocol(ep: ActorEndpoint[..., Any]) -> None:
+        _assert_implements_endpoint(ep)
+
+
 from monarch._src.actor.telemetry import get_monarch_tracer
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -685,73 +690,14 @@ def _create_endpoint_message(
     return message
 
 
-class ActorEndpoint(Endpoint[P, R]):
-    def __init__(
-        self,
-        actor_mesh: "ActorMeshProtocol",
-        mesh_name: str,
-        shape: Shape,
-        proc_mesh: "Optional[ProcMesh]",
-        name: MethodSpecifier,
-        impl: Callable[Concatenate[Any, P], Awaitable[R]],
-        propagator: Propagator,
-    ) -> None:
-        super().__init__(propagator)
-        self._actor_mesh = actor_mesh
-        self._mesh_name = mesh_name
-        self._name = name
-        self._shape = shape
-        self._proc_mesh = proc_mesh
-        self._signature: inspect.Signature = inspect.signature(impl)
-
-    def _call_name(self) -> MethodSpecifier:
-        return self._name
-
-    def _get_extent(self) -> Extent:
-        return Extent(self._shape.labels, self._shape.ndslice.sizes)
-
-    def _send(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        port: "Optional[PortRef | OncePortRef]" = None,
-        selection: Selection = "all",
-    ) -> None:
-        """
-        Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
-
-        This sends the message to all actors but does not wait for any result.
-        """
-        message = _create_endpoint_message(
-            self._name, self._signature, args, kwargs, port, self._proc_mesh
-        )
-
-        # Record the message size with method name attribute
-        endpoint_message_size_histogram.record(
-            len(message.message), {"method": self._get_method_name()}
-        )
-
-        self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-
-    def _full_name(self) -> str:
-        return f"{self._mesh_name}.{self._get_method_name()}()"
-
-    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
-        # Only return a supervisor if the mesh is a PythonActorMesh (Rust class).
-        # For pure Python implementations like _SingletonActorAdapator,
-        # return None to skip supervision (which is correct since those
-        # implementations don't support supervision anyway).
-        if isinstance(self._actor_mesh, PythonActorMesh):
-            return self._actor_mesh.get_supervision_monitor()
-        return None
-
-    def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
-        _check_endpoint_arguments(self._name, self._signature, args, kwargs)
-        refs, buffer, pending_pickle_state = _flatten_with_pending_pickle(
-            (args, kwargs)
-        )
-
-        return actor_rref(self, buffer, refs, pending_pickle_state)
+def _dispatch_actor_rref(
+    endpoint: Any,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> Any:
+    _check_endpoint_arguments(endpoint._name, endpoint._signature, args, kwargs)
+    refs, buffer, pending_pickle_state = _flatten_with_pending_pickle((args, kwargs))
+    return actor_rref(endpoint, buffer, refs, pending_pickle_state)
 
 
 @overload
@@ -1729,11 +1675,11 @@ class ActorMesh(MeshTrait, Generic[T]):
     ) -> Any:
         return ActorEndpoint(
             self._inner,
-            self._mesh_name,
-            self._shape,
-            self._proc_mesh,
             name,
-            impl,
+            self._shape,
+            self._mesh_name,
+            inspect.signature(impl),
+            self._proc_mesh,
             propagator,
         )
 
