@@ -190,7 +190,7 @@ impl EntityDispatcher {
 }
 
 impl EntityEventDispatcher for EntityDispatcher {
-    fn dispatch(&self, event: &EntityEvent) -> Result<(), anyhow::Error> {
+    fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
         match event {
             EntityEvent::Actor(actor_event) => {
                 let mut inner = self
@@ -202,7 +202,7 @@ impl EntityEventDispatcher for EntityDispatcher {
                     timestamp_us: timestamp_to_micros(&actor_event.timestamp),
                     mesh_id: actor_event.mesh_id,
                     rank: actor_event.rank,
-                    full_name: actor_event.full_name.clone(),
+                    full_name: actor_event.full_name,
                 });
                 inner.flush_actors_if_full()?;
             }
@@ -214,12 +214,12 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.actor_meshes_buffer.insert(ActorMesh {
                     id: mesh_event.id,
                     timestamp_us: timestamp_to_micros(&mesh_event.timestamp),
-                    class: mesh_event.class.clone(),
-                    given_name: mesh_event.given_name.clone(),
-                    full_name: mesh_event.full_name.clone(),
-                    shape_json: mesh_event.shape_json.clone(),
+                    class: mesh_event.class,
+                    given_name: mesh_event.given_name,
+                    full_name: mesh_event.full_name,
+                    shape_json: mesh_event.shape_json,
                     parent_mesh_id: mesh_event.parent_mesh_id,
-                    parent_view_json: mesh_event.parent_view_json.clone(),
+                    parent_view_json: mesh_event.parent_view_json,
                 });
                 inner.flush_actor_meshes_if_full()?;
             }
@@ -230,10 +230,10 @@ impl EntityEventDispatcher for EntityDispatcher {
                     .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.actor_status_events_buffer.insert(ActorStatusEvent {
                     timestamp_us: timestamp_to_micros(&status_event.timestamp),
-                    actor_id: status_event.actor_id.clone(),
-                    new_status: status_event.new_status.clone(),
-                    prev_status: status_event.prev_status.clone(),
-                    reason: status_event.reason.clone(),
+                    actor_id: status_event.actor_id,
+                    new_status: status_event.new_status,
+                    prev_status: status_event.prev_status,
+                    reason: status_event.reason,
                 });
                 inner.flush_actor_status_events_if_full()?;
             }
