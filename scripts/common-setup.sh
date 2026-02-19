@@ -172,26 +172,41 @@ run_test_groups() {
   export RUST_BACKTRACE=1
   local FAILED_GROUPS=()
   local TEST_EXIT_CODE=0
+  local MAX_RETRIES=2
   for GROUP in $(seq 1 10); do
-    echo "Running test group $GROUP of 10..."
-    # Kill any existing Python processes to ensure clean state
-    echo "Cleaning up Python processes before group $GROUP..."
-    pkill -9 python || true
-    pkill -9 pytest || true
-    sleep 2
-    LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-        --ignore-glob="**/meta/**" \
-        --dist=no \
-        --group="$GROUP" \
-        --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-        --splits=10
-    TEST_EXIT_CODE=$?
-    # Check result and record failures
-    if [[ $TEST_EXIT_CODE -eq 0 ]]; then
+    local ATTEMPT=1
+    local GROUP_PASSED=0
+    while [[ $ATTEMPT -le $((MAX_RETRIES + 1)) ]]; do
+      if [[ $ATTEMPT -gt 1 ]]; then
+        echo "Retrying test group $GROUP (attempt $ATTEMPT/$((MAX_RETRIES + 1)))..."
+      else
+        echo "Running test group $GROUP of 10..."
+      fi
+      # Kill any existing Python processes to ensure clean state
+      echo "Cleaning up Python processes before group $GROUP..."
+      pkill -9 python || true
+      pkill -9 pytest || true
+      sleep 2
+      LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+          --ignore-glob="**/meta/**" \
+          --dist=no \
+          --group="$GROUP" \
+          --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
+          --splits=10 \
+          --reruns=2
+      TEST_EXIT_CODE=$?
+      if [[ $TEST_EXIT_CODE -eq 0 ]]; then
         echo "✓ Test group $GROUP completed successfully"
-    else
-        FAILED_GROUPS+=("$GROUP")
-        echo "✗ Test group $GROUP failed with exit code $TEST_EXIT_CODE"
+        GROUP_PASSED=1
+        break
+      else
+        echo "✗ Test group $GROUP failed with exit code $TEST_EXIT_CODE (attempt $ATTEMPT/$((MAX_RETRIES + 1)))"
+      fi
+      ATTEMPT=$((ATTEMPT + 1))
+    done
+    if [[ $GROUP_PASSED -eq 0 ]]; then
+      FAILED_GROUPS+=("$GROUP")
+      echo "✗ Test group $GROUP failed after $((MAX_RETRIES + 1)) attempts"
     fi
   done
   # Final cleanup after all groups

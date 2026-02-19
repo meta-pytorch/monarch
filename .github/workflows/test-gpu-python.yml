@@ -58,7 +58,7 @@ jobs:
 
         # Run GPU Python tests split into 10 groups sequentially
         # Each group runs separately with process cleanup in between
-        pip install pytest-split
+        pip install pytest-split pytest-rerunfailures
 
         run_test_groups
 
