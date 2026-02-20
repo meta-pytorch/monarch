@@ -51,7 +51,6 @@ use std::fmt;
 use std::fmt::Debug;
 use std::net::ToSocketAddrs;
 
-use anyhow::Context;
 use bytes::Bytes;
 use enum_as_inner::EnumAsInner;
 use serde::de::Error;
@@ -220,8 +219,9 @@ pub enum ClientError {
 #[allow(dead_code)] // Not used outside tests.
 pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
     match addr.transport() {
-        // TODO Metatls?
         ChannelTransport::Tcp(_) => true,
+        ChannelTransport::MetaTls(_) => true,
+        ChannelTransport::Tls => true,
         ChannelTransport::Unix => true,
         _ => false,
     }
@@ -567,11 +567,136 @@ pub(crate) mod tcp {
 
 // TODO: Try to simplify the TLS creation T208304433
 pub(crate) mod meta {
-    use std::fs::File;
+    use std::io;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use anyhow::Result;
+    use tokio_rustls::TlsAcceptor;
+    use tokio_rustls::TlsConnector;
+
+    use super::*;
+    use crate::RemoteMessage;
+    use crate::config::Pem;
+    use crate::config::PemBundle;
+
+    const THRIFT_TLS_SRV_CA_PATH_ENV: &str = "THRIFT_TLS_SRV_CA_PATH";
+    const DEFAULT_SRV_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
+    const THRIFT_TLS_CL_CERT_PATH_ENV: &str = "THRIFT_TLS_CL_CERT_PATH";
+    const THRIFT_TLS_CL_KEY_PATH_ENV: &str = "THRIFT_TLS_CL_KEY_PATH";
+    const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
+
+    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
+    pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
+        // Try to parse as a socket address first
+        if let Ok(socket_addr) = addr_string.parse::<SocketAddr>() {
+            return Ok(ChannelAddr::MetaTls(TlsAddr::Socket(socket_addr)));
+        }
+
+        // Otherwise, parse as hostname:port
+        // use right split to allow for ipv6 addresses where ":" is expected.
+        let parts = addr_string.rsplit_once(":");
+        match parts {
+            Some((hostname, port_str)) => {
+                let Ok(port) = port_str.parse() else {
+                    return Err(ChannelError::InvalidAddress(addr_string.to_string()));
+                };
+                Ok(ChannelAddr::MetaTls(TlsAddr::Host {
+                    hostname: hostname.to_string(),
+                    port,
+                }))
+            }
+            _ => Err(ChannelError::InvalidAddress(addr_string.to_string())),
+        }
+    }
+
+    /// Construct a PemBundle for server operations from Meta-specific paths.
+    /// Server cert and key come from the same file (server.pem).
+    fn get_server_pem_bundle() -> PemBundle {
+        let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
+        let server_pem_path = PathBuf::from(DEFAULT_SERVER_PEM_PATH);
+        PemBundle {
+            ca: Pem::File(ca_path),
+            cert: Pem::File(server_pem_path.clone()),
+            key: Pem::File(server_pem_path),
+        }
+    }
+
+    /// Construct a PemBundle for client operations from Meta-specific env vars.
+    /// Returns None if client cert/key env vars are not set.
+    fn get_client_pem_bundle() -> Option<PemBundle> {
+        let cert_path = std::env::var_os(THRIFT_TLS_CL_CERT_PATH_ENV)?;
+        let key_path = std::env::var_os(THRIFT_TLS_CL_KEY_PATH_ENV)?;
+        let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
+        Some(PemBundle {
+            ca: Pem::File(ca_path),
+            cert: Pem::File(PathBuf::from(cert_path)),
+            key: Pem::File(PathBuf::from(key_path)),
+        })
+    }
+
+    /// Creates a TLS acceptor by looking for necessary certs and keys in a Meta server environment.
+    pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
+        let bundle = get_server_pem_bundle();
+        tls::tls_acceptor_from_bundle(&bundle, enforce_client_tls)
+    }
+
+    /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
+    /// Supports optional client authentication (unlike the tls module which always requires it).
+    fn tls_connector() -> Result<TlsConnector> {
+        let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
+        let ca_pem = Pem::File(ca_path);
+        let root_store = tls::build_root_store(&ca_pem)?;
+
+        // If client certs are available, use mutual TLS; otherwise, no client auth
+        let config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(Arc::new(root_store));
+
+        let config = if let Some(bundle) = get_client_pem_bundle() {
+            let certs = tls::load_certs(&bundle.cert)?;
+            let key = tls::load_key(&bundle.key)?;
+            config
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| anyhow::anyhow!("load client certs: {}", e))?
+        } else {
+            config.with_no_client_auth()
+        };
+
+        Ok(TlsConnector::from(Arc::new(config)))
+    }
+
+    pub fn dial<M: RemoteMessage>(addr: TlsAddr) -> Result<NetTx<M>, ClientError> {
+        let connector = tls_connector().map_err(|e| {
+            ClientError::Connect(
+                ChannelAddr::MetaTls(addr.clone()),
+                io::Error::other(e.to_string()),
+                "failed to create TLS connector".to_string(),
+            )
+        })?;
+        tls::dial_with_connector(addr, connector, tls::TlsAddrType::MetaTls)
+    }
+
+    /// Serve the given address. If port 0 is provided in a Host address,
+    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
+    /// For Host addresses, binds to all resolved socket addresses.
+    pub fn serve<M: RemoteMessage>(addr: TlsAddr) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+        tls::serve_with_acceptor(addr, tls::TlsAddrType::MetaTls)
+    }
+}
+
+/// TLS transport module using configurable certificates via hyperactor config attributes.
+pub(crate) mod tls {
     use std::io;
     use std::io::BufReader;
     use std::sync::Arc;
 
+    use anyhow::Context;
     use anyhow::Result;
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;
@@ -585,18 +710,26 @@ pub(crate) mod meta {
 
     use super::*;
     use crate::RemoteMessage;
+    use crate::channel::TlsAddr;
+    use crate::config::Pem;
+    use crate::config::PemBundle;
+    use crate::config::TLS_CA;
+    use crate::config::TLS_CERT;
+    use crate::config::TLS_KEY;
 
-    const THRIFT_TLS_SRV_CA_PATH_ENV: &str = "THRIFT_TLS_SRV_CA_PATH";
-    const DEFAULT_SRV_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
-    const THRIFT_TLS_CL_CERT_PATH_ENV: &str = "THRIFT_TLS_CL_CERT_PATH";
-    const THRIFT_TLS_CL_KEY_PATH_ENV: &str = "THRIFT_TLS_CL_KEY_PATH";
-    const DEFAULT_SERVER_PEM_PATH: &str = "/var/facebook/x509_identities/server.pem";
+    /// Distinguishes between Tls and MetaTls for address construction.
+    #[derive(Debug, Clone, Copy)]
+    pub(super) enum TlsAddrType {
+        Tls,
+        MetaTls,
+    }
 
-    #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
+    /// Parse an address string into a TlsAddr.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
         // Try to parse as a socket address first
         if let Ok(socket_addr) = addr_string.parse::<SocketAddr>() {
-            return Ok(ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr)));
+            return Ok(ChannelAddr::Tls(TlsAddr::Socket(socket_addr)));
         }
 
         // Otherwise, parse as hostname:port
@@ -607,7 +740,7 @@ pub(crate) mod meta {
                 let Ok(port) = port_str.parse() else {
                     return Err(ChannelError::InvalidAddress(addr_string.to_string()));
                 };
-                Ok(ChannelAddr::MetaTls(MetaTlsAddr::Host {
+                Ok(ChannelAddr::Tls(TlsAddr::Host {
                     hostname: hostname.to_string(),
                     port,
                 }))
@@ -616,136 +749,149 @@ pub(crate) mod meta {
         }
     }
 
-    /// Returns the root cert store
-    fn root_cert_store() -> Result<RootCertStore> {
-        let mut root_cert_store = tokio_rustls::rustls::RootCertStore::empty();
-        let ca_cert_path =
-            std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV).unwrap_or(DEFAULT_SRV_CA_PATH.into());
-        let ca_certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(ca_cert_path).context("open {ca_cert_path:?}")?,
-        ))?;
-        for cert in ca_certs {
-            root_cert_store
-                .add(cert.into())
-                .context("adding certificate to root store")?;
-        }
-        Ok(root_cert_store)
+    /// Load certificates from a Pem value.
+    pub(super) fn load_certs(pem: &Pem) -> Result<Vec<CertificateDer<'static>>> {
+        let mut reader = BufReader::new(pem.reader()?);
+        let certs = rustls_pemfile::certs(&mut reader)?
+            .into_iter()
+            .map(CertificateDer::from)
+            .collect();
+        Ok(certs)
     }
 
-    /// Creates a TLS acceptor by looking for necessary certs and keys in a Meta server environment.
-    pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
-        let server_cert_path = DEFAULT_SERVER_PEM_PATH;
-        let certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(server_cert_path).context("open {server_cert_path}")?,
-        ))?
-        .into_iter()
-        .map(CertificateDer::from)
-        .collect();
-        // certs are good here
-        let server_key_path = DEFAULT_SERVER_PEM_PATH;
-        let mut key_reader =
-            BufReader::new(File::open(server_key_path).context("open {server_key_path}")?);
-        let key = loop {
-            break match rustls_pemfile::read_one(&mut key_reader)? {
-                Some(rustls_pemfile::Item::RSAKey(key)) => key,
-                Some(rustls_pemfile::Item::PKCS8Key(key)) => key,
-                Some(rustls_pemfile::Item::ECKey(key)) => key,
+    /// Load a private key from a Pem value.
+    pub(super) fn load_key(pem: &Pem) -> Result<PrivateKeyDer<'static>> {
+        let mut reader = BufReader::new(pem.reader()?);
+        loop {
+            break match rustls_pemfile::read_one(&mut reader)? {
+                Some(rustls_pemfile::Item::RSAKey(key)) => Ok(PrivateKeyDer::try_from(key)
+                    .map_err(|_| anyhow::anyhow!("invalid RSA private key format"))?),
+                Some(rustls_pemfile::Item::PKCS8Key(key)) => Ok(PrivateKeyDer::try_from(key)
+                    .map_err(|_| anyhow::anyhow!("invalid PKCS8 private key format"))?),
+                Some(rustls_pemfile::Item::ECKey(key)) => Ok(PrivateKeyDer::try_from(key)
+                    .map_err(|_| anyhow::anyhow!("invalid EC private key format"))?),
                 Some(_) => continue,
-                None => {
-                    anyhow::bail!("no key found in {server_key_path}");
-                }
+                None => anyhow::bail!("no private key found in TLS key file"),
             };
-        };
+        }
+    }
+
+    /// Build root certificate store from the CA pem.
+    pub(super) fn build_root_store(ca_pem: &Pem) -> Result<RootCertStore> {
+        let mut root_store = RootCertStore::empty();
+        let certs = load_certs(ca_pem)?;
+        for cert in certs {
+            root_store.add(cert).context("add CA cert")?;
+        }
+        Ok(root_store)
+    }
+
+    /// Get the PEM bundle from configuration.
+    fn get_pem_bundle() -> PemBundle {
+        PemBundle {
+            ca: hyperactor_config::global::get_cloned(TLS_CA),
+            cert: hyperactor_config::global::get_cloned(TLS_CERT),
+            key: hyperactor_config::global::get_cloned(TLS_KEY),
+        }
+    }
+
+    /// Creates a TLS acceptor using certificates from the provided PEM bundle.
+    /// If `enforce_client_tls` is true, requires client certificates for mutual TLS.
+    pub(super) fn tls_acceptor_from_bundle(
+        bundle: &PemBundle,
+        enforce_client_tls: bool,
+    ) -> Result<TlsAcceptor> {
+        let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
+        let key = load_key(&bundle.key).context("load TLS key")?;
+        let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
         let config = tokio_rustls::rustls::ServerConfig::builder();
-
         let config = if enforce_client_tls {
-            let client_cert_verifier = tokio_rustls::rustls::server::WebPkiClientVerifier::builder(
-                Arc::new(root_cert_store()?),
-            )
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build client verifier: {}", e))?;
-            config.with_client_cert_verifier(client_cert_verifier)
+            // Build server config with mutual TLS (require client certs)
+            let client_verifier =
+                tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("failed to build client verifier: {}", e))?;
+            config.with_client_cert_verifier(client_verifier)
         } else {
             config.with_no_client_auth()
         }
-        .with_single_cert(
-            certs,
-            PrivateKeyDer::try_from(key)
-                .map_err(|_| anyhow::anyhow!("Invalid private key format"))?,
-        )?;
+        .with_single_cert(certs, key)?;
 
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 
-    fn load_client_pem() -> Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
-        let Some(cert_path) = std::env::var_os(THRIFT_TLS_CL_CERT_PATH_ENV) else {
-            return Ok(None);
-        };
-        let Some(key_path) = std::env::var_os(THRIFT_TLS_CL_KEY_PATH_ENV) else {
-            return Ok(None);
-        };
-        let certs = rustls_pemfile::certs(&mut BufReader::new(
-            File::open(cert_path).context("open {cert_path}")?,
-        ))?
-        .into_iter()
-        .map(CertificateDer::from)
-        .collect();
-        let mut key_reader = BufReader::new(File::open(key_path).context("open {key_path}")?);
-        let key = loop {
-            break match rustls_pemfile::read_one(&mut key_reader)? {
-                Some(rustls_pemfile::Item::RSAKey(key)) => key,
-                Some(rustls_pemfile::Item::PKCS8Key(key)) => key,
-                Some(rustls_pemfile::Item::ECKey(key)) => key,
-                Some(_) => continue,
-                None => return Ok(None),
-            };
-        };
-        // Certs are verified to be good here.
-        Ok(Some((
-            certs,
-            PrivateKeyDer::try_from(key)
-                .map_err(|_| anyhow::anyhow!("Invalid private key format"))?,
-        )))
+    /// Creates a TLS acceptor using certificates from config (always enforces mutual TLS).
+    pub(crate) fn tls_acceptor() -> Result<TlsAcceptor> {
+        tls_acceptor_from_bundle(&get_pem_bundle(), true)
     }
 
-    /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
-    fn tls_connector() -> Result<TlsConnector> {
-        // TODO (T208180540): try to simplify the logic here.
+    /// Creates a TLS connector using certificates from the provided PEM bundle.
+    pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
+        let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
+        let key = load_key(&bundle.key).context("load TLS key")?;
+        let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
+
         let config = tokio_rustls::rustls::ClientConfig::builder()
-            .with_root_certificates(Arc::new(root_cert_store()?));
-        let result = load_client_pem()?;
-        let config = if let Some((certs, key)) = result {
-            config
-                .with_client_auth_cert(certs, key)
-                .context("load client certs")?
-        } else {
-            config.with_no_client_auth()
-        };
+            .with_root_certificates(Arc::new(root_store))
+            .with_client_auth_cert(certs, key)
+            .context("configure client auth")?;
+
         Ok(TlsConnector::from(Arc::new(config)))
     }
 
-    fn tls_connector_config(peer_host_name: &str) -> Result<(TlsConnector, ServerName<'static>)> {
-        let connector = tls_connector()?;
-        let server_name = ServerName::try_from(peer_host_name.to_string())?;
-        Ok((connector, server_name))
+    /// Creates a TLS connector using certificates from config.
+    fn tls_connector() -> Result<TlsConnector> {
+        tls_connector_from_bundle(&get_pem_bundle())
     }
 
-    #[derive(Debug)]
-    pub(crate) struct MetaLink {
+    /// Shared TLS link implementation used by both tls and metatls transports.
+    pub(super) struct TlsLink {
         hostname: Hostname,
         port: Port,
+        connector: TlsConnector,
+        addr_type: TlsAddrType,
+    }
+
+    impl std::fmt::Debug for TlsLink {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("TlsLink")
+                .field("hostname", &self.hostname)
+                .field("port", &self.port)
+                .field("addr_type", &self.addr_type)
+                .finish()
+        }
+    }
+
+    impl TlsLink {
+        pub fn new(
+            hostname: Hostname,
+            port: Port,
+            connector: TlsConnector,
+            addr_type: TlsAddrType,
+        ) -> Self {
+            Self {
+                hostname,
+                port,
+                connector,
+                addr_type,
+            }
+        }
     }
 
     #[async_trait]
-    impl Link for MetaLink {
+    impl Link for TlsLink {
         type Stream = TlsStream<TcpStream>;
 
         fn dest(&self) -> ChannelAddr {
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            let addr = TlsAddr::Host {
                 hostname: self.hostname.clone(),
                 port: self.port,
-            })
+            };
+            match self.addr_type {
+                TlsAddrType::Tls => ChannelAddr::Tls(addr),
+                TlsAddrType::MetaTls => ChannelAddr::MetaTls(addr),
+            }
         }
 
         async fn connect(&self) -> Result<Self::Stream, ClientError> {
@@ -761,72 +907,78 @@ pub(crate) mod meta {
                 ClientError::Connect(
                     self.dest(),
                     err,
-                    "cannot disables Nagle algorithm".to_string(),
+                    "cannot disable Nagle algorithm".to_string(),
                 )
             })?;
-            let (connector, domain_name) = tls_connector_config(&self.hostname).map_err(|err| {
+            let server_name = ServerName::try_from(self.hostname.clone()).map_err(|e| {
                 ClientError::Connect(
                     self.dest(),
-                    io::Error::other(err.to_string()),
-                    format!("cannot config tls connector for addr {}", addr),
+                    io::Error::other(e.to_string()),
+                    "invalid server name".to_string(),
                 )
             })?;
-            connector
-                .connect(domain_name.clone(), stream)
+            self.connector
+                .connect(server_name.clone(), stream)
                 .await
                 .map_err(|err| {
                     ClientError::Connect(
                         self.dest(),
                         err,
-                        format!("cannot establish TLS connection to {:?}", domain_name),
+                        format!("cannot establish TLS connection to {:?}", server_name),
                     )
                 })
         }
     }
 
-    pub fn dial<M: RemoteMessage>(addr: MetaTlsAddr) -> Result<NetTx<M>, ClientError> {
+    /// Shared dial helper that takes a pre-built connector.
+    pub(super) fn dial_with_connector<M: RemoteMessage>(
+        addr: TlsAddr,
+        connector: TlsConnector,
+        addr_type: TlsAddrType,
+    ) -> Result<NetTx<M>, ClientError> {
         match addr {
-            MetaTlsAddr::Host { hostname, port } => Ok(super::dial(MetaLink { hostname, port })),
-            MetaTlsAddr::Socket(_) => Err(ClientError::InvalidAddress(
-                "MetaTls clients require hostname/port for host identity, not socket addresses"
+            TlsAddr::Host { hostname, port } => Ok(super::dial(TlsLink::new(
+                hostname, port, connector, addr_type,
+            ))),
+            TlsAddr::Socket(_) => Err(ClientError::InvalidAddress(
+                "TLS clients require hostname/port for host identity, not socket addresses"
                     .to_string(),
             )),
         }
     }
 
-    /// Serve the given address. If port 0 is provided in a Host address,
-    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
-    /// For Host addresses, binds to all resolved socket addresses.
-    pub fn serve<M: RemoteMessage>(
-        addr: MetaTlsAddr,
+    /// Shared serve helper for TLS transports.
+    pub(super) fn serve_with_acceptor<M: RemoteMessage>(
+        addr: TlsAddr,
+        addr_type: TlsAddrType,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
         match addr {
-            MetaTlsAddr::Host { hostname, port } => {
+            TlsAddr::Host { hostname, port } => {
                 // Resolve all addresses for the hostname
+                let make_channel_addr = |h: &str, p: Port| match addr_type {
+                    TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::Host {
+                        hostname: h.to_string(),
+                        port: p,
+                    }),
+                    TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::Host {
+                        hostname: h.to_string(),
+                        port: p,
+                    }),
+                };
+
                 let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
                     .to_socket_addrs()
-                    .map_err(|err| {
-                        ServerError::Resolve(
-                            ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                                hostname: hostname.clone(),
-                                port,
-                            }),
-                            err,
-                        )
-                    })?
+                    .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
                     .collect();
 
                 if addrs.is_empty() {
                     return Err(ServerError::Resolve(
-                        ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port }),
+                        make_channel_addr(&hostname, port),
                         io::Error::other("no available socket addr"),
                     ));
                 }
 
-                let channel_addr = ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                    hostname: hostname.clone(),
-                    port,
-                });
+                let channel_addr = make_channel_addr(&hostname, port);
 
                 // Bind to all resolved addresses
                 let std_listener = std::net::TcpListener::bind(&addrs[..])
@@ -842,15 +994,17 @@ pub(crate) mod meta {
                     .map_err(|err| ServerError::Resolve(channel_addr, err))?;
                 super::serve(
                     listener,
-                    ChannelAddr::MetaTls(MetaTlsAddr::Host {
-                        hostname,
-                        port: local_addr.port(),
-                    }),
+                    make_channel_addr(&hostname, local_addr.port()),
                     true,
                 )
             }
-            MetaTlsAddr::Socket(socket_addr) => {
-                let channel_addr = ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr));
+            TlsAddr::Socket(socket_addr) => {
+                let make_socket_addr = |sa: SocketAddr| match addr_type {
+                    TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::Socket(sa)),
+                    TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::Socket(sa)),
+                };
+
+                let channel_addr = make_socket_addr(socket_addr);
 
                 // Bind directly to the socket address
                 let std_listener = std::net::TcpListener::bind(socket_addr)
@@ -864,12 +1018,245 @@ pub(crate) mod meta {
                 let local_addr = listener
                     .local_addr()
                     .map_err(|err| ServerError::Resolve(channel_addr, err))?;
-                super::serve(
-                    listener,
-                    ChannelAddr::MetaTls(MetaTlsAddr::Socket(local_addr)),
-                    true,
-                )
+                super::serve(listener, make_socket_addr(local_addr), true)
             }
+        }
+    }
+
+    pub fn dial<M: RemoteMessage>(addr: TlsAddr) -> Result<NetTx<M>, ClientError> {
+        let connector = tls_connector().map_err(|e| {
+            ClientError::Connect(
+                ChannelAddr::Tls(addr.clone()),
+                io::Error::other(e.to_string()),
+                "failed to create TLS connector".to_string(),
+            )
+        })?;
+        dial_with_connector(addr, connector, TlsAddrType::Tls)
+    }
+
+    /// Serve the given address. If port 0 is provided in a Host address,
+    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
+    /// For Host addresses, binds to all resolved socket addresses.
+    pub fn serve<M: RemoteMessage>(addr: TlsAddr) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+        serve_with_acceptor(addr, TlsAddrType::Tls)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use timed_test::async_timed_test;
+
+        use super::*;
+        use crate::channel::Rx;
+        use crate::config::Pem;
+        use crate::config::TLS_CA;
+        use crate::config::TLS_CERT;
+        use crate::config::TLS_KEY;
+
+        // Dummy test certificates generated with openssl for testing only.
+        // These certificates include Subject Alternative Names (SAN) for localhost, 127.0.0.1, and ::1
+        // CA certificate
+        const TEST_CA_CERT: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDBTCCAe2gAwIBAgIUaGNmboiIosG+8Up0vgDr/+cg+2IwDQYJKoZIhvcNAQEL
+BQAwEjEQMA4GA1UEAwwHVGVzdCBDQTAeFw0yNjAxMjgxNzA4MzlaFw0yNzAxMjgx
+NzA4MzlaMBIxEDAOBgNVBAMMB1Rlc3QgQ0EwggEiMA0GCSqGSIb3DQEBAQUAA4IB
+DwAwggEKAoIBAQC9RBoMYXCajklswt8Vi1JI1lEYzic0WNOmz45vG/7H6jTWkgL3
+K5Ri+Seg3MobDNc48YHWXYm4hP9wCzkx8ih3ntT5XiY1My/G3jLUuoIEE9pF/BoJ
+YQwZVoPNFhA9WhXNRsINf1cXFf8NzRfXpxBfKWtQJxYXU4JiDBQ6rLnQQABo8JmQ
+vYFhJbBaYip5jTSiVNn7mB1zNr5jsVxuoSF53Pb7xQ76bwBdOq4zd6PSxL5/lr4G
+cHSoxwZQdZMG7PL6hbxDQ2S2YI2lYVET1zwc2WPKCfjbEXBC/jzx828CInQtuksk
+18gJt6xHkTFEA8CSA29GM3lejnwYWf51xyyBAgMBAAGjUzBRMB0GA1UdDgQWBBRX
+cbxSZ70NsUkAS3Hhy6irugywJDAfBgNVHSMEGDAWgBRXcbxSZ70NsUkAS3Hhy6ir
+ugywJDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQA7aAFfyW67
+Z+uGSVYhpsT/uH/3Z3nr7X1smTz5CGEfq2czEcTC7gbYI2l8GZ47GPfnAvHTBZVm
+V/XncBCsj7/thOh2jYEHFyCbPckoaSCRyCOnK7LPUlr4HN5uP9EFe45qBLCJDEoY
+GTTw7MtzwdovfjchNfKQCTtkBJCXQ95WLCf6UOh02Sn28UTlgfXzF0X0FrcWqWa3
+uJZd4XOo4O6hKKlHaBaQPiEr++1xc3SWPV7jZHbckI/vKBnDdEZ9JQX5fFZuypUI
+sgomYHxvxrU2hWx+7k53CRdjfaIvT9Ie44z9sSdsU/+blw2S8f/ZTmuECoIAAXYO
+0qpzlxZMdr7T
+-----END CERTIFICATE-----"#;
+
+        // Server certificate (signed by CA) with SAN for localhost, 127.0.0.1, ::1
+        const TEST_SERVER_CERT: &str = r#"-----BEGIN CERTIFICATE-----
+MIIDJDCCAgygAwIBAgIUaz66DsWaH5ZXM4hCFnbVbMsyN1cwDQYJKoZIhvcNAQEL
+BQAwEjEQMA4GA1UEAwwHVGVzdCBDQTAeFw0yNjAxMjgxNzA4MzlaFw0yNzAxMjgx
+NzA4MzlaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDCCASIwDQYJKoZIhvcNAQEBBQAD
+ggEPADCCAQoCggEBAKCbp++qNyTn5LOsV0h9gLKJALBcjg2A14I3804N9UyDhPW2
+QKQ2W424u2P1MfKrw/2C+CErGlrADlnco2RQVDAarAIuGdFvBOt5UezqOS7Mk4OS
+9MlS7NZnMbc37KuM9UIG5ScJjXR/Z5z9dxeR0I9y3n0Ix6khbV7tOSHobiweI0FI
+8LftBS+CQnXr6vbWPcHcW6Z0FHUv7IWhqMWmv9PlZRGe9Y6VzXrRp0PBnZMOnAYf
+aMQUwYRswWdm9j9Z1sMdTJ14G+KVmO3Vj6XI6Sm9uIcYhlwG/kORwogJFWlVuP9o
+rloFRCjyHJ1d7GZqqnRyHHDDCBms8ed+3YfEYQECAwEAAaNwMG4wLAYDVR0RBCUw
+I4IJbG9jYWxob3N0hwR/AAABhxAAAAAAAAAAAAAAAAAAAAABMB0GA1UdDgQWBBQl
+J4vxUoCzqqeTwQAiLqE8wYezKzAfBgNVHSMEGDAWgBRXcbxSZ70NsUkAS3Hhy6ir
+ugywJDANBgkqhkiG9w0BAQsFAAOCAQEAnXHIBDQ4AHAMV71piTOuI41ShASQed6L
+bi7XUMZgZDslLkfU1vnP3BlwpliraBsAytSYQC6kbytOuz1uQ4K7yLb2tAAmUgEO
+EdIVt9SXr5tCcIPeLmInF0pysPqjZO8n7vtJyd9gryKqdhm1uzA7WQWq/Az8a9Sk
+uW2J6Oc5p6P7Mf3/ixqXzvGRo8rzu0CUJOJ67UTE/HhbJuplQ5dep5CEEOAIsAtH
+zn9O4rW92ueBkoBJM++YILS1vQ7jKc2N3RNrnHm7FeootBrtR9mBi0TH97K73ZPZ
+2Cdhnym0CsCJggrllFGH32cYo7+K2PO7/4oj5XbBCSWcssicvd8ovg==
+-----END CERTIFICATE-----"#;
+
+        // Server private key
+        // test-only embedded key -- though it might expire at some point:
+        // @lint-ignore PRIVATEKEY insecure-private-key-storage
+        const TEST_SERVER_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEugIBADANBgkqhkiG9w0BAQEFAASCBKQwggSgAgEAAoIBAQCgm6fvqjck5+Sz
+rFdIfYCyiQCwXI4NgNeCN/NODfVMg4T1tkCkNluNuLtj9THyq8P9gvghKxpawA5Z
+3KNkUFQwGqwCLhnRbwTreVHs6jkuzJODkvTJUuzWZzG3N+yrjPVCBuUnCY10f2ec
+/XcXkdCPct59CMepIW1e7Tkh6G4sHiNBSPC37QUvgkJ16+r21j3B3FumdBR1L+yF
+oajFpr/T5WURnvWOlc160adDwZ2TDpwGH2jEFMGEbMFnZvY/WdbDHUydeBvilZjt
+1Y+lyOkpvbiHGIZcBv5DkcKICRVpVbj/aK5aBUQo8hydXexmaqp0chxwwwgZrPHn
+ft2HxGEBAgMBAAECgf8G5qlQov+7ljs9fSpC8yGUik59RXzVF7Qq5DyQHglsQDp2
+VF5yr+M/M7DZmq+KvdauDfKbej6np5j2Q4TByrHTX1IExfZWCW8srwnWJDpQyHmO
+LcJW5DlI/SYluUFyHZxsOd+ezcpGNzM8i6eSW7GaeFUXCkmJ+uW4LnlF+7bALnnd
+D6sak/58EsII+IJyd4lFn+voszlPn3CZGR0jkp21rvpaKgrMIsKVWWQO/sLDU5pr
+VbpBThcLU5gRcnQouQX12e2VTCIlFu75WTsJ8V/KnEaOZUVlU/B/Bs+WQF3U+/Jo
+eX4N+D6OsEcNQjERAFyWujxsl1WpD4uSsbFMN0ECgYEA2b7AdL+oKPQHku2KcBhr
+Zw8K4tMDlr2VPPNwZcBTLo+O71vv/xXjMcXrXmowzkgEQckUmt1VB46riyydhwdP
+/n9ciWcz0Va/nwHR6Y9F9unBiyUBP7PRhRyjQyRZZRGDSJvP+Xmc5UJFpRr07VLU
+nfgMXDj37vXzKDpfhdEB2nkCgYEAvNMfA8P8w3+6246x5YHflvTkPdw+2oyge+LD
+mphB/w7SF8mlyNGloj3+KBZmd9SkvT57wCvO96Y9/n+mBAVisRggc0hK4ymOVYhb
++im/JvqGQMbVeg6iCOHnWdaZf9tL8uVsegQy3kVTN7vAa+CMFgX1dt65cGBX6XkB
+44pYmMkCgYALhbiRdQLlB+TOtZs5y1EDpxwgXKI3+9hF3Wv5NnAwapBZwje0++eF
+3r9Rw7TJda4j/QwGFehF+hrBxp6fYpetE/hFnRx0225Qb7w368j8A+ql/lNOl6li
+rd1F1EqWupKD6RrcTL8sspEU55RGaretlE6zIqCcGI/BdTVQ03qRoQKBgHDC3zWf
+d7XD9HGjQGdfbIe4jQjIGxzmd/wjik4q+NZ5IkukVwWa9P/zZ3DHF8Ad05dT1hEH
+2FwaAdGWpyyljq9VSiOuG1KXAXHgsZSuE4ISf9P1KYzvaiJFzaPfvOEWs79E9MfU
+9A+6dJzG2X1SpjWMr26iSTlrv3QkmFUqzAfJAoGASBkn4wls+oC5rv/Mch43pBv5
+UmKru4ltnEHJZdbSi2DJ+AnDLD222JCasb1VT1tm2XgW6DBqrdVRPPP6GOlB0MHU
++3ULtZxAczt7I+ST2bo0/DV2Hse89Cm63w4wLOiVZs7+1wrAzJZLokWF7Q5gesra
+u19txmtkiMEH+aNmekk=
+-----END PRIVATE KEY-----"#;
+
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_tls_basic() {
+            // Set up TLS config using the standard override pattern
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            // Create a TLS server bound to localhost with dynamic port
+            let addr = TlsAddr::Host {
+                hostname: "localhost".to_string(),
+                port: 0,
+            };
+
+            let (local_addr, mut rx) = serve::<u64>(addr).expect("failed to serve");
+
+            // Dial the server
+            let tx = dial::<u64>(match &local_addr {
+                ChannelAddr::Tls(addr) => addr.clone(),
+                _ => panic!("unexpected address type"),
+            })
+            .expect("failed to dial");
+
+            // Send a message
+            tx.post(42u64);
+
+            // Receive the message
+            let received = rx.recv().await.expect("failed to receive");
+            assert_eq!(received, 42u64);
+        }
+
+        #[async_timed_test(timeout_secs = 30)]
+        async fn test_tls_multiple_messages() {
+            // Set up TLS config using the standard override pattern
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            let addr = TlsAddr::Host {
+                hostname: "localhost".to_string(),
+                port: 0,
+            };
+
+            let (local_addr, mut rx) = serve::<String>(addr).expect("failed to serve");
+            let tx = dial::<String>(match &local_addr {
+                ChannelAddr::Tls(addr) => addr.clone(),
+                _ => panic!("unexpected address type"),
+            })
+            .expect("failed to dial");
+
+            // Send multiple messages
+            for i in 0..10 {
+                tx.post(format!("message {}", i));
+            }
+
+            // Receive all messages
+            for i in 0..10 {
+                let received = rx.recv().await.expect("failed to receive");
+                assert_eq!(received, format!("message {}", i));
+            }
+        }
+
+        #[test]
+        fn test_tls_parse_hostname_port() {
+            let addr = parse("localhost:8080").expect("failed to parse");
+            assert!(matches!(
+                addr,
+                ChannelAddr::Tls(TlsAddr::Host { hostname, port })
+                    if hostname == "localhost" && port == 8080
+            ));
+        }
+
+        #[test]
+        fn test_tls_parse_socket_addr() {
+            let addr = parse("127.0.0.1:8080").expect("failed to parse");
+            assert!(matches!(addr, ChannelAddr::Tls(TlsAddr::Socket(_))));
+        }
+
+        #[test]
+        fn test_tls_certs_parsing() {
+            // Verify that the test certificates can be parsed correctly
+            let cert_pem = Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec());
+            let key_pem = Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec());
+            let ca_pem = Pem::Value(TEST_CA_CERT.as_bytes().to_vec());
+
+            let certs = super::load_certs(&cert_pem).expect("failed to load certs");
+            assert!(!certs.is_empty(), "expected at least one certificate");
+
+            let _key = super::load_key(&key_pem).expect("failed to load key");
+
+            let root_store = super::build_root_store(&ca_pem).expect("failed to build root store");
+            assert!(!root_store.is_empty(), "expected at least one CA cert");
+        }
+
+        #[test]
+        fn test_tls_acceptor_creation() {
+            // Set up TLS config using the standard override pattern
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            // Verify that we can create a TLS acceptor
+            let _acceptor = super::tls_acceptor().expect("failed to create TLS acceptor");
+        }
+
+        #[test]
+        fn test_tls_connector_creation() {
+            // Set up TLS config using the standard override pattern
+            let config = hyperactor_config::global::lock();
+            let _guard_cert =
+                config.override_key(TLS_CERT, Pem::Value(TEST_SERVER_CERT.as_bytes().to_vec()));
+            let _guard_key =
+                config.override_key(TLS_KEY, Pem::Value(TEST_SERVER_KEY.as_bytes().to_vec()));
+            let _guard_ca =
+                config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
+
+            // Verify that we can create a TLS connector
+            let _connector = super::tls_connector().expect("failed to create TLS connector");
         }
     }
 }
@@ -2309,7 +2696,7 @@ mod tests {
         let channel: ChannelAddr = "metatls!localhost:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "localhost".to_string(),
                 port: 1234
             })
@@ -2318,7 +2705,7 @@ mod tests {
         let channel: ChannelAddr = "metatls!1.2.3.4:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket("1.2.3.4:1234".parse().unwrap()))
+            ChannelAddr::MetaTls(TlsAddr::Socket("1.2.3.4:1234".parse().unwrap()))
         );
         // ipv6:port
         let channel: ChannelAddr = "metatls!2401:db00:33c:6902:face:0:2a2:0:1234"
@@ -2326,7 +2713,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "2401:db00:33c:6902:face:0:2a2:0".to_string(),
                 port: 1234
             })
@@ -2335,7 +2722,7 @@ mod tests {
         let channel: ChannelAddr = "metatls![::]:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket("[::]:1234".parse().unwrap()))
+            ChannelAddr::MetaTls(TlsAddr::Socket("[::]:1234".parse().unwrap()))
         );
     }
 

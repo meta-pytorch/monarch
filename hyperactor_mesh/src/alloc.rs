@@ -29,7 +29,7 @@ use hyperactor::ProcId;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::channel::MetaTlsAddr;
+use hyperactor::channel::TlsAddr;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
 use mockall::predicate::*;
@@ -484,13 +484,13 @@ pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> ChannelAddr {
             new_socket.set_port(0);
             ChannelAddr::Tcp(new_socket)
         }
-        ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+        ChannelAddr::MetaTls(TlsAddr::Socket(socket)) => {
             let mut new_socket = socket.clone();
             new_socket.set_port(0);
-            ChannelAddr::MetaTls(MetaTlsAddr::Socket(new_socket))
+            ChannelAddr::MetaTls(TlsAddr::Socket(new_socket))
         }
-        ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, port: _ }) => {
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+        ChannelAddr::MetaTls(TlsAddr::Host { hostname, port: _ }) => {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: hostname.clone(),
                 port: 0,
             })
