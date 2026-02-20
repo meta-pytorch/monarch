@@ -10,7 +10,7 @@ repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }

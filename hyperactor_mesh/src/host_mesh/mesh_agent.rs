@@ -721,7 +721,7 @@ impl Handler<GetLocalProc> for HostMeshAgent {
         GetLocalProc { proc_mesh_agent }: GetLocalProc,
     ) -> anyhow::Result<()> {
         let agent = self.local_mesh_agent.get_or_init(|| {
-            ProcMeshAgent::boot_v1(self.host.as_ref().unwrap().local_proc().clone())
+            ProcMeshAgent::boot_v1(self.host.as_ref().unwrap().local_proc().clone(), None)
         });
 
         match agent {
@@ -770,7 +770,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
     ) -> anyhow::Result<Self> {
         let host = if local {
             let spawn: ProcManagerSpawnFn =
-                Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+                Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
             let manager = LocalProcManager::new(spawn);
             let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Local(host)

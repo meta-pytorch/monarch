@@ -18,7 +18,6 @@
 pub mod local;
 pub mod process;
 pub mod remoteprocess;
-pub mod sim;
 
 use std::collections::HashMap;
 use std::fmt;

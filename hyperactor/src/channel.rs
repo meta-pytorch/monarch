@@ -28,7 +28,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor_config::attrs::AttrValue;
 use lazy_static::lazy_static;
-use local_ip_address::local_ipv6;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -686,10 +685,9 @@ impl ChannelAddr {
                         .ok()
                         .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                         .unwrap_or("unknown_host".to_string()),
-                    TlsMode::IpV6 => local_ipv6()
-                        .ok()
-                        .and_then(|addr| addr.to_string().parse().ok())
-                        .expect("failed to retrieve ipv6 address"),
+                    TlsMode::IpV6 => {
+                        get_host_ipv6_address().expect("failed to retrieve ipv6 address")
+                    }
                 };
                 Self::MetaTls(MetaTlsAddr::Host {
                     hostname: host_address,
@@ -732,6 +730,16 @@ impl ChannelAddr {
             Self::Alias { bind_to, .. } => bind_to.transport(),
         }
     }
+}
+
+#[cfg(fbcode_build)]
+fn get_host_ipv6_address() -> anyhow::Result<String> {
+    crate::meta::host_ip::host_ipv6_address()
+}
+
+#[cfg(not(fbcode_build))]
+fn get_host_ipv6_address() -> anyhow::Result<String> {
+    Ok(local_ip_address::local_ipv6()?.to_string())
 }
 
 impl fmt::Display for ChannelAddr {
