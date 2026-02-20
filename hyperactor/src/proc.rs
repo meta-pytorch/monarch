@@ -39,7 +39,9 @@ use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
 use hyperactor_config::Flattrs;
 use hyperactor_telemetry::ActorEvent;
+use hyperactor_telemetry::ActorStatusEvent;
 use hyperactor_telemetry::notify_actor_created;
+use hyperactor_telemetry::notify_actor_status_changed;
 use hyperactor_telemetry::recorder::Recording;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -1035,6 +1037,17 @@ impl<A: Actor> Instance<A> {
                 caller = %Location::caller(),
                 change_reason,
             );
+            notify_actor_status_changed(ActorStatusEvent {
+                actor_id: self.self_id().to_string(),
+                timestamp: RealClock.system_time_now(),
+                new_status: new_status.to_string(),
+                prev_status: old.arm().unwrap_or("Unknown").to_string(),
+                reason: if change_reason.is_empty() {
+                    None
+                } else {
+                    Some(change_reason)
+                },
+            });
         }
     }
 

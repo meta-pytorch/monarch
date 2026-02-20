@@ -16,29 +16,15 @@ import unittest
 from pathlib import Path
 from typing import Generator
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
+from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-from monarch._src.actor.allocator import (
-    AllocateMixin,
-    RemoteAllocator,
-    StaticRemoteAllocInitializer,
-)
+from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
 from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
-from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.tools.config.workspace import Workspace
-
-
-def code_sync_mesh(allocator: AllocateMixin, spec: AllocSpec) -> ProcMesh | HostMesh:
-    return HostMesh.allocate_nonblocking(
-        "hosts",
-        Extent(*zip(*list(spec.extent.items()))),
-        allocator,
-        AllocConstraints(),
-    )
 
 
 @contextlib.contextmanager

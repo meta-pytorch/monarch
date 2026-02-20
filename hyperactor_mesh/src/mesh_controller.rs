@@ -109,6 +109,10 @@ pub struct Subscribe(pub PortRef<Option<MeshFailure>>);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct Unsubscribe(pub PortRef<Option<MeshFailure>>);
 
+/// Query the number of active supervision subscribers on this controller.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
+pub struct GetSubscriberCount(#[binding(include)] pub PortRef<usize>);
+
 /// Check state of the actors in the mesh. This is used as a self message to
 /// periodically check.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
@@ -124,6 +128,7 @@ pub struct CheckState();
 #[hyperactor::export(handlers = [
     Subscribe,
     Unsubscribe,
+    GetSubscriberCount,
     resource::CreateOrUpdate<resource::mesh::Spec<()>> { cast = true },
     resource::GetState<resource::mesh::State<()>> { cast = true },
     resource::Stop { cast = true },
@@ -320,6 +325,18 @@ impl<A: Referable> Handler<Unsubscribe> for ActorMeshController<A> {
         if self.health_state.subscribers.remove(&message.0) {
             tracing::debug!(actor_id = %cx.self_id(), num_subscribers = self.health_state.subscribers.len(), "removed subscriber {} from mesh controller", message.0.port_id());
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<A: Referable> Handler<GetSubscriberCount> for ActorMeshController<A> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: GetSubscriberCount,
+    ) -> anyhow::Result<()> {
+        message.0.send(cx, self.health_state.subscribers.len())?;
         Ok(())
     }
 }

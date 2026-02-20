@@ -1876,3 +1876,57 @@ def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     assert proc_mesh._proc_mesh.poll() is None
     cloudpickle.dumps(actor_mesh)
     assert proc_mesh._proc_mesh.poll() is not None
+
+
+_GRACEFUL_SHUTDOWN_WORKER = """\
+import sys
+import time
+import monarch.actor
+from monarch.actor import Actor, endpoint, this_host
+
+collected_faults = []
+
+def collecting_hook(failure):
+    collected_faults.append(failure.report())
+
+monarch.actor.unhandled_fault_hook = collecting_hook
+
+class TestActor(Actor):
+    @endpoint
+    def hello(self):
+        return "hello"
+
+proc = this_host().spawn_procs({"gpus": 1})
+actor = proc.spawn("test", TestActor)
+assert actor.hello.call_one().get() == "hello"
+proc.stop().get()
+time.sleep(5)
+if collected_faults:
+    print(f"FAIL: {len(collected_faults)} faults", file=sys.stderr, flush=True)
+    sys.exit(1)
+print("OK: 0 faults", flush=True)
+"""
+
+
+@pytest.mark.timeout(60)
+def test_graceful_shutdown_no_unacked_messages() -> None:
+    """Stopping a proc mesh should not leave unacknowledged messages."""
+    env = os.environ.copy()
+    env["HYPERACTOR_MESSAGE_DELIVERY_TIMEOUT"] = "2s"
+    if "FB_XAR_INVOKED_NAME" in os.environ:
+        pytest.skip(  # pyre-ignore[29]: pytest.skip is callable
+            "fbcode subprocess doesn't work right..."
+        )
+    result = subprocess.run(
+        [sys.executable, "-c", _GRACEFUL_SHUTDOWN_WORKER],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"stdout:\n{result.stdout}")
+        print(f"stderr:\n{result.stderr}")
+    assert result.returncode == 0, (
+        f"Worker exited with code {result.returncode}.\nstderr: {result.stderr[-2000:]}"
+    )
+    assert "OK: 0 faults" in result.stdout

@@ -456,14 +456,9 @@ pub async fn rsync_mesh<C: context::Actor + Copy + Unpin>(
 mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
-    use hyperactor::channel::ChannelTransport;
     use hyperactor_mesh::ActorMesh;
-    use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::alloc::AllocSpec;
-    use hyperactor_mesh::alloc::Allocator;
-    use hyperactor_mesh::alloc::local::LocalAllocator;
     use hyperactor_mesh::global_root_client;
-    use ndslice::extent;
+    use hyperactor_mesh::test_utils;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio::net::TcpListener;
@@ -506,20 +501,12 @@ mod tests {
         fs::write(target_workspace.path().join("foo.txt"), "something").await?;
 
         // Set up actor mesh with 2 RsyncActors
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent! { replica = 1 },
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?;
-
         let instance = global_root_client();
-
-        let proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "rsync_test").await?;
-
+        let mut host_mesh = test_utils::local_host_mesh(1).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "rsync_test", ndslice::Extent::unity())
+            .await
+            .unwrap();
         // Spawn actor mesh with RsyncActors
         let actor_mesh: ActorMesh<RsyncActor> =
             proc_mesh.spawn(instance, "rsync_test", &()).await?;
@@ -549,6 +536,7 @@ mod tests {
                 .map_err(|e| anyhow!("{:?}", e))?
         );
 
+        let _ = host_mesh.shutdown(instance).await;
         Ok(())
     }
 

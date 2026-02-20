@@ -161,6 +161,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.mailbox",
     )?)?;
 
+    monarch_hyperactor::endpoint::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.endpoint",
+    )?)?;
+
     monarch_hyperactor::context::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.context",
@@ -200,6 +205,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::telemetry::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.telemetry",
+    )?)?;
+    monarch_hyperactor::testing::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.testing",
     )?)?;
     code_sync::register_python_bindings(&get_or_add_new_module(
         module,
