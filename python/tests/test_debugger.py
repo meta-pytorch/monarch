@@ -46,13 +46,8 @@ from monarch._src.actor.debugger.debug_session import (
 )
 from monarch._src.actor.endpoint import endpoint, Extent
 from monarch._src.actor.host_mesh import create_local_host_mesh, this_host
-from monarch._src.actor.proc_mesh import (
-    get_or_spawn_controller,
-    proc_mesh as proc_mesh_v0,
-    ProcMesh,
-)
+from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch._src.actor.source_loader import SourceLoaderController
-from monarch.config import configure
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
