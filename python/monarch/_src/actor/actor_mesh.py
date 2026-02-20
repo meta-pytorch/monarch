@@ -736,19 +736,8 @@ class ActorEndpoint(Endpoint[P, R]):
     def _full_name(self) -> str:
         return f"{self._mesh_name}.{self._get_method_name()}()"
 
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        p, r = super()._port(once=once)
-        instance = context().actor_instance._as_rust()
-        monitor = self._get_supervision_monitor()
-        monitor_task: Optional[Shared[Exception]] = (
-            None if monitor is None else monitor.supervision_event_task(instance)
-        )
-
-        r._attach_supervision(monitor_task, self._full_name())
-        return (p, r)
-
     def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
-        # Only return a supervision monitor if the mesh is a PythonActorMesh (Rust class).
+        # Only return a supervisor if the mesh is a PythonActorMesh (Rust class).
         # For pure Python implementations like _SingletonActorAdapator,
         # return None to skip supervision (which is correct since those
         # implementations don't support supervision anyway).
