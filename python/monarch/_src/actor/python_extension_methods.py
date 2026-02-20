@@ -43,6 +43,13 @@ class PatchRustClass:
                     setattr(self.rust_class, name, implementation)
             base.register(self.rust_class)
 
+        # If the Python class inherited from Generic, make the Rust class
+        # subscriptable so that ValueMesh[T] works at runtime.
+        if hasattr(python_class, "__class_getitem__") and not hasattr(
+            self.rust_class, "__class_getitem__"
+        ):
+            self.rust_class.__class_getitem__ = classmethod(lambda cls, params: cls)
+
         return cast(Type[T], self.rust_class)
 
     def _should_patch(self, name: str, implementation: object) -> bool:
