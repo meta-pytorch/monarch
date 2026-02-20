@@ -171,7 +171,7 @@ def test_nested_meshes() -> None:
 
 
 @pytest.mark.timeout(60)
-async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
+async def test_pickle_initialized_proc_mesh_in_tokio_thread(isolated) -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
     host = create_local_host_mesh(Extent(["hosts"], [2]))
     proc = host.spawn_procs(per_host={"gpus": 2})

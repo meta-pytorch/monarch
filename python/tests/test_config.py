@@ -93,7 +93,7 @@ def test_get_set_multiple() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
-def test_codec_max_frame_length_exceeds_default() -> None:
+def test_codec_max_frame_length_exceeds_default(isolated) -> None:
     """Test that sending 10 chunks of 1GiB fails with default 10 GiB
     limit."""
 
