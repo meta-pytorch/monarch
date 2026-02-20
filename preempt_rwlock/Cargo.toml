@@ -11,5 +11,5 @@ license = "BSD-3-Clause"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
