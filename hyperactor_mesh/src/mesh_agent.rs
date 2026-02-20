@@ -375,7 +375,7 @@ impl Actor for ProcMeshAgent {
 }
 
 #[async_trait]
-#[hyperactor::forward(MeshAgentMessage)]
+#[hyperactor::handle(MeshAgentMessage)]
 impl MeshAgentMessageHandler for ProcMeshAgent {
     async fn configure(
         &mut self,

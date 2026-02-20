@@ -133,7 +133,7 @@ pub use hyperactor_macros::behavior;
 #[doc(inline)]
 pub use hyperactor_macros::export;
 #[doc(inline)]
-pub use hyperactor_macros::forward;
+pub use hyperactor_macros::handle;
 #[doc(inline)]
 pub use hyperactor_macros::instrument;
 #[doc(inline)]

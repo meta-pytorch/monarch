@@ -2380,7 +2380,7 @@ mod tests {
     }
 
     #[async_trait]
-    #[crate::forward(TestActorMessage)]
+    #[crate::handle(TestActorMessage)]
     impl TestActorMessageHandler for TestActor {
         async fn reply(
             &mut self,
@@ -2524,7 +2524,7 @@ mod tests {
     }
 
     #[async_trait]
-    #[crate::forward(LookupTestMessage)]
+    #[crate::handle(LookupTestMessage)]
     impl LookupTestMessageHandler for LookupTestActor {
         async fn actor_exists(
             &mut self,
