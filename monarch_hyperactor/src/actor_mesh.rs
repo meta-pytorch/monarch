@@ -101,6 +101,7 @@ pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
     name = "PythonActorMesh",
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
+#[derive(Clone)]
 pub(crate) struct PythonActorMesh {
     inner: Arc<dyn SupervisableActorMesh>,
 }
@@ -135,15 +136,15 @@ pub(crate) fn to_hy_sel(selection: &str) -> PyResult<Selection> {
 #[pymethods]
 impl PythonActorMesh {
     #[tracing::instrument(level = "debug", skip_all)]
-    pub(crate) fn cast(
+    #[pyo3(name = "cast")]
+    fn py_cast(
         &self,
         message: &PythonMessage,
         selection: &str,
         instance: &PyInstance,
     ) -> PyResult<()> {
         let sel = to_hy_sel(selection)?;
-        self.inner
-            .cast(message.clone(), sel, &instance.clone().into_instance())
+        self.cast(message.clone(), sel, &instance.clone().into_instance())
     }
 
     fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMesh> {
@@ -151,14 +152,6 @@ impl PythonActorMesh {
         Ok(PythonActorMesh {
             inner: Arc::from(inner),
         })
-    }
-
-    /// Returns a SupervisionMonitor that can be used to monitor actor health.
-    ///
-    /// This is used by endpoint operations to race supervision events
-    /// against message receipt.
-    fn get_supervision_monitor(&self) -> PySupervisionMonitor {
-        PySupervisionMonitor::from_arc(self.inner.clone())
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -171,6 +164,25 @@ impl PythonActorMesh {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.inner.__reduce__(py)
+    }
+}
+
+impl PythonActorMesh {
+    #[hyperactor::instrument]
+    pub(crate) fn cast(
+        &self,
+        message: PythonMessage,
+        selection: Selection,
+        instance: &Instance<PythonActor>,
+    ) -> PyResult<()> {
+        self.inner.cast(message, selection, instance)
+    }
+    /// Returns a Supervisor that can be used to monitor actor health.
+    ///
+    /// This is used by endpoint operations to race supervision events
+    /// against message receipt.
+    pub(crate) fn get_supervision_monitor(&self) -> PySupervisionMonitor {
+        PySupervisionMonitor::from_arc(self.inner.clone())
     }
 }
 

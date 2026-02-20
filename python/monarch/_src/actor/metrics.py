@@ -14,14 +14,8 @@ performance metrics. Metrics (call_one, choose, call, stream) are now implemente
 """
 
 from monarch._src.actor.telemetry import METER
-from opentelemetry.metrics import Counter, Histogram
+from opentelemetry.metrics import Counter
 
-
-# Histogram for measuring endpoint message size
-endpoint_message_size_histogram: Histogram = METER.create_histogram(
-    name="endpoint_message_size",
-    description="Size of endpoint messages",
-)
 
 endpoint_broadcast_error_counter: Counter = METER.create_counter(
     name="endpoint_broadcast_error.count",

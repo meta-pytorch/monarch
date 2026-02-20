@@ -17,6 +17,8 @@
 //! `PythonMessage` envelope with `kind = Result` or `kind =
 //! Exception`?
 
+use hyperactor_mesh::sel;
+use ndslice::Selection;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use pyo3::types::PyModuleMethods;
@@ -134,7 +136,7 @@ pub(crate) fn probe_exit_port_via_mesh(
 
     // Cast to all actors in the mesh (should be just 1 for sliced
     // mesh)
-    actor_mesh_inner.cast(&message, "all", instance)?;
+    actor_mesh_inner.cast(message, sel!(*), &instance.clone().into_instance())?;
 
     // Return an awaitable task that receives the result
     PyPythonTask::new(async move {
