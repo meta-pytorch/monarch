@@ -50,10 +50,25 @@ def is_rdma_available():
     return _RdmaBuffer.rdma_supported()
 
 
+def get_rdma_backend() -> str:
+    """Return available RDMA backend.
+
+    Returns:
+        str: One of 'ibverbs' or 'none' indicating the available backend.
+             Both Mellanox and EFA hardware are accessed through ibverbs.
+    """
+    if is_rdma_available():
+        return "ibverbs"
+
+    return "none"
+
+
 # Cached so that we don't have to call out to the root client every time,
 # which may be on a different host.
 @functools.cache
 def _ensure_init_rdma_manager() -> Shared[None]:
+    """Initialize the RDMA manager for this node's backend (ibverbs or EFA)."""
+
     async def task() -> None:
         # Ensure the proc mesh is initialized before we can send it over the wire,
         # since pickling the proc mesh before it is initiliazed would block the
@@ -221,7 +236,7 @@ class RDMABuffer:
 
         Raises:
             ValueError: If data is not 1d contiguous, if size is 0, or if data is a GPU tensor.
-            RuntimeError: If RDMA is not available on this platform.
+            RuntimeError: If no RDMA backend is available on this platform.
 
         Note:
             Currently only CPU tensors are supported. GPU tensor support will be added in the future.
@@ -232,7 +247,7 @@ class RDMABuffer:
             # Check if CUDA caching allocator is using expandable segments
             _check_cuda_expandable_segments_enabled()
 
-        assert is_rdma_available(), (
+        assert get_rdma_backend() != "none", (
             "Tried to create an RDMABuffer, but RDMA is not available on this platform."
         )
 
@@ -256,6 +271,11 @@ class RDMABuffer:
         except Exception as e:
             logging.error("Failed to create buffer %s", e)
             raise e
+
+    @property
+    def backend(self) -> str:
+        """Return the RDMA backend in use ('ibverbs')."""
+        return get_rdma_backend()
 
     def size(self) -> int:
         return self._buffer.size()
