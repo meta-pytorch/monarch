@@ -125,6 +125,7 @@ class KubernetesJob(JobTrait):
         image_spec: ImageSpec | None = None,
         port: int = _DEFAULT_MONARCH_PORT,
         pod_spec: client.V1PodSpec | None = None,
+        labels: dict[str, str] | None = None,
     ) -> None:
         """
         Add a mesh specification.
@@ -148,6 +149,8 @@ class KubernetesJob(JobTrait):
             port: Monarch worker port (default: 26600).
             pod_spec: ``V1PodSpec`` for advanced provisioning (e.g. custom volumes, sidecars).
                       Mutually exclusive with ``image_spec``.
+            labels: Optional labels to apply to the MonarchMesh CRD metadata.
+                    Only used when provisioning (``image_spec`` or ``pod_spec`` supplied).
 
         Raises:
             ValueError: On invalid name or conflicting parameters.
@@ -179,6 +182,8 @@ class KubernetesJob(JobTrait):
             raise ValueError("'label_selector' cannot be customized when provisioning.")
         if provisioned and pod_rank_label != "apps.kubernetes.io/pod-index":
             raise ValueError("'pod_rank_label' cannot be customized when provisioning.")
+        if not provisioned and labels is not None:
+            raise ValueError("'labels' can only be set when provisioning.")
 
         mesh_entry: Dict[str, Any] = {
             "label_selector": label_selector
@@ -188,6 +193,9 @@ class KubernetesJob(JobTrait):
             "provisioned": provisioned,
             "port": port,
         }
+
+        if labels is not None:
+            mesh_entry["labels"] = labels
 
         if image_spec is not None:
             mesh_entry["pod_spec"] = self._build_worker_pod_spec(image_spec, port)
@@ -233,13 +241,17 @@ class KubernetesJob(JobTrait):
             pod_spec_dict = api_client.sanitize_for_serialization(
                 mesh_config["pod_spec"]
             )
+            metadata: Dict[str, Any] = {
+                "name": mesh_name,
+                "namespace": self._namespace,
+            }
+            if "labels" in mesh_config:
+                metadata["labels"] = mesh_config["labels"]
+
             body: Dict[str, Any] = {
                 "apiVersion": f"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}",
                 "kind": "MonarchMesh",
-                "metadata": {
-                    "name": mesh_name,
-                    "namespace": self._namespace,
-                },
+                "metadata": metadata,
                 "spec": {
                     "replicas": mesh_config["num_replicas"],
                     "port": mesh_config["port"],
