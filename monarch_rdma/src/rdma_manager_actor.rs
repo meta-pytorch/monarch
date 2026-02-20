@@ -551,7 +551,7 @@ impl Actor for RdmaManagerActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(RdmaManagerMessage)]
+#[hyperactor::handle(RdmaManagerMessage)]
 impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// Requests a buffer to be registered with the RDMA domain.
     ///

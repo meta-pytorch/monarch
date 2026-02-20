@@ -17,7 +17,7 @@ use hyperactor::Actor;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
@@ -187,7 +187,7 @@ impl NcclCommActor {
 }
 
 #[async_trait]
-#[forward(CommMessage)]
+#[handle(CommMessage)]
 impl CommMessageHandler for NcclCommActor {
     async fn all_reduce(
         &mut self,
