@@ -908,11 +908,6 @@ impl ActorEndpoint {
         self.method.clone()
     }
 
-    /// Get the call name for this endpoint (returns the method specifier for compatibility with Endpoint protocol).
-    fn _call_name(&self) -> MethodSpecifier {
-        self.method.clone()
-    }
-
     /// Get the signature (used for argument checking in _dispatch_actor_rref).
     #[getter]
     fn _signature(&self, py: Python<'_>) -> Py<PyAny> {
@@ -1077,6 +1072,253 @@ impl ActorEndpoint {
     }
 }
 
+/// A Rust wrapper for Python's RemoteImpl endpoint.
+///
+/// This allows us to implement the adverb methods (call, choose, call_one, stream, broadcast)
+/// in Rust while delegating the actual send logic to the Python RemoteImpl._send() method.
+#[pyclass(
+    name = "Remote",
+    module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
+)]
+pub struct Remote {
+    /// The wrapped Python RemoteImpl object
+    inner: Py<PyAny>,
+}
+
+impl Endpoint for Remote {
+    fn get_extent(&self, py: Python<'_>) -> PyResult<Extent> {
+        let extent: PyExtent = self.inner.call_method0(py, "_get_extent")?.extract(py)?;
+        Ok(extent.into())
+    }
+
+    fn get_method_name(&self) -> &str {
+        "unknown"
+    }
+
+    fn send_message<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+        port_ref: Option<&PythonPortRef>,
+        selection: Selection,
+        _instance: &Instance<PythonActor>,
+    ) -> PyResult<()> {
+        let send_kwargs = PyDict::new(py);
+        match port_ref {
+            Some(pr) => send_kwargs.set_item("port", pr.clone())?,
+            None => send_kwargs.set_item("port", py.None())?,
+        }
+
+        let selection_str = match selection {
+            Selection::All(inner) if matches!(*inner, Selection::True) => "all",
+            Selection::Any(inner) if matches!(*inner, Selection::True) => "choose",
+            _ => {
+                panic!("only sel!(*) and sel!(?) should be provided as selection for send_message")
+            }
+        };
+
+        send_kwargs.set_item("selection", selection_str)?;
+
+        let kwargs_dict = kwargs.map_or_else(|| PyDict::new(py), |d| d.clone());
+        self.inner
+            .call_method(py, "_send", (args.clone(), kwargs_dict), Some(&send_kwargs))?;
+
+        Ok(())
+    }
+
+    fn get_supervision_monitor(&self) -> Option<PySupervisionMonitor> {
+        None // Remote endpoints don't have supervision_monitors
+    }
+
+    fn get_qualified_name(&self) -> Option<String> {
+        None // Remote endpoints don't have qualified names
+    }
+}
+
+#[pymethods]
+impl Remote {
+    /// Create a new Remote wrapping a Python RemoteImpl object.
+    #[new]
+    fn new(remote: Py<PyAny>) -> Self {
+        Self { inner: remote }
+    }
+
+    /// Call the endpoint on all actors and collect all responses into a ValueMesh.
+    #[pyo3(signature = (*args, **kwargs), name = "call")]
+    fn py_call<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.call(py, args, kwargs)
+    }
+
+    /// Load balanced sends a message to one chosen actor and awaits a result.
+    #[pyo3(signature = (*args, **kwargs), name = "choose")]
+    fn py_choose<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.choose(py, args, kwargs)
+    }
+
+    /// Call the endpoint on exactly one actor (the mesh must have exactly one actor).
+    #[pyo3(signature = (*args, **kwargs), name = "call_one")]
+    fn py_call_one<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.call_one(py, args, kwargs)
+    }
+
+    /// Call the endpoint on all actors and return an iterator of Futures.
+    #[pyo3(signature = (*args, **kwargs), name = "stream")]
+    fn py_stream<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.stream(py, args, kwargs)
+    }
+
+    /// Send a message to all actors without waiting for responses (fire-and-forget).
+    #[pyo3(signature = (*args, **kwargs), name = "broadcast")]
+    fn py_broadcast<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<()> {
+        self.broadcast(py, args, kwargs)
+    }
+
+    /// Get the rref result by calling the wrapped Remote's rref method.
+    #[pyo3(signature = (*args, **kwargs))]
+    fn rref<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        let kwargs_dict = kwargs.map_or_else(|| PyDict::new(py), |d| d.clone());
+        self.inner.call_method(py, "rref", args, Some(&kwargs_dict))
+    }
+
+    /// Get the call name by delegating to the wrapped Remote's _call_name.
+    fn _call_name(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.call_method0(py, "_call_name")
+    }
+
+    /// Get the maybe_resolvable property from the wrapped RemoteImpl.
+    #[getter]
+    fn _maybe_resolvable(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.getattr(py, "_maybe_resolvable")
+    }
+
+    /// Get the resolvable property from the wrapped RemoteImpl.
+    #[getter]
+    fn _resolvable(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.getattr(py, "_resolvable")
+    }
+
+    /// Get the remote_impl from the wrapped RemoteImpl.
+    /// This is needed for function_to_import_path() in function.py to work correctly.
+    #[getter]
+    fn _remote_impl(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.getattr(py, "_remote_impl")
+    }
+
+    /// Propagation method for tensor shape inference.
+    /// Delegates to the wrapped Remote's _propagate.
+    fn _propagate<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyAny>,
+        kwargs: &Bound<'py, PyAny>,
+        fake_args: &Bound<'py, PyAny>,
+        fake_kwargs: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        self.inner
+            .call_method1(py, "_propagate", (args, kwargs, fake_args, fake_kwargs))
+    }
+
+    /// Propagation for fetch operations.
+    /// Delegates to the wrapped Remote's _fetch_propagate.
+    fn _fetch_propagate<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyAny>,
+        kwargs: &Bound<'py, PyAny>,
+        fake_args: &Bound<'py, PyAny>,
+        fake_kwargs: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        self.inner.call_method1(
+            py,
+            "_fetch_propagate",
+            (args, kwargs, fake_args, fake_kwargs),
+        )
+    }
+
+    /// Propagation for pipe operations.
+    /// Delegates to the wrapped Remote's _pipe_propagate.
+    fn _pipe_propagate<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyAny>,
+        kwargs: &Bound<'py, PyAny>,
+        fake_args: &Bound<'py, PyAny>,
+        fake_kwargs: &Bound<'py, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        self.inner.call_method1(
+            py,
+            "_pipe_propagate",
+            (args, kwargs, fake_args, fake_kwargs),
+        )
+    }
+
+    /// Send a message with optional port for response.
+    /// Delegates to the wrapped RemoteImpl's _send.
+    fn _send<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: &Bound<'py, PyDict>,
+        port: Option<Py<PyAny>>,
+        selection: &str,
+    ) -> PyResult<()> {
+        self.inner.call_method(
+            py,
+            "_send",
+            (args, kwargs),
+            Some(&{
+                let d = PyDict::new(py);
+                d.set_item("port", port.unwrap_or_else(|| py.None()))?;
+                d.set_item("selection", selection)?;
+                d
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Make RemoteEndpoint callable - delegates to rref() like Remote.__call__.
+    #[pyo3(signature = (*args, **kwargs))]
+    fn __call__<'py>(
+        &self,
+        py: Python<'py>,
+        args: &Bound<'py, PyTuple>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Py<PyAny>> {
+        self.rref(py, args, kwargs)
+    }
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     py_module_add_function!(
         module,
@@ -1099,6 +1341,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyValueStream>()?;
     module.add_class::<RepeatMailbox>()?;
     module.add_class::<ActorEndpoint>()?;
+    module.add_class::<Remote>()?;
 
     Ok(())
 }
