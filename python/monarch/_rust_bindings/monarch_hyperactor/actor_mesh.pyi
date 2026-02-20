@@ -13,7 +13,6 @@ from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
-from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
 from typing_extensions import Self
 
 class ActorMeshProtocol(Protocol):
@@ -42,14 +41,7 @@ class ActorMeshProtocol(Protocol):
 
 @final
 class PythonActorMesh(ActorMeshProtocol):
-    def get_supervision_monitor(self) -> SupervisionMonitor:
-        """
-        Returns a Supervisor that can be used to monitor actor health.
-
-        This is used by endpoint operations to race supervision events
-        against message receipt.
-        """
-        ...
+    pass
 
 @final
 class ActorSupervisionEvent:
