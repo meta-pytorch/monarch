@@ -101,9 +101,6 @@ class ProcessAllocatorBase(AllocatorBase):
 class LocalAllocatorBase(AllocatorBase):
     pass
 
-class SimAllocatorBase(AllocatorBase):
-    pass
-
 class RemoteAllocatorBase(AllocatorBase):
     def __new__(
         cls,
