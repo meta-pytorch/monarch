@@ -21,6 +21,7 @@ from typing import Any, Callable, cast, Coroutine
 
 import cloudpickle
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._rust_bindings.monarch_hyperactor.pickle import pickle
 from monarch._rust_bindings.monarch_hyperactor.proc_launcher_probe import (
     probe_exit_port_via_mesh,
 )
@@ -112,11 +113,11 @@ async def test_port_receives_result() -> None:
     # be (args_tuple, kwargs_dict) format
     args = ("test_tag",)
     kwargs = {}
-    pickled_args = cloudpickle.dumps((args, kwargs))
+    pickling_state = pickle((args, kwargs), allow_pending_pickles=False)
 
     # Call the Rust probe and await the result
     report = await probe_exit_port_via_mesh(
-        actor_mesh_inner, instance, "send_result_on_port", pickled_args
+        actor_mesh_inner, instance, "send_result_on_port", pickling_state
     )
 
     # Assert we received a PythonMessage
@@ -126,11 +127,6 @@ async def test_port_receives_result() -> None:
     # Assert it's a Result, not an Exception
     assert report.kind == "Result", f"Expected Result, got {report.kind}"
     assert report.rank is not None, "rank should be present for Result"
-
-    # Assert no pending pickle state
-    assert report.pending_pickle_state_present is False, (
-        "pending_pickle_state should be None"
-    )
 
     # Assert the payload can be decoded with cloudpickle
     payload = cloudpickle.loads(bytes(report.payload_bytes))
@@ -176,11 +172,11 @@ async def test_port_receives_exception() -> None:
     # be (args_tuple, kwargs_dict) format
     args = ("test_tag",)
     kwargs = {}
-    pickled_args = cloudpickle.dumps((args, kwargs))
+    pickling_state = pickle((args, kwargs), allow_pending_pickles=False)
 
     # Call the Rust probe and await the result
     report = await probe_exit_port_via_mesh(
-        actor_mesh_inner, instance, "send_exception_on_port", pickled_args
+        actor_mesh_inner, instance, "send_exception_on_port", pickling_state
     )
 
     # Assert we received a PythonMessage
@@ -190,11 +186,6 @@ async def test_port_receives_exception() -> None:
     # Assert it's an Exception, not a Result
     assert report.kind == "Exception", f"Expected Exception, got {report.kind}"
     assert report.rank is not None, "rank should be present for Exception"
-
-    # Assert no pending pickle state
-    assert report.pending_pickle_state_present is False, (
-        "pending_pickle_state should be None"
-    )
 
     # Assert the payload can be decoded as an exception
     exc = cloudpickle.loads(bytes(report.payload_bytes))
