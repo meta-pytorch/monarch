@@ -27,7 +27,6 @@ use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
-use hyperactor_mesh::alloc::sim::SimAllocator;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::transport::default_transport;
 use ndslice::Extent;
@@ -291,32 +290,6 @@ impl PyLocalAllocator {
 }
 
 #[pyclass(
-    name = "SimAllocatorBase",
-    module = "monarch._rust_bindings.monarch_hyperactor.alloc",
-    subclass
-)]
-pub struct PySimAllocator;
-
-#[pymethods]
-impl PySimAllocator {
-    #[new]
-    fn new() -> Self {
-        PySimAllocator {}
-    }
-
-    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
-        let spec = spec.into();
-        PyPythonTask::new(async move {
-            SimAllocator
-                .allocate(spec)
-                .await
-                .map(|inner| PyAlloc::new(Box::new(inner), None))
-                .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
-        })
-    }
-}
-
-#[pyclass(
     name = "ProcessAllocatorBase",
     module = "monarch._rust_bindings.monarch_hyperactor.alloc",
     subclass
@@ -555,7 +528,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PyAllocSpec>()?;
     hyperactor_mod.add_class::<PyProcessAllocator>()?;
     hyperactor_mod.add_class::<PyLocalAllocator>()?;
-    hyperactor_mod.add_class::<PySimAllocator>()?;
     hyperactor_mod.add_class::<PyRemoteAllocator>()?;
 
     Ok(())
