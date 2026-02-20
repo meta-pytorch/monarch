@@ -520,13 +520,8 @@ pub async fn code_sync_mesh(
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
-    use hyperactor::channel::ChannelTransport;
-    use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::alloc::AllocSpec;
-    use hyperactor_mesh::alloc::Allocator;
-    use hyperactor_mesh::alloc::local::LocalAllocator;
     use hyperactor_mesh::global_root_client;
-    use ndslice::extent;
+    use hyperactor_mesh::test_utils;
     use ndslice::shape;
     use tempfile::TempDir;
     use tokio::fs;
@@ -612,22 +607,15 @@ mod tests {
         fs::create_dir(target_workspace.path().join("subdir5")).await?;
         fs::write(target_workspace.path().join("foo.txt"), "something").await?;
 
-        // Set up actor mesh with CodeSyncManager actors
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent! { replica = 2 },
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?;
-
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
         let instance = global_root_client();
-
-        let proc_mesh = ProcMesh::allocate(&instance, Box::new(alloc), "code_sync_test").await?;
+        // Set up actor mesh with CodeSyncManager actors
+        let mut host_mesh = test_utils::local_host_mesh(2).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "code_sync_test", ndslice::Extent::unity())
+            .await
+            .unwrap();
 
         // Create CodeSyncManagerParams
         let params = CodeSyncManagerParams {};
@@ -673,6 +661,7 @@ mod tests {
             "Source and target workspaces should be identical after sync"
         );
 
+        let _ = host_mesh.shutdown(instance).await;
         Ok(())
     }
 }
