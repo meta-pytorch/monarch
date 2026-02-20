@@ -667,6 +667,17 @@ impl From<tokio::net::unix::SocketAddr> for ChannelAddr {
     }
 }
 
+/// Return the first non-link-local address from a list.
+fn find_routable_address(addresses: &[IpAddr]) -> Option<IpAddr> {
+    addresses
+        .iter()
+        .find(|addr| match addr {
+            IpAddr::V6(v6) => !v6.is_unicast_link_local(),
+            IpAddr::V4(v4) => !v4.is_link_local(),
+        })
+        .cloned()
+}
+
 impl ChannelAddr {
     /// The "any" address for the given transport type. This is used to
     /// servers to "any" address.
@@ -683,7 +694,7 @@ impl ChannelAddr {
                                 hostname.to_str().and_then(|hostname_str| {
                                     dns_lookup::lookup_host(hostname_str)
                                         .ok()
-                                        .and_then(|addresses| addresses.first().cloned())
+                                        .and_then(|addresses| find_routable_address(&addresses))
                                 })
                             })
                             .expect("failed to resolve hostname to ip address")
@@ -1521,5 +1532,41 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_link_local_ipv6() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let routable_v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let addrs = vec![link_local_v6, routable_v6];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v6));
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_link_local_ipv4() {
+        let link_local_v4: IpAddr = "169.254.1.1".parse().unwrap();
+        let routable_v4: IpAddr = "192.168.1.1".parse().unwrap();
+        let addrs = vec![link_local_v4, routable_v4];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v4));
+    }
+
+    #[test]
+    fn test_find_routable_address_returns_none_when_all_link_local() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let link_local_v4: IpAddr = "169.254.1.1".parse().unwrap();
+        let addrs = vec![link_local_v6, link_local_v4];
+        assert_eq!(find_routable_address(&addrs), None);
+    }
+
+    #[test]
+    fn test_find_routable_address_mixed() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let link_local_v4: IpAddr = "169.254.0.1".parse().unwrap();
+        let routable_v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let routable_v6: IpAddr = "2001:db8::2".parse().unwrap();
+
+        // First routable address in list order should be returned.
+        let addrs = vec![link_local_v6, link_local_v4, routable_v4, routable_v6];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v4));
     }
 }
