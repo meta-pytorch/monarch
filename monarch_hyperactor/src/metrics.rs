@@ -25,6 +25,11 @@ declare_static_counter!(ENDPOINT_ACTOR_COUNT, "endpoint_actor_count");
 declare_static_counter!(ENDPOINT_ACTOR_ERROR, "endpoint_actor_error");
 // Tracks panics that occur during endpoint execution
 declare_static_counter!(ENDPOINT_ACTOR_PANIC, "endpoint_actor_panic");
+// Tracks latency of endpoint calls from the caller's perspective in microseconds
+declare_static_histogram!(
+    ENDPOINT_CALL_LATENCY_US_HISTOGRAM,
+    "endpoint_call_latency_us_histogram"
+);
 // Tracks latency of endpoint call_one operations in microseconds
 declare_static_histogram!(
     ENDPOINT_CALL_ONE_LATENCY_US_HISTOGRAM,
@@ -35,10 +40,14 @@ declare_static_histogram!(
     ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM,
     "endpoint_choose_latency_us_histogram"
 );
+// Tracks errors that occur during endpoint calls from the caller's perspective
+declare_static_counter!(ENDPOINT_CALL_ERROR, "endpoint_call_error");
 // Tracks errors that occur during endpoint call_one operations
 declare_static_counter!(ENDPOINT_CALL_ONE_ERROR, "endpoint_call_one_error");
 // Tracks errors that occur during endpoint choose operations
 declare_static_counter!(ENDPOINT_CHOOSE_ERROR, "endpoint_choose_error");
+// Tracks throughput of endpoint call operations
+declare_static_counter!(ENDPOINT_CALL_THROUGHPUT, "endpoint_call_throughput");
 // Tracks throughput of endpoint call_one operations
 declare_static_counter!(ENDPOINT_CALL_ONE_THROUGHPUT, "endpoint_call_one_throughput");
 // Tracks throughput of endpoint choose operations
