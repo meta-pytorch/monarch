@@ -29,7 +29,7 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
@@ -990,7 +990,7 @@ impl StreamActor {
 }
 
 #[async_trait]
-#[forward(StreamMessage)]
+#[handle(StreamMessage)]
 impl StreamMessageHandler for StreamActor {
     async fn call_function(
         &mut self,

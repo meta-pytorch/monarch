@@ -1064,7 +1064,7 @@ impl hyperactor::RemoteSpawn for LogForwardActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LogForwardMessage)]
+#[hyperactor::handle(LogForwardMessage)]
 impl LogForwardMessageHandler for LogForwardActor {
     async fn forward(&mut self, ctx: &Context<Self>) -> Result<(), anyhow::Error> {
         match self.rx.recv().await {
@@ -1253,7 +1253,7 @@ impl Drop for LogClientActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LogMessage)]
+#[hyperactor::handle(LogMessage)]
 impl LogMessageHandler for LogClientActor {
     async fn log(
         &mut self,
@@ -1368,7 +1368,7 @@ impl LogMessageHandler for LogClientActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LogClientMessage)]
+#[hyperactor::handle(LogClientMessage)]
 impl LogClientMessageHandler for LogClientActor {
     async fn set_aggregate(
         &mut self,

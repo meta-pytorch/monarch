@@ -29,7 +29,7 @@ use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -237,7 +237,7 @@ impl CodeSyncManager {
 }
 
 #[async_trait]
-#[forward(CodeSyncMessage)]
+#[handle(CodeSyncMessage)]
 impl CodeSyncMessageHandler for CodeSyncManager {
     async fn sync(
         &mut self,

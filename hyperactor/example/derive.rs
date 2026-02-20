@@ -58,7 +58,7 @@ impl Actor for ShoppingListActor {}
 // We implement the trait here for the actor, defining a handler for
 // each ShoppingList message.
 //
-// The `forward` attribute installs a handler that forwards messages
+// The `handle` attribute installs a handler that routes messages
 // to the `ShoppingListHandler` implementation directly. This can also
 // be done manually:
 //
@@ -67,7 +67,7 @@ impl Actor for ShoppingListActor {}
 //     ::handle(self, comm, message).await
 // ```
 #[async_trait]
-#[hyperactor::forward(ShoppingList)]
+#[hyperactor::handle(ShoppingList)]
 impl ShoppingListHandler for ShoppingListActor {
     async fn add(&mut self, _cx: &Context<Self>, item: String) -> Result<(), anyhow::Error> {
         eprintln!("insert {}", item);
@@ -91,7 +91,7 @@ impl ShoppingListHandler for ShoppingListActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(ClearList)]
+#[hyperactor::handle(ClearList)]
 impl ClearListHandler for ShoppingListActor {
     async fn clear_list(
         &mut self,
@@ -105,7 +105,7 @@ impl ClearListHandler for ShoppingListActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(GetItemCount<usize>)]
+#[hyperactor::handle(GetItemCount<usize>)]
 impl GetItemCountHandler<usize> for ShoppingListActor {
     async fn get_item_count(
         &mut self,
