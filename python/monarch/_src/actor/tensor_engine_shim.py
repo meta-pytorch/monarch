@@ -30,7 +30,7 @@ time it is used.
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
-    from monarch._src.actor.actor_mesh import Port
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 
 from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 
@@ -73,7 +73,7 @@ def create_actor_message_kind(
     method_name: "MethodSpecifier",
     proc_mesh: "Optional[Any]",
     refs: "Sequence[Any]",
-    port: "Optional[Port[Any]]",
+    port: "Optional[PortRef | OncePortRef]",
 ) -> "Any": ...
 
 

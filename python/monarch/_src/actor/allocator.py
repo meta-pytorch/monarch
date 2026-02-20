@@ -18,7 +18,6 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     LocalAllocatorBase,
     ProcessAllocatorBase,
     RemoteAllocatorBase,
-    SimAllocatorBase,
 )
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.future import Future
@@ -123,16 +122,6 @@ class ProcessAllocator(ProcessAllocatorBase, AllocateMixin):
 class LocalAllocator(LocalAllocatorBase, AllocateMixin):
     """
     An allocator that allocates by spawning actors into the current process.
-    """
-
-    def _stream_logs(self) -> bool:
-        return False
-
-
-@final
-class SimAllocator(SimAllocatorBase, AllocateMixin):
-    """
-    An allocator that allocates by spawning actors into the current process using simulated channels for transport
     """
 
     def _stream_logs(self) -> bool:

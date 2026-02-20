@@ -27,7 +27,6 @@ from typing import (
     cast,
     Concatenate,
     Dict,
-    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -48,6 +47,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
@@ -73,6 +73,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Sh
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
+    SupervisionMonitor,
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -589,7 +590,7 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
 ) -> PendingMessage:
     """
@@ -607,11 +608,11 @@ def _create_endpoint_message(
     )
     objects = pickling_state.tensor_engine_references()
     if not objects:
-        message_kind = PythonMessageKind.CallMethod(
-            method_name, None if port is None else port._port_ref
-        )
+        message_kind = PythonMessageKind.CallMethod(method_name, port_ref)
     else:
-        message_kind = create_actor_message_kind(method_name, proc_mesh, objects, port)
+        message_kind = create_actor_message_kind(
+            method_name, proc_mesh, objects, port_ref
+        )
 
     return PendingMessage(message_kind, pickling_state)
 
@@ -638,13 +639,16 @@ class ActorEndpoint(Endpoint[P, R]):
     def _call_name(self) -> MethodSpecifier:
         return self._name
 
+    def _get_extent(self) -> Extent:
+        return Extent(self._shape.labels, self._shape.ndslice.sizes)
+
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
 
@@ -657,8 +661,6 @@ class ActorEndpoint(Endpoint[P, R]):
         self._actor_mesh.cast_unresolved(
             message, selection, context().actor_instance._as_rust()
         )
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
         return f"{self._mesh_name}.{self._get_method_name()}()"
@@ -666,12 +668,22 @@ class ActorEndpoint(Endpoint[P, R]):
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
         instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
+        monitor = self._get_supervision_monitor()
+        monitor_task: Optional[Shared[Exception]] = (
+            None if monitor is None else monitor.supervision_event_task(instance)
         )
 
-        r._attach_supervision(monitor, self._full_name())
+        r._attach_supervision(monitor_task, self._full_name())
         return (p, r)
+
+    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
+        # Only return a supervision monitor if the mesh is a PythonActorMesh (Rust class).
+        # For pure Python implementations like _SingletonActorAdapator,
+        # return None to skip supervision (which is correct since those
+        # implementations don't support supervision anyway).
+        if isinstance(self._actor_mesh, PythonActorMesh):
+            return self._actor_mesh.get_supervision_monitor()
+        return None
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
@@ -751,7 +763,7 @@ class Accumulator(Generic[P, R, A]):
         Returns:
             Future that resolves to the accumulated value.
         """
-        gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
+        gen: Iterator[Future[R]] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
             value = self._identity
@@ -923,7 +935,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):

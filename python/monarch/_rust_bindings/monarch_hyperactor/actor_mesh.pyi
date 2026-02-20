@@ -12,8 +12,9 @@ from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
+from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionMonitor
 from typing_extensions import Self
 
 class ActorMeshProtocol(Protocol):
@@ -48,19 +49,19 @@ class ActorMeshProtocol(Protocol):
         """Cast a PendingMessage (which may contain unresolved async values) to actors."""
         ...
     def new_with_region(self, region: Region) -> Self: ...
-    def supervision_event(
-        self, instance: Instance
-    ) -> "Optional[Shared[Exception]]": ...
-    # Starts supervision monitoring for future uses of "supervision_event".
-    def start_supervision(
-        self, instance: Instance, supervision_display_name: str
-    ) -> None: ...
     def stop(self, instance: Instance, reason: str) -> PythonTask[None]: ...
     def initialized(self) -> PythonTask[None]: ...
 
 @final
 class PythonActorMesh(ActorMeshProtocol):
-    pass
+    def get_supervision_monitor(self) -> SupervisionMonitor:
+        """
+        Returns a Supervisor that can be used to monitor actor health.
+
+        This is used by endpoint operations to race supervision events
+        against message receipt.
+        """
+        ...
 
 @final
 class ActorSupervisionEvent:

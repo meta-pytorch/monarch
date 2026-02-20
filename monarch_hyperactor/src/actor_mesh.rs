@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
 use hyperactor::ActorRef;
+use hyperactor::Instance;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -47,11 +49,12 @@ use crate::mailbox::EitherPortRef;
 use crate::pickle::PendingMessage;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
-use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::shape::PyRegion;
+use crate::supervision::PySupervisionMonitor;
+use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 
 py_global!(
@@ -93,25 +96,6 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)>;
 
-    /// Get supervision events for this actor mesh.
-    /// Returns None by default for implementations that don't support supervision events.
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        Ok(None)
-    }
-
-    /// Start supervision monitoring on this mesh.
-    /// This function is idempotent, and is used to start the channel that
-    /// will provide "supervision_event" with events.
-    /// The default implementation does nothing, and it is not required that
-    /// it has to be called before supervision_event.
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        Ok(())
-    }
-
     /// Stop the actor mesh asynchronously.
     /// Default implementation raises NotImplementedError for types that don't support stopping.
     fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
@@ -126,8 +110,10 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn initialized(&self) -> PyResult<PyPythonTask> {
         PyPythonTask::new(async { Ok(None::<()>) })
     }
+}
 
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>>;
+pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>>;
 }
 
 /// This just forwards to the rust trait that can implement these bindings
@@ -136,13 +122,13 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     module = "monarch._rust_bindings.monarch_hyperactor.actor_mesh"
 )]
 pub(crate) struct PythonActorMesh {
-    inner: Arc<dyn ActorMeshProtocol>,
+    inner: Arc<dyn SupervisableActorMesh>,
 }
 
 impl PythonActorMesh {
     pub(crate) fn new<F>(f: F, supervised: bool) -> Self
     where
-        F: Future<Output = PyResult<Box<dyn ActorMeshProtocol>>> + Send + 'static,
+        F: Future<Output = PyResult<Box<dyn SupervisableActorMesh>>> + Send + 'static,
     {
         let f = async move { Ok(Arc::from(f.await?)) }.boxed().shared();
         PythonActorMesh {
@@ -150,7 +136,7 @@ impl PythonActorMesh {
         }
     }
 
-    pub(crate) fn from_impl(inner: Arc<dyn ActorMeshProtocol>) -> Self {
+    pub(crate) fn from_impl(inner: Arc<dyn SupervisableActorMesh>) -> Self {
         PythonActorMesh { inner }
     }
 }
@@ -198,17 +184,12 @@ impl PythonActorMesh {
         })
     }
 
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        self.inner.supervision_event(instance)
-    }
-
-    fn start_supervision(
-        &self,
-        instance: &PyInstance,
-        supervision_display_name: String,
-    ) -> PyResult<()> {
-        self.inner
-            .start_supervision(instance, supervision_display_name)
+    /// Returns a SupervisionMonitor that can be used to monitor actor health.
+    ///
+    /// This is used by endpoint operations to race supervision events
+    /// against message receipt.
+    fn get_supervision_monitor(&self) -> PySupervisionMonitor {
+        PySupervisionMonitor::from_arc(self.inner.clone())
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -246,7 +227,7 @@ impl Clone for ClonePyErr {
     }
 }
 
-type ActorMeshResult = Result<Arc<dyn ActorMeshProtocol>, ClonePyErr>;
+type ActorMeshResult = Result<Arc<dyn SupervisableActorMesh>, ClonePyErr>;
 type ActorMeshFut = Shared<Pin<Box<dyn Future<Output = ActorMeshResult> + Send + 'static>>>;
 
 pub(crate) struct AsyncActorMesh {
@@ -270,7 +251,19 @@ impl AsyncActorMesh {
             }
         });
 
-        AsyncActorMesh::new(queue, supervised, f)
+        let mesh = AsyncActorMesh::new(queue, supervised, f);
+        // Eagerly trigger the mesh initialization by pushing an init task onto
+        // the queue. This ensures actors are spawned immediately rather than
+        // waiting for the first endpoint call, which is critical for:
+        // 1. Tests/code that wait for supervision events from actor __init__
+        //    failures without making any endpoint calls.
+        // 2. Ensuring all meshes on a proc are spawned before any errors occur,
+        //    preventing spawn rejections due to stale supervision events.
+        let f = mesh.mesh.clone();
+        mesh.push(async move {
+            let _ = f.await;
+        });
+        mesh
     }
 
     fn new(
@@ -292,8 +285,8 @@ impl AsyncActorMesh {
         self.queue.send(f.boxed()).unwrap();
     }
 
-    pub(crate) fn from_impl(mesh: Arc<dyn ActorMeshProtocol>) -> Self {
-        let fut = future::ready(Ok::<Arc<dyn ActorMeshProtocol>, ClonePyErr>(mesh))
+    pub(crate) fn from_impl(mesh: Arc<dyn SupervisableActorMesh>) -> Self {
+        let fut = future::ready(Ok::<Arc<dyn SupervisableActorMesh>, ClonePyErr>(mesh))
             .boxed()
             .shared();
         // Poll the future so that its result can be observed without blocking the tokio runtime.
@@ -351,18 +344,6 @@ impl ActorMeshProtocol for AsyncActorMesh {
         Ok(())
     }
 
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        let mesh = self.mesh.clone();
-        let region = region.clone();
-        Ok(Box::new(AsyncActorMesh::new(
-            self.queue.clone(),
-            self.supervised,
-            async move { Ok(Arc::from(mesh.await?.new_with_region(&region)?)) }
-                .boxed()
-                .shared(),
-        )))
-    }
-
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         let fut = self.mesh.clone();
         match fut.peek().cloned() {
@@ -377,51 +358,6 @@ impl ActorMeshProtocol for AsyncActorMesh {
                 Ok((block_on, args.into_any()))
             }
         }
-    }
-
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        if !self.supervised {
-            return Ok(None);
-        }
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let mesh = self.mesh.clone();
-        self.push(async move {
-            if tx.send(mesh.await).is_err() {
-                panic!("oneshot failed");
-            }
-        });
-        PyPythonTask::new(async move {
-            let event = rx
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))??
-                .supervision_event(&instance)?
-                .unwrap();
-            event.task()?.take_task()?.await
-        })
-        // This task must be aborted to run the Drop for the inner PyShared, in
-        // case that one is also abortable.
-        .map(|mut x| x.spawn_abortable().map(Some))?
-    }
-
-    fn start_supervision(
-        &self,
-        instance: &PyInstance,
-        supervision_display_name: String,
-    ) -> PyResult<()> {
-        if !self.supervised {
-            return Ok(());
-        }
-        let mesh = self.mesh.clone();
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        self.push(async move {
-            let mesh = mesh.await;
-            if let Ok(mesh) = mesh {
-                mesh.start_supervision(&instance, supervision_display_name)
-                    .unwrap();
-            }
-        });
-        Ok(())
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -444,6 +380,34 @@ impl ActorMeshProtocol for AsyncActorMesh {
             mesh.await?;
             Ok(None::<()>)
         })
+    }
+}
+
+#[async_trait]
+impl Supervisable for AsyncActorMesh {
+    async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        if !self.supervised {
+            return None;
+        }
+        let mesh = self.mesh.clone();
+        match mesh.await {
+            Ok(mesh) => mesh.supervision_event(instance).await,
+            Err(e) => Some(e.into()),
+        }
+    }
+}
+
+impl SupervisableActorMesh for AsyncActorMesh {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
+        let mesh = self.mesh.clone();
+        let region = region.clone();
+        Ok(Box::new(AsyncActorMesh::new(
+            self.queue.clone(),
+            self.supervised,
+            async move { Ok(Arc::from(mesh.await?.new_with_region(&region)?)) }
+                .boxed()
+                .shared(),
+        )))
     }
 }
 
@@ -494,6 +458,17 @@ impl PythonActorMeshImpl {
     }
 }
 
+#[async_trait]
+impl Supervisable for PythonActorMeshImpl {
+    async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr> {
+        let mesh = self.mesh_ref();
+        match mesh.next_supervision_event(instance).await {
+            Ok(supervision_failure) => Some(SupervisionError::new_err_from(supervision_failure)),
+            Err(e) => Some(PyValueError::new_err(e.to_string())),
+        }
+    }
+}
+
 impl ActorMeshProtocol for PythonActorMeshImpl {
     fn cast(
         &self,
@@ -507,42 +482,6 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
             selection,
             instance,
         )
-    }
-
-    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        // We clone here so the future can outlive the self reference, but we want
-        // to share the supervision receiver with the original mesh. This way
-        // if a second endpoint is started, it can reuse the same subscriber.
-        let mesh = self.mesh_ref().clone_with_supervision_receiver();
-        let instance = monarch_with_gil_blocking(|_py| instance.clone());
-        let shared = PyPythonTask::new::<_, ()>(async move {
-            let supervision_failure = mesh
-                .next_supervision_event(instance.deref())
-                .await
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            // Don't Unsubscribe here, as the receiver may have other copies being
-            // used.
-            Err(SupervisionError::new_err_from(supervision_failure))
-        })?
-        .spawn_abortable()?;
-        Ok(Some(shared))
-    }
-
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        // This function is a no-op since moving the monitor loop to ActorMeshController.
-        // Initializing the receiver changes no received events.
-        Ok(())
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
-        Ok(Box::new(PythonActorMeshImpl::new_ref(
-            self.mesh_ref().sliced(region.as_inner().clone()),
-        )))
     }
 
     fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
@@ -562,6 +501,15 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.mesh_ref().__reduce__(py)
+    }
+}
+
+impl SupervisableActorMesh for PythonActorMeshImpl {
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>> {
+        assert!(region.as_inner().is_subset(self.mesh_ref().region()));
+        Ok(Box::new(PythonActorMeshImpl::new_ref(
+            self.mesh_ref().sliced(region.as_inner().clone()),
+        )))
     }
 }
 
@@ -609,32 +557,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
         Ok(())
     }
 
-    fn supervision_event(&self, _instance: &PyInstance) -> PyResult<Option<PyShared>> {
-        Err(PyNotImplementedError::new_err(
-            "This should never be called on ActorMeshRef directly",
-        ))
-    }
-
-    fn start_supervision(
-        &self,
-        _instance: &PyInstance,
-        _supervision_display_name: String,
-    ) -> PyResult<()> {
-        Err(PyNotImplementedError::new_err(
-            "This should never be called on ActorMeshRef directly",
-        ))
-    }
-
     /// Stop the actor mesh asynchronously.
     fn stop(&self, _instance: &PyInstance, _reason: String) -> PyResult<PyPythonTask> {
         Err(PyNotImplementedError::new_err(
             "This cannot be used on ActorMeshRef, only on owned ActorMesh",
         ))
-    }
-
-    fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn ActorMeshProtocol>> {
-        let sliced = self.sliced(region.as_inner().clone());
-        Ok(Box::new(sliced))
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -761,4 +688,253 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PythonActorMeshImpl>()?;
     hyperactor_mod.add_class::<PyActorSupervisionEvent>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use hyperactor::Actor;
+    use hyperactor::Context;
+    use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::Proc;
+    use hyperactor::actor::Signal;
+    use hyperactor::channel::ChannelTransport;
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
+    use hyperactor::mailbox;
+    use hyperactor::mailbox::PortReceiver;
+    use hyperactor::proc::WorkCell;
+    use hyperactor::supervision::ActorSupervisionEvent;
+    use hyperactor_mesh::ProcMesh;
+    use hyperactor_mesh::alloc::AllocSpec;
+    use hyperactor_mesh::alloc::Allocator;
+    use hyperactor_mesh::alloc::LocalAllocator;
+    use hyperactor_mesh::mesh_controller::GetSubscriberCount;
+    use hyperactor_mesh::supervision::MeshFailure;
+    use monarch_types::PickledPyObject;
+    use ndslice::extent;
+    use pyo3::Python;
+    use tokio::sync::mpsc;
+
+    use super::*;
+    use crate::actor::PythonActor;
+    use crate::actor::PythonActorParams;
+
+    /// Minimal root-client actor for test infrastructure.
+    /// Handles MeshFailure by panicking (test failure).
+    #[derive(Debug)]
+    struct TestClient {
+        signal_rx: PortReceiver<Signal>,
+        supervision_rx: PortReceiver<ActorSupervisionEvent>,
+        work_rx: mpsc::UnboundedReceiver<WorkCell<Self>>,
+    }
+
+    impl Actor for TestClient {}
+
+    #[async_trait]
+    impl Handler<MeshFailure> for TestClient {
+        async fn handle(
+            &mut self,
+            _cx: &Context<Self>,
+            msg: MeshFailure,
+        ) -> Result<(), anyhow::Error> {
+            panic!("unexpected supervision failure in test: {}", msg);
+        }
+    }
+
+    impl TestClient {
+        fn run(mut self, instance: &'static Instance<Self>) {
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        work = self.work_rx.recv() => {
+                            match work {
+                                Some(work) => {
+                                    let _ = work.handle(&mut self, instance).await;
+                                }
+                                None => break,
+                            }
+                        }
+                        _ = self.signal_rx.recv() => {}
+                        Ok(event) = self.supervision_rx.recv() => {
+                            let _ = instance
+                                .handle_supervision_event(&mut self, event)
+                                .await;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    fn init_test_instance() -> &'static Instance<TestClient> {
+        static INSTANCE: OnceLock<Instance<TestClient>> = OnceLock::new();
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
+        let (actor, _handle, supervision_rx, signal_rx, work_rx) =
+            proc.actor_instance("test_client").unwrap();
+
+        INSTANCE
+            .set(actor)
+            .map_err(|_| "already initialized")
+            .unwrap();
+        let instance = INSTANCE.get().unwrap();
+
+        TestClient {
+            signal_rx,
+            supervision_rx,
+            work_rx,
+        }
+        .run(instance);
+
+        instance
+    }
+
+    fn test_instance() -> &'static Instance<TestClient> {
+        static INSTANCE: OnceLock<&'static Instance<TestClient>> = OnceLock::new();
+        INSTANCE.get_or_init(init_test_instance)
+    }
+
+    /// Verify that calling `supervision_event` repeatedly through a
+    /// [`PythonActorMesh`] does not increase the subscriber count on the
+    /// controller.  This guards against a regression where each call
+    /// would create a new supervision subscriber.
+    #[tokio::test]
+    async fn test_subscriber_count_stable_across_supervision_calls() {
+        crate::pytokio::ensure_python();
+
+        let instance = test_instance();
+
+        let proc_mesh = ProcMesh::allocate(
+            instance,
+            Box::new(
+                LocalAllocator
+                    .allocate(AllocSpec {
+                        extent: extent!(replicas = 2),
+                        constraints: Default::default(),
+                        proc_name: None,
+                        transport: ChannelTransport::Local,
+                        proc_allocation_mode: Default::default(),
+                    })
+                    .await
+                    .unwrap(),
+            ),
+            "test",
+        )
+        .await
+        .unwrap();
+
+        // Create a minimal Python class and pickle it so we can spawn
+        // PythonActor instances (mirroring PyProcMesh::spawn_async).
+        // The class must live in __main__'s globals for pickle to find it.
+        let pickled_type = Python::attach(|py| {
+            py.run(c"class MinimalActor: pass", None, None).unwrap();
+
+            PickledPyObject::pickle(
+                &py.import("__main__")
+                    .unwrap()
+                    .getattr("MinimalActor")
+                    .unwrap(),
+            )
+            .unwrap()
+        });
+
+        let actor_mesh = proc_mesh
+            .spawn::<PythonActor, _>(
+                instance,
+                "test_actors",
+                &PythonActorParams::new(pickled_type, None),
+            )
+            .await
+            .unwrap();
+
+        let controller = actor_mesh.controller().as_ref().unwrap().clone();
+
+        // Wrap using the production code path from PyProcMesh::spawn_async.
+        let mesh_impl =
+            async move { Ok::<_, PyErr>(Box::new(PythonActorMeshImpl::new_owned(actor_mesh))) };
+        let python_actor_mesh = PythonActorMesh::new(
+            async move {
+                let mesh_impl: Box<dyn SupervisableActorMesh> = mesh_impl.await?;
+                Ok(mesh_impl)
+            },
+            true,
+        );
+
+        // Instance<PythonActor> required by the Supervisable trait
+        // signature. Only used for subscription routing inside
+        // next_supervision_event.
+        let (py_instance, ..) = Proc::direct(ChannelTransport::Unix.any(), "py_proc".to_string())
+            .unwrap()
+            .actor_instance::<PythonActor>("py_client")
+            .unwrap();
+
+        // Query the subscriber count from the controller.
+        let (port, mut rx) = mailbox::open_port::<usize>(instance);
+        controller
+            .send(instance, GetSubscriberCount(port.bind()))
+            .unwrap();
+        let initial_count = RealClock
+            .timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for subscriber count")
+            .expect("channel closed");
+        assert_eq!(initial_count, 0, "should have 0 subscribers initially");
+
+        // Call supervision_event through the PythonActorMesh multiple
+        // times, racing against a short timeout each time.  The mesh is
+        // healthy so no event fires; we just want to trigger the lazy
+        // subscriber initialization repeatedly.
+        for _ in 0..5 {
+            tokio::select! {
+                _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
+                    panic!("unexpected supervision event on healthy mesh");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+        }
+
+        // After 5 calls from the same context, there should be exactly 1
+        // subscriber (created lazily on the first call, reused thereafter).
+        let (port, mut rx) = mailbox::open_port::<usize>(instance);
+        controller
+            .send(instance, GetSubscriberCount(port.bind()))
+            .unwrap();
+        let after_count = RealClock
+            .timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for subscriber count")
+            .expect("channel closed");
+        assert_eq!(
+            after_count, 1,
+            "subscriber count should be exactly 1, not growing with each call"
+        );
+
+        // Do 5 more calls to confirm it stays stable.
+        for _ in 0..5 {
+            tokio::select! {
+                _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
+                    panic!("unexpected supervision event on healthy mesh");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+        }
+
+        let (port, mut rx) = mailbox::open_port::<usize>(instance);
+        controller
+            .send(instance, GetSubscriberCount(port.bind()))
+            .unwrap();
+        let final_count = RealClock
+            .timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for subscriber count")
+            .expect("channel closed");
+        assert_eq!(
+            final_count, 1,
+            "subscriber count should still be 1 after repeated calls"
+        );
+    }
 }
