@@ -100,6 +100,7 @@ def _ensure_torch_pickle() -> None:
     import torch
 
     dispatch: dict[Any, Any] = {}
+    # pyre-ignore[16]: dynamic torch attribute
     keys: list[Any] = [torch.storage.UntypedStorage, torch.storage.TypedStorage]
     scan = 0
     while scan < len(keys):
@@ -127,8 +128,8 @@ def torch_loads(data: FrozenBuffer | bytes) -> Any:
     """Unpickle data with torch dispatch modes disabled."""
     import torch
 
-    with torch.utils._python_dispatch._disable_current_modes():
-        return cloudpickle.loads(data)
+    # pyre-ignore[16]: dynamic torch attribute
+    with torch.utils._python_dispatch._disable_current_modes():        return cloudpickle.loads(data)
 
 
 class _Pickler(cloudpickle.Pickler):
