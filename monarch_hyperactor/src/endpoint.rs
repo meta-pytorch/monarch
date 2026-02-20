@@ -17,7 +17,6 @@ use hyperactor::clock::RealClock;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor_mesh::sel;
 use monarch_types::py_global;
-use monarch_types::py_module_add_function;
 use ndslice::Extent;
 use ndslice::Selection;
 use ndslice::Shape;
@@ -371,40 +370,6 @@ async fn collect_valuemesh(
     })
 }
 
-/// Create a task that opens a port and processes multiple responses into a ValueMesh.
-///
-/// Returns a tuple of (PortRef, PythonTask) where:
-/// - PortRef: The port reference to send to actors for responses
-/// - PythonTask: A task that awaits all responses and returns a ValueMesh
-#[pyfunction]
-#[pyo3(name = "valuemesh_collector")]
-fn py_valuemesh_collector(
-    extent: PyExtent,
-    method_name: String,
-    supervision_monitor: Option<PySupervisionMonitor>,
-    instance: PyInstance,
-    qualified_endpoint_name: Option<String>,
-) -> PyResult<(PythonPortRef, PyPythonTask)> {
-    let instance = instance.into_instance();
-    let (p, r) = instance.open_port::<PythonMessage>();
-
-    Ok((
-        PythonPortRef { inner: p.bind() },
-        PythonTask::new(async move {
-            collect_valuemesh(
-                extent.into(),
-                r,
-                method_name,
-                supervision_monitor,
-                &instance,
-                qualified_endpoint_name,
-            )
-            .await
-        })?
-        .into(),
-    ))
-}
-
 fn value_collector(
     mut receiver: PortReceiver<PythonMessage>,
     method_name: String,
@@ -436,35 +401,6 @@ fn value_collector(
         }
     })?
     .into())
-}
-
-/// Create a task that opens a port and processes a single response.
-///
-/// Returns a tuple of (PortRef, PythonTask) where:
-/// - PortRef: The port reference to send to an actor for the response
-/// - PythonTask: A task that awaits the single response and returns the unpickled value
-#[pyfunction]
-#[pyo3(name = "value_collector")]
-fn py_value_collector(
-    method_name: String,
-    supervision_monitor: Option<PySupervisionMonitor>,
-    instance: PyInstance,
-    qualified_endpoint_name: Option<String>,
-    adverb: &str,
-) -> PyResult<(PythonPortRef, PyPythonTask)> {
-    let adverb = to_endpoint_adverb(adverb)?;
-    let mailbox = instance.mailbox_for_py();
-    let (p, r) = mailbox.open_port::<PythonMessage>();
-    let instance = instance.into_instance();
-    let task = value_collector(
-        r,
-        method_name,
-        supervision_monitor,
-        instance,
-        qualified_endpoint_name,
-        adverb,
-    )?;
-    Ok((PythonPortRef { inner: p.bind() }, task))
 }
 
 /// A streaming iterator that yields futures for each response from actors.
@@ -540,51 +476,6 @@ impl PyValueStream {
         let future = self.future_class.call(py, (), Some(&kwargs))?;
         Ok(Some(future))
     }
-}
-
-/// Create a streaming iterator for processing multiple responses incrementally.
-///
-/// Returns a tuple of (PortRef, ValueStream) where:
-/// - PortRef: The port reference to send to actors for responses
-/// - ValueStream: An iterator that yields PythonTask objects for each response
-#[pyfunction]
-#[pyo3(name = "stream_collector")]
-fn py_stream_collector(
-    py: Python<'_>,
-    extent: PyExtent,
-    method_name: String,
-    supervision_monitor: Option<PySupervisionMonitor>,
-    instance: PyInstance,
-    qualified_endpoint_name: Option<String>,
-) -> PyResult<(PythonPortRef, PyValueStream)> {
-    let start = RealClock.now();
-    let extent: Extent = extent.into();
-
-    let actor_count = extent.num_ranks();
-    let instance = instance.into_instance();
-    let (p, r) = instance.open_port::<PythonMessage>();
-
-    let attributes = hyperactor_telemetry::kv_pairs!(
-        "method" => method_name.clone()
-    );
-    ENDPOINT_STREAM_THROUGHPUT.add(1, attributes);
-
-    let future_class = make_future(py).unbind();
-
-    Ok((
-        PythonPortRef { inner: p.bind() },
-        PyValueStream {
-            receiver: Arc::new(tokio::sync::Mutex::new(r)),
-            supervision_monitor,
-            instance,
-            remaining: AtomicUsize::new(actor_count),
-            method_name,
-            qualified_endpoint_name,
-            start,
-            actor_count,
-            future_class,
-        },
-    ))
 }
 
 fn wrap_in_future(py: Python<'_>, task: PyPythonTask) -> PyResult<Py<PyAny>> {
@@ -1320,24 +1211,6 @@ impl Remote {
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    py_module_add_function!(
-        module,
-        "monarch._rust_bindings.monarch_hyperactor.endpoint",
-        py_valuemesh_collector
-    );
-
-    py_module_add_function!(
-        module,
-        "monarch._rust_bindings.monarch_hyperactor.endpoint",
-        py_value_collector
-    );
-
-    py_module_add_function!(
-        module,
-        "monarch._rust_bindings.monarch_hyperactor.endpoint",
-        py_stream_collector
-    );
-
     module.add_class::<PyValueStream>()?;
     module.add_class::<RepeatMailbox>()?;
     module.add_class::<ActorEndpoint>()?;
