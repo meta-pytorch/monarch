@@ -307,3 +307,59 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
     assert joined_count == 2, (
         f"Expected 2 joined rows for 2 workers, got: {joined_count}"
     )
+
+
+@pytest.mark.timeout(120)
+def test_actor_status_events_table(cleanup_callbacks) -> None:
+    """Test that the actor_status_events table is populated when actors change status."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn worker actors — actors go through status transitions during spawn
+    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    workers = worker_procs.spawn("status_test_worker", WorkerActor)
+
+    # Force spawn to complete by calling an endpoint
+    workers.spawn_child.call("dummy_status").get()
+
+    # Query the actor_status_events table
+    result = engine.query("SELECT * FROM actor_status_events")
+    result_dict = result.to_pydict()
+
+    # Verify the schema has the expected columns
+    expected_columns = {
+        "timestamp_us",
+        "actor_id",
+        "new_status",
+        "prev_status",
+        "reason",
+    }
+    actual_columns = set(result_dict.keys())
+    assert expected_columns == actual_columns, (
+        f"Expected columns {expected_columns}, got {actual_columns}"
+    )
+
+    # We should have at least some status events (actors transition through
+    # Created -> Initializing -> Idle at minimum)
+    event_count = len(result_dict.get("timestamp_us", []))
+    assert event_count > 0, (
+        f"Expected at least one actor status event, got {event_count}"
+    )
+
+    # Verify new_status values are valid ActorStatus arm names
+    valid_statuses = {
+        "Unknown",
+        "Created",
+        "Initializing",
+        "Client",
+        "Idle",
+        "Processing",
+        "Saving",
+        "Loading",
+        "Stopping",
+        "Stopped",
+        "Failed",
+    }
+    new_statuses = set(result_dict.get("new_status", []))
+    assert new_statuses.issubset(valid_statuses), (
+        f"Found unexpected status values: {new_statuses - valid_statuses}"
+    )

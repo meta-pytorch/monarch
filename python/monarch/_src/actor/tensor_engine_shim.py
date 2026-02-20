@@ -30,7 +30,7 @@ time it is used.
 
 if TYPE_CHECKING:
     from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
-    from monarch._src.actor.actor_mesh import Port
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PendingPickleState
@@ -75,7 +75,7 @@ def create_actor_message(
     proc_mesh: "Optional[Any]",
     args_kwargs_tuple: Buffer,
     refs: "Sequence[Any]",
-    port: "Optional[Port[Any]]",
+    port: "Optional[PortRef | OncePortRef]",
     pending_pickle_state: Optional[PendingPickleState],
 ) -> "Any": ...
 

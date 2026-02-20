@@ -48,7 +48,6 @@ from monarch._src.actor.proc_mesh import (
     local_proc_mesh,
     proc_mesh,
     ProcMesh,
-    sim_proc_mesh,
 )
 from monarch._src.actor.supervision import unhandled_fault_hook
 
@@ -69,7 +68,6 @@ __all__ = [
     "Channel",
     "send",
     "shutdown_context",
-    "sim_proc_mesh",
     "ValueMesh",
     "debug_controller",
     "get_or_spawn_controller",

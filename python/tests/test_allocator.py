@@ -6,6 +6,8 @@
 
 # pyre-strict
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import importlib.resources

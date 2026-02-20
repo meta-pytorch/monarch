@@ -10,7 +10,7 @@ repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 arc-swap = { version = "1.5", features = ["weak"] }
 bincode = "1.3.3"
 bytes = { version = "1.11.1", features = ["serde"] }

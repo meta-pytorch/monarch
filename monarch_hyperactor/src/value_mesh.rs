@@ -7,6 +7,7 @@
  */
 
 use hyperactor_mesh::ValueMesh;
+use ndslice::Extent;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
@@ -18,10 +19,7 @@ use pyo3::types::PyList;
 
 use crate::shape::PyShape;
 
-#[pyclass(
-    name = "ValueMesh",
-    module = "monarch._rust_bindings.monarch_hyperactor.value_mesh"
-)]
+#[pyclass(name = "ValueMesh", module = "monarch._src.actor.actor_mesh")]
 pub struct PyValueMesh {
     inner: ValueMesh<Py<PyAny>>,
 }
@@ -57,6 +55,12 @@ impl PyValueMesh {
     /// Return number of ranks (Python: len(vm))
     fn __len__(&self) -> usize {
         self.inner.region().num_ranks()
+    }
+
+    /// Expose the shape so Python MeshTrait methods can access labels/ndslice.
+    #[getter]
+    fn _shape(&self) -> PyShape {
+        PyShape::from(ndslice::Shape::from(self.inner.region().clone()))
     }
 
     /// Return the values in region/iteration order as a Python list.
@@ -113,7 +117,48 @@ impl PyValueMesh {
     }
 }
 
+impl PyValueMesh {
+    /// Create a ValueMesh from an extent and a pre-populated Vec of values.
+    pub fn build_dense_from_extent(extent: &Extent, values: Vec<Py<PyAny>>) -> PyResult<Self> {
+        let mut inner = <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(
+            ndslice::View::region(extent),
+            values,
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+
+        Ok(Self { inner })
+    }
+}
+
+/// Test helper: create a ValueMesh entirely from Rust and return it to Python.
+/// This lets us verify that Python extension methods (patched via @rust_struct)
+/// are available on objects returned from Rust functions.
+#[pyfunction]
+fn _make_test_value_mesh(
+    labels: Vec<String>,
+    sizes: Vec<usize>,
+    values: Bound<'_, PyList>,
+) -> PyResult<PyValueMesh> {
+    let strides: Vec<usize> = {
+        let mut s = vec![1usize; sizes.len()];
+        for i in (0..sizes.len().saturating_sub(1)).rev() {
+            s[i] = s[i + 1] * sizes[i + 1];
+        }
+        s
+    };
+    let slice =
+        ndslice::Slice::new(0, sizes, strides).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let region = Region::new(labels, slice);
+    let vals: Vec<Py<PyAny>> = values.extract()?;
+    let mut inner = <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(region, vals)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+    Ok(PyValueMesh { inner })
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyValueMesh>()?;
+    module.add_function(wrap_pyfunction!(_make_test_value_mesh, module)?)?;
     Ok(())
 }
