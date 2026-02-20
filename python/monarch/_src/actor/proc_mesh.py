@@ -36,7 +36,6 @@ from urllib.parse import urlparse
 from weakref import WeakSet
 
 from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import (
@@ -54,7 +53,7 @@ from monarch._src.actor.actor_mesh import (
     ActorMesh,
     context,
 )
-from monarch._src.actor.allocator import AllocHandle, SimAllocator
+from monarch._src.actor.allocator import AllocHandle
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
     CodeSyncMethod,
@@ -972,45 +971,6 @@ def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
     return fake_in_process_host().spawn_procs(
         per_host={"hosts": hosts, "gpus": gpus if gpus else _local_device_count()},
     )
-
-
-def sim_proc_mesh(
-    *,
-    gpus: int = 1,
-    hosts: int = 1,
-    racks: int = 1,
-    zones: int = 1,
-    dcs: int = 1,
-    regions: int = 1,
-) -> ProcMesh:
-    """Create a simulated process mesh for testing distributed scenarios.
-
-    This function creates a process mesh using simulation allocation to test
-    distributed behavior without requiring actual remote resources.
-
-    Args:
-        gpus: Number of GPUs per host. Defaults to 1.
-        hosts: Number of hosts. Defaults to 1.
-        racks: Number of racks. Defaults to 1.
-        zones: Number of zones. Defaults to 1.
-        dcs: Number of data centers. Defaults to 1.
-        regions: Number of regions. Defaults to 1.
-
-    Returns:
-        ProcMesh: A simulated process mesh with the specified topology.
-    """
-    from monarch._src.actor.host_mesh import HostMesh
-
-    host_mesh = HostMesh.allocate_nonblocking(
-        "sim",
-        Extent(
-            ["regions", "dcs", "zones", "racks", "hosts"],
-            [regions, dcs, zones, racks, hosts],
-        ),
-        SimAllocator(),
-        AllocConstraints(),
-    )
-    return host_mesh.spawn_procs(per_host={"gpus": gpus})
 
 
 _BOOTSTRAP_MAIN = "monarch._src.actor.bootstrap_main"
