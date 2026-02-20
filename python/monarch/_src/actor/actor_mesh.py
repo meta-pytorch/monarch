@@ -28,7 +28,6 @@ from typing import (
     cast,
     Concatenate,
     Dict,
-    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -837,7 +836,7 @@ class Accumulator(Generic[P, R, A]):
         Returns:
             Future that resolves to the accumulated value.
         """
-        gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
+        gen: Iterator[Future[R]] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
             value = self._identity

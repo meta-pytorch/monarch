@@ -52,3 +52,12 @@ declare_static_counter!(ENDPOINT_CALL_THROUGHPUT, "endpoint_call_throughput");
 declare_static_counter!(ENDPOINT_CALL_ONE_THROUGHPUT, "endpoint_call_one_throughput");
 // Tracks throughput of endpoint choose operations
 declare_static_counter!(ENDPOINT_CHOOSE_THROUGHPUT, "endpoint_choose_throughput");
+// Tracks latency of endpoint stream operations in microseconds
+declare_static_histogram!(
+    ENDPOINT_STREAM_LATENCY_US_HISTOGRAM,
+    "endpoint_stream_latency_us_histogram"
+);
+// Tracks errors that occur during endpoint stream operations
+declare_static_counter!(ENDPOINT_STREAM_ERROR, "endpoint_stream_error");
+// Tracks throughput of endpoint stream operations
+declare_static_counter!(ENDPOINT_STREAM_THROUGHPUT, "endpoint_stream_throughput");
