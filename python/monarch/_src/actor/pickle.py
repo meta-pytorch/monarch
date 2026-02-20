@@ -129,7 +129,8 @@ def torch_loads(data: FrozenBuffer | bytes) -> Any:
     import torch
 
     # pyre-ignore[16]: dynamic torch attribute
-    with torch.utils._python_dispatch._disable_current_modes():        return cloudpickle.loads(data)
+    with torch.utils._python_dispatch._disable_current_modes():
+        return cloudpickle.loads(data)
 
 
 class _Pickler(cloudpickle.Pickler):
