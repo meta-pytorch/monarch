@@ -28,7 +28,6 @@ from typing import (
     cast,
     Concatenate,
     Dict,
-    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -49,6 +48,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
@@ -78,9 +78,7 @@ from monarch._rust_bindings.monarch_hyperactor.shape import (
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
-)
-from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
-    ValueMesh as HyValueMesh,
+    SupervisionMonitor,
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -596,11 +594,6 @@ class _SingletonActorAdapator:
     def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
         return None
 
-    def start_supervision(
-        self, instance: HyInstance, supervision_display_name: str
-    ) -> None:
-        return None
-
     def stop(self, instance: HyInstance, reason: str) -> "PythonTask[None]":
         raise NotImplementedError("stop()")
 
@@ -646,7 +639,7 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
 ) -> PythonMessage:
     """
@@ -682,15 +675,13 @@ def _create_endpoint_message(
 
     if not has_ref:
         message = PythonMessage(
-            PythonMessageKind.CallMethod(
-                method_name, None if port is None else port._port_ref
-            ),
+            PythonMessageKind.CallMethod(method_name, port_ref),
             buffer,
             pending_pickle_state,
         )
     else:
         message = create_actor_message(
-            method_name, proc_mesh, buffer, objects, port, pending_pickle_state
+            method_name, proc_mesh, buffer, objects, port_ref, pending_pickle_state
         )
 
     return message
@@ -718,13 +709,16 @@ class ActorEndpoint(Endpoint[P, R]):
     def _call_name(self) -> MethodSpecifier:
         return self._name
 
+    def _get_extent(self) -> Extent:
+        return Extent(self._shape.labels, self._shape.ndslice.sizes)
+
     def _send(
         self,
         args: Tuple[Any, ...],
         kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
+        port: "Optional[PortRef | OncePortRef]" = None,
         selection: Selection = "all",
-    ) -> Extent:
+    ) -> None:
         """
         Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
 
@@ -740,8 +734,6 @@ class ActorEndpoint(Endpoint[P, R]):
         )
 
         self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
 
     def _full_name(self) -> str:
         return f"{self._mesh_name}.{self._get_method_name()}()"
@@ -749,12 +741,22 @@ class ActorEndpoint(Endpoint[P, R]):
     def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
         p, r = super()._port(once=once)
         instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
+        monitor = self._get_supervision_monitor()
+        monitor_task: Optional[Shared[Exception]] = (
+            None if monitor is None else monitor.supervision_event_task(instance)
         )
 
-        r._attach_supervision(monitor, self._full_name())
+        r._attach_supervision(monitor_task, self._full_name())
         return (p, r)
+
+    def _get_supervision_monitor(self) -> "SupervisionMonitor | None":
+        # Only return a supervision monitor if the mesh is a PythonActorMesh (Rust class).
+        # For pure Python implementations like _SingletonActorAdapator,
+        # return None to skip supervision (which is correct since those
+        # implementations don't support supervision anyway).
+        if isinstance(self._actor_mesh, PythonActorMesh):
+            return self._actor_mesh.get_supervision_monitor()
+        return None
 
     def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
         _check_endpoint_arguments(self._name, self._signature, args, kwargs)
@@ -836,7 +838,7 @@ class Accumulator(Generic[P, R, A]):
         Returns:
             Future that resolves to the accumulated value.
         """
-        gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
+        gen: Iterator[Future[R]] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
             value = self._identity
@@ -847,6 +849,7 @@ class Accumulator(Generic[P, R, A]):
         return Future(coro=impl())
 
 
+@rust_struct("monarch_hyperactor::value_mesh::ValueMesh")
 class ValueMesh(MeshTrait, Generic[R]):
     """
     A mesh that holds the result of an endpoint invocation.
@@ -903,9 +906,13 @@ class ValueMesh(MeshTrait, Generic[R]):
         ...     print(f"Rank {point.rank}: {result}")
     """
 
-    def __init__(self, shape: Shape, values: List[R]) -> None:
-        self._shape = shape
-        self._hy: HyValueMesh = HyValueMesh(shape, values)
+    def __init__(self, shape: Shape, values: List[R]) -> None: ...
+    def __len__(self) -> int: ...
+
+    @property
+    def _shape(self) -> Shape: ...
+
+    def get(self, rank: int) -> R: ...
 
     def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
         # Build a map from current global ranks -> local indices.
@@ -913,7 +920,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         pos = {g: i for i, g in enumerate(cur_ranks)}
         # For each global rank of the target shape, pull from our
         # current local index.
-        remapped = [self._hy.get(pos[g]) for g in shape.ranks()]
+        remapped = [self.get(pos[g]) for g in shape.ranks()]
         return ValueMesh(shape, remapped)
 
     def item(self, **kwargs: int) -> R:
@@ -942,7 +949,7 @@ class ValueMesh(MeshTrait, Generic[R]):
             # Shouldn't happen if Shape is consistent, but keep a clear
             # error.
             raise IndexError(f"rank {global_rank} not in current shape")
-        return self._hy.get(local_idx)
+        return self.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """
@@ -953,7 +960,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         """
         extent = self._shape.extent
         for i, _global_rank in enumerate(self._shape.ranks()):
-            yield Point(i, extent), self._hy.get(i)
+            yield Point(i, extent), self.get(i)
 
     def values(self) -> Iterable[R]:
         """
@@ -962,8 +969,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         Returns:
             Values at all coordinates.
         """
-        for _, value in self.items():
-            yield value
+        ...
 
     def __iter__(self) -> Iterator[Tuple[Point, R]]:
         return iter(self.items())
@@ -980,13 +986,8 @@ class ValueMesh(MeshTrait, Generic[R]):
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
 
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"shape": self._shape, "values": self._hy.values()}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self._shape = state["shape"]
-        vals = state["values"]
-        self._hy = HyValueMesh(self._shape, vals)
+    def __reduce__(self) -> Tuple[Type["ValueMesh[R]"], Tuple[Shape, List[R]]]:
+        return (ValueMesh, (self._shape, list(self.values())))
 
 
 def send(
@@ -1009,7 +1010,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):

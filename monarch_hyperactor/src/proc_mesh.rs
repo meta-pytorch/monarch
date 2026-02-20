@@ -26,9 +26,9 @@ use pyo3::types::PyType;
 
 use crate::actor::PythonActorParams;
 use crate::actor::PythonMessage;
-use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
+use crate::actor_mesh::SupervisableActorMesh;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
 use crate::pytokio::PyPythonTask;
@@ -149,7 +149,7 @@ impl PyProcMesh {
         } else {
             let r = PythonActorMesh::new(
                 async move {
-                    let mesh_impl: Box<dyn ActorMeshProtocol> = mesh_impl.await?;
+                    let mesh_impl: Box<dyn SupervisableActorMesh> = mesh_impl.await?;
                     Ok(mesh_impl)
                 },
                 true,
