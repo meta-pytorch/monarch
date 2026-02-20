@@ -13,6 +13,7 @@ from typing import Callable, Optional, TypeVar
 
 import monarch.actor
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
+from tests.tools.isolated import isolated  # noqa: F401
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import parametrize_config
 

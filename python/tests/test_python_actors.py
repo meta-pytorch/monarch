@@ -28,6 +28,7 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 
 import cloudpickle
 import monarch.actor
+from tests.tools.isolated import isolated  # noqa: F401
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,

@@ -18,6 +18,7 @@ import cloudpickle
 import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
+from tests.tools.isolated import isolated  # noqa: F401
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared

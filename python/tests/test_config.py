@@ -10,6 +10,7 @@ import contextlib
 
 import monarch
 import pytest
+from tests.tools.isolated import isolated  # noqa: F401
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host

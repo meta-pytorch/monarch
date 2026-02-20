@@ -20,6 +20,7 @@ from typing import Callable, cast, Optional
 
 import monarch.actor
 import pytest
+from tests.tools.isolated import isolated  # noqa: F401
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import hold_gil_for_test
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
