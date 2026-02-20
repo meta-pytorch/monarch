@@ -20,6 +20,7 @@ from typing import Callable, cast, Optional
 
 import monarch.actor
 import pytest
+from tests.tools.isolated import isolated  # noqa: F401
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import hold_gil_for_test
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
@@ -200,7 +201,7 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
-async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
+async def test_actor_init_exception(mesh, actor_class, num_procs, isolated) -> None:
     """
     Test that exceptions raised in actor initializers are propagated as supervision faults.
     __init__ exceptions become supervision errors delivered to the unhandled_fault_hook.
@@ -240,7 +241,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
-def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
+def test_actor_init_exception_sync(mesh, actor_class, num_procs, isolated) -> None:
     """
     Test that exceptions raised in actor initializers are propagated as supervision faults.
     __init__ exceptions become supervision errors delivered to the unhandled_fault_hook.
@@ -630,7 +631,7 @@ async def test_errors_propagated() -> None:
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_actor_mesh_supervision_handling() -> None:
+async def test_actor_mesh_supervision_handling(isolated) -> None:
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
         proc = spawn_procs_on_this_host({"gpus": 1})
@@ -754,7 +755,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
 )
-async def test_base_exception_handling(mesh, error_actor_cls) -> None:
+async def test_base_exception_handling(mesh, error_actor_cls, isolated) -> None:
     """Test that BaseException subclasses trigger supervision errors.
 
     This test verifies that both synchronous and asynchronous methods
@@ -795,7 +796,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
 )
-async def test_process_exit_handling(error_actor_cls) -> None:
+async def test_process_exit_handling(error_actor_cls, isolated) -> None:
     """Test that process exit triggers supervision errors.
 
     This test verifies that both synchronous and asynchronous methods
@@ -846,7 +847,7 @@ class FaultActor(Actor):
 
 @pytest.mark.timeout(180)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_sigsegv_handling():
+async def test_sigsegv_handling(isolated):
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
         hosts = this_host()
@@ -889,7 +890,7 @@ async def test_sigsegv_handling():
     ids=["local_proc_mesh", "proc_mesh"],
 )
 @pytest.mark.timeout(30)
-async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
+async def test_supervision_with_proc_mesh_stopped(mesh, isolated) -> None:
     with override_fault_hook():
         proc = mesh({"gpus": 1})
         actor_mesh = proc.spawn("healthy", HealthyActor)
@@ -917,7 +918,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
 
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_actor_mesh_stop() -> None:
+async def test_actor_mesh_stop(isolated) -> None:
     class Printer(Actor):
         @endpoint
         async def print(self, content: str) -> None:
@@ -949,7 +950,7 @@ async def test_actor_mesh_stop() -> None:
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(120)
-async def test_supervision_with_sending_error() -> None:
+async def test_supervision_with_sending_error(isolated) -> None:
     # This test doesn't want the client process to crash during testing.
     errors = []
 
@@ -1020,7 +1021,7 @@ async def test_supervision_with_sending_error() -> None:
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_slice_supervision() -> None:
+async def test_slice_supervision(isolated) -> None:
     # This test doesn't want the client process to crash during testing.
     with override_fault_hook():
         pm = spawn_procs_on_this_host({"gpus": 4})
@@ -1070,7 +1071,7 @@ async def test_slice_supervision() -> None:
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_mesh_slices_inherit_parent_errors() -> None:
+async def test_mesh_slices_inherit_parent_errors(isolated) -> None:
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
     pm = spawn_procs_on_this_host({"gpus": 4})
@@ -1318,7 +1319,7 @@ async def test_supervise_callback_when_procs_killed():
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_supervise_callback_unhandled():
+async def test_supervise_callback_unhandled(isolated):
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
     # This test handles none of the supervision errors, and ensures they make their
@@ -1349,7 +1350,7 @@ async def test_supervise_callback_unhandled():
 # This test takes up to 3 minutes to run because the timeout on controller
 # unreachable is 120 seconds.
 @pytest.mark.timeout(180)
-async def test_actor_mesh_supervision_controller_dead() -> None:
+async def test_actor_mesh_supervision_controller_dead(isolated) -> None:
     """Tests what happens when the owner of an actor crashes ungracefully, and
     another proc has a ref to that actor. That actor should stop and the ref
     should get a supervision error"""
@@ -1381,7 +1382,7 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
 
 
 @pytest.mark.timeout(60)
-async def test_actor_abort() -> None:
+async def test_actor_abort(isolated) -> None:
     class AbortActor(Actor):
         @endpoint
         def abort(self, reason: Optional[str] = None) -> None:

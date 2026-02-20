@@ -10,6 +10,7 @@ import contextlib
 
 import monarch
 import pytest
+from tests.tools.isolated import isolated  # noqa: F401
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host
@@ -93,7 +94,7 @@ def test_get_set_multiple() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
-def test_codec_max_frame_length_exceeds_default() -> None:
+def test_codec_max_frame_length_exceeds_default(isolated) -> None:
     """Test that sending 10 chunks of 1GiB fails with default 10 GiB
     limit."""
 

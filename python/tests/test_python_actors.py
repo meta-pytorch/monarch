@@ -28,6 +28,7 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 
 import cloudpickle
 import monarch.actor
+from tests.tools.isolated import isolated  # noqa: F401
 import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
@@ -1344,7 +1345,7 @@ async def test_undeliverable_message_with_override() -> None:
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
-async def test_undeliverable_message_without_override() -> None:
+async def test_undeliverable_message_without_override(isolated) -> None:
     # This test generates a fault that reaches the client. We don't want it to
     # crash.
     monarch.actor.unhandled_fault_hook = lambda failure: None
