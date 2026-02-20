@@ -467,7 +467,16 @@ impl RemoteProcessAllocator {
                         }
                         None => {
                             tracing::debug!("sending done");
-                            tx.post(RemoteProcessProcStateMessage::Done(alloc_key.clone()));
+                            // Use send().await (not post()) to ensure Done is
+                            // delivered before this task completes. This
+                            // guarantees all prior posted messages (Stopped
+                            // updates) have been flushed through this
+                            // connection's FIFO buffer, so downstream consumers
+                            // see Done before Allocated from a subsequent
+                            // allocation.
+                            if let Err(e) = tx.send(RemoteProcessProcStateMessage::Done(alloc_key.clone())).await {
+                                tracing::error!("failed to send Done message: {}", e);
+                            }
                             running = false;
                             break;
                         }

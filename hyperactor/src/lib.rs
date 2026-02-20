@@ -94,6 +94,9 @@ pub mod sync;
 pub mod test_utils;
 pub mod time;
 
+#[cfg(fbcode_build)]
+mod meta;
+
 /// Re-exports of external crates used by hyperactor_macros codegen.
 /// This module is not part of the public API and should not be used directly.
 #[doc(hidden)]

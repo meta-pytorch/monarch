@@ -346,7 +346,7 @@ impl HostMesh {
     /// a [`HostRef`] for it.
     async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<HostRef> {
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
         let host = Host::new(manager, addr).await?;
         let addr = host.addr().clone();

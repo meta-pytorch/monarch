@@ -1377,7 +1377,7 @@ mod tests {
         // Use Unix transport for all procs — Local transport does not
         // support cross-proc message routing.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1532,7 +1532,7 @@ mod tests {
 
         // Stand up a local in-process Host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1684,7 +1684,7 @@ mod tests {
 
         // Stand up a local in-process Host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1839,7 +1839,7 @@ mod tests {
 
         // Stand up a local host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
