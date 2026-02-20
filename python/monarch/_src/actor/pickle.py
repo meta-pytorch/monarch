@@ -83,6 +83,54 @@ def _torch_storage(obj: Any) -> Any:
     return (_load_from_bytes, (b.getvalue(),))
 
 
+# Torch-aware pickle classes - initialized lazily on first use.
+# These are used by pickle.rs when torch is loaded to handle
+# torch storage types and dispatch mode disabling.
+_TorchPickler: Any = None
+_torch_pickle_initialized: bool = False
+
+
+def _ensure_torch_pickle() -> None:
+    """Lazily initialize torch-aware pickle classes on first use."""
+    global _torch_pickle_initialized, _TorchPickler
+    if _torch_pickle_initialized:
+        return
+    _torch_pickle_initialized = True
+
+    import torch
+
+    dispatch: dict[Any, Any] = {}
+    keys: list[Any] = [torch.storage.UntypedStorage, torch.storage.TypedStorage]
+    scan = 0
+    while scan < len(keys):
+        keys.extend(keys[scan].__subclasses__())
+        scan += 1
+    for key in keys:
+        dispatch[key] = _torch_storage
+
+    class TorchPickler(cloudpickle.Pickler):
+        dispatch_table: ChainMap[Any, Any] = ChainMap(
+            dispatch, cloudpickle.Pickler.dispatch_table
+        )
+
+    _TorchPickler = TorchPickler
+
+
+def torch_dump(obj: Any, f: Buffer | io.BytesIO) -> None:
+    """Pickle obj into f using a torch-aware pickler with storage dispatch."""
+    _ensure_torch_pickle()
+    pickler = _TorchPickler(f)
+    pickler.dump(obj)
+
+
+def torch_loads(data: FrozenBuffer | bytes) -> Any:
+    """Unpickle data with torch dispatch modes disabled."""
+    import torch
+
+    with torch.utils._python_dispatch._disable_current_modes():
+        return cloudpickle.loads(data)
+
+
 class _Pickler(cloudpickle.Pickler):
     _torch_initialized = False
     _dispatch_table: dict[Any, Any] = {}

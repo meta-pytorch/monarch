@@ -52,6 +52,18 @@ py_global!(
     "_function_getstate"
 );
 
+// Check if torch has been loaded into the current Python process.
+// Returns the torch module if loaded, otherwise None.
+py_global!(maybe_torch_fn, "monarch._src.actor.pickle", "maybe_torch");
+
+// Torch-aware dump function: uses a Pickler subclass with dispatch_table
+// entries for torch storage types (UntypedStorage, TypedStorage, etc.).
+py_global!(torch_dump_fn, "monarch._src.actor.pickle", "torch_dump");
+
+// Torch-aware loads function: wraps cloudpickle.loads with
+// torch.utils._python_dispatch._disable_current_modes().
+py_global!(torch_loads_fn, "monarch._src.actor.pickle", "torch_loads");
+
 // Shared class for pickling PyShared values
 py_global!(
     shared_class,
@@ -252,8 +264,13 @@ impl PicklingState {
 
         let _guard = ActivePicklingGuard::enter(active);
 
-        // Unpickle the object
-        let result = cloudpickle(py).getattr("loads")?.call1((inner.buffer,));
+        // Unpickle the object. If torch is loaded, use torch_loads which
+        // disables dispatch modes during unpickling.
+        let result = if maybe_torch_fn(py).call0()?.is_truthy()? {
+            torch_loads_fn(py).call1((inner.buffer,))
+        } else {
+            cloudpickle(py).getattr("loads")?.call1((inner.buffer,))
+        };
 
         result.map(|obj| obj.unbind())
     }
@@ -528,12 +545,16 @@ pub fn pickle(
     let _guard = ActivePicklingGuard::enter(active);
 
     // Get the Pickler class and create an instance with our buffer
-    let pickler = cloudpickle(py)
-        .getattr("Pickler")?
-        .call1((buffer.bind(py),))?;
-
-    // Dump the object
-    pickler.call_method1("dump", (&obj,))?;
+    // If torch is loaded, use the torch-aware pickler that handles
+    // torch storage types via dispatch_table.
+    if maybe_torch_fn(py).call0()?.is_truthy()? {
+        torch_dump_fn(py).call1((&obj, buffer.bind(py)))?;
+    } else {
+        let pickler = cloudpickle(py)
+            .getattr("Pickler")?
+            .call1((buffer.bind(py),))?;
+        pickler.call_method1("dump", (&obj,))?;
+    }
 
     // Take the state (which may have been modified during pickling).
     // The guard will restore the previous state on drop.
