@@ -74,9 +74,6 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
 )
-from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
-    ValueMesh as HyValueMesh,
-)
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
@@ -765,6 +762,7 @@ class Accumulator(Generic[P, R, A]):
         return Future(coro=impl())
 
 
+@rust_struct("monarch_hyperactor::value_mesh::ValueMesh")
 class ValueMesh(MeshTrait, Generic[R]):
     """
     A mesh that holds the result of an endpoint invocation.
@@ -821,9 +819,13 @@ class ValueMesh(MeshTrait, Generic[R]):
         ...     print(f"Rank {point.rank}: {result}")
     """
 
-    def __init__(self, shape: Shape, values: List[R]) -> None:
-        self._shape = shape
-        self._hy: HyValueMesh = HyValueMesh(shape, values)
+    def __init__(self, shape: Shape, values: List[R]) -> None: ...
+    def __len__(self) -> int: ...
+
+    @property
+    def _shape(self) -> Shape: ...
+
+    def get(self, rank: int) -> R: ...
 
     def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
         # Build a map from current global ranks -> local indices.
@@ -831,7 +833,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         pos = {g: i for i, g in enumerate(cur_ranks)}
         # For each global rank of the target shape, pull from our
         # current local index.
-        remapped = [self._hy.get(pos[g]) for g in shape.ranks()]
+        remapped = [self.get(pos[g]) for g in shape.ranks()]
         return ValueMesh(shape, remapped)
 
     def item(self, **kwargs: int) -> R:
@@ -860,7 +862,7 @@ class ValueMesh(MeshTrait, Generic[R]):
             # Shouldn't happen if Shape is consistent, but keep a clear
             # error.
             raise IndexError(f"rank {global_rank} not in current shape")
-        return self._hy.get(local_idx)
+        return self.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """
@@ -871,7 +873,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         """
         extent = self._shape.extent
         for i, _global_rank in enumerate(self._shape.ranks()):
-            yield Point(i, extent), self._hy.get(i)
+            yield Point(i, extent), self.get(i)
 
     def values(self) -> Iterable[R]:
         """
@@ -880,8 +882,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         Returns:
             Values at all coordinates.
         """
-        for _, value in self.items():
-            yield value
+        ...
 
     def __iter__(self) -> Iterator[Tuple[Point, R]]:
         return iter(self.items())
@@ -898,13 +899,8 @@ class ValueMesh(MeshTrait, Generic[R]):
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
 
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"shape": self._shape, "values": self._hy.values()}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self._shape = state["shape"]
-        vals = state["values"]
-        self._hy = HyValueMesh(self._shape, vals)
+    def __reduce__(self) -> Tuple[Type["ValueMesh[R]"], Tuple[Shape, List[R]]]:
+        return (ValueMesh, (self._shape, list(self.values())))
 
 
 def send(

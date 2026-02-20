@@ -571,6 +571,11 @@ impl ProcMesh {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn ranks(&self) -> Arc<Vec<ProcRef>> {
+        self.allocation.ranks()
+    }
 }
 
 impl fmt::Display for ProcMesh {
