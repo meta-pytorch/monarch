@@ -8,7 +8,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 async-trait = "0.1.86"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }

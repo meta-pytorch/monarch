@@ -15,7 +15,7 @@ serde_bytes = "0.11"
 typeuri = { version = "0.0.0", path = "../typeuri" }
 
 [dev-dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 
