@@ -43,12 +43,7 @@ from monarch._src.actor.host_mesh import (
     this_host,
     this_proc,
 )
-from monarch._src.actor.proc_mesh import (
-    get_or_spawn_controller,
-    local_proc_mesh,
-    proc_mesh,
-    ProcMesh,
-)
+from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch._src.actor.supervision import unhandled_fault_hook
 
 __all__ = [
@@ -61,9 +56,7 @@ __all__ = [
     "current_size",
     "endpoint",
     "Future",
-    "local_proc_mesh",
     "Point",
-    "proc_mesh",
     "ProcMesh",
     "Channel",
     "send",

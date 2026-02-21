@@ -62,7 +62,6 @@ from monarch._src.actor.code_sync import (
     WorkspaceLocation,
     WorkspaceShape,
 )
-from monarch._src.actor.device_utils import _local_device_count
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.future import Future
 from monarch._src.actor.logging import LoggingManager
@@ -884,92 +883,6 @@ def get_or_spawn_controller(
     """
     cc = context().actor_instance._controller_controller
     return cc.get_or_spawn.call_one(cc, name, Class, *args, **kwargs)
-
-
-def proc_mesh(
-    *,
-    gpus: Optional[int] = None,
-    hosts: int = 1,
-    env: dict[str, str] | None = None,
-    setup: Callable[[], None] | None = None,
-) -> ProcMesh:
-    """
-    [DEPRECATED] Create a distributed process mesh across hosts.
-
-    This function creates a process mesh using distributed process allocation
-    across multiple hosts and GPUs. Used for production distributed computing.
-
-    Args:
-        gpus: Number of GPUs per host. If None, uses local device count.
-        hosts: Number of hosts to allocate. Defaults to 1.
-        env: Environment variables to set on remote processes.
-        setup: Optional setup function to run on each process at startup.
-
-    Returns:
-        ProcMesh: A distributed process mesh with the specified configuration.
-
-    Warning:
-        This function is deprecated. Use `this_host().spawn_procs()` with
-        appropriate per_host configuration instead.
-    """
-    warnings.warn(
-        (
-            "DEPRECATION WARNING: this function will soon be unsupported. "
-            "Use this_host().spawn_procs(per_host = {'hosts': 2, 'gpus': 3}) "
-            "instead of monarch.actor.proc_mesh(hosts=2, gpus=3)."
-        ),
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    if env is not None and len(env) > 0:
-        raise ValueError(
-            "`env` is not supported for `proc_mesh(...)`, and you shouldn't be using this function anyway. "
-            "Use `this_host().spawn_procs(per_host = {'hosts': ..., 'gpus': ...})` instead."
-        )
-
-    from monarch._src.actor.host_mesh import this_host
-
-    return this_host().spawn_procs(
-        per_host={"hosts": hosts, "gpus": gpus if gpus else _local_device_count()},
-        bootstrap=setup,
-    )
-
-
-def local_proc_mesh(*, gpus: Optional[int] = None, hosts: int = 1) -> ProcMesh:
-    """
-    [DEPRECATED] Create a local process mesh for testing and development.
-
-    This function creates a process mesh using local allocation instead of
-    distributed process allocation. Primarily used for testing scenarios.
-
-    Args:
-        gpus: Number of GPUs to allocate per host. If None, uses local device count.
-        hosts: Number of hosts to allocate. Defaults to 1.
-
-    Returns:
-        ProcMesh: A locally allocated process mesh.
-
-    Warning:
-        This function is deprecated. Use `fake_in_process_host().spawn_procs()`
-        for testing or `this_proc().spawn_procs()` for current process actors.
-    """
-    warnings.warn(
-        (
-            "DEPRECATION WARNING: this function will soon be unsupported. "
-            "Use monarch._src.actor.host_mesh.fake_in_process_host().spawn_procs "
-            "for testing. For launching an actor in the current process use "
-            "this_proc().spawn_procs()."
-        ),
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    from monarch._src.actor.host_mesh import fake_in_process_host
-
-    return fake_in_process_host().spawn_procs(
-        per_host={"hosts": hosts, "gpus": gpus if gpus else _local_device_count()},
-    )
 
 
 _BOOTSTRAP_MAIN = "monarch._src.actor.bootstrap_main"
