@@ -39,7 +39,7 @@ bytes = { version = "1.11.1", features = ["serde"] }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 derivative = "2.2"
-dns-lookup = "1.0"
+dns-lookup = "1.0.8"
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.9"
 fastrand = "2.1.1"
