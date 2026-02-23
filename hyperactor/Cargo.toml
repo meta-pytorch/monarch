@@ -60,6 +60,7 @@ paste = "1.0.14"
 rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"
 regex = "1.12.3"
+rustls = "0.23.36"
 rustls-pemfile = "1.0.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }

@@ -655,8 +655,7 @@ pub(crate) mod meta {
         let root_store = tls::build_root_store(&ca_pem)?;
 
         // If client certs are available, use mutual TLS; otherwise, no client auth
-        let config = tokio_rustls::rustls::ClientConfig::builder()
-            .with_root_certificates(Arc::new(root_store));
+        let config = rustls::ClientConfig::builder().with_root_certificates(Arc::new(root_store));
 
         let config = if let Some(bundle) = get_client_pem_bundle() {
             let certs = tls::load_certs(&bundle.cert)?;
@@ -698,15 +697,15 @@ pub(crate) mod tls {
 
     use anyhow::Context;
     use anyhow::Result;
+    use rustls::RootCertStore;
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::PrivateKeyDer;
+    use rustls::pki_types::ServerName;
     use tokio::net::TcpListener;
     use tokio::net::TcpStream;
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::TlsConnector;
     use tokio_rustls::client::TlsStream;
-    use tokio_rustls::rustls::RootCertStore;
-    use tokio_rustls::rustls::pki_types::CertificateDer;
-    use tokio_rustls::rustls::pki_types::PrivateKeyDer;
-    use tokio_rustls::rustls::pki_types::ServerName;
 
     use super::*;
     use crate::RemoteMessage;
@@ -805,11 +804,11 @@ pub(crate) mod tls {
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = tokio_rustls::rustls::ServerConfig::builder();
+        let config = rustls::ServerConfig::builder();
         let config = if enforce_client_tls {
             // Build server config with mutual TLS (require client certs)
             let client_verifier =
-                tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
                     .build()
                     .map_err(|e| anyhow::anyhow!("failed to build client verifier: {}", e))?;
             config.with_client_cert_verifier(client_verifier)
@@ -832,7 +831,7 @@ pub(crate) mod tls {
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = tokio_rustls::rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder()
             .with_root_certificates(Arc::new(root_store))
             .with_client_auth_cert(certs, key)
             .context("configure client auth")?;
