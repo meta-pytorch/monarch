@@ -89,8 +89,8 @@ impl AsMut<rdmaxcel_sys::ibv_gid> for Gid {
 
 /// Queue pair type for RDMA operations.
 ///
-/// Controls whether to use standard ibverbs queue pairs or mlx5dv extended queue pairs.
-/// Auto mode automatically selects based on device capabilities.
+/// Controls whether to use standard ibverbs queue pairs, mlx5dv extended queue pairs,
+/// or EFA SRD queue pairs. Auto mode automatically selects based on device capabilities.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RdmaQpType {
     /// Auto-detect based on device capabilities
@@ -99,13 +99,17 @@ pub enum RdmaQpType {
     Standard,
     /// Force mlx5dv extended queue pair
     Mlx5dv,
+    /// Force EFA SRD queue pair
+    Efa,
 }
 
 /// Converts `RdmaQpType` to the corresponding integer enum value in rdmaxcel_sys.
 pub fn resolve_qp_type(qp_type: RdmaQpType) -> u32 {
     match qp_type {
         RdmaQpType::Auto => {
-            if mlx5dv_supported() {
+            if crate::efa::is_efa_device() {
+                rdmaxcel_sys::RDMA_QP_TYPE_EFA
+            } else if mlx5dv_supported() {
                 rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV
             } else {
                 rdmaxcel_sys::RDMA_QP_TYPE_STANDARD
@@ -113,6 +117,7 @@ pub fn resolve_qp_type(qp_type: RdmaQpType) -> u32 {
         }
         RdmaQpType::Standard => rdmaxcel_sys::RDMA_QP_TYPE_STANDARD,
         RdmaQpType::Mlx5dv => rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV,
+        RdmaQpType::Efa => rdmaxcel_sys::RDMA_QP_TYPE_EFA,
     }
 }
 
@@ -172,7 +177,7 @@ wirevalue::register_type!(IbverbsConfig);
 /// based on ibv_query_device() results and workload characteristics
 impl Default for IbverbsConfig {
     fn default() -> Self {
-        Self {
+        let mut config = Self {
             device: RdmaDevice::default(),
             cq_entries: 1024,
             port_num: 1,
@@ -193,7 +198,11 @@ impl Default for IbverbsConfig {
             use_gpu_direct: false, // nv_peermem enabled for cuda
             hw_init_delay_ms: 2,
             qp_type: RdmaQpType::Auto,
+        };
+        if crate::efa::is_efa_device() {
+            crate::efa::apply_efa_defaults(&mut config);
         }
+        config
     }
 }
 

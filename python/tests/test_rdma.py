@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.rdma import is_rdma_available, RDMAAction, RDMABuffer
+from monarch.rdma import get_rdma_backend, is_rdma_available, RDMAAction, RDMABuffer
 
 
 needs_cuda = pytest.mark.skipif(
@@ -24,6 +24,64 @@ needs_rdma = pytest.mark.skipif(
     not is_rdma_available(),
     reason="RDMA not available",
 )
+
+
+# ---------------------------------------------------------------------------
+# Utility function tests (no hardware needed)
+# ---------------------------------------------------------------------------
+
+
+def test_rdma_api_basics():
+    """is_rdma_available() and get_rdma_backend() return sane values."""
+    result = is_rdma_available()
+    assert isinstance(result, bool)
+
+    backend = get_rdma_backend()
+    assert backend in ("ibverbs", "none")
+
+
+def test_memoryview_addr_and_contiguity():
+    """memoryview from various backing stores produces valid addr/size,
+    and non-contiguous views are rejected."""
+    import mmap
+
+    from monarch._src.rdma.rdma import _assert_1d_contiguous, _get_addr_and_size
+
+    # bytearray-backed memoryview
+    buf = bytearray(4096)
+    mv = memoryview(buf)
+    addr, size = _get_addr_and_size(mv)
+    assert size == 4096
+    assert addr > 0
+
+    # mmap-backed memoryview (small)
+    mm = mmap.mmap(-1, 4096)
+    mv = memoryview(mm)
+    addr, size = _get_addr_and_size(mv)
+    assert size == 4096
+    assert addr > 0
+    del mv
+    mm.close()
+
+    # mmap-backed memoryview (large / potentially unfaulted pages)
+    mm = mmap.mmap(-1, 1024 * 1024)
+    mv = memoryview(mm)
+    addr, size = _get_addr_and_size(mv)
+    assert size == 1024 * 1024
+    assert addr > 0
+    del mv
+    mm.close()
+
+    # non-contiguous memoryview must be rejected
+    buf = bytearray(100)
+    mv = memoryview(buf)
+    with pytest.raises(ValueError):
+        _assert_1d_contiguous(mv[::2])
+
+
+# ---------------------------------------------------------------------------
+# RDMA tests (require hardware)
+# ---------------------------------------------------------------------------
 
 
 class ParameterServer(Actor):

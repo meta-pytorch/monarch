@@ -483,6 +483,7 @@ pub struct RdmaQueuePair {
     pub dv_recv_cq: usize, // *mut rdmaxcel_sys::mlx5dv_cq,
     context: usize,        // *mut rdmaxcel_sys::ibv_context,
     config: IbverbsConfig,
+    is_efa: bool,
 }
 wirevalue::register_type!(RdmaQueuePair);
 
@@ -491,7 +492,11 @@ impl RdmaQueuePair {
     ///
     /// This ensures the hardware has sufficient time to settle after reaching
     /// Ready-to-Send state before the first actual operation.
+    /// Skipped for EFA devices which don't need settling time.
     fn apply_first_op_delay(&self, wr_id: u64) {
+        if self.is_efa() {
+            return;
+        }
         unsafe {
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             if wr_id == 0 {
@@ -514,6 +519,11 @@ impl RdmaQueuePair {
                 }
             }
         }
+    }
+
+    /// Returns true if this queue pair is using EFA (non-mlx5) transport.
+    fn is_efa(&self) -> bool {
+        self.is_efa
     }
 
     /// Creates a new RdmaQueuePair from a given RdmaDomain.
@@ -545,6 +555,7 @@ impl RdmaQueuePair {
         unsafe {
             // Resolve Auto to a concrete QP type based on device capabilities
             let resolved_qp_type = resolve_qp_type(config.qp_type);
+            let is_efa = resolved_qp_type == rdmaxcel_sys::RDMA_QP_TYPE_EFA;
             let qp = rdmaxcel_sys::rdmaxcel_qp_create(
                 context,
                 pd,
@@ -566,6 +577,21 @@ impl RdmaQueuePair {
 
             let send_cq = (*(*qp).ibv_qp).send_cq;
             let recv_cq = (*(*qp).ibv_qp).recv_cq;
+
+            // EFA: no mlx5dv objects needed
+            if is_efa {
+                return Ok(RdmaQueuePair {
+                    send_cq: send_cq as usize,
+                    recv_cq: recv_cq as usize,
+                    qp: qp as usize,
+                    dv_qp: 0,
+                    dv_send_cq: 0,
+                    dv_recv_cq: 0,
+                    context: context as usize,
+                    config,
+                    is_efa: true,
+                });
+            }
 
             // mlx5dv provider APIs
             let dv_qp = rdmaxcel_sys::create_mlx5dv_qp((*qp).ibv_qp);
@@ -598,11 +624,12 @@ impl RdmaQueuePair {
                 send_cq: send_cq as usize,
                 recv_cq: recv_cq as usize,
                 qp: qp as usize,
-                dv_qp: qp as usize,
+                dv_qp: dv_qp as usize,
                 dv_send_cq: dv_send_cq as usize,
                 dv_recv_cq: dv_recv_cq as usize,
                 context: context as usize,
                 config,
+                is_efa: false,
             })
         }
     }
@@ -698,6 +725,11 @@ impl RdmaQueuePair {
     ///
     /// * `connection_info` - The remote connection info to connect to
     pub fn connect(&mut self, connection_info: &RdmaQpInfo) -> Result<(), anyhow::Error> {
+        // EFA: use unified C function for QP state transitions
+        if self.is_efa() {
+            return self.efa_connect(connection_info);
+        }
+
         // SAFETY:
         // This unsafe block is necessary because we're interacting with the RDMA device through rdmaxcel_sys calls.
         // The operations are safe because:
@@ -827,6 +859,41 @@ impl RdmaQueuePair {
         }
     }
 
+    /// Connects via the EFA-specific C function for QP state transitions.
+    fn efa_connect(&mut self, connection_info: &RdmaQpInfo) -> Result<(), anyhow::Error> {
+        let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+
+        let gid_ptr = connection_info.gid.as_ref().map_or(std::ptr::null(), |g| {
+            let ibv_gid: &rdmaxcel_sys::ibv_gid = g.as_ref();
+            unsafe { ibv_gid.raw.as_ptr() }
+        });
+
+        unsafe {
+            let ret = rdmaxcel_sys::rdmaxcel_efa_connect(
+                qp,
+                self.config.port_num,
+                self.config.pkey_index,
+                0x4242, // qkey
+                self.config.psn,
+                self.config.gid_index,
+                gid_ptr,
+                connection_info.qp_num,
+            );
+            if ret != 0 {
+                let msg = std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
+                    .to_str()
+                    .unwrap_or("unknown");
+                return Err(anyhow::anyhow!("EFA connect failed: {}", msg));
+            }
+        }
+
+        tracing::debug!(
+            "connection sequence has successfully completed (qp: {:?})",
+            qp
+        );
+        Ok(())
+    }
+
     pub fn recv(&mut self, lhandle: RdmaBuffer, rhandle: RdmaBuffer) -> Result<u64, anyhow::Error> {
         unsafe {
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
@@ -928,6 +995,10 @@ impl RdmaQueuePair {
     ///
     /// * `Result<DoorBell, anyhow::Error>` - A doorbell for the queue pair
     pub fn ring_doorbell(&mut self) -> Result<(), anyhow::Error> {
+        // Non-mlx5 devices (EFA, standard ibverbs) don't use doorbell ringing
+        if self.is_efa() {
+            return Ok(());
+        }
         unsafe {
             let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
             let dv_qp = self.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
@@ -1134,6 +1205,11 @@ impl RdmaQueuePair {
         raddr: usize,
         rkey: u32,
     ) -> Result<(), anyhow::Error> {
+        // EFA: use unified C function
+        if self.is_efa() {
+            return self.post_op_efa(laddr, lkey, length, wr_id, signaled, op_type, raddr, rkey);
+        }
+
         // SAFETY:
         // This code uses unsafe rdmaxcel_sys calls to post work requests to the RDMA device, but is safe because:
         // - All pointers (send_sge, send_wr) are properly initialized on the stack before use
@@ -1218,6 +1294,62 @@ impl RdmaQueuePair {
         }
     }
 
+    /// Posts an RDMA operation via the EFA-specific C function.
+    fn post_op_efa(
+        &mut self,
+        laddr: usize,
+        lkey: u32,
+        length: usize,
+        wr_id: u64,
+        signaled: bool,
+        op_type: RdmaOperation,
+        raddr: usize,
+        rkey: u32,
+    ) -> Result<(), anyhow::Error> {
+        let c_op = match op_type {
+            RdmaOperation::Write => 0,
+            RdmaOperation::Read => 1,
+            RdmaOperation::Recv => 2,
+            RdmaOperation::WriteWithImm => 3,
+        };
+
+        unsafe {
+            let qp = self.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
+            let ret = rdmaxcel_sys::rdmaxcel_qp_post_op(
+                qp,
+                laddr as *mut std::ffi::c_void,
+                lkey,
+                length,
+                raddr as *mut std::ffi::c_void,
+                rkey,
+                wr_id,
+                if signaled { 1 } else { 0 },
+                c_op,
+            );
+            if ret != 0 {
+                let msg = std::ffi::CStr::from_ptr(rdmaxcel_sys::rdmaxcel_error_string(ret))
+                    .to_str()
+                    .unwrap_or("unknown");
+                return Err(anyhow::anyhow!(
+                    "Failed to post {:?} request: {}",
+                    op_type,
+                    msg
+                ));
+            }
+            tracing::debug!(
+                "completed sending {:?} request (lkey: {}, addr: 0x{:x}, length {}) to (raddr 0x{:x}, rkey {})",
+                op_type,
+                lkey,
+                laddr,
+                length,
+                raddr,
+                rkey,
+            );
+
+            Ok(())
+        }
+    }
+
     fn send_wqe(
         &mut self,
         laddr: usize,
@@ -1229,6 +1361,16 @@ impl RdmaQueuePair {
         raddr: usize,
         rkey: u32,
     ) -> Result<DoorBell, anyhow::Error> {
+        // Non-mlx5 devices use the unified C post_op path
+        if self.is_efa() {
+            self.post_op(laddr, lkey, length, wr_id, signaled, op_type, raddr, rkey)?;
+            return Ok(DoorBell {
+                dst_ptr: 0,
+                src_ptr: 0,
+                size: 0,
+            });
+        }
+
         unsafe {
             let op_type_val = match op_type {
                 RdmaOperation::Write => rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE,
