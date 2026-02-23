@@ -111,14 +111,21 @@ def isolate_in_subprocess(test_fn=None, *, env=None):
                 == 0
             )
         else:
+            test_dir = os.path.dirname(os.path.abspath(__file__))
+            sub_env = {
+                **env,
+                "PYTHONPATH": os.pathsep.join(
+                    filter(None, [test_dir, env.get("PYTHONPATH", "")])
+                ),
+            }
             assert (
                 subprocess.call(
                     [
                         sys.executable,
                         "-c",
-                        f"import tests.test_debugger; tests.test_debugger.{sync_test_fn_name}()",
+                        f"import test_debugger; test_debugger.{sync_test_fn_name}()",
                     ],
-                    env=env,
+                    env=sub_env,
                 )
                 == 0
             )
