@@ -13,7 +13,6 @@ import pytest
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
-    PythonMessage,
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
@@ -21,6 +20,11 @@ from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monar
     Alloc,
     AllocConstraints,
     AllocSpec,
+)
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -38,6 +42,13 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import Context, context, Instance
+
+
+def _to_frozen_buffer(data: bytes) -> FrozenBuffer:
+    """Helper to convert bytes to FrozenBuffer."""
+    buf = Buffer()
+    buf.write(data)
+    return buf.freeze()
 
 
 def run_on_tokio(
@@ -134,9 +145,10 @@ async def test_bind_and_pickling() -> None:
 
 def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
     # Create an explicit init message
-    init_message = PythonMessage(
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
-        pickle.dumps(None),
+        init_state,
     )
 
     # Use spawn_async with the explicit init message
@@ -155,9 +167,9 @@ def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
 async def cast_to_call(
     actor_mesh: PythonActorMesh,
     instance: Instance,
-    message: PythonMessage,
+    message: PendingMessage,
 ) -> None:
-    actor_mesh.cast(message, "all", instance._as_rust())
+    actor_mesh.cast_unresolved(message, "all", instance._as_rust())
 
 
 async def verify_cast_to_call(
@@ -170,9 +182,10 @@ async def verify_cast_to_call(
     port_ref = handle.bind()
 
     # Now send the real message
-    message = PythonMessage(
+    state = monarch_pickle("ping")
+    message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
-        pickle.dumps("ping"),
+        state,
     )
     await cast_to_call(actor_mesh, instance, message)
 
