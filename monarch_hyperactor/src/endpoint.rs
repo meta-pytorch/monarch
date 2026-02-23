@@ -47,10 +47,10 @@ use crate::metrics::ENDPOINT_CALL_THROUGHPUT;
 use crate::metrics::ENDPOINT_CHOOSE_ERROR;
 use crate::metrics::ENDPOINT_CHOOSE_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_CHOOSE_THROUGHPUT;
-use crate::metrics::ENDPOINT_MESSAGE_SIZE_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_ERROR;
 use crate::metrics::ENDPOINT_STREAM_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_THROUGHPUT;
+use crate::pickle::PendingMessage;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::shape::PyExtent;
@@ -709,28 +709,28 @@ impl ActorEndpoint {
         args: &Bound<'py, PyTuple>,
         kwargs: Option<&Bound<'py, PyDict>>,
         port_ref: Option<&PythonPortRef>,
-    ) -> PyResult<PythonMessage> {
+    ) -> PyResult<PendingMessage> {
         let port_ref_py: Py<PyAny> = match port_ref {
             Some(pr) => pr.clone().into_pyobject(py)?.unbind().into(),
             None => py.None(),
         };
 
-        create_endpoint_message(py)
-            .call1((
-                self.method.clone(),
-                self.signature
-                    .as_ref()
-                    .map_or_else(|| py.None(), |s| s.clone_ref(py)),
-                args,
-                kwargs
-                    .map_or_else(|| PyDict::new(py), |d| d.clone())
-                    .into_any(),
-                port_ref_py,
-                self.proc_mesh
-                    .as_ref()
-                    .map_or_else(|| py.None(), |p| p.clone_ref(py)),
-            ))?
-            .extract()
+        let result = create_endpoint_message(py).call1((
+            self.method.clone(),
+            self.signature
+                .as_ref()
+                .map_or_else(|| py.None(), |s| s.clone_ref(py)),
+            args,
+            kwargs
+                .map_or_else(|| PyDict::new(py), |d| d.clone())
+                .into_any(),
+            port_ref_py,
+            self.proc_mesh
+                .as_ref()
+                .map_or_else(|| py.None(), |p| p.clone_ref(py)),
+        ))?;
+        let mut pending: PyRefMut<'_, PendingMessage> = result.extract()?;
+        pending.take()
     }
 }
 
@@ -753,11 +753,7 @@ impl Endpoint for ActorEndpoint {
         instance: &Instance<PythonActor>,
     ) -> PyResult<()> {
         let message = self.create_message(py, args, kwargs, port_ref)?;
-        let attributes = hyperactor_telemetry::kv_pairs!(
-            "method" => self.method.name().to_string()
-        );
-        ENDPOINT_MESSAGE_SIZE_HISTOGRAM.record(message.message.len() as f64, attributes);
-        self.inner.cast(message, selection, instance)
+        self.inner.cast_unresolved(message, selection, instance)
     }
 
     fn get_supervision_monitor(&self) -> Option<Arc<dyn Supervisable>> {

@@ -10,6 +10,7 @@ from typing import final, Optional, Protocol
 
 from monarch._rust_bindings.monarch_hyperactor.actor import PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
@@ -34,7 +35,18 @@ class ActorMeshProtocol(Protocol):
         message: PythonMessage,
         selection: str,
         instance: Instance,
-    ) -> None: ...
+    ) -> None:
+        """Cast an already-resolved PythonMessage to actors."""
+        ...
+
+    def cast_unresolved(
+        self,
+        message: PendingMessage,
+        selection: str,
+        instance: Instance,
+    ) -> None:
+        """Cast a PendingMessage (which may contain unresolved async values) to actors."""
+        ...
     def new_with_region(self, region: Region) -> Self: ...
     def stop(self, instance: Instance, reason: str) -> PythonTask[None]: ...
     def initialized(self) -> PythonTask[None]: ...

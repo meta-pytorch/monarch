@@ -42,11 +42,11 @@ use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::supervision::MeshFailure;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
-use monarch_hyperactor::buffers::Buffer;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
 use monarch_hyperactor::ndslice::PySlice;
+use monarch_hyperactor::pickle::pickle;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::controller::ControllerActor;
@@ -556,19 +556,14 @@ impl History {
                     .unwrap()
                     .getattr("RemoteException")
                     .unwrap();
-                let pickle = py
-                    .import("monarch._src.actor.actor_mesh")
-                    .unwrap()
-                    .getattr("_pickle")
-                    .unwrap();
                 let exe = remote_exception
                     .call1((exception.backtrace, traceback, rank))
                     .unwrap();
-                let mut data: Buffer = pickle.call1((exe,)).unwrap().extract().unwrap();
+                let mut state = pickle(py, exe.unbind(), false, false).unwrap();
+                let inner = state.take_inner().unwrap();
                 PythonMessage::new_from_buf(
                     PythonMessageKind::Exception { rank: Some(rank) },
-                    data.take_part(),
-                    None,
+                    inner.take_buffer(),
                 )
             })
             .await,
@@ -616,7 +611,6 @@ impl History {
                         PythonMessage::new_from_buf(
                             PythonMessageKind::Result { rank: None },
                             b"\x80\x04N.".to_vec(),
-                            None,
                         )
                     }
                 };
