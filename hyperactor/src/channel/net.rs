@@ -781,9 +781,7 @@ pub(crate) mod tls {
     pub(super) fn build_root_store(ca_pem: &Pem) -> Result<RootCertStore> {
         let mut root_store = RootCertStore::empty();
         let certs = load_certs(ca_pem)?;
-        for cert in certs {
-            root_store.add(cert).context("add CA cert")?;
-        }
+        root_store.add_parsable_certificates(certs);
         Ok(root_store)
     }
 
