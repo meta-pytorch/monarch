@@ -577,6 +577,7 @@ pub(crate) mod meta {
 
     use super::*;
     use crate::RemoteMessage;
+    use crate::channel::normalize_host;
     use crate::config::Pem;
     use crate::config::PemBundle;
 
@@ -602,7 +603,7 @@ pub(crate) mod meta {
                     return Err(ChannelError::InvalidAddress(addr_string.to_string()));
                 };
                 Ok(ChannelAddr::MetaTls(TlsAddr::Host {
-                    hostname: hostname.to_string(),
+                    hostname: normalize_host(hostname),
                     port,
                 }))
             }
@@ -710,6 +711,7 @@ pub(crate) mod tls {
     use super::*;
     use crate::RemoteMessage;
     use crate::channel::TlsAddr;
+    use crate::channel::normalize_host;
     use crate::config::Pem;
     use crate::config::PemBundle;
     use crate::config::TLS_CA;
@@ -740,7 +742,7 @@ pub(crate) mod tls {
                     return Err(ChannelError::InvalidAddress(addr_string.to_string()));
                 };
                 Ok(ChannelAddr::Tls(TlsAddr::Host {
-                    hostname: hostname.to_string(),
+                    hostname: normalize_host(hostname),
                     port,
                 }))
             }
