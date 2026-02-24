@@ -6,6 +6,7 @@
 
 # pyre-strict
 
+import warnings
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
@@ -114,6 +115,16 @@ class HostMesh(MeshTrait):
         alloc_constraints: Optional[AllocConstraints] = None,
         bootstrap_cmd: Optional[BootstrapCommand] = None,
     ) -> "HostMesh":
+        warnings.warn(
+            (
+                "DEPRECATION WARNING: this function is deprecated. "
+                "Use `attach_to_workers` instead, or if applicable, one of the "
+                "JobTrait classes directly."
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         spec = AllocSpec(alloc_constraints or AllocConstraints(), **extent)
         alloc: AllocHandle = allocator.allocate(spec)
 

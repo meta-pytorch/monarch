@@ -799,8 +799,9 @@ class ProcMesh(MeshTrait):
     ) -> "ProcMesh":
         warnings.warn(
             (
-                "DEPRECATION WARNING: this function will soon be unsupported. "
-                "Use `HostMesh.allocate_nonblocking(...).spawn_procs(...)` instead."
+                "DEPRECATION WARNING: this function is deprecated. "
+                "Use `attach_to_workers` instead, or if applicable, one of the "
+                "JobTrait classes directly."
             ),
             DeprecationWarning,
             stacklevel=2,
