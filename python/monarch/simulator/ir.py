@@ -709,6 +709,17 @@ class IRGraph:
 
         self.control_dag = updated_commands
 
+    def export_dag_json_timed(self, output_file: str) -> None:
+        """Export DAG to Chrome Trace JSON using actual command durations.
+
+        Unlike export_dag_json() which uses fixed-width events for control flow
+        visualization, this method uses the duration field from each command
+        (set via import_timing) to produce timing-accurate traces.
+
+        Logs a warning if any commands have zero duration (timing not imported).
+        """
+        self._export_dag_json_impl(output_file, use_timed_durations=True)
+
     def remove_dag_item_type(
         self, command_types: Union[str, List[str]], print_removed_nodes: bool = False
     ) -> int:
@@ -756,6 +767,23 @@ class IRGraph:
         return num_removed
 
     def export_dag_json(self, output_file: str) -> None:
+        """Export DAG to Chrome Trace JSON using fixed-width events.
+
+        Uses a constant event width for all commands, suitable for control flow
+        visualization where relative timing doesn't matter.
+        """
+        self._export_dag_json_impl(output_file, use_timed_durations=False)
+
+    def _export_dag_json_impl(
+        self, output_file: str, use_timed_durations: bool
+    ) -> None:
+        """Shared implementation for DAG JSON export.
+
+        Args:
+            output_file: Path to write the Chrome Trace JSON.
+            use_timed_durations: If True, use actual command durations (from import_timing).
+                               If False, use fixed-width events for control flow visualization.
+        """
         # Note: The default width unit is in us, so we need to use "larger" standard durations to ensure the flow events are visible.
         default_event_width = 4000
         default_event_spacing = 1000
@@ -767,10 +795,34 @@ class IRGraph:
         reduce_sendtensor_max_ts = defaultdict(int)
         reduce_sendtensor_events = defaultdict(list)
 
+        # Track commands with zero duration for warning (only used when use_timed_durations=True)
+        zero_duration_keys: Set[str] = set()
+        cmd_input_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = {}
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = {}
+        if use_timed_durations:
+            cmd_input_tensors, cmd_output_tensors = self._build_tensor_shape_maps()
+
         for dag_item in self.control_dag:
             worker_rank = dag_item.worker_rank
             name = dag_item.command_name
             cat = dag_item.command_name.split(":")[0]
+
+            # Determine event duration based on mode
+            if use_timed_durations:
+                event_duration = dag_item.duration
+                if event_duration == 0:
+                    timing_key = self._get_timing_key(
+                        dag_item, cmd_input_tensors, cmd_output_tensors
+                    )
+                    zero_duration_keys.add(timing_key)
+                    event_duration = 1  # Minimum visible duration
+            else:
+                event_duration = default_event_width
+
             event: Dict[str, Any] = {
                 "name": name,
                 "cat": cat,
@@ -787,7 +839,7 @@ class IRGraph:
                 stream_name = dag_item.stream_name
                 event["ph"] = "X"
                 event["tid"] = stream_name
-                event["dur"] = default_event_width
+                event["dur"] = event_duration
 
                 if event["cat"] in ["BorrowCreate", "BorrowLastUse"]:
                     event["ts"] = stream_locs[f"{worker_rank}_{stream_name}"]
@@ -799,7 +851,7 @@ class IRGraph:
                     event_start = event.copy()
 
                     event_start["ph"] = "s"
-                    event_start["ts"] = event["ts"] + default_event_width
+                    event_start["ts"] = event["ts"] + event_duration
 
                     if event["cat"] == "BorrowCreate":
                         event_start["name"] = (
@@ -877,7 +929,7 @@ class IRGraph:
                             e["ts"] = ts
                             stream_locs[f"{e['pid']}_{e['tid']}"] = (
                                 reduce_sendtensor_max_ts[name]
-                                + default_event_width
+                                + event_duration
                                 + default_event_spacing
                             )
                     # Extra SendTensor metadata
@@ -894,12 +946,20 @@ class IRGraph:
                     event["ts"] = stream_locs[f"{worker_rank}_{stream_name}"]
 
                 stream_locs[f"{worker_rank}_{stream_name}"] += (
-                    default_event_width + default_event_spacing
+                    event_duration + default_event_spacing
                 )
                 event["args"]["traceback"] = traceback.format_list(dag_item.traceback)
                 trace_events.append(event)
             else:
                 raise ValueError(f"Unknown DAG item type: {type(dag_item)}")
+
+        # Log warning for commands with zero duration (only when using timed durations)
+        if use_timed_durations and zero_duration_keys:
+            print(
+                f"Warning: {len(zero_duration_keys)} command type(s) have no timing data:"
+            )
+            for key in sorted(zero_duration_keys):
+                print(f"  {key}")
 
         with open(output_file, "w") as f:
             json.dump({"traceEvents": trace_events}, f)
