@@ -585,6 +585,29 @@ impl Bind for EitherPortRef {
 }
 
 impl EitherPortRef {
+    pub fn get_return_undeliverable(&self) -> bool {
+        match self {
+            EitherPortRef::Unbounded(port_ref) => port_ref.inner.get_return_undeliverable(),
+            EitherPortRef::Once(once_port_ref) => once_port_ref
+                .inner
+                .as_ref()
+                .is_some_and(|r| r.get_return_undeliverable()),
+        }
+    }
+
+    pub fn set_return_undeliverable(&mut self, return_undeliverable: bool) {
+        match self {
+            EitherPortRef::Unbounded(port_ref) => {
+                port_ref.inner.return_undeliverable(return_undeliverable);
+            }
+            EitherPortRef::Once(once_port_ref) => {
+                if let Some(ref mut inner) = once_port_ref.inner {
+                    inner.return_undeliverable(return_undeliverable);
+                }
+            }
+        }
+    }
+
     /// Send a message through this port reference.
     /// The message is first resolved for any pending pickle state before sending.
     pub fn send(

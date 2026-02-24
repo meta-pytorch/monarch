@@ -26,6 +26,7 @@ use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
+use hyperactor::context::Actor as ContextActor;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
@@ -72,6 +73,7 @@ use crate::metrics::ENDPOINT_ACTOR_COUNT;
 use crate::metrics::ENDPOINT_ACTOR_ERROR;
 use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
+use crate::pickle::pickle_to_part;
 use crate::proc::PyActorId;
 use crate::pympsc;
 use crate::pytokio::PythonTask;
@@ -267,24 +269,19 @@ impl PythonMessage {
             } => {
                 monarch_with_gil(|py| {
                     let local_state: Py<PyAny> = PyList::empty(py).unbind().into();
-                    let instance: PyInstance = cx.into();
-                    let response_port = response_port
-                        .map_or_else(
-                            || {
-                                py.import("monarch._src.actor.actor_mesh")
-                                    .unwrap()
-                                    .call_method0("DroppingPort")
-                                    .unwrap()
-                            },
-                            |x| {
-                                let point = cx.cast_point();
-                                py.import("monarch._src.actor.actor_mesh")
-                                    .unwrap()
-                                    .call_method1("Port", (x, instance, point.rank()))
-                                    .unwrap()
-                            },
-                        )
-                        .unbind();
+                    let response_port = response_port.map_or_else(
+                        || DroppingPort.into_py_any(py).unwrap(),
+                        |port_ref| {
+                            let point = cx.cast_point();
+                            Port {
+                                port_ref,
+                                instance: cx.instance().clone_for_py(),
+                                rank: Some(point.rank()),
+                            }
+                            .into_py_any(py)
+                            .unwrap()
+                        },
+                    );
                     Ok(ResolvedCallMethod {
                         method: name,
                         bytes: FrozenBuffer {
@@ -1370,6 +1367,110 @@ impl LocalPort {
     }
 }
 
+/// A port that drops all messages sent to it.
+/// Used when there is no response port for a message.
+/// Any exceptions sent to it are re-raised in the current actor.
+#[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Debug)]
+pub struct DroppingPort;
+
+#[pymethods]
+impl DroppingPort {
+    #[new]
+    fn new() -> Self {
+        DroppingPort
+    }
+
+    fn send(&self, _obj: Py<PyAny>) -> PyResult<()> {
+        Ok(())
+    }
+
+    fn exception(&self, e: Bound<'_, PyAny>) -> PyResult<()> {
+        // Unwrap ActorError to get the inner exception, matching Python behavior.
+        let exc = if let Ok(inner) = e.getattr("exception") {
+            inner
+        } else {
+            e
+        };
+        Err(PyErr::from_value(exc))
+    }
+
+    #[getter]
+    fn get_return_undeliverable(&self) -> bool {
+        true
+    }
+
+    #[setter]
+    fn set_return_undeliverable(&self, _value: bool) {}
+}
+
+/// A port that sends messages to a remote receiver.
+/// Wraps an EitherPortRef with the actor instance needed for sending.
+#[pyclass(module = "monarch._src.actor.actor_mesh")]
+pub struct Port {
+    port_ref: EitherPortRef,
+    instance: Instance<PythonActor>,
+    rank: Option<usize>,
+}
+
+#[pymethods]
+impl Port {
+    #[new]
+    fn new(
+        port_ref: EitherPortRef,
+        instance: &crate::context::PyInstance,
+        rank: Option<usize>,
+    ) -> Self {
+        Self {
+            port_ref,
+            instance: instance.clone().into_instance(),
+            rank,
+        }
+    }
+
+    #[getter("_port_ref")]
+    fn port_ref_py(&self) -> EitherPortRef {
+        self.port_ref.clone()
+    }
+
+    #[getter("_rank")]
+    fn rank_py(&self) -> Option<usize> {
+        self.rank
+    }
+
+    #[getter]
+    fn get_return_undeliverable(&self) -> bool {
+        self.port_ref.get_return_undeliverable()
+    }
+
+    #[setter]
+    fn set_return_undeliverable(&mut self, value: bool) {
+        self.port_ref.set_return_undeliverable(value);
+    }
+
+    fn send(&mut self, py: Python<'_>, obj: Py<PyAny>) -> PyResult<()> {
+        let message = PythonMessage::new_from_buf(
+            PythonMessageKind::Result { rank: self.rank },
+            pickle_to_part(py, &obj)?,
+        );
+
+        self.port_ref
+            .send(&self.instance, message)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn exception(&mut self, py: Python<'_>, e: Py<PyAny>) -> PyResult<()> {
+        let message = PythonMessage::new_from_buf(
+            PythonMessageKind::Exception { rank: self.rank },
+            pickle_to_part(py, &e)?,
+        );
+
+        self.port_ref
+            .send(&self.instance, message)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+}
+
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PythonActorHandle>()?;
     hyperactor_mod.add_class::<PythonMessage>()?;
@@ -1378,6 +1479,8 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<UnflattenArg>()?;
     hyperactor_mod.add_class::<PanicFlag>()?;
     hyperactor_mod.add_class::<QueuedMessage>()?;
+    hyperactor_mod.add_class::<DroppingPort>()?;
+    hyperactor_mod.add_class::<Port>()?;
     Ok(())
 }
 

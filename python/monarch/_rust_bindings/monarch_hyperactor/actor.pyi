@@ -109,6 +109,21 @@ class Uninit(PythonMessageKind):
     pass
 
 @final
+class DroppingPort:
+    """
+    Used in place of a real port when the message has no response port.
+    Makes sure any exception sent to it causes the actor to report an exception.
+    """
+
+    def __init__(self) -> None: ...
+    def send(self, obj: Any) -> None: ...
+    def exception(self, obj: BaseException) -> None: ...
+    @property
+    def return_undeliverable(self) -> bool: ...
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None: ...
+
+@final
 class PythonMessage:
     """
     A message that carries a python method and a pickled message that contains
