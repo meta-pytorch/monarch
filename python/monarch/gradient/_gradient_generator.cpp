@@ -604,9 +604,9 @@ struct GradientGenerator {
   Arena arena_;
 };
 
-typedef struct {
+struct PyGradientGenerator {
   PyObject_HEAD GradientGenerator* obj;
-} PyGradientGenerator;
+};
 
 static int convertNode(PyObject* obj, std::shared_ptr<Node>* node) {
   if (THPFunction_Check(obj)) {
