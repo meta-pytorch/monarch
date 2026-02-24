@@ -6,7 +6,6 @@
 
 # pyre-unsafe
 import asyncio
-import functools
 import importlib.resources
 import os
 import re
@@ -21,6 +20,7 @@ import cloudpickle
 import monarch
 import pytest
 import torch
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.actor_mesh import (
     Actor,
     ActorError,
@@ -80,64 +80,6 @@ debug_env = {
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR: "0.0.0.0",
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR: "0",
 }
-
-
-def isolate_in_subprocess(test_fn=None, *, env=None):
-    if test_fn is None:
-        return functools.partial(isolate_in_subprocess, env=env)
-
-    if env is None:
-        env = {}
-
-    def sync_test_fn():
-        asyncio.run(test_fn())
-
-    sync_test_fn_name = f"sync_{test_fn.__name__}"
-    setattr(sys.modules[__name__], sync_test_fn_name, sync_test_fn)
-
-    env.update(os.environ.copy())
-
-    def wrapper():
-        if IN_PAR:
-            assert (
-                subprocess.call(
-                    [
-                        str(
-                            importlib.resources.files("monarch.python.tests").joinpath(
-                                "run_test_bin"
-                            )
-                        ),
-                        sync_test_fn_name,
-                    ],
-                    env=env,
-                )
-                == 0
-            )
-        else:
-            test_dir = os.path.dirname(os.path.abspath(__file__))
-            sub_env = {
-                **env,
-                "PYTHONPATH": os.pathsep.join(
-                    filter(None, [test_dir, env.get("PYTHONPATH", "")])
-                ),
-            }
-            assert (
-                subprocess.call(
-                    [
-                        sys.executable,
-                        "-c",
-                        f"import test_debugger; test_debugger.{sync_test_fn_name}()",
-                    ],
-                    env=sub_env,
-                )
-                == 0
-            )
-
-    return wrapper
-
-
-def run_test_from_name():
-    getattr(sys.modules[__name__], sys.argv[1])()
 
 
 cli_bin = (
