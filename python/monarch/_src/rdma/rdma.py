@@ -466,7 +466,7 @@ class RDMAAction:
         )
 
         # range is unchanged - no need to update
-        if expanded_range == (new_start, new_end):
+        if expanded_range == overlapping_range:
             return
 
         # Update dictionary: remove old range, add expanded range
