@@ -12,6 +12,7 @@ from threading import Event
 from typing import Callable, Optional, TypeVar
 
 import monarch.actor
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import parametrize_config
@@ -101,6 +102,7 @@ class FaultCapture:
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_actor_failure():
     """
     If an actor dies, the client should receive an unhandled fault.
@@ -113,6 +115,7 @@ def test_actor_failure():
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_proc_failure():
     """
     If a proc dies, the client should receive an unhandled fault.
@@ -128,6 +131,7 @@ def test_proc_failure():
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_nested_mesh_kills_actor_actor_error():
     """
     If a nested actor errors, the fault should propagate to the client.
