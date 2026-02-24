@@ -173,10 +173,26 @@ wirevalue::register_type!(PythonMessage);
 struct ResolvedCallMethod {
     method: MethodSpecifier,
     bytes: FrozenBuffer,
-    local_state: Py<PyAny>,
+    local_state: Option<Py<PyAny>>,
     /// Implements PortProtocol
     /// Concretely either a Port, DroppingPort, or LocalPort
-    response_port: Py<PyAny>,
+    response_port: ResponsePort,
+}
+
+enum ResponsePort {
+    Dropping,
+    Port(Port),
+    Local(LocalPort),
+}
+
+impl ResponsePort {
+    fn into_py_any(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
+            ResponsePort::Dropping => DroppingPort.into_py_any(py),
+            ResponsePort::Port(port) => port.into_py_any(py),
+            ResponsePort::Local(port) => port.into_py_any(py),
+        }
+    }
 }
 
 /// Message sent through the queue in queue-dispatch mode.
@@ -235,23 +251,25 @@ impl PythonMessage {
                 let mut state_it = state.state.into_iter();
                 monarch_with_gil(|py| {
                     let mailbox = mailbox(py, cx);
-                    let local_state = PyList::new(
-                        py,
-                        unflatten_args.into_iter().map(|x| -> Bound<'_, PyAny> {
-                            match x {
-                                UnflattenArg::Mailbox => mailbox.clone(),
-                                UnflattenArg::PyObject => state_it.next().unwrap().into_bound(py),
-                            }
-                        }),
-                    )
-                    .unwrap()
-                    .into();
-                    let response_port = LocalPort {
+                    let local_state = Some(
+                        PyList::new(
+                            py,
+                            unflatten_args.into_iter().map(|x| -> Bound<'_, PyAny> {
+                                match x {
+                                    UnflattenArg::Mailbox => mailbox.clone(),
+                                    UnflattenArg::PyObject => {
+                                        state_it.next().unwrap().into_bound(py)
+                                    }
+                                }
+                            }),
+                        )
+                        .unwrap()
+                        .into(),
+                    );
+                    let response_port = ResponsePort::Local(LocalPort {
                         instance: cx.into(),
                         inner: Some(state.response_port),
-                    }
-                    .into_py_any(py)
-                    .unwrap();
+                    });
                     Ok(ResolvedCallMethod {
                         method: name,
                         bytes: FrozenBuffer {
@@ -267,31 +285,22 @@ impl PythonMessage {
                 name,
                 response_port,
             } => {
-                monarch_with_gil(|py| {
-                    let local_state: Py<PyAny> = PyList::empty(py).unbind().into();
-                    let response_port = response_port.map_or_else(
-                        || DroppingPort.into_py_any(py).unwrap(),
-                        |port_ref| {
-                            let point = cx.cast_point();
-                            Port {
-                                port_ref,
-                                instance: cx.instance().clone_for_py(),
-                                rank: Some(point.rank()),
-                            }
-                            .into_py_any(py)
-                            .unwrap()
-                        },
-                    );
-                    Ok(ResolvedCallMethod {
-                        method: name,
-                        bytes: FrozenBuffer {
-                            inner: self.message.into_bytes(),
-                        },
-                        local_state,
-                        response_port,
+                let response_port = response_port.map_or(ResponsePort::Dropping, |port_ref| {
+                    let point = cx.cast_point();
+                    ResponsePort::Port(Port {
+                        port_ref,
+                        instance: cx.instance().clone_for_py(),
+                        rank: Some(point.rank()),
                     })
+                });
+                Ok(ResolvedCallMethod {
+                    method: name,
+                    bytes: FrozenBuffer {
+                        inner: self.message.into_bytes(),
+                    },
+                    local_state: None,
+                    response_port,
                 })
-                .await
             }
             _ => {
                 panic!("unexpected message kind {:?}", self.kind)
@@ -1054,8 +1063,10 @@ impl PythonActor {
                     PanicFlag {
                         sender: Some(sender),
                     },
-                    resolved.local_state,
-                    resolved.response_port,
+                    resolved
+                        .local_state
+                        .unwrap_or_else(|| PyList::empty(py).unbind().into()),
+                    resolved.response_port.into_py_any(py)?,
                 ),
                 None,
             )?;
@@ -1104,8 +1115,10 @@ impl PythonActor {
                 context: py_context_obj,
                 method: resolved.method,
                 bytes: resolved.bytes,
-                local_state: resolved.local_state,
-                response_port: resolved.response_port,
+                local_state: resolved
+                    .local_state
+                    .unwrap_or_else(|| PyList::empty(py).unbind().into()),
+                response_port: resolved.response_port.into_py_any(py)?,
             })
         })
         .await?;
