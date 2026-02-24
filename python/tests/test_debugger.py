@@ -44,10 +44,11 @@ from monarch._src.actor.debugger.debug_session import (
     DebugSessionInfo,
     DebugSessions,
 )
-from monarch._src.actor.endpoint import endpoint, Extent
-from monarch._src.actor.host_mesh import create_local_host_mesh, this_host
+from monarch._src.actor.endpoint import endpoint
+from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, ProcMesh
 from monarch._src.actor.source_loader import SourceLoaderController
+from monarch._src.job.process import ProcessJob
 from monarch.tools.debug_env import (
     _MONARCH_DEBUG_SERVER_HOST_ENV_VAR,
     _MONARCH_DEBUG_SERVER_PORT_ENV_VAR,
@@ -62,8 +63,10 @@ def proc_mesh(
     gpus: int = 1,
     hosts: int = 1,
 ) -> ProcMesh:
-    return create_local_host_mesh(extent=Extent(["hosts"], [hosts])).spawn_procs(
-        per_host={"gpus": gpus}
+    return (
+        ProcessJob({"hosts": hosts})
+        .state(cached_path=None)
+        .hosts.spawn_procs(per_host={"gpus": gpus})
     )
 
 
@@ -218,7 +221,7 @@ async def _test_debug(nested: bool) -> None:
         proc = proc_mesh(hosts=2, gpus=2)
         debugee = proc.spawn("debugee", DebugeeActor)
     else:
-        proc = create_local_host_mesh(extent=Extent(["hosts"], [1])).spawn_procs()
+        proc = ProcessJob({"hosts": 1}).state(cached_path=None).hosts.spawn_procs()
         debugee = proc.spawn("debugee", DebugeeActor).nested.choose().get()
     name = debugee.name.choose().get()
 
