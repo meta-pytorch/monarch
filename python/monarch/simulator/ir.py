@@ -567,6 +567,34 @@ class IRGraph:
             return str(shapes[0][1]).replace("torch.", "")
         return "unknown"
 
+    @staticmethod
+    def _parse_command_name(command_name: str) -> Tuple[str, str]:
+        """Parse command name into (cmd_type, sub_type)."""
+        parts = [p.strip() for p in command_name.split(":")]
+        return parts[0], parts[1] if len(parts) > 1 else "unknown"
+
+    @staticmethod
+    def _get_cmd_shapes(
+        cmd_id: int,
+        cmd_input_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ],
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ],
+    ) -> List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]:
+        """Get shapes for a command, preferring inputs over outputs."""
+        return cmd_input_tensors.get(cmd_id, []) or cmd_output_tensors.get(cmd_id, [])
+
+    @staticmethod
+    def _format_shapes_string(
+        shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]],
+    ) -> str:
+        """Format shapes as '(3x4)x(4x5)' string."""
+        if not shapes:
+            return ""
+        return "x".join(f"({'x'.join(str(d) for d in dims)})" for dims, _ in shapes)
+
     def _get_timing_key(
         self,
         cmd: Command,
@@ -593,21 +621,13 @@ class IRGraph:
         Returns:
             The timing key string for this command
         """
-        parts = [p.strip() for p in cmd.command_name.split(":")]
-        cmd_type = parts[0]
-        # Use input shapes; fall back to output shapes for in-place ops (e.g., reduce_)
-        shapes = cmd_input_tensors.get(cmd.command_id, []) or cmd_output_tensors.get(
-            cmd.command_id, []
+        cmd_type, sub_type = self._parse_command_name(cmd.command_name)
+        shapes = self._get_cmd_shapes(
+            cmd.command_id, cmd_input_tensors, cmd_output_tensors
         )
         num_devices = len(cmd.devices)
-        # Format shapes inline: "(3x4)x(4x5)"
-        s = (
-            "x".join(f"({'x'.join(str(d) for d in dims)})" for dims, _ in shapes)
-            if shapes
-            else ""
-        )
+        s = self._format_shapes_string(shapes)
         d = self._get_dtype(shapes)
-        sub_type = parts[1] if len(parts) > 1 else "unknown"
 
         # Generate timing key based on command type
         if cmd_type == "CallFunction":
@@ -621,11 +641,21 @@ class IRGraph:
         else:
             return cmd_type
 
-    def export_command_types(self, output_file: str) -> None:
+    def export_command_types(
+        self,
+        output_file: str,
+        include_timing: bool = False,
+    ) -> None:
         """Export unique command types with metadata for external timing lookup.
 
         Generates a JSON catalog of unique command types grouped by timing_key.
         Users can provide external timing data keyed by timing_key.
+
+        Args:
+            output_file: Path to write the JSON output.
+            include_timing: If True, profile compute kernels on GPU, include
+                           timing values in the output, and auto-apply timing
+                           to the DAG. Default is False.
 
         Timing key formats (fields separated by colons):
         - CallFunction: "CallFunction:{func}:{input_shapes}:{dtype}"
@@ -640,7 +670,20 @@ class IRGraph:
 
         Shape format: Each tensor shape is "(dim1xdim2x...)", multiple shapes
         joined with "x", e.g., "(3x4)x(4x5)" for two input tensors.
+
+        Output JSON format (when include_timing=False):
+            {"command_types": [{"timing_key": "...", "count": N, ...}]}
+
+        Output JSON format (when include_timing=True):
+            {
+                "command_types": [{"timing_key": "...", "count": N, "timing_us": 1234, ...}],
+                "timing": {"timing_key1": 1234, "timing_key2": 5678, ...}
+            }
+            The "timing" section uses the same format as import_timing() expects.
+            When include_timing=True, timing is also auto-applied to the DAG.
         """
+        from monarch.simulator.profiling import expand_func_path, profile_function
+
         cmd_input_tensors, cmd_output_tensors = self._build_tensor_shape_maps()
 
         # Aggregate commands by timing_key
@@ -650,11 +693,10 @@ class IRGraph:
                 cmd, cmd_input_tensors, cmd_output_tensors
             )
 
-            parts = [p.strip() for p in cmd.command_name.split(":")]
-            cmd_type = parts[0]
-            shapes = cmd_input_tensors.get(
-                cmd.command_id, []
-            ) or cmd_output_tensors.get(cmd.command_id, [])
+            cmd_type, sub_type = self._parse_command_name(cmd.command_name)
+            shapes = self._get_cmd_shapes(
+                cmd.command_id, cmd_input_tensors, cmd_output_tensors
+            )
 
             # Initialize entry for new timing_key
             if timing_key not in timing_key_data:
@@ -662,6 +704,9 @@ class IRGraph:
                 if shapes and not cmd_type.startswith("Borrow"):
                     if cmd_type == "CallFunction":
                         entry["input_shapes"] = [list(dims) for dims, _ in shapes]
+                        # Add func_path to help users profile externally
+                        if sub_type != "unknown":
+                            entry["func_path"] = expand_func_path(sub_type)
                     else:
                         entry["tensor_shape"] = list(shapes[0][0])
                     entry["dtype"] = self._get_dtype(shapes)
@@ -671,33 +716,68 @@ class IRGraph:
 
             timing_key_data[timing_key]["count"] += 1
 
+        # Generate timing values if requested
+        timing_dict: Dict[str, int] = {}
+        if include_timing:
+            defaults = {
+                "CallFunction": 10000,  # 10ms fallback
+                "Reduce": 50000,  # 50ms
+                "SendTensor": 10000,  # 10ms
+                "Borrow": 100,  # 0.1ms
+            }
+            for timing_key, entry in timing_key_data.items():
+                cmd_type = timing_key.split(":")[0]
+                if cmd_type == "CallFunction":
+                    # GPU profiling for compute kernels
+                    try:
+                        # Extract function path and shapes from entry
+                        func_path = (
+                            timing_key.split(":")[1] if ":" in timing_key else ""
+                        )
+                        # Reconstruct shapes from entry
+                        shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]] = []
+                        if "input_shapes" in entry:
+                            dtype_str = entry.get("dtype", "float32")
+                            dtype = getattr(torch, dtype_str, torch.float32)
+                            for shape in entry["input_shapes"]:
+                                shapes.append((tuple(shape), dtype))
+                        if shapes and func_path:
+                            timing_us = profile_function(func_path, shapes)
+                        else:
+                            timing_us = defaults["CallFunction"]
+                    except Exception:
+                        timing_us = defaults["CallFunction"]
+                else:
+                    # Use defaults for non-compute operations
+                    timing_us = next(
+                        (
+                            val
+                            for prefix, val in defaults.items()
+                            if cmd_type.startswith(prefix)
+                        ),
+                        100,
+                    )
+                timing_dict[timing_key] = timing_us
+                entry["timing_us"] = timing_us
+
+        output: Dict[str, Any] = {"command_types": list(timing_key_data.values())}
+        if include_timing:
+            output["timing"] = timing_dict
         with open(output_file, "w") as f:
-            json.dump({"command_types": list(timing_key_data.values())}, f, indent=2)
+            json.dump(output, f, indent=2)
 
-    def import_timing(self, timing_file: str) -> None:
-        """Import external timing data and apply durations to commands.
+        # Auto-apply timing to the DAG when include_timing is True
+        if include_timing:
+            self.import_timing(timing_dict)
 
-        Loads a JSON file mapping timing keys to durations (in microseconds)
-        and updates the duration field of matching commands in the control DAG.
+    def _apply_timing(self, timing_data: Dict[str, int]) -> None:
+        """Apply timing data directly to commands (internal use).
 
         Args:
-            timing_file: Path to JSON file with timing data in the format:
-                {
-                    "CallFunction:aten.mm:(3x4)x(4x3):float32": 1500,
-                    "Reduce:reduce_scatter:(3x3):float32:4": 5000,
-                    "BorrowCreate": 10
-                }
-                Keys are timing_key strings (same format as export_command_types).
-                Values are durations in microseconds (µs).
+            timing_data: Dictionary mapping timing keys to durations in microseconds.
         """
-        # Load timing data from JSON
-        with open(timing_file, "r") as f:
-            timing_data: Dict[str, int] = json.load(f)
-
-        # Build tensor shape maps for timing key generation
         cmd_input_tensors, cmd_output_tensors = self._build_tensor_shape_maps()
 
-        # Update each command's duration based on its timing key
         updated_commands: List[Command] = []
         for cmd in self.control_dag:
             timing_key = self._get_timing_key(
@@ -708,6 +788,34 @@ class IRGraph:
             updated_commands.append(cmd)
 
         self.control_dag = updated_commands
+
+    def import_timing(self, timing: str | Dict[str, int]) -> None:
+        """Import timing data and apply durations to commands.
+
+        Args:
+            timing: Either a file path (str) to a JSON file, or a dict mapping
+                    timing keys to durations in microseconds.
+
+        Example:
+            # From file
+            ir.import_timing("timing.json")
+
+            # From dict
+            ir.import_timing({"CallFunction:aten.mm:(3x4)x(4x3):float32": 100})
+
+        JSON file format:
+            {
+                "CallFunction:aten.mm:(3x4)x(4x3):float32": 1500,
+                "Reduce:reduce_scatter:(3x3):float32:4": 5000,
+                "BorrowCreate": 10
+            }
+            Keys are timing_key strings (same format as export_command_types).
+            Values are durations in microseconds (µs).
+        """
+        if isinstance(timing, str):
+            with open(timing, "r") as f:
+                timing = json.load(f)
+        self._apply_timing(timing)
 
     def export_dag_json_timed(self, output_file: str) -> None:
         """Export DAG to Chrome Trace JSON using actual command durations.
