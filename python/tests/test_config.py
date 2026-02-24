@@ -10,21 +10,10 @@ import contextlib
 
 import monarch
 import pytest
-from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured, get_global_config
-
-
-class Chunker(Actor):
-    def __init__(self):
-        self.chunks = []
-
-    @endpoint
-    def process_chunks(self, chunks):
-        self.chunks = chunks
-        return len(chunks)
 
 
 @contextlib.contextmanager
@@ -104,10 +93,18 @@ def test_get_set_multiple() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
-@isolate_in_subprocess
 def test_codec_max_frame_length_exceeds_default() -> None:
     """Test that sending 10 chunks of 1GiB fails with default 10 GiB
     limit."""
+
+    class Chunker(Actor):
+        def __init__(self):
+            self.chunks = []
+
+        @endpoint
+        def process_chunks(self, chunks):
+            self.chunks = chunks
+            return len(chunks)
 
     oneGiB = 1024 * 1024 * 1024
     tenGiB = 10 * oneGiB
@@ -138,6 +135,15 @@ def test_codec_max_frame_length_exceeds_default() -> None:
 def test_codec_max_frame_length_with_increased_limit() -> None:
     """Test that we can successfully send 10 chunks of 1GiB each with
     100 GiB limit."""
+
+    class Chunker(Actor):
+        def __init__(self):
+            self.chunks = []
+
+        @endpoint
+        def process_chunks(self, chunks):
+            self.chunks = chunks
+            return len(chunks)
 
     oneGiB = 1024 * 1024 * 1024
     tenGiB = 10 * oneGiB
