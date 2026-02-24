@@ -75,45 +75,6 @@ pub enum StopActorResult {
 }
 wirevalue::register_type!(StopActorResult);
 
-/// Response to admin introspection queries.
-///
-/// The admin response types (`ProcDetails`, `ActorDetails`) contain
-/// `serde_json::Value` which doesn't implement `Named`, so we serialize
-/// them to JSON strings for transport over actor messaging.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
-pub struct AdminQueryResponse {
-    /// JSON-serialized response, or None if the queried entity was not found.
-    pub json: Option<String>,
-}
-wirevalue::register_type!(AdminQueryResponse);
-
-/// Messages for querying admin introspection data from a child proc's
-/// `ProcMeshAgent` via actor messaging.
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    Handler,
-    HandleClient,
-    RefClient,
-    Named
-)]
-pub(crate) enum AdminQueryMessage {
-    /// Query details about the proc managed by this agent.
-    GetProcDetails {
-        #[reply]
-        reply: OncePortRef<AdminQueryResponse>,
-    },
-    /// Query details about a specific actor by name.
-    GetActorDetails {
-        actor_name: String,
-        #[reply]
-        reply: OncePortRef<AdminQueryResponse>,
-    },
-}
-
 #[derive(
     Debug,
     Clone,
@@ -245,7 +206,6 @@ struct ActorInstanceState {
 #[hyperactor::export(
     handlers=[
         MeshAgentMessage,
-        AdminQueryMessage,
         ActorSupervisionEvent,
         resource::CreateOrUpdate<ActorSpec> { cast = true },
         resource::Stop { cast = true },
@@ -266,6 +226,10 @@ pub struct ProcMeshAgent {
     /// If record_supervision_events is true, then this will contain the list
     /// of all events that were received.
     supervision_events: HashMap<ActorId, Vec<ActorSupervisionEvent>>,
+    /// If set, the StopAll handler will send the exit code through this
+    /// channel instead of calling process::exit directly, allowing the
+    /// caller to perform graceful shutdown (e.g. draining the mailbox server).
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
 }
 
 impl ProcMeshAgent {
@@ -287,12 +251,16 @@ impl ProcMeshAgent {
             actor_states: HashMap::new(),
             record_supervision_events: false,
             supervision_events: HashMap::new(),
+            shutdown_tx: None,
         };
         let handle = proc.spawn::<Self>("mesh", agent)?;
         Ok((proc, handle))
     }
 
-    pub(crate) fn boot_v1(proc: Proc) -> Result<ActorHandle<Self>, anyhow::Error> {
+    pub(crate) fn boot_v1(
+        proc: Proc,
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
+    ) -> Result<ActorHandle<Self>, anyhow::Error> {
         let agent = ProcMeshAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
@@ -300,6 +268,7 @@ impl ProcMeshAgent {
             actor_states: HashMap::new(),
             record_supervision_events: true,
             supervision_events: HashMap::new(),
+            shutdown_tx,
         };
         proc.spawn::<Self>("agent", agent)
     }
@@ -322,10 +291,91 @@ impl Actor for ProcMeshAgent {
         self.proc.set_supervision_coordinator(this.port())?;
         Ok(())
     }
+
+    /// Proc-level introspection override.
+    ///
+    /// `ProcMeshAgent` describes the proc it manages: on `Query` it
+    /// returns `NodeProperties::Proc` and enumerates all actor ids in
+    /// the proc as `children` (excluding the `ProcMeshAgent` itself,
+    /// which is just the infrastructure wrapper).
+    ///
+    /// `QueryChild` is unsupported because proc "children" are always
+    /// independently addressable actors; callers should introspect
+    /// them by sending `IntrospectMessage::Query` directly to the
+    /// child actor id.
+    async fn handle_introspect(
+        &mut self,
+        cx: &Instance<Self>,
+        msg: hyperactor::introspect::IntrospectMessage,
+    ) -> Result<(), anyhow::Error> {
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectView;
+        use hyperactor::introspect::NodePayload;
+        use hyperactor::introspect::NodeProperties;
+
+        match msg {
+            IntrospectMessage::Query { view, reply } => {
+                let payload = match view {
+                    IntrospectView::Entity => {
+                        // Return Proc properties.
+                        let all_actors = self.proc.all_actor_ids();
+                        // Include all actors in the proc, including
+                        // ProcMeshAgent itself (consistent with
+                        // HostMeshAgent behavior).
+                        let children: Vec<String> =
+                            all_actors.into_iter().map(|id| id.to_string()).collect();
+
+                        NodePayload {
+                            identity: cx.self_id().to_string(),
+                            properties: NodeProperties::Proc {
+                                proc_name: self.proc.proc_id().to_string(),
+                                num_actors: children.len(),
+                                is_system: false,
+                            },
+                            children,
+                            parent: None,
+                        }
+                    }
+                    IntrospectView::Actor => {
+                        // Return Actor properties using default.
+                        cx.introspect_payload()
+                    }
+                };
+
+                if let Err(e) = reply.send(cx, payload) {
+                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
+                }
+            }
+            IntrospectMessage::QueryChild { child_ref, reply } => {
+                // All children are independently addressable
+                // actors.
+                if let Err(e) = reply.send(
+                    cx,
+                    NodePayload {
+                        identity: String::new(),
+                        properties: NodeProperties::Error {
+                            code: "not_found".into(),
+                            message: format!(
+                                "proc {} does not handle QueryChild \
+                                 for {}; query the actor directly",
+                                self.proc.proc_id(),
+                                child_ref,
+                            ),
+                        },
+                        children: vec![],
+                        parent: None,
+                    },
+                ) {
+                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
-#[hyperactor::forward(MeshAgentMessage)]
+#[hyperactor::handle(MeshAgentMessage)]
 impl MeshAgentMessageHandler for ProcMeshAgent {
     async fn configure(
         &mut self,
@@ -472,29 +522,6 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
                 "status unavailable: agent in invalid state"
             )),
         }
-    }
-}
-
-#[async_trait]
-#[hyperactor::forward(AdminQueryMessage)]
-impl AdminQueryMessageHandler for ProcMeshAgent {
-    async fn get_proc_details(
-        &mut self,
-        _cx: &Context<Self>,
-    ) -> Result<AdminQueryResponse, anyhow::Error> {
-        let details = hyperactor::admin::query_proc_details(&self.proc);
-        let json = serde_json::to_string(&details)?;
-        Ok(AdminQueryResponse { json: Some(json) })
-    }
-
-    async fn get_actor_details(
-        &mut self,
-        _cx: &Context<Self>,
-        actor_name: String,
-    ) -> Result<AdminQueryResponse, anyhow::Error> {
-        let details = hyperactor::admin::query_actor_details(&self.proc, &actor_name);
-        let json = details.map(|d| serde_json::to_string(&d)).transpose()?;
-        Ok(AdminQueryResponse { json })
     }
 }
 
@@ -696,10 +723,18 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
                     stopped_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     aborted_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                 );
+                if let Some(tx) = self.shutdown_tx.take() {
+                    let _ = tx.send(0);
+                    return Ok(());
+                }
                 std::process::exit(0);
             }
             Err(e) => {
                 tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcMeshAgent: {:?}", e);
+                if let Some(tx) = self.shutdown_tx.take() {
+                    let _ = tx.send(1);
+                    return Ok(());
+                }
                 std::process::exit(1);
             }
         }

@@ -11,7 +11,6 @@ import collections
 import contextvars
 import functools
 import inspect
-import itertools
 import logging
 import threading
 import warnings
@@ -28,7 +27,6 @@ from typing import (
     cast,
     Concatenate,
     Dict,
-    Generator,
     Generic,
     Iterable,
     Iterator,
@@ -49,10 +47,12 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
+from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
+from monarch._rust_bindings.monarch_hyperactor.endpoint import ActorEndpoint
 from monarch._rust_bindings.monarch_hyperactor.logging import log_endpoint_exception
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
@@ -60,27 +60,20 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortRef,
     UndeliverableMessageEnvelope,
 )
-from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
-from monarch._rust_bindings.monarch_hyperactor.pytokio import (
-    PendingPickle,
-    PendingPickleState,
-    PythonTask,
-    Shared,
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle,
+    PicklingState,
 )
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.selection import (
     Selection as HySelection,  # noqa: F401
 )
-from monarch._rust_bindings.monarch_hyperactor.shape import (
-    Point as HyPoint,
-    Region,
-    Shape,
-)
+from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
     SupervisionError,
-)
-from monarch._rust_bindings.monarch_hyperactor.value_mesh import (
-    ValueMesh as HyValueMesh,
 )
 from monarch._src.actor import config
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
@@ -88,22 +81,19 @@ from monarch._src.actor.debugger.pdb_wrapper import PdbWrapper
 from monarch._src.actor.endpoint import (
     Endpoint,
     EndpointProperty,
-    Extent,
     NotAnEndpoint,
     Propagator,
     Selection,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.metrics import endpoint_message_size_histogram
 from monarch._src.actor.mpsc import (  # noqa: F401 - import runs @rust_struct patching
     Receiver,
 )
-from monarch._src.actor.pickle import allow_pending_pickle_mesh, flatten, unflatten
 from monarch._src.actor.python_extension_methods import rust_struct
 from monarch._src.actor.shape import MeshTrait, NDSlice
 from monarch._src.actor.sync_state import fake_sync_state
 from monarch._src.actor.telemetry import METER
-from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message
+from monarch._src.actor.tensor_engine_shim import actor_rref, create_actor_message_kind
 from opentelemetry.metrics import Counter
 from opentelemetry.trace import Tracer
 from typing_extensions import Self
@@ -119,6 +109,13 @@ if TYPE_CHECKING:
         PortReceiverBase,
     )
     from monarch._src.actor.proc_mesh import _ControllerController, DeviceMesh, ProcMesh
+
+    def _assert_implements_endpoint(x: Endpoint[..., Any]) -> None: ...
+
+    def _check_actor_endpoint_satisfies_protocol(ep: ActorEndpoint[..., Any]) -> None:
+        _assert_implements_endpoint(ep)
+
+
 from monarch._src.actor.telemetry import get_monarch_tracer
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -499,6 +496,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
             - "ipc": ChannelTransport.Unix
             - "metatls": ChannelTransport.MetaTlsWithIpV6
             - "metatls-hostname": ChannelTransport.MetaTlsWithHostname
+            - "tls": ChannelTransport.Tls (uses configurable TLS certs)
         - ZMQ-style URL format string for explicit address, e.g.:
             - "tcp://127.0.0.1:8080"
 
@@ -511,6 +509,7 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
             "ipc": ChannelTransport.Unix,
             "metatls": ChannelTransport.MetaTlsWithIpV6,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
+            "tls": ChannelTransport.Tls,
         }.get(transport)
         if resolved is not None:
             transport_config = BindSpec(resolved)
@@ -564,51 +563,6 @@ R = TypeVar("R")
 A = TypeVar("A")
 
 
-class _SingletonActorAdapator:
-    def __init__(self, inner: ActorId, region: Optional[Region] = None) -> None:
-        self._inner: ActorId = inner
-        if region is None:
-            region = singleton_shape.region
-        self._region: Region = region
-
-    @property
-    def region(self) -> Region:
-        return self._region
-
-    def get(self, rank: int) -> Optional[ActorId]:
-        if rank == 0:
-            return self._inner
-        return None
-
-    def cast(
-        self,
-        message: PythonMessage,
-        selection: str,
-        instance: HyInstance,
-    ) -> None:
-        Instance._as_py(instance)._mailbox.post(self._inner, message)
-
-    def new_with_region(self, region: Region) -> "_SingletonActorAdapator":
-        return _SingletonActorAdapator(self._inner, self._region)
-
-    def supervision_event(self, instance: HyInstance) -> "Optional[Shared[Exception]]":
-        return None
-
-    def start_supervision(
-        self, instance: HyInstance, supervision_display_name: str
-    ) -> None:
-        return None
-
-    def stop(self, instance: HyInstance, reason: str) -> "PythonTask[None]":
-        raise NotImplementedError("stop()")
-
-    def initialized(self) -> "PythonTask[None]":
-        async def empty() -> None:
-            pass
-
-        return PythonTask.from_coroutine(empty())
-
-
 def _check_endpoint_arguments(
     method_name: MethodSpecifier,
     signature: inspect.Signature,
@@ -644,9 +598,9 @@ def _create_endpoint_message(
     signature: inspect.Signature,
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
-    port: "Optional[Port[Any]]",
+    port_ref: "Optional[PortRef | OncePortRef]",
     proc_mesh: "Optional[ProcMesh]",
-) -> PythonMessage:
+) -> PendingMessage:
     """
     Create a PythonMessage for sending to an actor endpoint.
 
@@ -657,110 +611,28 @@ def _create_endpoint_message(
         PythonMessage ready to be sent to the actor mesh
     """
     _check_endpoint_arguments(method_name, signature, args, kwargs)
-    with allow_pending_pickle_mesh():
-        objects, buffer = flatten((args, kwargs), _is_ref_or_mailbox_or_pending_pickle)
-
-    has_ref = False
-    has_pending_pickle = False
-    mailbox_or_refs = []
-    for obj in objects:
-        if isinstance(obj, PendingPickle):
-            has_pending_pickle = True
-        elif hasattr(obj, "__monarch_ref__"):
-            mailbox_or_refs.append(obj)
-            has_ref = True
-        else:
-            mailbox_or_refs.append(obj)
-
-    pending_pickle_state = None
-    if has_pending_pickle:
-        pending_pickle_state = PendingPickleState(
-            objects, _is_ref_or_mailbox_or_pending_pickle
-        )
-
-    if not has_ref:
-        message = PythonMessage(
-            PythonMessageKind.CallMethod(
-                method_name, None if port is None else port._port_ref
-            ),
-            buffer,
-            pending_pickle_state,
-        )
+    pickling_state = pickle(
+        (args, kwargs), allow_pending_pickles=True, allow_tensor_engine_references=True
+    )
+    objects = pickling_state.tensor_engine_references()
+    if not objects:
+        message_kind = PythonMessageKind.CallMethod(method_name, port_ref)
     else:
-        message = create_actor_message(
-            method_name, proc_mesh, buffer, objects, port, pending_pickle_state
+        message_kind = create_actor_message_kind(
+            method_name, proc_mesh, objects, port_ref
         )
 
-    return message
+    return PendingMessage(message_kind, pickling_state)
 
 
-class ActorEndpoint(Endpoint[P, R]):
-    def __init__(
-        self,
-        actor_mesh: "ActorMeshProtocol",
-        mesh_name: str,
-        shape: Shape,
-        proc_mesh: "Optional[ProcMesh]",
-        name: MethodSpecifier,
-        impl: Callable[Concatenate[Any, P], Awaitable[R]],
-        propagator: Propagator,
-    ) -> None:
-        super().__init__(propagator)
-        self._actor_mesh = actor_mesh
-        self._mesh_name = mesh_name
-        self._name = name
-        self._shape = shape
-        self._proc_mesh = proc_mesh
-        self._signature: inspect.Signature = inspect.signature(impl)
-
-    def _call_name(self) -> MethodSpecifier:
-        return self._name
-
-    def _send(
-        self,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-        port: "Optional[Port[R]]" = None,
-        selection: Selection = "all",
-    ) -> Extent:
-        """
-        Fire-and-forget broadcast invocation of the endpoint across all actors in the mesh.
-
-        This sends the message to all actors but does not wait for any result.
-        """
-        message = _create_endpoint_message(
-            self._name, self._signature, args, kwargs, port, self._proc_mesh
-        )
-
-        # Record the message size with method name attribute
-        endpoint_message_size_histogram.record(
-            len(message.message), {"method": self._get_method_name()}
-        )
-
-        self._actor_mesh.cast(message, selection, context().actor_instance._as_rust())
-        shape = self._shape
-        return Extent(shape.labels, shape.ndslice.sizes)
-
-    def _full_name(self) -> str:
-        return f"{self._mesh_name}.{self._get_method_name()}()"
-
-    def _port(self, once: bool = False) -> "Tuple[Port[R], PortReceiver[R]]":
-        p, r = super()._port(once=once)
-        instance = context().actor_instance._as_rust()
-        monitor: Optional[Shared[Exception]] = self._actor_mesh.supervision_event(
-            instance
-        )
-
-        r._attach_supervision(monitor, self._full_name())
-        return (p, r)
-
-    def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> R:
-        _check_endpoint_arguments(self._name, self._signature, args, kwargs)
-        refs, buffer, pending_pickle_state = _flatten_with_pending_pickle(
-            (args, kwargs)
-        )
-
-        return actor_rref(self, buffer, refs, pending_pickle_state)
+def _dispatch_actor_rref(
+    endpoint: Any,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> Any:
+    _check_endpoint_arguments(endpoint._name, endpoint._signature, args, kwargs)
+    state = pickle((args, kwargs))
+    return actor_rref(endpoint, state)
 
 
 @overload
@@ -834,7 +706,7 @@ class Accumulator(Generic[P, R, A]):
         Returns:
             Future that resolves to the accumulated value.
         """
-        gen: Generator[Future[R], None, None] = self._endpoint.stream(*args, **kwargs)
+        gen: Iterator[Future[R]] = self._endpoint.stream(*args, **kwargs)
 
         async def impl() -> A:
             value = self._identity
@@ -845,6 +717,7 @@ class Accumulator(Generic[P, R, A]):
         return Future(coro=impl())
 
 
+@rust_struct("monarch_hyperactor::value_mesh::ValueMesh")
 class ValueMesh(MeshTrait, Generic[R]):
     """
     A mesh that holds the result of an endpoint invocation.
@@ -901,9 +774,13 @@ class ValueMesh(MeshTrait, Generic[R]):
         ...     print(f"Rank {point.rank}: {result}")
     """
 
-    def __init__(self, shape: Shape, values: List[R]) -> None:
-        self._shape = shape
-        self._hy: HyValueMesh = HyValueMesh(shape, values)
+    def __init__(self, shape: Shape, values: List[R]) -> None: ...
+    def __len__(self) -> int: ...
+
+    @property
+    def _shape(self) -> Shape: ...
+
+    def get(self, rank: int) -> R: ...
 
     def _new_with_shape(self, shape: Shape) -> "ValueMesh[R]":
         # Build a map from current global ranks -> local indices.
@@ -911,7 +788,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         pos = {g: i for i, g in enumerate(cur_ranks)}
         # For each global rank of the target shape, pull from our
         # current local index.
-        remapped = [self._hy.get(pos[g]) for g in shape.ranks()]
+        remapped = [self.get(pos[g]) for g in shape.ranks()]
         return ValueMesh(shape, remapped)
 
     def item(self, **kwargs: int) -> R:
@@ -940,7 +817,7 @@ class ValueMesh(MeshTrait, Generic[R]):
             # Shouldn't happen if Shape is consistent, but keep a clear
             # error.
             raise IndexError(f"rank {global_rank} not in current shape")
-        return self._hy.get(local_idx)
+        return self.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """
@@ -951,7 +828,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         """
         extent = self._shape.extent
         for i, _global_rank in enumerate(self._shape.ranks()):
-            yield Point(i, extent), self._hy.get(i)
+            yield Point(i, extent), self.get(i)
 
     def values(self) -> Iterable[R]:
         """
@@ -960,8 +837,7 @@ class ValueMesh(MeshTrait, Generic[R]):
         Returns:
             Values at all coordinates.
         """
-        for _, value in self.items():
-            yield value
+        ...
 
     def __iter__(self) -> Iterator[Tuple[Point, R]]:
         return iter(self.items())
@@ -978,13 +854,8 @@ class ValueMesh(MeshTrait, Generic[R]):
     def _labels(self) -> Iterable[str]:
         return self._shape.labels
 
-    def __getstate__(self) -> Dict[str, Any]:
-        return {"shape": self._shape, "values": self._hy.values()}
-
-    def __setstate__(self, state: Dict[str, Any]) -> None:
-        self._shape = state["shape"]
-        vals = state["values"]
-        self._hy = HyValueMesh(self._shape, vals)
+    def __reduce__(self) -> Tuple[Type["ValueMesh[R]"], Tuple[Shape, List[R]]]:
+        return (ValueMesh, (self._shape, list(self.values())))
 
 
 def send(
@@ -1007,7 +878,9 @@ def send(
         port: Handle to send the response to.
         selection: Selection query representing a subset of the mesh.
     """
-    endpoint._send(args, kwargs, port, selection)
+    endpoint._send(
+        args, kwargs, port._port_ref if port is not None else None, selection
+    )
 
 
 class Port(Generic[R]):
@@ -1034,21 +907,26 @@ class Port(Generic[R]):
         Args:
             obj: R-typed object to send.
         """
-        _, buffer, pending_pickle_state = _flatten_with_pending_pickle(obj)
+        pickle_state = pickle(
+            obj, allow_pending_pickles=False, allow_tensor_engine_references=False
+        )
 
         self._port_ref.send(
             self._instance,
-            PythonMessage(
-                PythonMessageKind.Result(self._rank), buffer, pending_pickle_state
-            ),
+            PythonMessage(PythonMessageKind.Result(self._rank), pickle_state.buffer()),
         )
 
     def exception(self, obj: Exception) -> None:
         # we deliver each error exactly once, so if there is no port to respond to,
         # the error is sent to the current actor as an exception.
+        pickle_state = pickle(
+            obj, allow_pending_pickles=False, allow_tensor_engine_references=False
+        )
         self._port_ref.send(
             self._instance,
-            PythonMessage(PythonMessageKind.Exception(self._rank), _pickle(obj)),
+            PythonMessage(
+                PythonMessageKind.Exception(self._rank), pickle_state.buffer()
+            ),
         )
 
     def __reduce__(self) -> Tuple[Any, Tuple[Any, ...]]:
@@ -1195,7 +1073,7 @@ class PortReceiver(Generic[R]):
 
     def _process(self, msg: PythonMessage) -> R:
         # TODO: Try to do something more structured than a cast here
-        payload = cast(R, unflatten(msg.message, itertools.repeat(self._mailbox)))
+        payload = cast(R, PicklingState(msg.message).unpickle())
         match msg.kind:
             case PythonMessageKind.Result():
                 return payload
@@ -1290,7 +1168,7 @@ class _Actor:
         method: MethodSpecifier,
         message: FrozenBuffer,
         panic_flag: PanicFlag,
-        local_state: Iterable[Any],
+        local_state: List[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
         MESSAGES_HANDLED.add(1)
@@ -1306,7 +1184,7 @@ class _Actor:
 
             DebugContext.set(DebugContext())
 
-            args, kwargs = unflatten(message, local_state)
+            args, kwargs = PicklingState(message, local_state).unpickle()
 
             match method:
                 case MethodSpecifier.Init():
@@ -1535,12 +1413,12 @@ class _Actor:
             try:
                 await self._handle_queued_message(msg)
             except BaseException as e:
-                import cloudpickle
-
-                error_bytes = cloudpickle.dumps(e)
+                state = pickle(
+                    e, allow_pending_pickles=False, allow_tensor_engine_references=False
+                )
                 error_msg = PythonMessage(
                     PythonMessageKind.Exception(rank=None),
-                    error_bytes,
+                    state.buffer(),
                 )
                 error_port.send(msg.context.actor_instance, error_msg)
                 raise
@@ -1576,40 +1454,6 @@ class _Actor:
 
     def __repr__(self) -> str:
         return f"_Actor(instance={self.instance!r})"
-
-
-def _is_mailbox(x: object) -> bool:
-    if hasattr(x, "__monarch_ref__"):
-        raise NotImplementedError(
-            "Sending monarch tensor references directly to a port."
-        )
-    return isinstance(x, Mailbox)
-
-
-def _is_ref_or_mailbox(x: object) -> bool:
-    return hasattr(x, "__monarch_ref__") or isinstance(x, Mailbox)
-
-
-def _is_ref_or_mailbox_or_pending_pickle(x: object) -> bool:
-    return _is_ref_or_mailbox(x) or isinstance(x, PendingPickle)
-
-
-def _flatten_with_pending_pickle(
-    x: object,
-) -> Tuple[List[Any], Buffer, Optional[PendingPickleState]]:
-    with allow_pending_pickle_mesh():
-        objs, buff = flatten(x, _is_ref_or_mailbox_or_pending_pickle)
-    pending_pickle_state = None
-    if any(isinstance(obj, PendingPickle) for obj in objs):
-        pending_pickle_state = PendingPickleState(
-            objs, _is_ref_or_mailbox_or_pending_pickle
-        )
-    return objs, buff, pending_pickle_state
-
-
-def _pickle(obj: object) -> Buffer:
-    _, buff = flatten(obj, _is_mailbox)
-    return buff
 
 
 class Actor(MeshTrait):
@@ -1737,21 +1581,13 @@ class ActorMesh(MeshTrait, Generic[T]):
     ) -> Any:
         return ActorEndpoint(
             self._inner,
-            self._mesh_name,
-            self._shape,
-            self._proc_mesh,
             name,
-            impl,
+            self._shape,
+            self._mesh_name,
+            inspect.signature(impl),
+            self._proc_mesh,
             propagator,
         )
-
-    @classmethod
-    def from_actor_id(
-        cls,
-        Class: Type[T],
-        actor_id: ActorId,
-    ) -> "ActorMesh[T]":
-        return cls(Class, "", _SingletonActorAdapator(actor_id), singleton_shape, None)
 
     def __reduce_ex__(
         self, protocol: Any
@@ -1845,10 +1681,14 @@ class RootClientActor(Actor):
         return True
 
     @staticmethod
-    def _pickled_init_args() -> Buffer:
+    def _pickled_init_args() -> FrozenBuffer:
         args = (
             ActorInitArgs(RootClientActor, None, None, RootClientActor.name, None, ()),
         )
         kwargs = {}
-        _, buffer = flatten((args, kwargs), lambda _: False)
-        return buffer
+        state = pickle(
+            (args, kwargs),
+            allow_pending_pickles=False,
+            allow_tensor_engine_references=False,
+        )
+        return state.buffer()

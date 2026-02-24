@@ -263,4 +263,35 @@ unsafe extern "C" {
 
     /// Debug: Print comprehensive device attributes
     pub fn rdmaxcel_print_device_info(context: *mut ibv_context);
+
+    // EFA functions
+
+    /// Check if the device is an EFA device (via efadv_query_device)
+    pub fn rdmaxcel_is_efa_dev(ctx: *mut ibv_context) -> std::os::raw::c_int;
+
+    /// EFA connect: INIT->RTR->RTS + AH creation, stored directly in qp struct
+    pub fn rdmaxcel_efa_connect(
+        qp: *mut rdmaxcel_qp_t,
+        port_num: u8,
+        pkey_index: u16,
+        qkey: u32,
+        psn: u32,
+        gid_index: u8,
+        remote_gid: *const u8,
+        remote_qpn: u32,
+    ) -> std::os::raw::c_int;
+
+    /// EFA post operation with ibv_post_recv fallback
+    /// op_type: 0 = write, 1 = read, 2 = recv, 3 = write_with_imm
+    pub fn rdmaxcel_qp_post_op(
+        qp: *mut rdmaxcel_qp_t,
+        local_addr: *mut std::ffi::c_void,
+        lkey: u32,
+        length: usize,
+        remote_addr: *mut std::ffi::c_void,
+        rkey: u32,
+        wr_id: u64,
+        signaled: std::os::raw::c_int,
+        op_type: std::os::raw::c_int,
+    ) -> std::os::raw::c_int;
 }

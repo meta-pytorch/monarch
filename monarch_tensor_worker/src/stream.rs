@@ -29,16 +29,16 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
-use monarch_hyperactor::buffers::Buffer;
 use monarch_hyperactor::local_state_broker::BrokerId;
 use monarch_hyperactor::local_state_broker::LocalState;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerMessage;
+use monarch_hyperactor::pickle::pickle;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
@@ -93,22 +93,16 @@ fn pickle_python_result(
     result: Bound<'_, PyAny>,
     worker_rank: usize,
 ) -> Result<PythonMessage, anyhow::Error> {
-    let pickle = py
-        .import("monarch._src.actor.actor_mesh")
-        .unwrap()
-        .getattr("_pickle")
-        .unwrap();
-    let mut data: Buffer = pickle
-        .call1((result,))
-        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?
-        .extract()
-        .unwrap();
+    let mut state = pickle(py, result.unbind(), false, false)
+        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?;
+    let inner = state
+        .take_inner()
+        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?;
     Ok(PythonMessage::new_from_buf(
         PythonMessageKind::Result {
             rank: Some(worker_rank),
         },
-        data.take_part(),
-        None,
+        inner.take_buffer(),
     ))
 }
 
@@ -990,7 +984,7 @@ impl StreamActor {
 }
 
 #[async_trait]
-#[forward(StreamMessage)]
+#[handle(StreamMessage)]
 impl StreamMessageHandler for StreamActor {
     async fn call_function(
         &mut self,

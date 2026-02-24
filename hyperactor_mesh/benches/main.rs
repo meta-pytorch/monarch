@@ -13,14 +13,10 @@ use criterion::Criterion;
 use criterion::Throughput;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::LocalAllocator;
 use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::test_utils;
 use ndslice::extent;
 use ndslice::view::Ranked as _;
 use tokio::time::Duration;
@@ -54,19 +50,10 @@ fn bench_actor_scaling(c: &mut Criterion) {
         group.bench_function(BenchmarkId::from_parameter(host_count), |b| {
             let mut b = b.to_async(shared_runtime());
             b.iter_custom(|iters| async move {
-                let alloc = LocalAllocator
-                    .allocate(AllocSpec {
-                        extent: extent!(hosts = host_count, gpus = gpus),
-                        constraints: Default::default(),
-                        proc_name: None,
-                        transport: ChannelTransport::Local,
-                        proc_allocation_mode: Default::default(),
-                    })
-                    .await
-                    .unwrap();
-
                 let instance = global_root_client();
-                let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "bench")
+                let mut host_mesh = test_utils::local_host_mesh(host_count).await;
+                let mut proc_mesh = host_mesh
+                    .spawn(instance, "bench", extent!(gpus = gpus))
                     .await
                     .unwrap();
                 let actor_mesh: ActorMesh<BenchActor> = proc_mesh
@@ -108,6 +95,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                     .stop(instance, "benchmark complete".to_string())
                     .await
                     .expect("Failed to stop mesh");
+                let _ = host_mesh.shutdown(instance).await;
                 elapsed
             })
         });
@@ -152,19 +140,10 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                 |b| {
                     let mut b = b.to_async(shared_runtime());
                     b.iter_custom(|iters| async move {
-                        let alloc = LocalAllocator
-                            .allocate(AllocSpec {
-                                extent: extent!(gpus = actor_count),
-                                constraints: Default::default(),
-                                proc_name: None,
-                                transport: ChannelTransport::Local,
-                                proc_allocation_mode: Default::default(),
-                            })
-                            .await
-                            .unwrap();
-
                         let instance = global_root_client();
-                        let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "bench")
+                        let mut host_mesh = test_utils::local_host_mesh(1).await;
+                        let mut proc_mesh = host_mesh
+                            .spawn(instance, "bench", extent!(gpus = actor_count))
                             .await
                             .unwrap();
                         let actor_mesh: ActorMesh<BenchActor> = proc_mesh
@@ -207,6 +186,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                             .stop(instance, "benchmark complete".to_string())
                             .await
                             .expect("Failed to stop mesh");
+                        let _ = host_mesh.shutdown(instance).await;
                         elapsed
                     });
                 },

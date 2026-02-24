@@ -28,7 +28,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor_config::attrs::AttrValue;
 use lazy_static::lazy_static;
-use local_ip_address::local_ipv6;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -302,7 +301,7 @@ pub enum TlsMode {
     // TODO: consider adding IpV4 support.
 }
 
-/// Address format for MetaTls channels. Supports both hostname/port pairs
+/// Address format for Tls channels. Supports both hostname/port pairs
 /// (required for clients for host identity) and direct socket addresses
 /// (allowed for servers).
 #[derive(
@@ -317,7 +316,7 @@ pub enum TlsMode {
     PartialOrd,
     EnumAsInner
 )]
-pub enum MetaTlsAddr {
+pub enum TlsAddr {
     /// Hostname and port pair. Required for clients to establish host identity.
     Host {
         /// The hostname to connect to.
@@ -329,7 +328,7 @@ pub enum MetaTlsAddr {
     Socket(SocketAddr),
 }
 
-impl MetaTlsAddr {
+impl TlsAddr {
     /// Returns the port number for this address.
     pub fn port(&self) -> Port {
         match self {
@@ -347,7 +346,7 @@ impl MetaTlsAddr {
     }
 }
 
-impl fmt::Display for MetaTlsAddr {
+impl fmt::Display for TlsAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Host { hostname, port } => write!(f, "{}:{}", hostname, port),
@@ -374,6 +373,9 @@ pub enum ChannelTransport {
     /// Transport over a TCP connection with TLS support within Meta
     MetaTls(TlsMode),
 
+    /// Transport over a TCP connection with configurable TLS support
+    Tls,
+
     /// Local transports uses an in-process registry and mpsc channels.
     Local,
 
@@ -389,6 +391,7 @@ impl fmt::Display for ChannelTransport {
         match self {
             Self::Tcp(mode) => write!(f, "tcp({:?})", mode),
             Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
+            Self::Tls => write!(f, "tls"),
             Self::Local => write!(f, "local"),
             Self::Sim(transport) => write!(f, "sim({})", transport),
             Self::Unix => write!(f, "unix"),
@@ -421,6 +424,7 @@ impl FromStr for ChannelTransport {
             }
             "local" => Ok(ChannelTransport::Local),
             "unix" => Ok(ChannelTransport::Unix),
+            "tls" => Ok(ChannelTransport::Tls),
             s if s.starts_with("metatls(") && s.ends_with(")") => {
                 let inner = &s["metatls(".len()..s.len() - 1];
                 let mode = inner.parse()?;
@@ -440,6 +444,7 @@ impl ChannelTransport {
             ChannelTransport::Tcp(TcpMode::Hostname),
             ChannelTransport::Local,
             ChannelTransport::Unix,
+            // Tls requires certificate configuration, tested separately in tls::tests
             // TODO add MetaTls (T208303369)
             // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Tcp)),
             // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Local)),
@@ -456,6 +461,7 @@ impl ChannelTransport {
         match self {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
+            ChannelTransport::Tls => true,
             ChannelTransport::Local => false,
             ChannelTransport::Sim(_) => false,
             ChannelTransport::Unix => false,
@@ -595,9 +601,14 @@ pub enum ChannelAddr {
     Tcp(SocketAddr),
 
     /// An address to establish TCP channels with TLS support within Meta.
+    /// Uses TlsAddr which supports both hostname/port pairs (required for clients)
+    /// and socket addresses (allowed for servers).
+    MetaTls(TlsAddr),
+
+    /// An address to establish TCP channels with configurable TLS support.
     /// Supports both hostname/port pairs (required for clients) and
     /// socket addresses (allowed for servers).
-    MetaTls(MetaTlsAddr),
+    Tls(TlsAddr),
 
     /// Local addresses are registered in-process and given an integral
     /// index.
@@ -656,6 +667,17 @@ impl From<tokio::net::unix::SocketAddr> for ChannelAddr {
     }
 }
 
+/// Return the first non-link-local address from a list.
+fn find_routable_address(addresses: &[IpAddr]) -> Option<IpAddr> {
+    addresses
+        .iter()
+        .find(|addr| match addr {
+            IpAddr::V6(v6) => !v6.is_unicast_link_local(),
+            IpAddr::V4(v4) => !v4.is_link_local(),
+        })
+        .cloned()
+}
+
 impl ChannelAddr {
     /// The "any" address for the given transport type. This is used to
     /// servers to "any" address.
@@ -672,7 +694,7 @@ impl ChannelAddr {
                                 hostname.to_str().and_then(|hostname_str| {
                                     dns_lookup::lookup_host(hostname_str)
                                         .ok()
-                                        .and_then(|addresses| addresses.first().cloned())
+                                        .and_then(|addresses| find_routable_address(&addresses))
                                 })
                             })
                             .expect("failed to resolve hostname to ip address")
@@ -686,17 +708,26 @@ impl ChannelAddr {
                         .ok()
                         .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                         .unwrap_or("unknown_host".to_string()),
-                    TlsMode::IpV6 => local_ipv6()
-                        .ok()
-                        .and_then(|addr| addr.to_string().parse().ok())
-                        .expect("failed to retrieve ipv6 address"),
+                    TlsMode::IpV6 => {
+                        get_host_ipv6_address().expect("failed to retrieve ipv6 address")
+                    }
                 };
-                Self::MetaTls(MetaTlsAddr::Host {
+                Self::MetaTls(TlsAddr::Host {
                     hostname: host_address,
                     port: 0,
                 })
             }
             ChannelTransport::Local => Self::Local(0),
+            ChannelTransport::Tls => {
+                let host_address = hostname::get()
+                    .ok()
+                    .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                    .unwrap_or("localhost".to_string());
+                Self::Tls(TlsAddr::Host {
+                    hostname: host_address,
+                    port: 0,
+                })
+            }
             ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
@@ -714,16 +745,17 @@ impl ChannelAddr {
                 }
             }
             Self::MetaTls(addr) => match addr {
-                MetaTlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
+                TlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
                     Ok(IpAddr::V6(_)) => ChannelTransport::MetaTls(TlsMode::IpV6),
                     Ok(IpAddr::V4(_)) => ChannelTransport::MetaTls(TlsMode::Hostname),
                     Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
                 },
-                MetaTlsAddr::Socket(socket_addr) => match socket_addr.ip() {
+                TlsAddr::Socket(socket_addr) => match socket_addr.ip() {
                     IpAddr::V6(_) => ChannelTransport::MetaTls(TlsMode::IpV6),
                     IpAddr::V4(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
                 },
             },
+            Self::Tls(_) => ChannelTransport::Tls,
             Self::Local(_) => ChannelTransport::Local,
             Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
             Self::Unix(_) => ChannelTransport::Unix,
@@ -734,11 +766,22 @@ impl ChannelAddr {
     }
 }
 
+#[cfg(fbcode_build)]
+fn get_host_ipv6_address() -> anyhow::Result<String> {
+    crate::meta::host_ip::host_ipv6_address()
+}
+
+#[cfg(not(fbcode_build))]
+fn get_host_ipv6_address() -> anyhow::Result<String> {
+    Ok(local_ip_address::local_ipv6()?.to_string())
+}
+
 impl fmt::Display for ChannelAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tcp(addr) => write!(f, "tcp:{}", addr),
             Self::MetaTls(addr) => write!(f, "metatls:{}", addr),
+            Self::Tls(addr) => write!(f, "tls:{}", addr),
             Self::Local(index) => write!(f, "local:{}", index),
             Self::Sim(sim_addr) => write!(f, "sim:{}", sim_addr),
             Self::Unix(addr) => write!(f, "unix:{}", addr),
@@ -763,6 +806,7 @@ impl FromStr for ChannelAddr {
                 .map(Self::Tcp)
                 .map_err(anyhow::Error::from),
             Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
+            Some(("tls", rest)) => net::tls::parse(rest).map_err(|e| e.into()),
             Some(("sim", rest)) => sim::parse(rest).map_err(|e| e.into()),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
             Some(("alias", _)) => Err(anyhow::anyhow!(
@@ -850,12 +894,28 @@ impl ChannelAddr {
 
                 if host == "*" {
                     // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::MetaTls(MetaTlsAddr::Host {
+                    Ok(Self::MetaTls(TlsAddr::Host {
                         hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
                         port,
                     }))
                 } else {
-                    Ok(Self::MetaTls(MetaTlsAddr::Host {
+                    Ok(Self::MetaTls(TlsAddr::Host {
+                        hostname: host.to_string(),
+                        port,
+                    }))
+                }
+            }
+            "tls" => {
+                let (host, port) = Self::split_host_port(address)?;
+
+                if host == "*" {
+                    // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
+                    Ok(Self::Tls(TlsAddr::Host {
+                        hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
+                        port,
+                    }))
+                } else {
+                    Ok(Self::Tls(TlsAddr::Host {
                         hostname: host.to_string(),
                         port,
                     }))
@@ -921,6 +981,7 @@ enum ChannelTxKind<M: RemoteMessage> {
     Local(local::LocalTx<M>),
     Tcp(net::NetTx<M>),
     MetaTls(net::NetTx<M>),
+    Tls(net::NetTx<M>),
     Unix(net::NetTx<M>),
     Sim(sim::SimTx<M>),
 }
@@ -932,6 +993,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Local(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Tcp(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::MetaTls(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Tls(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Sim(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Unix(tx) => tx.do_post(message, return_channel),
         }
@@ -942,6 +1004,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Local(tx) => tx.addr(),
             ChannelTxKind::Tcp(tx) => Tx::<M>::addr(tx),
             ChannelTxKind::MetaTls(tx) => Tx::<M>::addr(tx),
+            ChannelTxKind::Tls(tx) => Tx::<M>::addr(tx),
             ChannelTxKind::Sim(tx) => tx.addr(),
             ChannelTxKind::Unix(tx) => Tx::<M>::addr(tx),
         }
@@ -952,6 +1015,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Local(tx) => tx.status(),
             ChannelTxKind::Tcp(tx) => tx.status(),
             ChannelTxKind::MetaTls(tx) => tx.status(),
+            ChannelTxKind::Tls(tx) => tx.status(),
             ChannelTxKind::Sim(tx) => tx.status(),
             ChannelTxKind::Unix(tx) => tx.status(),
         }
@@ -976,6 +1040,7 @@ enum ChannelRxKind<M: RemoteMessage> {
     Local(local::LocalRx<M>),
     Tcp(net::NetRx<M>),
     MetaTls(net::NetRx<M>),
+    Tls(net::NetRx<M>),
     Unix(net::NetRx<M>),
     Sim(sim::SimRx<M>),
 }
@@ -988,6 +1053,7 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::Local(rx) => rx.recv().await,
             ChannelRxKind::Tcp(rx) => rx.recv().await,
             ChannelRxKind::MetaTls(rx) => rx.recv().await,
+            ChannelRxKind::Tls(rx) => rx.recv().await,
             ChannelRxKind::Sim(rx) => rx.recv().await,
             ChannelRxKind::Unix(rx) => rx.recv().await,
         }
@@ -998,6 +1064,7 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::Local(rx) => rx.addr(),
             ChannelRxKind::Tcp(rx) => rx.addr(),
             ChannelRxKind::MetaTls(rx) => rx.addr(),
+            ChannelRxKind::Tls(rx) => rx.addr(),
             ChannelRxKind::Sim(rx) => rx.addr(),
             ChannelRxKind::Unix(rx) => rx.addr(),
         }
@@ -1015,6 +1082,7 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
         ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
+        ChannelAddr::Tls(tls_addr) => ChannelTxKind::Tls(net::tls::dial(tls_addr)?),
         ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
@@ -1050,6 +1118,10 @@ fn serve_inner<M: RemoteMessage>(
         ChannelAddr::MetaTls(meta_addr) => {
             let (addr, rx) = net::meta::serve::<M>(meta_addr)?;
             Ok((addr, ChannelRxKind::MetaTls(rx)))
+        }
+        ChannelAddr::Tls(tls_addr) => {
+            let (addr, rx) = net::tls::serve::<M>(tls_addr)?;
+            Ok((addr, ChannelRxKind::Tls(rx)))
         }
         ChannelAddr::Unix(path) => {
             let (addr, rx) = net::unix::serve::<M>(path)?;
@@ -1203,7 +1275,7 @@ mod tests {
         // Test metatls with hostname
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://example.com:443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "example.com".to_string(),
                 port: 443
             })
@@ -1212,7 +1284,7 @@ mod tests {
         // Test metatls with IP address (should be normalized)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://192.168.1.1:443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "192.168.1.1".to_string(),
                 port: 443
             })
@@ -1221,7 +1293,7 @@ mod tests {
         // Test metatls with wildcard (should use IPv6 unspecified address)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://*:8443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "::".to_string(),
                 port: 8443
             })
@@ -1460,5 +1532,41 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_link_local_ipv6() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let routable_v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let addrs = vec![link_local_v6, routable_v6];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v6));
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_link_local_ipv4() {
+        let link_local_v4: IpAddr = "169.254.1.1".parse().unwrap();
+        let routable_v4: IpAddr = "192.168.1.1".parse().unwrap();
+        let addrs = vec![link_local_v4, routable_v4];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v4));
+    }
+
+    #[test]
+    fn test_find_routable_address_returns_none_when_all_link_local() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let link_local_v4: IpAddr = "169.254.1.1".parse().unwrap();
+        let addrs = vec![link_local_v6, link_local_v4];
+        assert_eq!(find_routable_address(&addrs), None);
+    }
+
+    #[test]
+    fn test_find_routable_address_mixed() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let link_local_v4: IpAddr = "169.254.0.1".parse().unwrap();
+        let routable_v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let routable_v6: IpAddr = "2001:db8::2".parse().unwrap();
+
+        // First routable address in list order should be returned.
+        let addrs = vec![link_local_v6, link_local_v4, routable_v4, routable_v6];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v4));
     }
 }

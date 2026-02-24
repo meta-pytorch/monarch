@@ -126,11 +126,6 @@ impl<A: Referable> ActorMesh<A> {
         &self.name
     }
 
-    /// Detach this mesh from the lifetime of `self`, and return its reference.
-    pub(crate) fn detach(self) -> ActorMeshRef<A> {
-        self.current_ref.clone()
-    }
-
     pub(crate) fn set_controller(&mut self, controller: Option<ActorRef<ActorMeshController<A>>>) {
         self.controller = controller.clone();
         self.current_ref.set_controller(controller);
@@ -938,12 +933,8 @@ mod tests {
         let instance = testing::instance();
         // Small mesh so the test runs fast, but > page_size so we
         // cross a boundary
-        let extent = extent!(replicas = 3, hosts = 2); // 6 ranks
-        let pm: ProcMesh = testing::proc_meshes(instance, extent.clone())
-            .await
-            .into_iter()
-            .next()
-            .expect("at least one proc mesh");
+        let mut hm = testing::host_mesh(3).await;
+        let pm: ProcMesh = hm.spawn(instance, "test", extent!(gpus = 2)).await.unwrap();
         let am: ActorMesh<testactor::TestActor> = pm.spawn(instance, "test", &()).await.unwrap();
 
         // 2) Build our ActorMeshRef with a tiny page size (2) to
@@ -952,7 +943,7 @@ mod tests {
         let page_size = 2;
         let amr: ActorMeshRef<testactor::TestActor> =
             ActorMeshRef::with_page_size(am.name.clone(), pm.clone(), page_size, None);
-        assert_eq!(amr.extent(), extent);
+        assert_eq!(amr.extent(), extent!(hosts = 3, gpus = 2));
         assert_eq!(amr.region().num_ranks(), 6);
 
         // 3) Within-rank pointer stability (OnceLock caches &ActorRef)
@@ -987,7 +978,7 @@ mod tests {
 
         // 7) Slicing preserves page_size and clears cache
         // (RankedSliceable::sliced)
-        let sliced = amr.range("replicas", 1..).expect("slice should be valid"); // leaves 4 ranks
+        let sliced = amr.range("hosts", 1..).expect("slice should be valid"); // leaves 4 ranks
         assert_eq!(sliced.region().num_ranks(), 4);
         // First access materializes a new cache for the sliced view.
         let sp0_a = sliced.get(0).unwrap() as *const _;
@@ -1029,6 +1020,8 @@ mod tests {
             .expect("timed out waiting for second reply")
             .expect("channel closed before second reply");
         assert_ne!(id_a, id_b, "two different ranks responded");
+
+        let _ = hm.shutdown(instance).await;
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -1041,8 +1034,8 @@ mod tests {
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
-        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let proc_mesh = &meshes[1];
+        let mut hm = testing::host_mesh(num_replicas).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
         let child_name = Name::new("child").unwrap();
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
@@ -1114,6 +1107,8 @@ mod tests {
                 .unwrap();
             check_failure(failure);
         }
+
+        let _ = hm.shutdown(instance).await;
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -1129,10 +1124,13 @@ mod tests {
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
-        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let second_meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let proc_mesh = &meshes[1];
-        let second_proc_mesh = &second_meshes[1];
+        let mut hm = testing::host_mesh(num_replicas).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let mut second_hm = testing::host_mesh(num_replicas).await;
+        let second_proc_mesh = second_hm
+            .spawn(instance, "test2", Extent::unity())
+            .await
+            .unwrap();
         let child_name = Name::new("child").unwrap();
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
@@ -1177,12 +1175,11 @@ mod tests {
             .expect("no supervision event found on ref from wrapper actor");
 
         let check_failure = move |failure: MeshFailure| {
-            // TODO: It can't find the real actor id, so it says the agent failed.
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
-            assert_eq!(failure.event.actor_id.name(), "mesh");
+            assert_eq!(failure.event.actor_id.name(), child_name.to_string());
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
                 assert!(
-                    msg.contains("timeout waiting for message from proc mesh agent"),
+                    msg.contains("process exited with non-zero code 1"),
                     "{}",
                     msg
                 );
@@ -1201,6 +1198,9 @@ mod tests {
                 .unwrap();
             check_failure(failure);
         }
+
+        let _ = second_hm.shutdown(instance).await;
+        let _ = hm.shutdown(instance).await;
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -1213,8 +1213,8 @@ mod tests {
         let (supervision_port, mut supervision_receiver) = instance.open_port::<MeshFailure>();
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
-        let meshes = testing::proc_meshes(instance, extent!(replicas = num_replicas)).await;
-        let proc_mesh = &meshes[1];
+        let mut hm = testing::host_mesh(num_replicas).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
         let child_name = Name::new("child").unwrap();
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
@@ -1228,7 +1228,7 @@ mod tests {
             .await
             .unwrap();
         let sliced = actor_mesh
-            .range("replicas", 1..3)
+            .range("hosts", 1..3)
             .expect("slice should be valid");
         let sliced_replicas = sliced.len();
 
@@ -1258,6 +1258,8 @@ mod tests {
                 panic!("actor status is not failed: {}", event.actor_status);
             }
         }
+
+        let _ = hm.shutdown(instance).await;
     }
 
     #[async_timed_test(timeout_secs = 30)]
@@ -1267,7 +1269,7 @@ mod tests {
         let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
 
         let instance = testing::instance();
-        let host_mesh = testing::host_mesh(4).await;
+        let mut host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
             .spawn(instance, "test", Extent::unity())
             .await
@@ -1297,7 +1299,7 @@ mod tests {
             assert_eq!(&sender_actor_id, instance.self_id());
         }
 
-        drop(host_mesh);
+        let _ = host_mesh.shutdown(instance).await;
     }
 
     /// Test that undeliverable messages are properly returned to the
@@ -1305,7 +1307,7 @@ mod tests {
     ///
     /// This is the V1 version of the test from
     /// hyperactor_multiprocess/src/proc_actor.rs::test_undeliverable_message_return.
-    #[async_timed_test(timeout_secs = 30)]
+    #[async_timed_test(timeout_secs = 60)]
     #[cfg(fbcode_build)]
     async fn test_undeliverable_message_return() {
         use hyperactor::mailbox::MessageEnvelope;
@@ -1315,27 +1317,20 @@ mod tests {
 
         hyperactor_telemetry::initialize_logging_for_test();
 
-        // Set message delivery timeout for faster test
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(
-            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
-            std::time::Duration::from_secs(1),
-        );
-
         let instance = testing::instance();
 
-        // Create a proc mesh with 2 replicas.
-        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = &meshes[1]; // Use the ProcessAllocator version
+        // Create a proc mesh with 2 hosts.
+        let mut hm = testing::host_mesh(2).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
 
         // Set up undeliverable message port for collecting undeliverables
         let (undeliverable_port, mut undeliverable_rx) =
             instance.open_port::<Undeliverable<MessageEnvelope>>();
 
-        // Spawn actors individually on each replica by spawning separate actor meshes
+        // Spawn actors individually on each host by spawning separate actor meshes
         // with specific proc selections.
-        let ping_proc_mesh = proc_mesh.range("replicas", 0..1).unwrap();
-        let pong_proc_mesh = proc_mesh.range("replicas", 1..2).unwrap();
+        let ping_proc_mesh = proc_mesh.range("hosts", 0..1).unwrap();
+        let pong_proc_mesh = proc_mesh.range("hosts", 1..2).unwrap();
 
         let ping_mesh: ActorMesh<PingPongActor> = ping_proc_mesh
             .spawn(
@@ -1377,6 +1372,13 @@ mod tests {
         // Give it a moment to fully stop
         RealClock.sleep(std::time::Duration::from_millis(200)).await;
 
+        // Set message delivery timeout for faster test
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::MESSAGE_DELIVERY_TIMEOUT,
+            std::time::Duration::from_secs(5),
+        );
+
         // Send multiple messages that will all fail to be delivered
         let n = 100usize;
         for i in 1..=n {
@@ -1414,6 +1416,8 @@ mod tests {
             "Expected {} undeliverable messages, got {}",
             n, count
         );
+
+        let _ = hm.shutdown(instance).await;
     }
 
     /// Test that actors not responding within stop timeout are
@@ -1438,9 +1442,9 @@ mod tests {
 
         let instance = testing::instance();
 
-        // Create proc mesh with 2 replicas
-        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = &meshes[1]; // Use ProcessAllocator version
+        // Create proc mesh with 2 procs
+        let mut hm = testing::host_mesh(2).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
 
         // Spawn SleepActors across the mesh that will block longer
         // than timeout
@@ -1505,6 +1509,8 @@ mod tests {
             "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
             stop_duration
         );
+
+        let _ = hm.shutdown(instance).await;
     }
 
     /// Test that actors stop gracefully when they respond to stop
@@ -1519,9 +1525,9 @@ mod tests {
 
         let instance = testing::instance();
 
-        // Create proc mesh with 2 replicas
-        let meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = &meshes[1];
+        // Create proc mesh with 2 procs
+        let mut hm = testing::host_mesh(2).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
 
         // Spawn TestActors - these stop cleanly (no blocking
         // operations)
@@ -1587,5 +1593,7 @@ mod tests {
             next_event.event.actor_status,
             ActorStatus::Stopped(_)
         ));
+
+        let _ = hm.shutdown(instance).await;
     }
 }

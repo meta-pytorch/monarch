@@ -90,9 +90,11 @@ class KubernetesJob(JobTrait):
 
     *Provisioning* -- create MonarchMesh CRDs via the K8s API so the
     pre-installed operator provisions StatefulSets and Services
-    automatically. Pass ``image_spec`` or ``pod_spec`` (advanced) to
-    ``add_mesh`` to enable provisioning for that mesh. If the MonarchMesh CRD
-    already exists, it is patched instead of created.
+    automatically. Pass ``image_spec`` or ``pod_spec`` (a ``V1PodSpec``) to
+    ``add_mesh`` to enable provisioning for that
+    mesh. If the MonarchMesh CRD
+    already exists, it is patched instead
+    of created.
     """
 
     def __init__(
@@ -122,7 +124,8 @@ class KubernetesJob(JobTrait):
         pod_rank_label: str = "apps.kubernetes.io/pod-index",
         image_spec: ImageSpec | None = None,
         port: int = _DEFAULT_MONARCH_PORT,
-        pod_spec: dict[str, Any] | None = None,
+        pod_spec: client.V1PodSpec | None = None,
+        labels: dict[str, str] | None = None,
     ) -> None:
         """
         Add a mesh specification.
@@ -144,7 +147,10 @@ class KubernetesJob(JobTrait):
             image_spec: ``ImageSpec`` with container image and optional resources for simple provisioning.
                    Mutually exclusive with ``pod_spec``.
             port: Monarch worker port (default: 26600).
-            pod_spec: Full PodSpec dict for advanced provisioning. Mutually exclusive with ``image_spec``.
+            pod_spec: ``V1PodSpec`` for advanced provisioning (e.g. custom volumes, sidecars).
+                      Mutually exclusive with ``image_spec``.
+            labels: Optional labels to apply to the MonarchMesh CRD metadata.
+                    Only used when provisioning (``image_spec`` or ``pod_spec`` supplied).
 
         Raises:
             ValueError: On invalid name or conflicting parameters.
@@ -176,6 +182,8 @@ class KubernetesJob(JobTrait):
             raise ValueError("'label_selector' cannot be customized when provisioning.")
         if provisioned and pod_rank_label != "apps.kubernetes.io/pod-index":
             raise ValueError("'pod_rank_label' cannot be customized when provisioning.")
+        if not provisioned and labels is not None:
+            raise ValueError("'labels' can only be set when provisioning.")
 
         mesh_entry: Dict[str, Any] = {
             "label_selector": label_selector
@@ -185,6 +193,9 @@ class KubernetesJob(JobTrait):
             "provisioned": provisioned,
             "port": port,
         }
+
+        if labels is not None:
+            mesh_entry["labels"] = labels
 
         if image_spec is not None:
             mesh_entry["pod_spec"] = self._build_worker_pod_spec(image_spec, port)
@@ -224,19 +235,27 @@ class KubernetesJob(JobTrait):
             ) from e
 
         api = client.CustomObjectsApi()
+        api_client = client.ApiClient()
 
         for mesh_name, mesh_config in provisioned.items():
+            pod_spec_dict = api_client.sanitize_for_serialization(
+                mesh_config["pod_spec"]
+            )
+            metadata: Dict[str, Any] = {
+                "name": mesh_name,
+                "namespace": self._namespace,
+            }
+            if "labels" in mesh_config:
+                metadata["labels"] = mesh_config["labels"]
+
             body: Dict[str, Any] = {
                 "apiVersion": f"{_MONARCHMESH_GROUP}/{_MONARCHMESH_VERSION}",
                 "kind": "MonarchMesh",
-                "metadata": {
-                    "name": mesh_name,
-                    "namespace": self._namespace,
-                },
+                "metadata": metadata,
                 "spec": {
                     "replicas": mesh_config["num_replicas"],
                     "port": mesh_config["port"],
-                    "podTemplate": mesh_config["pod_spec"],
+                    "podTemplate": pod_spec_dict,
                 },
             }
 
@@ -268,9 +287,9 @@ class KubernetesJob(JobTrait):
     def _build_worker_pod_spec(
         image_spec: ImageSpec,
         port: int,
-    ) -> Dict[str, Any]:
+    ) -> client.V1PodSpec:
         """
-        Build a PodSpec dict for the MonarchMesh CRD.
+        Build a V1PodSpec for the MonarchMesh CRD.
 
         Generates a single-container pod spec with a worker bootstrap
         script that starts ``run_worker_loop_forever``.
@@ -280,21 +299,23 @@ class KubernetesJob(JobTrait):
             port: Monarch worker port.
 
         Returns:
-            PodSpec dict suitable for the ``podTemplate`` CRD field.
+            V1PodSpec suitable for the ``podTemplate`` CRD field.
         """
-        container: Dict[str, Any] = {
-            "name": "worker",
-            "image": image_spec.image,
-            "command": ["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-            "env": [{"name": "MONARCH_PORT", "value": str(port)}],
-        }
+        resources = None
         if image_spec.resources is not None:
             k8s_resources = {str(k): str(v) for k, v in image_spec.resources.items()}
-            container["resources"] = {
-                "requests": k8s_resources,
-                "limits": k8s_resources,
-            }
-        return {"containers": [container]}
+            resources = client.V1ResourceRequirements(
+                requests=k8s_resources,
+                limits=k8s_resources,
+            )
+        container = client.V1Container(
+            name="worker",
+            image=image_spec.image,
+            command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
+            env=[client.V1EnvVar(name="MONARCH_PORT", value=str(port))],
+            resources=resources,
+        )
+        return client.V1PodSpec(containers=[container])
 
     def _is_pod_worker_ready(self, pod: client.V1Pod) -> bool:
         """

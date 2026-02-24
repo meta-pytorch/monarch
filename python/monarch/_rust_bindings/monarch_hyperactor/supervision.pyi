@@ -8,6 +8,9 @@
 
 from typing import final, Optional
 
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
+
 @final
 class SupervisionError(RuntimeError):
     """

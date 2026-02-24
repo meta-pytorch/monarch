@@ -6,9 +6,30 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use async_trait::async_trait;
+use hyperactor::Instance;
 use hyperactor_mesh::supervision::MeshFailure;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+
+use crate::actor::PythonActor;
+use crate::context::PyInstance;
+use crate::pytokio::PyPythonTask;
+use crate::pytokio::PyShared;
+
+/// Trait for types that can provide supervision events.
+///
+/// This trait abstracts the supervision functionality, allowing endpoint
+/// operations to work with any type that can monitor actor health without
+/// depending on the full ActorMesh interface.
+#[async_trait]
+pub trait Supervisable: Send + Sync {
+    /// Wait for the next supervision event indicating an actor failure.
+    ///
+    /// Returns `Some(PyErr)` if a supervision failure is detected,
+    /// or `None` if supervision is not available or the mesh is healthy.
+    async fn supervision_event(&self, instance: &Instance<PythonActor>) -> Option<PyErr>;
+}
 
 #[pyclass(
     name = "SupervisionError",
@@ -66,6 +87,17 @@ impl SupervisionError {
             "Actor {} exited because of the following reason: {}",
             event.actor_id, event,
         ))
+    }
+    /// Set the endpoint on a PyErr containing a SupervisionError.
+    ///
+    /// If the error is a SupervisionError, sets its endpoint field and returns a new
+    /// error with the endpoint prefix. If not a SupervisionError, returns the original error.
+    pub fn set_endpoint_on_err(py: Python<'_>, err: PyErr, endpoint: String) -> PyErr {
+        if let Ok(supervision_err) = err.value(py).extract::<SupervisionError>() {
+            Self::new_err_from_endpoint(supervision_err.message, endpoint)
+        } else {
+            err
+        }
     }
 }
 

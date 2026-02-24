@@ -10,11 +10,94 @@
 //!
 //! This module declares hyperactor-specific config keys.
 
+use std::io::Cursor;
+use std::io::Read;
+use std::path::PathBuf;
 use std::time::Duration;
 
+use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
+use serde::Deserialize;
+use serde::Serialize;
+use typeuri::Named;
+
+/// Stores a PEM-encoded value, either specified directly or read from a file.
+#[derive(Clone, Debug, Serialize, Named)]
+#[named("hyperactor::config::Pem")]
+pub enum Pem {
+    /// Raw PEM value stored directly.
+    Value(Vec<u8>),
+    /// Path to a file containing the PEM data.
+    File(PathBuf),
+    /// Static path string (for use in const/static contexts).
+    StaticPath(&'static str),
+}
+
+// Custom Deserialize implementation because StaticPath contains &'static str
+impl<'de> Deserialize<'de> for Pem {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        enum PemDeserialize {
+            Value(Vec<u8>),
+            File(PathBuf),
+            // StaticPath deserializes as a File since we can't deserialize &'static str
+            StaticPath(String),
+        }
+
+        match PemDeserialize::deserialize(deserializer)? {
+            PemDeserialize::Value(v) => Ok(Pem::Value(v)),
+            PemDeserialize::File(p) => Ok(Pem::File(p)),
+            // Convert StaticPath string to File during deserialization
+            PemDeserialize::StaticPath(s) => Ok(Pem::File(PathBuf::from(s))),
+        }
+    }
+}
+
+impl AttrValue for Pem {
+    fn display(&self) -> String {
+        match self {
+            Pem::Value(data) => String::from_utf8_lossy(data).to_string(),
+            Pem::File(path) => path.display().to_string(),
+            Pem::StaticPath(path) => path.to_string(),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        // PEM data starts with "-----BEGIN"
+        if value.trim_start().starts_with("-----BEGIN") {
+            Ok(Pem::Value(value.as_bytes().to_vec()))
+        } else {
+            Ok(Pem::File(PathBuf::from(value)))
+        }
+    }
+}
+
+impl Pem {
+    /// Returns a reader for the PEM data.
+    pub fn reader(&self) -> std::io::Result<Box<dyn Read + '_>> {
+        match self {
+            Pem::Value(data) => Ok(Box::new(Cursor::new(data))),
+            Pem::File(path) => Ok(Box::new(std::fs::File::open(path)?)),
+            Pem::StaticPath(path) => Ok(Box::new(std::fs::File::open(path)?)),
+        }
+    }
+}
+
+/// A bundle of PEM files for TLS configuration: CA certificate, server/client certificate, and private key.
+#[derive(Clone, Debug)]
+pub struct PemBundle {
+    /// The CA certificate used to verify peer certificates.
+    pub ca: Pem,
+    /// The certificate to present to peers.
+    pub cert: Pem,
+    /// The private key for the certificate.
+    pub key: Pem,
+}
 
 // Declare hyperactor-specific configuration keys
 declare_attrs! {
@@ -137,6 +220,27 @@ declare_attrs! {
         Some("server_heartbeat_interval".to_string()),
     ))
     pub attr SERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Path to TLS certificate file for the 'tls' transport.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TLS_CERT".to_string()),
+        Some("hyperactor_tls_cert".to_string()),
+    ).process_local())
+    pub attr TLS_CERT: Pem = Pem::StaticPath("/etc/hyperactor/tls/tls.crt");
+
+    /// Path to TLS private key file for the 'tls' transport.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TLS_KEY".to_string()),
+        Some("hyperactor_tls_key".to_string()),
+    ).process_local())
+    pub attr TLS_KEY: Pem = Pem::StaticPath("/etc/hyperactor/tls/tls.key");
+
+    /// Path to TLS CA certificate file for the 'tls' transport.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TLS_CA".to_string()),
+        Some("hyperactor_tls_ca".to_string()),
+    ).process_local())
+    pub attr TLS_CA: Pem = Pem::StaticPath("/etc/hyperactor/tls/ca.crt");
 }
 
 #[cfg(test)]

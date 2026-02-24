@@ -102,7 +102,7 @@ impl RemoteSpawn for LoggerRuntimeActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LoggerRuntimeMessage)]
+#[hyperactor::handle(LoggerRuntimeMessage)]
 impl LoggerRuntimeMessageHandler for LoggerRuntimeActor {
     async fn set_logging(&mut self, _cx: &Context<Self>, level: u8) -> Result<(), anyhow::Error> {
         let logger: Arc<_> = self.logger.clone();

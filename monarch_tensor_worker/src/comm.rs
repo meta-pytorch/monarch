@@ -17,9 +17,8 @@ use hyperactor::Actor;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
-use hyperactor_config::Flattrs;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;
@@ -188,7 +187,7 @@ impl NcclCommActor {
 }
 
 #[async_trait]
-#[forward(CommMessage)]
+#[handle(CommMessage)]
 impl CommMessageHandler for NcclCommActor {
     async fn all_reduce(
         &mut self,

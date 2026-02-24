@@ -70,7 +70,6 @@
 pub mod accum;
 pub mod actor;
 pub mod actor_local;
-pub mod admin;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
@@ -78,6 +77,7 @@ pub mod config;
 pub mod context;
 pub mod host;
 mod init;
+pub mod introspect;
 pub mod mailbox;
 pub mod message;
 pub mod metrics;
@@ -93,6 +93,9 @@ pub mod sync;
 /// Test utilities
 pub mod test_utils;
 pub mod time;
+
+#[cfg(fbcode_build)]
+mod meta;
 
 /// Re-exports of external crates used by hyperactor_macros codegen.
 /// This module is not part of the public API and should not be used directly.
@@ -130,7 +133,7 @@ pub use hyperactor_macros::behavior;
 #[doc(inline)]
 pub use hyperactor_macros::export;
 #[doc(inline)]
-pub use hyperactor_macros::forward;
+pub use hyperactor_macros::handle;
 #[doc(inline)]
 pub use hyperactor_macros::instrument;
 #[doc(inline)]

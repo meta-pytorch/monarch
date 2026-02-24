@@ -14,11 +14,7 @@ from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     HostMesh as HyHostMesh,
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import (
-    PendingPickle,
-    PythonTask,
-    Shared,
-)
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
 from monarch._src.actor.allocator import (
@@ -28,7 +24,6 @@ from monarch._src.actor.allocator import (
     ProcessAllocator,
 )
 from monarch._src.actor.future import Future
-from monarch._src.actor.pickle import is_pending_pickle_allowed
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
 from monarch.tools.config.workspace import Workspace
@@ -160,6 +155,33 @@ class HostMesh(MeshTrait):
             True,
         )
 
+    def _spawn_admin(self, bind_addr: Optional[str] = None) -> "Future[str]":
+        """
+        Spawn a MeshAdminAgent on this host mesh and return its HTTP address.
+
+        The admin agent aggregates topology across all hosts and serves
+        an HTTP API. Use the returned address to connect the admin TUI::
+
+            addr = await host_mesh._spawn_admin()
+            # buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {addr}
+
+        Args:
+            bind_addr: Optional binding address for the admin proc
+                (e.g. ``"tcp:0.0.0.0:0"``). If not provided, uses the
+                globally configured default transport.
+
+        Returns:
+            Future[str]: The admin HTTP address (e.g. ``"127.0.0.1:12345"``).
+        """
+
+        async def task() -> str:
+            hy_mesh = await self._hy_host_mesh
+            return await hy_mesh._spawn_admin(
+                context().actor_instance._as_rust(), bind_addr
+            )
+
+        return Future(coro=task())
+
     def _spawn_nonblocking(
         self,
         name: str,
@@ -260,16 +282,12 @@ class HostMesh(MeshTrait):
         )
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:
-        return HostMesh._from_initialized_hy_host_mesh, (
-            self._hy_host_mesh.poll()
-            or (
-                PendingPickle(self._hy_host_mesh)
-                if is_pending_pickle_allowed()
-                else self._hy_host_mesh.block_on()
-            ),
+        return HostMesh, (
+            self._hy_host_mesh,
             self._region,
             self.stream_logs,
             self.is_fake_in_process,
+            None,
         )
 
     @property

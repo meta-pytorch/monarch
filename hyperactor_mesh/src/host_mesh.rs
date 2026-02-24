@@ -21,7 +21,6 @@ use ndslice::view::CollectMeshExt;
 
 use crate::supervision::MeshFailure;
 
-pub mod host_admin;
 pub mod mesh_agent;
 
 use std::collections::HashSet;
@@ -319,9 +318,35 @@ impl HostMesh {
     /// This API is intended for tests, examples, and debugging.
     pub async fn local_in_process() -> crate::Result<HostMesh> {
         let addr = hyperactor_config::global::get_cloned(DEFAULT_TRANSPORT).binding_addr();
+        Ok(HostMesh::take(Self::local_n_in_process(vec![addr]).await?))
+    }
 
+    /// Create a local in-process host mesh with multiple hosts, where
+    /// all procs run in the current OS process using [`LocalProcManager`].
+    ///
+    /// Each address in `addrs` becomes a separate host. The resulting
+    /// mesh has `extent!(hosts = addrs.len())`.
+    ///
+    /// This API is intended for unit tests that need a multi-host mesh
+    /// within a single process.
+    pub(crate) async fn local_n_in_process(addrs: Vec<ChannelAddr>) -> crate::Result<HostMeshRef> {
+        let n = addrs.len();
+        let mut host_refs = Vec::with_capacity(n);
+        for addr in addrs {
+            host_refs.push(Self::create_in_process_host(addr).await?);
+        }
+        HostMeshRef::new(
+            Name::new("local").unwrap(),
+            extent!(hosts = n).into(),
+            host_refs,
+        )
+    }
+
+    /// Create a single in-process host at the given address, returning
+    /// a [`HostRef`] for it.
+    async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<HostRef> {
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
         let host = Host::new(manager, addr).await?;
         let addr = host.addr().clone();
@@ -330,14 +355,7 @@ impl HostMesh {
             .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
-
-        let host = HostRef(addr);
-        let host_mesh_ref = HostMeshRef::new(
-            Name::new("local").unwrap(),
-            extent!(hosts = 1).into(),
-            vec![host],
-        )?;
-        Ok(HostMesh::take(host_mesh_ref))
+        Ok(HostRef(addr))
     }
 
     /// Create a new process-based host mesh. Each host is represented by a local process,
@@ -508,9 +526,14 @@ impl HostMesh {
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
         let controller = HostMeshController::new(mesh.deref().clone());
-        controller
+        let controller_handle = controller
             .spawn(cx)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+        // Bind the actor's well-known ports (Signal, IntrospectMessage,
+        // Undeliverable). Without this, the controller's mailbox has no
+        // port entries and messages (including introspection queries)
+        // are returned as undeliverable.
+        let _: hyperactor::ActorRef<HostMeshController> = controller_handle.bind();
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
         Ok(mesh)
@@ -1066,9 +1089,14 @@ impl HostMeshRef {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
-            controller
+            let controller_handle = controller
                 .spawn(cx)
                 .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
+            // Bind the actor's well-known ports (Signal, IntrospectMessage,
+            // Undeliverable). Without this, the controller's mailbox has no
+            // port entries and messages (including introspection queries)
+            // are returned as undeliverable.
+            let _: hyperactor::ActorRef<ProcMeshController> = controller_handle.bind();
         }
         mesh
     }
@@ -1076,6 +1104,11 @@ impl HostMeshRef {
     /// The name of the referenced host mesh.
     pub fn name(&self) -> &Name {
         &self.name
+    }
+
+    /// The host references (channel addresses) in rank order.
+    pub fn hosts(&self) -> &[HostRef] {
+        &self.ranks
     }
 
     /// Spawn a [`MeshAdminAgent`] on `proc` and return its HTTP address.
@@ -1092,7 +1125,11 @@ impl HostMeshRef {
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
-        let agent_handle = proc.spawn("mesh_admin", MeshAdminAgent::new(hosts))?;
+        let root_client_id = crate::global_root_client().self_id().clone();
+        let agent_handle = proc.spawn(
+            "mesh_admin",
+            MeshAdminAgent::new(hosts, Some(root_client_id)),
+        )?;
         let agent_ref = agent_handle.bind::<MeshAdminAgent>();
 
         let response = agent_ref.get_admin_addr(cx).await?;
@@ -1784,8 +1821,8 @@ mod tests {
 
         let instance = testing::instance();
 
-        let proc_meshes = testing::proc_meshes(instance, extent!(replicas = 2)).await;
-        let proc_mesh = proc_meshes.get(1).unwrap();
+        let mut hm = testing::host_mesh(2).await;
+        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1821,5 +1858,7 @@ mod tests {
                 .unwrap(),
             Duration::from_mins(1)
         );
+
+        let _ = hm.shutdown(instance).await;
     }
 }

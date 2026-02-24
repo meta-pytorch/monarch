@@ -14,8 +14,7 @@ dynamic = ["version"]  # overridden via MONARCH_VERSION env var
 description = "Monarch: Single controller library"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "BSD-3-Clause"
-license-files = ["LICENSE"]
+license = {text = "BSD-3-Clause"}
 authors = [
     {name = "Meta", email = "oncall+monarch@xmail.facebook.com"}
 ]
@@ -61,7 +60,11 @@ explicit = true
 [tool.uv.sources]
 # Override with: uv sync --extra-index-url https://download.pytorch.org/whl/nightly/{platform} e.g.
 # uv sync --extra-index-url https://download.pytorch.org/whl/nightly/cu128
-torch = { index = "pytorch-cu128" }
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform != 'darwin'"  },
+    # MacOS cannot have cuda symbols, so default to CPU.
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+]
 
 # Configure uv for torch nightly builds
 [tool.uv]

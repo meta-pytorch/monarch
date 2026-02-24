@@ -11,8 +11,8 @@ use std::str::FromStr;
 use hyperactor::channel::BindSpec;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::channel::MetaTlsAddr;
 use hyperactor::channel::TcpMode;
+use hyperactor::channel::TlsAddr;
 use hyperactor::channel::TlsMode;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyTypeError;
@@ -34,6 +34,7 @@ pub enum PyChannelTransport {
     TcpWithHostname,
     MetaTlsWithHostname,
     MetaTlsWithIpV6,
+    Tls,
     Local,
     Unix,
     // Sim(/*transport:*/ ChannelTransport), TODO kiuk@ add support
@@ -57,6 +58,7 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
                 Ok(PyChannelTransport::MetaTlsWithHostname)
             }
             ChannelTransport::MetaTls(TlsMode::IpV6) => Ok(PyChannelTransport::MetaTlsWithIpV6),
+            ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
             _ => Err(PyValueError::new_err(format!(
@@ -174,10 +176,12 @@ impl PyChannelAddr {
     /// Returns the port number (if any) of this channel address,
     /// `0` for transports for which unix ports do not apply (e.g. `unix`, `local`)
     pub fn get_port(&self) -> PyResult<u16> {
-        match self.inner {
+        match &self.inner {
             ChannelAddr::Tcp(socket_addr)
-            | ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr)) => Ok(socket_addr.port()),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host { port, .. }) => Ok(port),
+            | ChannelAddr::MetaTls(TlsAddr::Socket(socket_addr))
+            | ChannelAddr::Tls(TlsAddr::Socket(socket_addr)) => Ok(socket_addr.port()),
+            ChannelAddr::MetaTls(TlsAddr::Host { port, .. })
+            | ChannelAddr::Tls(TlsAddr::Host { port, .. }) => Ok(*port),
             ChannelAddr::Unix(_) | ChannelAddr::Local(_) => Ok(0),
             _ => Err(PyRuntimeError::new_err(format!(
                 "unsupported transport: `{:?}` for channel address: `{}`",
@@ -199,6 +203,7 @@ impl PyChannelAddr {
                 TlsMode::Hostname => Ok(PyChannelTransport::MetaTlsWithHostname),
                 TlsMode::IpV6 => Ok(PyChannelTransport::MetaTlsWithIpV6),
             },
+            ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
             _ => Err(PyRuntimeError::new_err(format!(
@@ -217,6 +222,7 @@ impl From<PyChannelTransport> for ChannelTransport {
             PyChannelTransport::TcpWithHostname => ChannelTransport::Tcp(TcpMode::Hostname),
             PyChannelTransport::MetaTlsWithHostname => ChannelTransport::MetaTls(TlsMode::Hostname),
             PyChannelTransport::MetaTlsWithIpV6 => ChannelTransport::MetaTls(TlsMode::IpV6),
+            PyChannelTransport::Tls => ChannelTransport::Tls,
             PyChannelTransport::Local => ChannelTransport::Local,
             PyChannelTransport::Unix => ChannelTransport::Unix,
         }
@@ -245,6 +251,7 @@ mod tests {
             PyChannelTransport::Unix,
             PyChannelTransport::MetaTlsWithHostname,
             PyChannelTransport::MetaTlsWithIpV6,
+            PyChannelTransport::Tls,
             PyChannelTransport::Local,
         ] {
             let address = PyChannelAddr::any(transport)?;

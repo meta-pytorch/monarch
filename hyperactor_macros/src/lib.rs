@@ -581,7 +581,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// // We implement the trait here for the actor, defining a handler for
 /// // each ShoppingList message.
 /// //
-/// // The `forward` attribute installs a handler that forwards messages
+/// // The `handle` attribute installs a handler that routes messages
 /// // to the `ShoppingListHandler` implementation directly. This can also
 /// // be done manually:
 /// //
@@ -590,7 +590,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// //     ::handle(self, comm, message).await
 /// // ```
 /// #[async_trait]
-/// #[hyperactor::forward(ShoppingList)]
+/// #[hyperactor::handle(ShoppingList)]
 /// impl ShoppingListHandler for ShoppingListActor {
 ///     async fn add(&mut self, _cx: &Context<Self>, item: String) -> Result<(), anyhow::Error> {
 ///         eprintln!("insert {}", item);
@@ -1118,19 +1118,19 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-const FORWARD_ARGUMENT_ERROR: &str = indoc! {r#"
-`forward` expects the message type that is being forwarded
+const HANDLE_ARGUMENT_ERROR: &str = indoc! {r#"
+`handle` expects the message type that is being handled
 
-= help: use `#[forward(MessageType)]`
+= help: use `#[handle(MessageType)]`
 "#};
 
-/// Forward messages of the provided type to this handler implementation.
+/// Install a [`Handler`] that routes messages of the provided type to this handler trait implementation.
 #[proc_macro_attribute]
-pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn handle(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_args = parse_macro_input!(attr with Punctuated::<syn::PathSegment, syn::Token![,]>::parse_terminated);
     if attr_args.len() != 1 {
         return TokenStream::from(
-            syn::Error::new_spanned(attr_args, FORWARD_ARGUMENT_ERROR).to_compile_error(),
+            syn::Error::new_spanned(attr_args, HANDLE_ARGUMENT_ERROR).to_compile_error(),
         );
     }
 
@@ -1144,7 +1144,7 @@ pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         _ => {
             return TokenStream::from(
-                syn::Error::new_spanned(input.self_ty, "`forward` argument must be a type")
+                syn::Error::new_spanned(input.self_ty, "`handle` argument must be a type")
                     .to_compile_error(),
             );
         }
@@ -1398,6 +1398,9 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Always export the `Signal` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
+
+        // Always export the `IntrospectMessage` type.
+        impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
 
         impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
             fn bind(ports: &hyperactor::proc::Ports<Self>) {

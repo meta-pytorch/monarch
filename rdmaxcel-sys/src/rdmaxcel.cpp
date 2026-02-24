@@ -578,6 +578,12 @@ const char* rdmaxcel_error_string(int error_code) {
       return "[RdmaXcel] CQ polling failed";
     case RDMAXCEL_COMPLETION_FAILED:
       return "[RdmaXcel] Completion status not successful";
+    case RDMAXCEL_QP_MODIFY_FAILED:
+      return "[RdmaXcel] QP state transition failed (ibv_modify_qp)";
+    case RDMAXCEL_AH_CREATE_FAILED:
+      return "[RdmaXcel] Address handle creation failed (ibv_create_ah)";
+    case RDMAXCEL_UNSUPPORTED_OP:
+      return "[RdmaXcel] Unsupported operation type";
     default:
       return "[RdmaXcel] Unknown error code";
   }

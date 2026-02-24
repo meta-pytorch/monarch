@@ -16,7 +16,7 @@ name = "test_monarch_hyperactor"
 path = "tests/lib.rs"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 async-once-cell = "0.4.2"
 async-trait = "0.1.86"
 bincode = "1.3.3"
