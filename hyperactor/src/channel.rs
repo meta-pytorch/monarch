@@ -820,6 +820,23 @@ impl FromStr for ChannelAddr {
     }
 }
 
+/// Normalize a host string. If the host is an IP address, parse and
+/// re-format it to produce a canonical string representation.
+pub(crate) fn normalize_host(host: &str) -> String {
+    // Strip URI-style brackets (e.g., "[::1]") because IpAddr::from_str
+    // rejects them — it only accepts bare addresses.
+    let host_clean = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if let Ok(ip_addr) = host_clean.parse::<IpAddr>() {
+        ip_addr.to_string()
+    } else {
+        host.to_string()
+    }
+}
+
 impl ChannelAddr {
     /// Parse ZMQ-style URL format: scheme://address
     /// Supports:
@@ -900,7 +917,7 @@ impl ChannelAddr {
                     }))
                 } else {
                     Ok(Self::MetaTls(TlsAddr::Host {
-                        hostname: host.to_string(),
+                        hostname: normalize_host(host),
                         port,
                     }))
                 }
@@ -916,7 +933,7 @@ impl ChannelAddr {
                     }))
                 } else {
                     Ok(Self::Tls(TlsAddr::Host {
-                        hostname: host.to_string(),
+                        hostname: normalize_host(host),
                         port,
                     }))
                 }
@@ -1316,6 +1333,76 @@ mod tests {
         assert!(ChannelAddr::from_zmq_url("tcp://invalid-port").is_err());
         assert!(ChannelAddr::from_zmq_url("metatls://no-port").is_err());
         assert!(ChannelAddr::from_zmq_url("inproc://not-a-number").is_err());
+
+        // IPv6 normalization: leading zeros are stripped
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443")
+                .unwrap(),
+            ChannelAddr::MetaTls(TlsAddr::Host {
+                hostname: "2a03:83e4:5000:c000:56d7:cf:75ce:144a".to_string(),
+                port: 443,
+            })
+        );
+
+        // Short and long forms of the same IPv6 produce equal ChannelAddr values
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443")
+                .unwrap(),
+            ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:cf:75ce:144a:443")
+                .unwrap(),
+        );
+
+        // Bracketed IPv6 is normalized
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metatls://[::1]:443").unwrap(),
+            ChannelAddr::MetaTls(TlsAddr::Host {
+                hostname: "::1".to_string(),
+                port: 443,
+            })
+        );
+
+        // Same tests for tls://
+        assert_eq!(
+            ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443").unwrap(),
+            ChannelAddr::Tls(TlsAddr::Host {
+                hostname: "2a03:83e4:5000:c000:56d7:cf:75ce:144a".to_string(),
+                port: 443,
+            })
+        );
+        assert_eq!(
+            ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443").unwrap(),
+            ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:cf:75ce:144a:443").unwrap(),
+        );
+        assert_eq!(
+            ChannelAddr::from_zmq_url("tls://[::1]:443").unwrap(),
+            ChannelAddr::Tls(TlsAddr::Host {
+                hostname: "::1".to_string(),
+                port: 443,
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_host() {
+        // Plain IPv4 passes through
+        assert_eq!(normalize_host("192.168.1.1"), "192.168.1.1");
+
+        // Plain hostname passes through
+        assert_eq!(normalize_host("example.com"), "example.com");
+
+        // IPv6 with leading zeros gets normalized
+        assert_eq!(
+            normalize_host("2a03:83e4:5000:c000:56d7:00cf:75ce:144a"),
+            "2a03:83e4:5000:c000:56d7:cf:75ce:144a"
+        );
+
+        // Bracketed IPv6 is stripped and normalized
+        assert_eq!(normalize_host("[::1]"), "::1");
+
+        // Without bracket stripping, IpAddr::from_str rejects bracketed
+        // addresses. This demonstrates that the bracket stripping in
+        // normalize_host is necessary.
+        assert!("[::1]".parse::<IpAddr>().is_err());
     }
 
     #[test]
