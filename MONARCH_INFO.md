@@ -23,6 +23,7 @@
 
 - For prose (docs, comments, commit messages, etc.), adhere to Strunk & White. Use the Oxford comma. Use "you" and "we" to refer to the reader and the author, respectively.
 - Do NOT use decoration in code comments. If structure is necessary, use Markdown (Rust), or reStructuredText (Python). Keep it SIMPLE.
+- Do NOT add headers (e.g., in comments) to denote different sections of code; only use modules, structs, impl blocks, etc. for organization.
 - Use "that" for restrictive clauses (essential to meaning, no commas) and "which" for non-restrictive clauses (additional info, set off by commas). "The actor that crashed must be restarted" (identifies a specific actor) vs "The actor, which was created yesterday, is still running" (adds extra detail about an already-identified actor).
 - In Rust code, error messages are concise lowercase sentences without trailing punctuation
 
