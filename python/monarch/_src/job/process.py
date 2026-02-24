@@ -21,6 +21,15 @@ from monarch._src.job.job import JobState, JobTrait, ProcessState
 
 logger = logging.getLogger(__name__)
 
+try:
+    from __manifest__ import fbmake  # noqa
+
+    _IN_PAR = bool(fbmake.get("par_style"))
+except ImportError:
+    _IN_PAR = False
+
+_PROCESS_WORKER_MODULE = "monarch._src.job._process_worker"
+
 
 class ProcessJob(JobTrait):
     """Job where each host is a local subprocess communicating over IPC.
@@ -37,13 +46,17 @@ class ProcessJob(JobTrait):
         state.dataloaders # HostMesh with 1 host
     """
 
-    def __init__(self, meshes: Dict[str, int]) -> None:
+    def __init__(
+        self, meshes: Dict[str, int], env: Optional[Dict[str, str]] = None
+    ) -> None:
         """
         Args:
             meshes: Mapping from mesh name to number of hosts.
+            env: Extra environment variables for worker subprocesses.
         """
         super().__init__()
         self._meshes = meshes
+        self._env = env
         self._host_to_pid: Dict[str, ProcessState] = {}
         self._tmpdir: Optional[str] = None
 
@@ -59,16 +72,27 @@ class ProcessJob(JobTrait):
                     host_key = f"{mesh_name}_{i}"
                     addr = f"ipc://{self._tmpdir}/{host_key}"
                     env = {**os.environ}
-                    if "FB_XAR_INVOKED_NAME" in os.environ:
-                        env["PYTHONPATH"] = ":".join(sys.path)
-                    proc = subprocess.Popen(
-                        [
+                    if self._env is not None:
+                        env.update(self._env)
+                    if _IN_PAR:
+                        # In PAR/XAR mode, sys.executable is the bare
+                        # Python interpreter which cannot import modules
+                        # from the archive.  Re-invoke the PAR binary
+                        # (sys.argv[0]) with PAR_MAIN_OVERRIDE pointing
+                        # to the worker module.
+                        env["PAR_MAIN_OVERRIDE"] = _PROCESS_WORKER_MODULE
+                        env["_MONARCH_WORKER_ADDR"] = addr
+                        cmd = [sys.argv[0]]
+                    else:
+                        cmd = [
                             sys.executable,
                             "-c",
                             "from monarch.actor import run_worker_loop_forever; "
                             f'run_worker_loop_forever(address="{addr}", '
                             'ca="trust_all_connections")',
-                        ],
+                        ]
+                    proc = subprocess.Popen(
+                        cmd,
                         env=env,
                         start_new_session=True,
                     )
