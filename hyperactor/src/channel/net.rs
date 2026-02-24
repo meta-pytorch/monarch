@@ -571,6 +571,7 @@ pub(crate) mod meta {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use anyhow::Context;
     use anyhow::Result;
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::TlsConnector;
@@ -655,7 +656,11 @@ pub(crate) mod meta {
         let root_store = tls::build_root_store(&ca_pem)?;
 
         // If client certs are available, use mutual TLS; otherwise, no client auth
-        let config = rustls::ClientConfig::builder().with_root_certificates(Arc::new(root_store));
+        let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+        let config = tokio_rustls::rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .context("set TLS protocol versions")?
+            .with_root_certificates(Arc::new(root_store));
 
         let config = if let Some(bundle) = get_client_pem_bundle() {
             let certs = tls::load_certs(&bundle.cert)?;
@@ -804,7 +809,10 @@ pub(crate) mod tls {
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ServerConfig::builder();
+        let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .context("set TLS protocol versions")?;
         let config = if enforce_client_tls {
             // Build server config with mutual TLS (require client certs)
             let client_verifier =
@@ -831,7 +839,10 @@ pub(crate) mod tls {
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
 
-        let config = rustls::ClientConfig::builder()
+        let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .context("set TLS protocol versions")?
             .with_root_certificates(Arc::new(root_store))
             .with_client_auth_cert(certs, key)
             .context("configure client auth")?;
