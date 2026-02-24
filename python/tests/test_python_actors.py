@@ -48,7 +48,6 @@ from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
     _bootstrap_cmd,
-    create_local_host_mesh,
     fake_in_process_host,
     HostMesh,
     this_host,
@@ -60,6 +59,7 @@ from monarch._src.actor.proc_mesh import (
     HyProcMesh,
 )
 from monarch._src.job.job import LoginJob, ProcessState
+from monarch._src.job.process import ProcessJob
 from monarch.actor import (
     Accumulator,
     Actor,
@@ -1169,7 +1169,11 @@ async def test_sync_workspace() -> None:
         tempfile.TemporaryDirectory() as workspace_src,
         tempfile.TemporaryDirectory() as workspace_dst,
     ):
-        host = create_local_host_mesh(env={"WORKSPACE_DIR": workspace_dst})
+        host = (
+            ProcessJob({"hosts": 1}, env={"WORKSPACE_DIR": workspace_dst})
+            .state(cached_path=None)
+            .hosts
+        )
         pm = host.spawn_procs(per_host={"gpus": 1})
         code_sync_mesh = host
 
@@ -1485,7 +1489,7 @@ class HostMeshActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_this_host() -> None:
-    host = create_local_host_mesh(Extent(["hosts"], [6]))
+    host = ProcessJob({"hosts": 6}).state(cached_path=None).hosts
     hosts_by_rank = [host.slice(hosts=i) for i in range(6)]
     for r, h in enumerate(hosts_by_rank):
         hy_host = h._hy_host_mesh.block_on()  # type: ignore
