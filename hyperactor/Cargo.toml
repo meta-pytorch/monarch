@@ -52,7 +52,7 @@ hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 indenter = "0.3.4"
 inventory = "0.3.21"
 lazy_static = "1.5"
-local-ip-address = "0.5.3"
+local-ip-address = "0.5.7"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 opentelemetry = "0.29"
