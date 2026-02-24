@@ -349,11 +349,11 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
         3. OuterActor spawns InnerActor via this_proc().spawn()
         4. InnerActor should be MockInnerActor (returns "mock" not "real")
         """
-        from monarch._src.actor.host_mesh import create_local_host_mesh
+        from monarch._src.job.process import ProcessJob
 
         with patch_actor(InnerActor, MockInnerActor):
             # Create a host mesh and spawn processes
-            host = create_local_host_mesh()
+            host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
             proc_mesh = host.spawn_procs(name="test_proc")
 
             # Spawn OuterActor in the subprocess

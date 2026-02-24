@@ -56,35 +56,6 @@ def this_proc() -> "ProcMesh":
     return context().actor_instance.proc
 
 
-def create_local_host_mesh(
-    extent: Optional[Extent] = None, env: Optional[Dict[str, str]] = None
-) -> "HostMesh":
-    """
-    Create a local host mesh for the current machine.
-
-    Args:
-        name: The name of the host mesh.
-        extent: Optional extent describing the shape of the host mesh.
-                If not provided, `Extent(labels=[], sizes=[])` is used.
-                Other extents allow for local host meshes where each "host" is
-                actually just a local process.
-
-    Returns:
-        HostMesh: A single-host mesh configured for local process allocation.
-    """
-
-    cmd, args, bootstrap_env = _get_bootstrap_args()
-    if env is not None:
-        bootstrap_env.update(env)
-
-    return HostMesh.allocate_nonblocking(
-        "local_host",
-        extent if extent is not None else Extent([], []),
-        ProcessAllocator(cmd, args, bootstrap_env),
-        bootstrap_cmd=_bootstrap_cmd(),
-    )
-
-
 class HostMesh(MeshTrait):
     """
     HostMesh represents a collection of compute hosts that can be used to spawn

@@ -31,12 +31,7 @@ from monarch._src.actor.actor_mesh import (
 )
 from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import (
-    create_local_host_mesh,
-    HostMesh,
-    this_host,
-    this_proc,
-)
+from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.proc_mesh import (
     _get_bootstrap_args,
     get_or_spawn_controller,
@@ -44,6 +39,7 @@ from monarch._src.actor.proc_mesh import (
     register_proc_mesh_spawn_callback,
     unregister_proc_mesh_spawn_callback,
 )
+from monarch._src.job.process import ProcessJob
 
 
 _proc_rank = -1
@@ -93,7 +89,7 @@ class TestActor(Actor):
 
 @pytest.mark.timeout(60)
 async def test_proc_mesh_initialization() -> None:
-    host = create_local_host_mesh()
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
     # Test that initialization completes successfully
     assert await proc_mesh.initialized
@@ -101,7 +97,7 @@ async def test_proc_mesh_initialization() -> None:
 
 @pytest.mark.timeout(60)
 def test_proc_mesh_spawn_single_actor() -> None:
-    host = create_local_host_mesh()
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
     assert actor.get_value.call_one().get() == 42
@@ -111,13 +107,13 @@ def test_proc_mesh_spawn_single_actor() -> None:
 
 @pytest.mark.timeout(60)
 def test_proc_mesh_multi_actor() -> None:
-    host = create_local_host_mesh(Extent(["replicas", "hosts"], [2, 2]))
+    host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
 
     proc_ranks = actor.get_proc_rank.call().get()
-    assert proc_ranks.extent.labels == ["replicas", "hosts", "gpus"]
-    assert proc_ranks.extent.sizes == [2, 2, 3]
+    assert proc_ranks.extent.labels == ["hosts", "gpus"]
+    assert proc_ranks.extent.sizes == [4, 3]
     for i, (point, rank) in enumerate(proc_ranks.items()):
         assert rank == i
         assert point.rank == i
@@ -125,21 +121,21 @@ def test_proc_mesh_multi_actor() -> None:
 
 @pytest.mark.timeout(60)
 def test_proc_mesh_sliced() -> None:
-    host = create_local_host_mesh(Extent(["replicas", "hosts"], [2, 2]))
+    host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
     # Initialize _proc_rank on each actor process
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
     actor.get_proc_rank.call().get()
-    # Replicas 0 and 1, host 0, gpus 1 and 2
+    # Hosts 0 and 2, gpus 1 and 2
     sliced = proc_mesh._new_with_shape(
         Shape(
-            labels=["replicas", "gpus"],
+            labels=["hosts", "gpus"],
             slice=Slice(offset=1, sizes=[2, 2], strides=[6, 1]),
         )
     )
     actor = sliced.spawn("test_actor_sliced", TestActor, 42)
     proc_ranks = actor.get_proc_rank.call().get()
-    assert proc_ranks.extent.labels == ["replicas", "gpus"]
+    assert proc_ranks.extent.labels == ["hosts", "gpus"]
     assert proc_ranks.extent.sizes == [2, 2]
     for (i, (point, rank)), expected_rank in zip(
         enumerate(proc_ranks.items()), [1, 2, 7, 8]
@@ -150,7 +146,7 @@ def test_proc_mesh_sliced() -> None:
 
 @pytest.mark.timeout(120)
 def test_nested_meshes() -> None:
-    host = create_local_host_mesh(Extent(["hosts"], [2]))
+    host = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     proc = host.spawn_procs(name="proc")
     actor = proc.spawn("actor", TestActor)
     nested = actor.spawn_on_this_host.call().get()
@@ -173,7 +169,7 @@ def test_nested_meshes() -> None:
 @pytest.mark.timeout(60)
 async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
-    host = create_local_host_mesh(Extent(["hosts"], [2]))
+    host = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     proc = host.spawn_procs(per_host={"gpus": 2})
 
     async def task():
@@ -338,7 +334,7 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
         time.sleep(15)
         return await pm
 
-    host = create_local_host_mesh()
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
     proc_mesh._proc_mesh = PythonTask.from_coroutine(
         sleep_then_mesh(proc_mesh._proc_mesh)
@@ -373,7 +369,7 @@ def test_proc_mesh_spawn_callback() -> None:
 
     register_proc_mesh_spawn_callback(callback)
     try:
-        host = create_local_host_mesh()
+        host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
         proc_mesh = host.spawn_procs(name="test_proc")
 
         assert len(spawned_meshes) == 1
@@ -397,7 +393,7 @@ def test_proc_mesh_spawn_callback_multiple() -> None:
     register_proc_mesh_spawn_callback(callback1)
     register_proc_mesh_spawn_callback(callback2)
     try:
-        host = create_local_host_mesh()
+        host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
         proc_mesh = host.spawn_procs(name="test_proc")
 
         assert len(callback1_meshes) == 1
@@ -420,7 +416,7 @@ def test_proc_mesh_spawn_callback_unregister() -> None:
     register_proc_mesh_spawn_callback(callback)
     unregister_proc_mesh_spawn_callback(callback)
 
-    host = create_local_host_mesh()
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     host.spawn_procs(name="test_proc")
 
     assert len(spawned_meshes) == 0
