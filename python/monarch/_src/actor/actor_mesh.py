@@ -1161,6 +1161,7 @@ class _Actor:
         self.instance: object | None = None
         # TODO: (@pzhang) remove this with T229200522
         self._saved_error: ActorError | None = None
+        self._method_cache: Dict[str, Tuple[Callable[..., Any], bool, bool]] = {}
 
     async def handle(
         self,
@@ -1235,14 +1236,23 @@ class _Actor:
                 )
                 raise AssertionError(error_message)
 
-            the_method = getattr(self.instance, method_name)
-            should_instrument = False
+            if method_name not in self._method_cache:
+                the_method = getattr(self.instance, method_name)
+                should_instrument = False
 
-            if isinstance(the_method, EndpointProperty):
-                should_instrument = the_method._instrument
-                the_method = functools.partial(the_method._method, self.instance)
+                if isinstance(the_method, EndpointProperty):
+                    should_instrument = the_method._instrument
+                    the_method = functools.partial(the_method._method, self.instance)
 
-            if inspect.iscoroutinefunction(the_method):
+                self._method_cache[method_name] = (
+                    the_method,
+                    should_instrument,
+                    inspect.iscoroutinefunction(the_method),
+                )
+
+            the_method, should_instrument, is_coro = self._method_cache[method_name]
+
+            if is_coro:
                 if should_instrument:
                     # TODO(T12345): Replace with a lower-overhead tracing solution.
                     # Using TRACER context manager for now to avoid thread-safety
