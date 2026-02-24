@@ -141,6 +141,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.actor",
     )?)?;
 
+    monarch_hyperactor::pickle::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pickle",
+    )?)?;
+
     monarch_hyperactor::pytokio::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.pytokio",
@@ -159,6 +164,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.mailbox",
+    )?)?;
+
+    monarch_hyperactor::endpoint::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.endpoint",
     )?)?;
 
     monarch_hyperactor::context::register_python_bindings(&get_or_add_new_module(

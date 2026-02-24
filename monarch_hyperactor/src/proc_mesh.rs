@@ -25,12 +25,12 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyType;
 
 use crate::actor::PythonActorParams;
-use crate::actor::PythonMessage;
-use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
+use crate::actor_mesh::SupervisableActorMesh;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
+use crate::pickle::PendingMessage;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
@@ -102,20 +102,17 @@ impl PyProcMesh {
         instance: &PyInstance,
         name: String,
         actor: Py<PyType>,
-        mut init_message: PythonMessage,
+        init_message: &mut PendingMessage,
         emulated: bool,
         supervision_display_name: Option<String>,
     ) -> PyResult<Py<PyAny>> {
+        let init_message = init_message.take()?;
         let task = proc_mesh.task()?.take_task()?;
         let instance = instance.clone();
         let mesh_impl = async move {
             let proc_mesh = task.await?;
 
-            if let Some(pending_pickle_state) = init_message.pending_pickle_state.take() {
-                init_message.message = pending_pickle_state
-                    .resolve(init_message.message.into_bytes())
-                    .await?;
-            }
+            let init_message = init_message.resolve().await?;
 
             let (proc_mesh, params) = monarch_with_gil(|py| -> PyResult<_> {
                 let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
@@ -149,7 +146,7 @@ impl PyProcMesh {
         } else {
             let r = PythonActorMesh::new(
                 async move {
-                    let mesh_impl: Box<dyn ActorMeshProtocol> = mesh_impl.await?;
+                    let mesh_impl: Box<dyn SupervisableActorMesh> = mesh_impl.await?;
                     Ok(mesh_impl)
                 },
                 true,

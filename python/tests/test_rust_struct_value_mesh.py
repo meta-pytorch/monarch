@@ -24,6 +24,7 @@ from monarch._rust_bindings.monarch_hyperactor.value_mesh import _make_test_valu
 
 # Import ValueMesh from actor_mesh — this triggers the @rust_struct patching
 from monarch._src.actor.actor_mesh import ValueMesh
+from monarch._src.actor.mpsc import Receiver
 
 
 class TestRustStructValueMesh:
@@ -130,3 +131,14 @@ class TestRustStructValueMesh:
         assert type(vm2) is ValueMesh
         assert list(vm2.values()) == list(range(6))
         assert vm2.sizes == {"x": 2, "y": 3}
+
+    def test_value_mesh_runtime_subscript(self) -> None:
+        """ValueMesh[T] works at runtime (not just under TYPE_CHECKING)."""
+        # This must not raise TypeError: type 'ValueMesh' is not subscriptable
+        alias = ValueMesh[int]
+        assert alias is ValueMesh
+
+    def test_receiver_runtime_subscript(self) -> None:
+        """Receiver[T] works at runtime (not just under TYPE_CHECKING)."""
+        alias = Receiver[int]
+        assert alias is Receiver

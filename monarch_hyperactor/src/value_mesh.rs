@@ -7,6 +7,7 @@
  */
 
 use hyperactor_mesh::ValueMesh;
+use ndslice::Extent;
 use ndslice::Region;
 use ndslice::view::BuildFromRegion;
 use ndslice::view::Ranked;
@@ -110,6 +111,20 @@ impl PyValueMesh {
         // pointer are merged into RLE runs. This tends to compress
         // sentinel/categorical/boolean data, but not freshly
         // allocated numerics/strings.
+        inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
+
+        Ok(Self { inner })
+    }
+}
+
+impl PyValueMesh {
+    /// Create a ValueMesh from an extent and a pre-populated Vec of values.
+    pub fn build_dense_from_extent(extent: &Extent, values: Vec<Py<PyAny>>) -> PyResult<Self> {
+        let mut inner = <ValueMesh<Py<PyAny>> as BuildFromRegion<Py<PyAny>>>::build_dense(
+            ndslice::View::region(extent),
+            values,
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
         inner.compress_adjacent_in_place_by(|a, b| a.as_ptr() == b.as_ptr());
 
         Ok(Self { inner })

@@ -47,10 +47,8 @@ use ndslice::extent;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyBaseException;
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
@@ -60,7 +58,6 @@ use serde_multipart::Part;
 use tokio::sync::oneshot;
 use typeuri::Named;
 
-use crate::buffers::Buffer;
 use crate::buffers::FrozenBuffer;
 use crate::config::ACTOR_QUEUE_DISPATCH;
 use crate::config::SHARED_ASYNCIO_RUNTIME;
@@ -77,7 +74,6 @@ use crate::metrics::ENDPOINT_ACTOR_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_ACTOR_PANIC;
 use crate::proc::PyActorId;
 use crate::pympsc;
-use crate::pytokio::PendingPickleState;
 use crate::pytokio::PythonTask;
 use crate::runtime::get_proc_runtime;
 use crate::runtime::get_tokio_runtime;
@@ -111,8 +107,14 @@ impl std::fmt::Display for MethodSpecifier {
 
 #[pymethods]
 impl MethodSpecifier {
-    #[getter]
-    fn name(&self) -> &str {
+    #[getter(name)]
+    fn py_name(&self) -> &str {
+        self.name()
+    }
+}
+
+impl MethodSpecifier {
+    pub(crate) fn name(&self) -> &str {
         match self {
             MethodSpecifier::ReturnsResponse { name } => name,
             MethodSpecifier::ExplicitPort { name } => name,
@@ -158,22 +160,12 @@ fn mailbox<'py, T: Actor>(py: Python<'py>, cx: &Context<'_, T>) -> Bound<'py, Py
 }
 
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
-#[derive(Clone, Serialize, Deserialize, Named, Default)]
+#[derive(Clone, Serialize, Deserialize, Named, Default, PartialEq)]
 pub struct PythonMessage {
     pub kind: PythonMessageKind,
     pub message: Part,
-    #[serde(skip)]
-    pub pending_pickle_state: Option<PendingPickleState>,
 }
 
-impl PartialEq for PythonMessage {
-    fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind
-            && self.message == other.message
-            && self.pending_pickle_state.is_none() // PendingPickleState doesn't/can't implement PartialEq
-            && other.pending_pickle_state.is_none()
-    }
-}
 wirevalue::register_type!(PythonMessage);
 
 struct ResolvedCallMethod {
@@ -202,15 +194,10 @@ pub struct QueuedMessage {
 }
 
 impl PythonMessage {
-    pub fn new_from_buf(
-        kind: PythonMessageKind,
-        message: impl Into<Part>,
-        pending_pickle_state: Option<PendingPickleState>,
-    ) -> Self {
+    pub fn new_from_buf(kind: PythonMessageKind, message: impl Into<Part>) -> Self {
         Self {
             kind,
             message: message.into(),
-            pending_pickle_state,
         }
     }
 
@@ -220,12 +207,10 @@ impl PythonMessage {
             PythonMessageKind::Result { .. } => PythonMessage {
                 kind: PythonMessageKind::Result { rank },
                 message: self.message,
-                pending_pickle_state: self.pending_pickle_state,
             },
             PythonMessageKind::Exception { .. } => PythonMessage {
                 kind: PythonMessageKind::Exception { rank },
                 message: self.message,
-                pending_pickle_state: self.pending_pickle_state,
             },
             _ => panic!("PythonMessage is not a response but {:?}", self),
         }
@@ -281,13 +266,7 @@ impl PythonMessage {
                 response_port,
             } => {
                 monarch_with_gil(|py| {
-                    let mailbox = mailbox(py, cx);
-                    let local_state = py
-                        .import("itertools")
-                        .unwrap()
-                        .call_method1("repeat", (mailbox.clone(),))
-                        .unwrap()
-                        .unbind();
+                    let local_state: Py<PyAny> = PyList::empty(py).unbind().into();
                     let instance: PyInstance = cx.into();
                     let response_port = response_port
                         .map_or_else(
@@ -357,29 +336,9 @@ impl Bind for PythonMessage {
 #[pymethods]
 impl PythonMessage {
     #[new]
-    #[pyo3(signature = (kind, message, pending_pickle_state=None))]
-    pub fn new<'py>(
-        kind: PythonMessageKind,
-        message: Bound<'py, PyAny>,
-        pending_pickle_state: Option<PendingPickleState>,
-    ) -> PyResult<Self> {
-        if let Ok(mut buff) = message.extract::<PyRefMut<'py, Buffer>>() {
-            return Ok(PythonMessage::new_from_buf(
-                kind,
-                buff.take_part(),
-                pending_pickle_state,
-            ));
-        } else if let Ok(buff) = message.extract::<Bound<'py, PyBytes>>() {
-            return Ok(PythonMessage::new_from_buf(
-                kind,
-                Vec::from(buff.as_bytes()),
-                pending_pickle_state,
-            ));
-        }
-
-        Err(PyTypeError::new_err(
-            "PythonMessage(buff) takes Buffer or bytes objects only",
-        ))
+    #[pyo3(signature = (kind, message))]
+    pub fn new<'py>(kind: PythonMessageKind, message: PyRef<'py, FrozenBuffer>) -> PyResult<Self> {
+        Ok(PythonMessage::new_from_buf(kind, message.inner.clone()))
     }
 
     #[getter]
@@ -546,17 +505,18 @@ impl PythonActor {
             PickledPyObject::pickle(&actor_mesh_mod.getattr("_Actor").expect("get _Actor"))
                 .expect("pickle _Actor");
 
-        let init_message = PythonMessage::new(
+        let init_frozen_buffer: FrozenBuffer = root_client_class
+            .call_method0("_pickled_init_args")
+            .expect("call RootClientActor._pickled_init_args")
+            .extract()
+            .expect("extract FrozenBuffer from _pickled_init_args");
+        let init_message = PythonMessage::new_from_buf(
             PythonMessageKind::CallMethod {
                 name: MethodSpecifier::Init {},
                 response_port: None,
             },
-            root_client_class
-                .call_method0("_pickled_init_args")
-                .expect("call RootClientActor._pickled_init_args"),
-            None,
-        )
-        .expect("create RootClientActor init message");
+            init_frozen_buffer,
+        );
 
         let mut actor = PythonActor::new(
             actor_type,
@@ -1459,7 +1419,6 @@ mod tests {
                 response_port: Some(EitherPortRef::Unbounded(port_ref.clone().into())),
             },
             message: Part::from(vec![1, 2, 3]),
-            pending_pickle_state: None,
         };
         {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();

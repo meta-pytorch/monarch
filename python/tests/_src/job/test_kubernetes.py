@@ -211,6 +211,28 @@ class TestAddMesh(unittest.TestCase):
         job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"), port=9999)
         self.assertEqual(job._meshes["workers"]["port"], 9999)
 
+    # -- labels ----------------------------------------------------------------
+
+    def test_labels_stored_when_provisioning(self) -> None:
+        job = self._make_job()
+        labels = {"team": "infra", "env": "staging"}
+        job.add_mesh(
+            "workers", num_replicas=1, image_spec=ImageSpec("img"), labels=labels
+        )
+        self.assertEqual(job._meshes["workers"]["labels"], labels)
+
+    def test_labels_forbidden_without_provisioning(self) -> None:
+        job = self._make_job()
+        with self.assertRaises(
+            ValueError, msg="labels can only be set when provisioning"
+        ):
+            job.add_mesh("workers", num_replicas=1, labels={"team": "infra"})
+
+    def test_no_labels_by_default(self) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+        self.assertNotIn("labels", job._meshes["workers"])
+
 
 class TestCreate(unittest.TestCase):
     """Tests for KubernetesJob._create guards."""
@@ -282,6 +304,52 @@ class TestCreate(unittest.TestCase):
             body["spec"]["podTemplate"]["containers"][0]["image"], "myimage:latest"
         )
         self.assertEqual(body["spec"]["port"], 9999)
+
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_includes_labels_in_crd(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        labels = {"kueue.x-k8s.io/queue-name": "my-queue", "team": "team"}
+        job.add_mesh(
+            "workers",
+            num_replicas=1,
+            image_spec=ImageSpec("img"),
+            labels=labels,
+        )
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        self.assertEqual(body["metadata"]["labels"], labels)
+
+    @patch("monarch._src.job.kubernetes.client.ApiClient")
+    @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_create_omits_labels_when_not_set(
+        self,
+        mock_load_config: MagicMock,
+        mock_custom_api_cls: MagicMock,
+        mock_api_client_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1, image_spec=ImageSpec("img"))
+
+        mock_api = MagicMock()
+        mock_custom_api_cls.return_value = mock_api
+
+        job._create(None)
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        self.assertNotIn("labels", body["metadata"])
 
     @patch("monarch._src.job.kubernetes.client.ApiClient")
     @patch("monarch._src.job.kubernetes.client.CustomObjectsApi")
