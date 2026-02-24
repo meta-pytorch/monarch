@@ -516,6 +516,110 @@ class IRGraph:
         """
         return self._data.storage_to_mesh_ref.get(storage_id)
 
+    def export_command_types(self, output_file: str) -> None:
+        """Export unique command types with metadata for external timing lookup.
+
+        Generates a JSON catalog of unique command types grouped by timing_key.
+        Users can provide external timing data keyed by timing_key.
+
+        Timing key formats (fields separated by colons):
+        - CallFunction: "CallFunction:{func}:{input_shapes}:{dtype}"
+          Example: "CallFunction:aten.mm:(3x4)x(4x5):float32"
+        - Reduce: "Reduce:{reduce_type}:{tensor_shape}:{dtype}:{num_devices}"
+          Example: "Reduce:reduce_scatter:(1024x1024):float32:8"
+          Note: num_devices is included because collective timing depends on
+          the number of participating devices.
+        - SendTensor: "SendTensor:{tensor_shape}:{dtype}"
+          Example: "SendTensor:(512x512):float32"
+        - Borrow*: "{borrow_type}" (no shape info, e.g., "BorrowCreate")
+
+        Shape format: Each tensor shape is "(dim1xdim2x...)", multiple shapes
+        joined with "x", e.g., "(3x4)x(4x5)" for two input tensors.
+        """
+        # Step 1: Identify output tensors from TensorCreationEvent entries.
+        # We need this to filter them out when collecting inputs below.
+        # Also save output shapes for fallback (needed for in-place ops like reduce_).
+        output_tensors: Set[Tuple[int, int]] = set()
+        cmd_output_tensors: Dict[
+            int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]
+        ] = defaultdict(list)
+        for event in self.data_dag:
+            if isinstance(event, TensorCreationEvent):
+                output_tensors.add((event.command_id, event.DTensorRef))
+                if event.dims is not None:
+                    cmd_output_tensors[event.command_id].append(
+                        (event.dims, event.dtype)
+                    )
+
+        # Step 2: Collect input tensor shapes by filtering out outputs.
+        # TensorAccessEvent includes both inputs and outputs; exclude outputs here.
+        cmd_tensors: Dict[int, List[Tuple[Tuple[int, ...], Optional[torch.dtype]]]] = (
+            defaultdict(list)
+        )
+        for event in self.data_dag:
+            if isinstance(event, TensorAccessEvent) and event.dims is not None:
+                if (event.command_id, event.DTensorRef) not in output_tensors:
+                    cmd_tensors[event.command_id].append((event.dims, event.dtype))
+
+        def get_dtype(
+            shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]],
+        ) -> str:
+            if shapes and shapes[0][1]:
+                return str(shapes[0][1]).replace("torch.", "")
+            return "unknown"
+
+        def fmt_shapes(
+            shapes: List[Tuple[Tuple[int, ...], Optional[torch.dtype]]],
+        ) -> str:
+            if not shapes:
+                return ""
+            return "x".join(f"({'x'.join(str(d) for d in dims)})" for dims, _ in shapes)
+
+        # Step 3: Aggregate commands by timing_key
+        timing_key_data: Dict[str, Dict[str, Any]] = {}
+        for cmd in self.control_dag:
+            parts = [p.strip() for p in cmd.command_name.split(":")]
+            cmd_type = parts[0]
+            # Use input shapes; fall back to output shapes for in-place ops (e.g., reduce_)
+            shapes = cmd_tensors.get(cmd.command_id, []) or cmd_output_tensors.get(
+                cmd.command_id, []
+            )
+            num_devices = len(cmd.devices)
+            s, d = fmt_shapes(shapes), get_dtype(shapes)
+            sub_type = parts[1] if len(parts) > 1 else "unknown"
+
+            # Generate timing key based on command type
+            if cmd_type == "CallFunction":
+                timing_key = (
+                    f"{cmd_type}:{sub_type}:{s}:{d}"
+                    if s
+                    else f"{cmd_type}:{sub_type}:{d}"
+                )
+            elif cmd_type == "Reduce":
+                timing_key = f"{cmd_type}:{sub_type}:{s}:{d}:{num_devices}"
+            elif cmd_type == "SendTensor":
+                timing_key = f"{cmd_type}:{s}:{d}" if s else f"{cmd_type}:{d}"
+            else:
+                timing_key = cmd_type
+
+            # Initialize entry for new timing_key
+            if timing_key not in timing_key_data:
+                entry: Dict[str, Any] = {"timing_key": timing_key, "count": 0}
+                if shapes and not cmd_type.startswith("Borrow"):
+                    if cmd_type == "CallFunction":
+                        entry["input_shapes"] = [list(dims) for dims, _ in shapes]
+                    else:
+                        entry["tensor_shape"] = list(shapes[0][0])
+                    entry["dtype"] = d
+                if cmd_type == "Reduce":
+                    entry["num_devices"] = num_devices
+                timing_key_data[timing_key] = entry
+
+            timing_key_data[timing_key]["count"] += 1
+
+        with open(output_file, "w") as f:
+            json.dump({"command_types": list(timing_key_data.values())}, f, indent=2)
+
     def remove_dag_item_type(
         self, command_types: Union[str, List[str]], print_removed_nodes: bool = False
     ) -> int:
