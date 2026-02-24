@@ -1129,6 +1129,10 @@ u19txmtkiMEH+aNmekk=
 
         #[async_timed_test(timeout_secs = 30)]
         async fn test_tls_basic() {
+            // Ensure ring is installed as the default crypto provider
+            // (no-op if already installed, e.g. under Buck with native-tls).
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Set up TLS config using the standard override pattern
             let config = hyperactor_config::global::lock();
             let _guard_cert =
@@ -1163,6 +1167,8 @@ u19txmtkiMEH+aNmekk=
 
         #[async_timed_test(timeout_secs = 30)]
         async fn test_tls_multiple_messages() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Set up TLS config using the standard override pattern
             let config = hyperactor_config::global::lock();
             let _guard_cert =
@@ -1230,6 +1236,10 @@ u19txmtkiMEH+aNmekk=
 
         #[test]
         fn test_tls_acceptor_creation() {
+            // Ensure ring is installed as the default crypto provider
+            // (no-op if already installed, e.g. under Buck with native-tls).
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Set up TLS config using the standard override pattern
             let config = hyperactor_config::global::lock();
             let _guard_cert =
@@ -1245,6 +1255,10 @@ u19txmtkiMEH+aNmekk=
 
         #[test]
         fn test_tls_connector_creation() {
+            // Ensure ring is installed as the default crypto provider
+            // (no-op if already installed, e.g. under Buck with native-tls).
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Set up TLS config using the standard override pattern
             let config = hyperactor_config::global::lock();
             let _guard_cert =
