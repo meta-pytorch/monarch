@@ -41,6 +41,13 @@ class CommandHistory:
         maxlen (int): The maximum number of commands to record. Defaults to 10_000_000.
     """
 
+    # Mapping: message_type -> list of field names to convert to DTensorRef
+    _DTENSOR_FIELDS = {
+        "SendTensor": ["tensor", "result"],
+        "Reduce": ["local_tensor", "result"],
+        "BorrowCreate": ["result", "tensor"],
+    }
+
     def __init__(
         self,
         world_size: int,
@@ -115,36 +122,26 @@ class CommandHistory:
 
     @staticmethod
     def convert_msg(msg):
-        def _convert_arg(v):
-            if isinstance(v, torch.Tensor):
-                return DTensorRef.from_ref(v)
-            return v
-
         name = type(msg).__name__
-        match name:
-            case "CallFunction":
-                args, kwargs, mutates, result = tree_map(
-                    _convert_arg, (msg.args, msg.kwargs, msg.mutates, msg.result)
-                )
-                msg = msg._replace(
-                    args=args, kwargs=kwargs, mutates=mutates, result=result
-                )
-            case "SendTensor":
-                msg = msg._replace(
-                    tensor=DTensorRef.from_ref(msg.tensor),
-                    result=DTensorRef.from_ref(msg.result),
-                )
-            case "Reduce":
-                msg = msg._replace(
-                    local_tensor=DTensorRef.from_ref(msg.local_tensor),
-                    result=DTensorRef.from_ref(msg.result),
-                )
-            case "BorrowCreate":
-                msg = msg._replace(
-                    result=DTensorRef.from_ref(msg.result),
-                    tensor=DTensorRef.from_ref(msg.tensor),
-                )
 
+        if name == "CallFunction":
+
+            def _convert_arg(v):
+                if isinstance(v, torch.Tensor):
+                    return DTensorRef.from_ref(v)
+                return v
+
+            args, kwargs, mutates, result = tree_map(
+                _convert_arg, (msg.args, msg.kwargs, msg.mutates, msg.result)
+            )
+            return msg._replace(
+                args=args, kwargs=kwargs, mutates=mutates, result=result
+            )
+
+        fields = CommandHistory._DTENSOR_FIELDS.get(name, [])
+        if fields:
+            updates = {f: DTensorRef.from_ref(getattr(msg, f)) for f in fields}
+            return msg._replace(**updates)
         return msg
 
     @staticmethod
