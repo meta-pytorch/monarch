@@ -19,6 +19,7 @@ use monarch_types::py_global;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::types::PyTuple;
+use serde_multipart::Part;
 
 use crate::actor::PythonMessage;
 use crate::actor::PythonMessageKind;
@@ -513,6 +514,43 @@ pub fn reduce_shared<'py>(
     Ok((from_value, args))
 }
 
+/// Pickle a Python object into a [`Buffer`].
+///
+/// This is the shared pickling core. The caller is responsible for setting up
+/// the [`ActivePicklingGuard`] before calling this function.
+fn pickle_into_buffer(py: Python<'_>, obj: &Py<PyAny>, buffer: &Py<Buffer>) -> PyResult<()> {
+    // Ensure the cloudpickle monkeypatch for RemoteImportLoader is applied.
+    pickle_monkeypatch(py);
+
+    // If torch is loaded, use the torch-aware pickler that handles
+    // torch storage types via dispatch_table.
+    if maybe_torch_fn(py).call0()?.is_truthy()? {
+        torch_dump_fn(py).call1((obj, buffer.bind(py)))?;
+    } else {
+        let pickler = cloudpickle(py)
+            .getattr("Pickler")?
+            .call1((buffer.bind(py),))?;
+        pickler.call_method1("dump", (obj,))?;
+    }
+
+    Ok(())
+}
+
+/// Pickle a Python object and return the serialized data as a [`Part`].
+///
+/// This is a simplified variant of [`pickle`] that disallows pending pickles
+/// and tensor engine references, and returns the raw serialized bytes instead
+/// of a [`PicklingState`].
+pub fn pickle_to_part(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<Part> {
+    let active = ActivePicklingState::new(false, false);
+    let buffer = Py::new(py, Buffer::default())?;
+    let _guard = ActivePicklingGuard::enter(active);
+
+    pickle_into_buffer(py, obj, &buffer)?;
+
+    Ok(buffer.borrow_mut(py).take_part())
+}
+
 /// Pickle an object with support for pending pickles and tensor engine references.
 ///
 /// This function creates a PicklingState and calls cloudpickle.dumps with
@@ -534,27 +572,11 @@ pub fn pickle(
     allow_pending_pickles: bool,
     allow_tensor_engine_references: bool,
 ) -> PyResult<PicklingState> {
-    // Ensure the cloudpickle monkeypatch for RemoteImportLoader is applied.
-    pickle_monkeypatch(py);
-
     let active = ActivePicklingState::new(allow_pending_pickles, allow_tensor_engine_references);
     let buffer = Py::new(py, Buffer::default())?;
-
-    // Set up this state as the active pickling state.
-    // The guard saves any previous state and restores it on drop (including on panic).
     let _guard = ActivePicklingGuard::enter(active);
 
-    // Get the Pickler class and create an instance with our buffer
-    // If torch is loaded, use the torch-aware pickler that handles
-    // torch storage types via dispatch_table.
-    if maybe_torch_fn(py).call0()?.is_truthy()? {
-        torch_dump_fn(py).call1((&obj, buffer.bind(py)))?;
-    } else {
-        let pickler = cloudpickle(py)
-            .getattr("Pickler")?
-            .call1((buffer.bind(py),))?;
-        pickler.call_method1("dump", (&obj,))?;
-    }
+    pickle_into_buffer(py, &obj, &buffer)?;
 
     // Take the state (which may have been modified during pickling).
     // The guard will restore the previous state on drop.

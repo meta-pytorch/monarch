@@ -42,6 +42,7 @@ from typing import (
 )
 
 from monarch._rust_bindings.monarch_hyperactor.actor import (
+    DroppingPort,
     MethodSpecifier,
     PanicFlag,
     PythonMessage,
@@ -883,6 +884,7 @@ def send(
     )
 
 
+@rust_struct("monarch_hyperactor::actor::Port")
 class Port(Generic[R]):
     """
     Handle used to send reliable in-order messages through a channel to
@@ -894,10 +896,7 @@ class Port(Generic[R]):
         port_ref: PortRef | OncePortRef,
         instance: HyInstance,
         rank: Optional[int],
-    ) -> None:
-        self._port_ref = port_ref
-        self._instance = instance
-        self._rank = rank
+    ) -> None: ...
 
     def send(self, obj: R) -> None:
         """
@@ -907,27 +906,9 @@ class Port(Generic[R]):
         Args:
             obj: R-typed object to send.
         """
-        pickle_state = pickle(
-            obj, allow_pending_pickles=False, allow_tensor_engine_references=False
-        )
+        ...
 
-        self._port_ref.send(
-            self._instance,
-            PythonMessage(PythonMessageKind.Result(self._rank), pickle_state.buffer()),
-        )
-
-    def exception(self, obj: Exception) -> None:
-        # we deliver each error exactly once, so if there is no port to respond to,
-        # the error is sent to the current actor as an exception.
-        pickle_state = pickle(
-            obj, allow_pending_pickles=False, allow_tensor_engine_references=False
-        )
-        self._port_ref.send(
-            self._instance,
-            PythonMessage(
-                PythonMessageKind.Exception(self._rank), pickle_state.buffer()
-            ),
-        )
+    def exception(self, obj: Exception) -> None: ...
 
     def __reduce__(self) -> Tuple[Any, Tuple[Any, ...]]:
         """
@@ -955,39 +936,16 @@ class Port(Generic[R]):
         not be returned to the sender and will be dropped. Use this sparingly as
         it could lead to unexpected hangs instead of errors that propagate back
         to the owner of the actor"""
-        return self._port_ref.return_undeliverable
+        ...
 
     @return_undeliverable.setter
-    def return_undeliverable(self, value: bool) -> None:
-        self._port_ref.return_undeliverable = value
-
-
-class DroppingPort:
-    """
-    Used in place of a real port when the message has no response port.
-    Makes sure any exception sent to it causes the actor to report an exception.
-    """
-
-    def __init__(self) -> None:
-        pass
-
-    def send(self, obj: Any) -> None:
-        pass
-
-    def exception(self, obj: Exception) -> None:
-        if isinstance(obj, ActorError):
-            obj = obj.exception
-        # we deliver each error exactly once, so if there is no port to respond to,
-        # the error is sent to the current actor as an exception.
-        raise obj from None
+    def return_undeliverable(self, value: bool) -> None: ...
 
     @property
-    def return_undeliverable(self) -> bool:
-        return True
+    def _port_ref(self) -> PortRef | OncePortRef: ...
 
-    @return_undeliverable.setter
-    def return_undeliverable(self, value: bool) -> None:
-        pass
+    @property
+    def _rank(self) -> Optional[int]: ...
 
 
 R = TypeVar("R")
