@@ -29,6 +29,7 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 import cloudpickle
 import monarch.actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
@@ -1351,6 +1352,7 @@ async def test_undeliverable_message_with_override() -> None:
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_undeliverable_message_without_override() -> None:
     # This test generates a fault that reaches the client. We don't want it to
     # crash.

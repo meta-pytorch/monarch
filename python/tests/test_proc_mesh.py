@@ -18,6 +18,7 @@ import cloudpickle
 import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
@@ -167,6 +168,7 @@ def test_nested_meshes() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
     host = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
