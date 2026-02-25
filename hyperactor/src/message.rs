@@ -325,8 +325,8 @@ mod tests {
     use crate::Unbind;
     use crate::accum::ReducerSpec;
     use crate::accum::StreamingReducerOpts;
-    use crate::id;
     use crate::reference::UnboundPort;
+    use crate::testing::ids::test_port_id_with_pid;
 
     // Used to demonstrate a user defined reply type.
     #[derive(Debug, PartialEq, Serialize, Deserialize, typeuri::Named)]
@@ -354,9 +354,9 @@ mod tests {
 
     #[test]
     fn test_castable() {
-        let original_port0 = PortRef::attest(id!(world[0].actor[0][123]));
+        let original_port0 = PortRef::attest(test_port_id_with_pid("world_0", "actor", 0, 123));
         let original_port1 = PortRef::attest_reducible(
-            id!(world[1].actor1[0][456]),
+            test_port_id_with_pid("world_1", "actor1", 0, 456),
             Some(ReducerSpec {
                 typehash: 123,
                 builder_params: None,
@@ -396,9 +396,9 @@ mod tests {
         );
 
         // Modify the port in the erased
-        let new_port_id0 = id!(world[0].comm[0][680]);
+        let new_port_id0 = test_port_id_with_pid("world_0", "comm", 0, 680);
         assert_ne!(&new_port_id0, original_port0.port_id());
-        let new_port_id1 = id!(world[1].comm[0][257]);
+        let new_port_id1 = test_port_id_with_pid("world_1", "comm", 0, 257);
         assert_ne!(&new_port_id1, original_port1.port_id());
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();

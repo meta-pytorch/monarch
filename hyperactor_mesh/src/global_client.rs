@@ -390,7 +390,7 @@ mod tests {
     use hyperactor::PortId;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
-    use hyperactor::id;
+    use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
     use ndslice::extent;
 
@@ -454,7 +454,7 @@ mod tests {
         let (sink_handle, mut sink_rx) = client.open_port::<ActorSupervisionEvent>();
         set_global_supervision_sink(sink_handle.bind());
 
-        let marker = id!(fwd_test[0].marker_actor);
+        let marker = test_actor_id("fwd_test", "marker_actor");
         inject_undeliverable(client, marker.clone());
 
         // The handler runs asynchronously via work_rx; wait for the
@@ -493,7 +493,7 @@ mod tests {
         let (sink_b_handle, mut sink_b_rx) = client.open_port::<ActorSupervisionEvent>();
         set_global_supervision_sink(sink_b_handle.bind());
 
-        let marker = id!(last_wins[0].marker_actor);
+        let marker = test_actor_id("last_wins", "marker_actor");
         inject_undeliverable(client, marker.clone());
 
         // B should receive our marked event.
@@ -523,7 +523,7 @@ mod tests {
         *sink_cell().write().unwrap() = None;
 
         // Inject an undeliverable — should not panic.
-        inject_undeliverable(client, id!(no_sink[0].marker_actor));
+        inject_undeliverable(client, test_actor_id("no_sink", "marker_actor"));
 
         // Give the async handler time to run.
         RealClock.sleep(Duration::from_millis(100)).await;
@@ -534,7 +534,7 @@ mod tests {
         let (sink_handle, mut sink_rx) = client.open_port::<ActorSupervisionEvent>();
         set_global_supervision_sink(sink_handle.bind());
 
-        let marker = id!(no_sink_recovery[0].marker_actor);
+        let marker = test_actor_id("no_sink_recovery", "marker_actor");
         inject_undeliverable(client, marker.clone());
 
         let event = RealClock
