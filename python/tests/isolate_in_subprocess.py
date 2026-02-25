@@ -103,9 +103,22 @@ def isolate_in_subprocess(test_fn=None, *, env=None):
         os.close(fn_read_fd)
         os.close(result_write_fd)
 
-        # Send the test function and its arguments to the child.
+        # Capture the current runtime config so it can be restored in the child.
+        # Some config values contain unpicklable Rust objects, so we filter
+        # to only those that survive pickling.
+        from monarch.config import get_runtime_config
+
+        runtime_config = {}
+        for k, v in get_runtime_config().items():
+            try:
+                pickle.dumps(v)
+                runtime_config[k] = v
+            except Exception:
+                pass
+
+        # Send the test function, its arguments, and the runtime config to the child.
         with os.fdopen(fn_write_fd, "wb") as f:
-            cloudpickle.dump((test_fn, args, kwargs), f)
+            cloudpickle.dump((test_fn, args, kwargs, runtime_config), f)
 
         returncode = proc.wait()
 
@@ -169,7 +182,12 @@ def subprocess_main() -> None:
     result_write_fd = int(sys.argv[2])
 
     with os.fdopen(fn_read_fd, "rb") as f:
-        test_fn, args, kwargs = pickle.load(f)
+        test_fn, args, kwargs, runtime_config = pickle.load(f)
+
+    # Restore the parent's runtime config in this subprocess.
+    from monarch.config import configure
+
+    configure(**runtime_config)
 
     result = _run_test(test_fn, args, kwargs)
 
