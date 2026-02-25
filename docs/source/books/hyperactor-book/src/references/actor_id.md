@@ -25,19 +25,13 @@ pub struct ActorId(pub ProcId, pub String, pub usize);
 
 Construct an actor ID directly:
 ```rust
-use hyperactor::reference::{ActorId, ProcId, WorldId};
+use hyperactor::reference::{ActorId, ProcId};
 
-let proc = ProcId::Ranked(WorldId("training".into()), 0);
+let addr = "tcp:127.0.0.1:8080".parse()?;
+let proc = ProcId(addr, "myproc".to_string());
 let actor = ActorId(proc, "worker".into(), 1);
 ```
 
-Or with the `id!` macro:
-```rust
-use hyperactor::id;
-
-let actor = id!(training[0].worker[1]);
-// Equivalent to ActorId(ProcId::Ranked(WorldId("training".into()), 0), "worker".into(), 1)
-```
 To refer to the root actor (the canonical instance), use:
 ```rust
 let root = ActorId::root(proc, "worker".into());
@@ -51,8 +45,6 @@ impl ActorId {
     pub fn proc_id(&self) -> &ProcId;
     pub fn name(&self) -> &str;
     pub fn pid(&self) -> usize;
-    pub fn world_name(&self) -> &str;
-    pub fn rank(&self) -> usize;
     pub fn child_id(&self, pid: usize) -> Self;
     pub fn port_id(&self, port: u64) -> PortId;
     pub fn root(proc: ProcId, name: String) -> Self;
@@ -62,8 +54,6 @@ impl ActorId {
 - `.proc_id()` returns the ProcId that owns this actor.
 - `.name()` returns the logical name of the actor (e.g., "worker").
 - `.pid()` returns the actor's instance ID.
-- `.world_name()` returns the name of the actor's world. **Panics** if this is a direct proc.
-- `.rank()` returns the proc rank (i.e., index) this actor runs on. **Panics** if this is a direct proc.
 - `.child_id(pid)` creates a new `ActorId` with the same name and proc but a different pid.
 - `.port_id(port)` returns a `PortId` representing a port on this actor.
 - `.root(proc, name)` constructs a new root actor (`pid = 0`) in the given proc.
@@ -72,8 +62,8 @@ impl ActorId {
 
 `ActorId` implements:
 
-- `Display` — formats as `world[rank].name[pid]`
-- `FromStr` — parses strings like `"training[0].logger[1]"`
+- `Display` — formats as `addr,proc_name,name[pid]`
+- `FromStr` — parses strings like `"tcp:[::1]:1234,myproc,logger[1]"`
 - `Clone`, `Eq`, `Ord`, `Hash` — useful in maps, sets, and registries
 - `Named` — enables type-based routing, port lookup, and reflection
 
