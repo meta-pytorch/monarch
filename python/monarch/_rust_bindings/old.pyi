@@ -49,26 +49,26 @@ class ActorId:
     for an actor.
 
     Arguments:
-    - `world_name`: The world the actor belongs in (same as the Proc containing the Actor)
-    - `rank`: The rank of the proc containing the actor.
+    - `addr`: The channel address of the proc containing the actor.
+    - `proc_name`: The name of the proc containing the actor.
     - `actor_name`: Name of the actor.
     - `pid`: The pid of the actor.
     """
 
     def __init__(
-        self, *, world_name: str, rank: int, actor_name: str, pid: int = 0
+        self, *, addr: str, proc_name: str, actor_name: str, pid: int = 0
     ) -> None: ...
     def __str__(self) -> str: ...
     def __hash__(self) -> int: ...
     def __eq__(self, other: object) -> bool: ...
     @property
-    def world_name(self) -> str:
-        """The world the actor belongs in (same as the Proc containing the Actor)"""
+    def addr(self) -> str:
+        """The channel address of the proc containing the actor."""
         ...
 
     @property
-    def rank(self) -> int:
-        """The rank of the proc containing the actor."""
+    def proc_name(self) -> str:
+        """The name of the proc containing the actor."""
         ...
 
     @property
@@ -83,7 +83,7 @@ class ActorId:
 
     @property
     def proc_id(self) -> str:
-        """String representation of the ProcId eg. `"world_name[0]"`"""
+        """String representation of the ProcId."""
         ...
 
     @staticmethod

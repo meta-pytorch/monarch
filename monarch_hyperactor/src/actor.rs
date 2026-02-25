@@ -1502,10 +1502,10 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
-    use hyperactor::id;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
     use hyperactor::reference::UnboundPort;
+    use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::Name;
     use hyperactor_mesh::host_mesh::mesh_agent::ProcState;
@@ -1523,7 +1523,7 @@ mod tests {
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
         let port_ref = PortRef::<PythonMessage>::attest_reducible(
-            id!(world[0].client[0][123]),
+            test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
         );
@@ -1584,9 +1584,16 @@ mod tests {
         };
 
         // A ProcCreationError
+        let mesh_agent: hyperactor::ActorRef<
+            hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent,
+        > = hyperactor::ActorRef::attest(test_port_id("hello_0", "actor", 0).actor_id().clone());
+        let expected_prefix = format!(
+            "error creating proc (host rank 0) on host mesh agent {}",
+            mesh_agent
+        );
         let err = MeshError::ProcCreationError {
             host_rank: 0,
-            mesh_agent: hyperactor::ActorRef::attest(id!(hello[0].actor[0])),
+            mesh_agent,
             state: Box::new(state),
         };
 
@@ -1604,8 +1611,7 @@ mod tests {
             assert!(py_msg.contains(", state: "));
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
-            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent>";
-            assert!(py_msg.starts_with(expected_prefix));
+            assert!(py_msg.starts_with(&expected_prefix));
         });
     }
 }
