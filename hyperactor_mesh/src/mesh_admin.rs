@@ -681,15 +681,7 @@ impl MeshAdminAgent {
                 e
             )
         })?;
-        let host_addr = match &proc_id {
-            ProcId::Direct(addr, _) => addr.to_string(),
-            ProcId::Ranked(world_id, _) => {
-                return Err(anyhow::anyhow!(
-                    "ranked proc references not yet supported: {}",
-                    world_id
-                ));
-            }
-        };
+        let host_addr = proc_id.addr().to_string();
 
         let agent = self
             .hosts
@@ -735,15 +727,7 @@ impl MeshAdminAgent {
         cx: &Context<'_, Self>,
         proc_id: &ProcId,
     ) -> Result<NodePayload, anyhow::Error> {
-        let (host_addr, _proc_name) = match proc_id {
-            ProcId::Direct(addr, name) => (addr.to_string(), name.clone()),
-            ProcId::Ranked(world_id, _rank) => {
-                return Err(anyhow::anyhow!(
-                    "ranked proc references not yet supported: {}",
-                    world_id
-                ));
-            }
-        };
+        let host_addr = proc_id.addr().to_string();
 
         let agent = self
             .hosts
@@ -856,10 +840,7 @@ impl MeshAdminAgent {
             children
         };
 
-        let proc_name = match proc_id {
-            ProcId::Direct(_, name) => name.clone(),
-            _ => proc_id.to_string(),
-        };
+        let proc_name = proc_id.name().to_string();
 
         Ok(NodePayload {
             identity: proc_id.to_string(),
@@ -929,10 +910,7 @@ impl MeshAdminAgent {
         match &payload.properties {
             NodeProperties::Proc { .. } => {
                 // ProcMeshAgent: parent is the host agent.
-                let host_addr = match proc_id {
-                    ProcId::Direct(addr, _) => addr.to_string(),
-                    _ => proc_id.to_string(),
-                };
+                let host_addr = proc_id.addr().to_string();
                 if let Some(agent) = self.hosts.get(&host_addr) {
                     payload.parent = Some(HostId(agent.actor_id().clone()).to_string());
                 }
@@ -942,16 +920,13 @@ impl MeshAdminAgent {
                 // system proc ref format if the proc is a known
                 // system/local proc, otherwise the ProcMeshAgent
                 // ActorId.
-                let host_addr = match proc_id {
-                    ProcId::Direct(addr, _) => Some(addr.to_string()),
-                    _ => None,
-                };
+                let host_addr = proc_id.addr().to_string();
 
                 // Check if this is a system proc by seeing if the
                 // host lists it as a system proc child.
-                let is_system = host_addr
-                    .as_ref()
-                    .and_then(|addr| self.hosts.get(addr))
+                let is_system = self
+                    .hosts
+                    .get(&host_addr)
                     .map(|agent| {
                         // If the actor's proc is the same proc the
                         // host agent lives in (system proc) or any
@@ -1256,7 +1231,7 @@ async fn tree_dump(
 ///   `"my_proc"`
 /// - Bare ProcId `"unix:@hash,my_proc"` → `"my_proc"`
 ///
-/// Note: `ActorId::Display` for `ProcId::Direct` uses commas as
+/// Note: `ActorId::Display` for `ProcId` uses commas as
 /// separators (`proc_id,actor_name[idx]`), not slashes.
 fn derive_tree_label(reference: &str) -> String {
     // System proc refs: "[system] transport!addr,name" → name.
@@ -1301,6 +1276,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use hyperactor::channel::ChannelAddr;
+    use hyperactor::testing::ids::test_proc_id_with_addr;
 
     use super::*;
 
@@ -1322,11 +1298,11 @@ mod tests {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
         let addr2: SocketAddr = "127.0.0.1:9002".parse().unwrap();
 
-        let proc1 = ProcId::Direct(ChannelAddr::Tcp(addr1), "host1".to_string());
-        let proc2 = ProcId::Direct(ChannelAddr::Tcp(addr2), "host2".to_string());
+        let proc1 = test_proc_id_with_addr(ChannelAddr::Tcp(addr1), "host1");
+        let proc2 = test_proc_id_with_addr(ChannelAddr::Tcp(addr2), "host2");
 
-        let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
-        let actor_id2 = ActorId::root(proc2, "mesh_agent".to_string());
+        let actor_id1 = proc1.actor_id("mesh_agent", 0);
+        let actor_id2 = proc2.actor_id("mesh_agent", 0);
 
         let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
         let ref2: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id2.clone());
@@ -1395,7 +1371,7 @@ mod tests {
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         // The admin proc has no supervision coordinator by default.
         // Without one, actor teardown triggers std::process::exit(1).
-        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
@@ -1548,7 +1524,7 @@ mod tests {
 
         // Spawn MeshAdminAgent on a separate proc.
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
-        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
@@ -1639,12 +1615,11 @@ mod tests {
     #[test]
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
-        let proc1 = ProcId::Direct(ChannelAddr::Tcp(addr1), "host1".to_string());
+        let proc1 = ProcId(ChannelAddr::Tcp(addr1), "host1".to_string());
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
         let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
 
-        let client_proc_id =
-            ProcId::Direct(ChannelAddr::Tcp(addr1), "mesh_root_client_proc".to_string());
+        let client_proc_id = ProcId(ChannelAddr::Tcp(addr1), "mesh_root_client_proc".to_string());
         let client_actor_id = client_proc_id.actor_id("client", 0);
 
         let agent = MeshAdminAgent::new(
@@ -1714,7 +1689,7 @@ mod tests {
 
         // Spawn MeshAdminAgent with the root client ActorId.
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
-        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
@@ -1855,7 +1830,7 @@ mod tests {
 
         // Spawn MeshAdminAgent on a separate proc.
         let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
-        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(

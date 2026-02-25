@@ -935,7 +935,7 @@ class SimulatorController(MockController):
                     error=DeviceException(
                         e,
                         traceback.extract_tb(e.__traceback__),
-                        ActorId.from_string("unknown[0].unknown[0]"),
+                        ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
                         message="Simulator has an internal error.",
                     ),
                 )
