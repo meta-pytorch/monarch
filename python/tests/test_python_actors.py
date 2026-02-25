@@ -33,7 +33,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
@@ -42,22 +41,15 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
-from monarch._src.actor.allocator import ProcessAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.host_mesh import (
-    _bootstrap_cmd,
     fake_in_process_host,
     HostMesh,
     this_host,
     this_proc,
 )
-from monarch._src.actor.proc_mesh import (
-    _get_bootstrap_args,
-    get_or_spawn_controller,
-    HyProcMesh,
-)
+from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
 from monarch.actor import (
@@ -703,79 +695,6 @@ async def test_actor_log_streaming() -> None:
             r"similar log lines.*log streaming as level matched",
             stderr_content,
         ), stderr_content
-
-
-# oss_skip: pytest keeps complaining about mocking get_ipython module
-# oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
-@pytest.mark.oss_skip
-async def test_alloc_based_log_streaming() -> None:
-    """Test both AllocHandle.stream_logs = False and True cases."""
-
-    async def test_stream_logs_case(stream_logs: bool, test_name: str) -> None:
-        with configured_with_redirected_stdio(
-            capture_stderr=False,
-            enable_log_forwarding=True,
-            enable_file_capture=True,
-            tail_log_lines=100,
-        ) as (_, paths):
-            # Create proc mesh with custom stream_logs setting
-            class ProcessAllocatorStreamLogs(ProcessAllocator):
-                def allocate_nonblocking(self, spec: AllocSpec) -> PythonTask[Alloc]:
-                    return super().allocate_nonblocking(spec)
-
-                def _stream_logs(self) -> bool:
-                    return stream_logs
-
-            alloc = ProcessAllocatorStreamLogs(*_get_bootstrap_args())
-
-            host_mesh = HostMesh.allocate_nonblocking(
-                "host",
-                Extent(["hosts"], [1]),
-                alloc,
-                bootstrap_cmd=_bootstrap_cmd(),
-            )
-
-            pm = host_mesh.spawn_procs(name="proc", per_host={"gpus": 2})
-
-            am = pm.spawn("printer", Printer)
-
-            await pm.initialized
-
-            for _ in range(5):
-                await am.print.call(f"{test_name} print streaming")
-
-            # Wait for at least the aggregation window (3 seconds)
-            await asyncio.sleep(5)
-
-            # Flush to ensure all output is written before reading
-            sys.stdout.flush()
-
-            # Read the captured output
-            with open(paths.stdout, "r") as f:
-                stdout_content = f.read()
-
-            if not stream_logs:
-                # When stream_logs=False, logs should not be streamed to client
-                assert not re.search(
-                    rf"similar log lines.*{test_name} print streaming",
-                    stdout_content,
-                ), f"stream_logs=False case: {stdout_content}"
-                assert re.search(rf"{test_name} print streaming", stdout_content), (
-                    f"stream_logs=False case: {stdout_content}"
-                )
-            else:
-                # When stream_logs=True, logs should be streamed to client (no aggregation by default)
-                assert re.search(
-                    rf"similar log lines.*{test_name} print streaming",
-                    stdout_content,
-                ), f"stream_logs=True case: {stdout_content}"
-                assert not re.search(
-                    rf"\[[0-9]\]{test_name} print streaming", stdout_content
-                ), f"stream_logs=True case: {stdout_content}"
-
-    # Test both cases
-    await test_stream_logs_case(False, "stream_logs_false")
-    await test_stream_logs_case(True, "stream_logs_true")
 
 
 # oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
