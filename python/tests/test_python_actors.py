@@ -29,6 +29,7 @@ from typing import Any, cast, Dict, Iterator, NamedTuple, Tuple
 import cloudpickle
 import monarch.actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
@@ -966,6 +967,7 @@ async def test_flush_on_disable_aggregation() -> None:
 
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_multiple_ongoing_flushes_no_deadlock() -> None:
     """
     The goal is to make sure when a user sends multiple sync flushes, we are not deadlocked.
@@ -1127,6 +1129,7 @@ async def test_sync_workspace() -> None:
 
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_proc_mesh_stop_after_actor_mesh_stop() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("printer", Printer)
@@ -1254,6 +1257,7 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
 
 @pytest.mark.timeout(10)
 # Not compatible with queue dispatch, as it assumes concurrent dispatch
+@isolate_in_subprocess
 async def test_undeliverable_message_with_override() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
@@ -1270,6 +1274,7 @@ async def test_undeliverable_message_with_override() -> None:
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_undeliverable_message_without_override() -> None:
     # This test generates a fault that reaches the client. We don't want it to
     # crash.
@@ -1366,6 +1371,7 @@ class Hello(Actor):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_simple_bootstrap():
     with TemporaryDirectory() as d:
         procs = []
@@ -1475,6 +1481,7 @@ class FakeLocalLoginJob(LoginJob):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_login_job():
     with TemporaryDirectory() as temp_dir:
         j = FakeLocalLoginJob(temp_dir)
@@ -1650,6 +1657,7 @@ class ActorWithAsyncCleanup(Actor):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_cleanup():
     procs = this_host().spawn_procs(per_host={"gpus": 1})
     counter = procs.spawn("counter", Counter, 0)
@@ -1661,6 +1669,7 @@ def test_cleanup():
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_cleanup_async():
     procs = this_host().spawn_procs(per_host={"gpus": 1})
     counter = procs.spawn("counter", Counter, 0)
@@ -1697,6 +1706,7 @@ class WrapperActor(Actor):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_recursive_stop():
     """Tests that if A owns B, and A is stopped, B is also stopped. Cleanup
     actors are used because we can observe a side effect of them stopping"""

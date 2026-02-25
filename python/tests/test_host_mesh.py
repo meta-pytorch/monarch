@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import cloudpickle
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
@@ -153,6 +154,7 @@ class PidActor(Actor):
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_this_host_on_client_can_spawn_actual_os_processes() -> None:
     hm = this_host()
     assert not hm.is_fake_in_process
@@ -178,6 +180,7 @@ class PidActorController(Actor):
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_this_host_on_controllers_can_spawn_actual_os_processes() -> None:
     pid_controller_0 = get_or_spawn_controller(
         "pid_test_this_host_on_controllers_0", PidActorController

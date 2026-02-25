@@ -6,24 +6,23 @@
 
 # pyre-unsafe
 
-import contextlib
-
 import monarch
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured, get_global_config
 
 
-@contextlib.contextmanager
-def override_fault_hook(callback=None):
-    original_hook = monarch.actor.unhandled_fault_hook
-    try:
-        monarch.actor.unhandled_fault_hook = callback or (lambda failure: None)
-        yield
-    finally:
-        monarch.actor.unhandled_fault_hook = original_hook
+class Chunker(Actor):
+    def __init__(self):
+        self.chunks = []
+
+    @endpoint
+    def process_chunks(self, chunks):
+        self.chunks = chunks
+        return len(chunks)
 
 
 def test_get_set_transport() -> None:
@@ -93,18 +92,10 @@ def test_get_set_multiple() -> None:
 # This test tries to allocate too much memory for the GitHub actions
 # environment.
 @pytest.mark.oss_skip
+@isolate_in_subprocess
 def test_codec_max_frame_length_exceeds_default() -> None:
     """Test that sending 10 chunks of 1GiB fails with default 10 GiB
     limit."""
-
-    class Chunker(Actor):
-        def __init__(self):
-            self.chunks = []
-
-        @endpoint
-        def process_chunks(self, chunks):
-            self.chunks = chunks
-            return len(chunks)
 
     oneGiB = 1024 * 1024 * 1024
     tenGiB = 10 * oneGiB
@@ -113,20 +104,20 @@ def test_codec_max_frame_length_exceeds_default() -> None:
     config = get_global_config()
     assert config["codec_max_frame_length"] == tenGiB
 
-    with override_fault_hook():
-        # Try to send 10 chunks of 1GiB each with default 10 GiB limit
-        # This should fail due to serialization overhead.
-        # Spawn in separate proc so messages are serialized via Unix
-        # sockets
-        proc = this_host().spawn_procs()
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    # Try to send 10 chunks of 1GiB each with default 10 GiB limit
+    # This should fail due to serialization overhead.
+    # Spawn in separate proc so messages are serialized via Unix
+    # sockets
+    proc = this_host().spawn_procs()
 
-        # Create 10 chunks, 1GiB each (total 10GiB)
-        chunks = [bytes(oneGiB) for _ in range(10)]
+    # Create 10 chunks, 1GiB each (total 10GiB)
+    chunks = [bytes(oneGiB) for _ in range(10)]
 
-        # Spawn actor and send chunks - should fail with SupervisionError
-        chunker = proc.spawn("chunker", Chunker)
-        with pytest.raises(SupervisionError):
-            chunker.process_chunks.call_one(chunks).get()
+    # Spawn actor and send chunks - should fail with SupervisionError
+    chunker = proc.spawn("chunker", Chunker)
+    with pytest.raises(SupervisionError):
+        chunker.process_chunks.call_one(chunks).get()
 
 
 # This test tries to allocate too much memory for the GitHub actions
@@ -135,15 +126,6 @@ def test_codec_max_frame_length_exceeds_default() -> None:
 def test_codec_max_frame_length_with_increased_limit() -> None:
     """Test that we can successfully send 10 chunks of 1GiB each with
     100 GiB limit."""
-
-    class Chunker(Actor):
-        def __init__(self):
-            self.chunks = []
-
-        @endpoint
-        def process_chunks(self, chunks):
-            self.chunks = chunks
-            return len(chunks)
 
     oneGiB = 1024 * 1024 * 1024
     tenGiB = 10 * oneGiB

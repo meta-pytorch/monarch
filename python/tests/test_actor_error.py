@@ -7,7 +7,6 @@
 # pyre-unsafe
 
 import asyncio
-import contextlib
 import ctypes
 import datetime
 import importlib.resources
@@ -16,10 +15,11 @@ import re
 import subprocess
 import sys
 import time
-from typing import Callable, cast, Optional
+from typing import cast, Optional
 
 import monarch.actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import hold_gil_for_test
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     UndeliverableMessageEnvelope,
@@ -30,16 +30,6 @@ from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import Actor, ActorError, endpoint, MeshFailure
 from monarch.config import configured, parametrize_config
-
-
-@contextlib.contextmanager
-def override_fault_hook(callback=None):
-    original_hook = monarch.actor.unhandled_fault_hook
-    try:
-        monarch.actor.unhandled_fault_hook = callback or (lambda failure: None)
-        yield
-    finally:
-        monarch.actor.unhandled_fault_hook = original_hook
 
 
 class ExceptionActor(Actor):
@@ -200,6 +190,7 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
+@isolate_in_subprocess
 async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     """
     Test that exceptions raised in actor initializers are propagated as supervision faults.
@@ -213,12 +204,12 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
         if len(faults) >= num_procs:
             faulted.set()
 
-    with override_fault_hook(fault_hook):
-        proc = mesh({"gpus": num_procs})
-        proc.spawn("exception_actor", actor_class, except_on_init=True)
+    monarch.actor.unhandled_fault_hook = fault_hook
+    proc = mesh({"gpus": num_procs})
+    proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-        # Wait for the faults to arrive at the hook
-        await asyncio.wait_for(faulted.wait(), timeout=15.0)
+    # Wait for the faults to arrive at the hook
+    await asyncio.wait_for(faulted.wait(), timeout=15.0)
 
     # Verify the fault was received
     assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
@@ -240,6 +231,7 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
     [ExceptionActor, ExceptionActorSync],
 )
 @pytest.mark.parametrize("num_procs", [1, 2])
+@isolate_in_subprocess
 def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
     """
     Test that exceptions raised in actor initializers are propagated as supervision faults.
@@ -255,12 +247,12 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
         if len(faults) >= num_procs:
             faulted.set()
 
-    with override_fault_hook(fault_hook):
-        proc = mesh({"gpus": num_procs})
-        proc.spawn("exception_actor", actor_class, except_on_init=True)
+    monarch.actor.unhandled_fault_hook = fault_hook
+    proc = mesh({"gpus": num_procs})
+    proc.spawn("exception_actor", actor_class, except_on_init=True)
 
-        # Wait for the faults to arrive at the hook
-        assert faulted.wait(timeout=15.0), "Timed out waiting for faults"
+    # Wait for the faults to arrive at the hook
+    assert faulted.wait(timeout=15.0), "Timed out waiting for faults"
 
     # Verify the fault was received
     assert len(faults) >= num_procs, f"Expected {num_procs} faults, got {len(faults)}"
@@ -630,44 +622,45 @@ async def test_errors_propagated() -> None:
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_actor_mesh_supervision_handling() -> None:
     # This test doesn't want the client process to crash during testing.
-    with override_fault_hook():
-        proc = spawn_procs_on_this_host({"gpus": 1})
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    proc = spawn_procs_on_this_host({"gpus": 1})
 
-        e = proc.spawn("error", ErrorActor)
+    e = proc.spawn("error", ErrorActor)
 
-        # first check() call should succeed
+    # first check() call should succeed
+    await e.check.call()
+
+    # throw an application error
+    with pytest.raises(ActorError, match="failed the check with app error"):
+        await e.check_with_exception.call()
+
+    # actor mesh should still be healthy
+    await e.check.call()
+    print("before failure")
+
+    # existing call should fail with supervision error
+    with pytest.raises(
+        SupervisionError,
+        match=".*Actor .* exited because of the following reason",
+    ):
+        await e.fail_with_supervision_error.call_one()
+    print("after failure")
+
+    # new call should fail with check of health state of actor mesh
+    with pytest.raises(
+        RuntimeError,
+        match="failure on mesh.*error.*with event: "
+        "The actor.*ErrorActor error.* and all its descendants have failed|"
+        "Actor.*error.*exited because of the following",
+    ):
         await e.check.call()
+    print("after subsequent endpoint call")
 
-        # throw an application error
-        with pytest.raises(ActorError, match="failed the check with app error"):
-            await e.check_with_exception.call()
-
-        # actor mesh should still be healthy
-        await e.check.call()
-        print("before failure")
-
-        # existing call should fail with supervision error
-        with pytest.raises(
-            SupervisionError,
-            match=".*Actor .* exited because of the following reason",
-        ):
-            await e.fail_with_supervision_error.call_one()
-        print("after failure")
-
-        # new call should fail with check of health state of actor mesh
-        with pytest.raises(
-            RuntimeError,
-            match="failure on mesh.*error.*with event: "
-            "The actor.*ErrorActor error.* and all its descendants have failed|"
-            "Actor.*error.*exited because of the following",
-        ):
-            await e.check.call()
-        print("after subsequent endpoint call")
-
-        with pytest.raises(RuntimeError, match="error spawning actor mesh"):
-            await proc.spawn("ex", ExceptionActorSync).initialized
+    with pytest.raises(RuntimeError, match="error spawning actor mesh"):
+        await proc.spawn("ex", ExceptionActorSync).initialized
 
 
 class HealthyActor(Actor):
@@ -754,6 +747,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
 )
+@isolate_in_subprocess
 async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     """Test that BaseException subclasses trigger supervision errors.
 
@@ -763,31 +757,31 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
 
     """
     # This test doesn't want the client process to crash during testing.
-    with override_fault_hook():
-        proc = mesh({"gpus": 1})
-        error_actor = proc.spawn("error", error_actor_cls)
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    proc = mesh({"gpus": 1})
+    error_actor = proc.spawn("error", error_actor_cls)
 
-        # The call should raise a SupervisionError
-        with pytest.raises(
-            SupervisionError,
-            match=".*Actor .* exited because of the following reason",
-        ):
-            await error_actor.fail_with_supervision_error.call_one()
+    # The call should raise a SupervisionError
+    with pytest.raises(
+        SupervisionError,
+        match=".*Actor .* exited because of the following reason",
+    ):
+        await error_actor.fail_with_supervision_error.call_one()
 
-        # Subsequent calls should fail with a health state error, including
-        # the previous error that had occurred.
-        with pytest.raises(
-            RuntimeError,
-            match="failure on mesh .*error.* at rank 0 with event:.*"
-            "The actor .*ErrorActor error.*and all its descendants have failed.*"
-            "|"
-            "Actor .*error.*exited because of the following reason:"
-            ".*ErrorActor error.*and all its descendants have failed",
-        ):
-            await error_actor.check.call()
-        # The above check call is undeliverable and might get returned to the client
-        # later on. We need to wait for it to be processed.
-        await asyncio.sleep(5)
+    # Subsequent calls should fail with a health state error, including
+    # the previous error that had occurred.
+    with pytest.raises(
+        RuntimeError,
+        match="failure on mesh .*error.* at rank 0 with event:.*"
+        "The actor .*ErrorActor error.*and all its descendants have failed.*"
+        "|"
+        "Actor .*error.*exited because of the following reason:"
+        ".*ErrorActor error.*and all its descendants have failed",
+    ):
+        await error_actor.check.call()
+    # The above check call is undeliverable and might get returned to the client
+    # later on. We need to wait for it to be processed.
+    await asyncio.sleep(5)
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -795,6 +789,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     "error_actor_cls",
     [ErrorActor, SyncErrorActor],
 )
+@isolate_in_subprocess
 async def test_process_exit_handling(error_actor_cls) -> None:
     """Test that process exit triggers supervision errors.
 
@@ -802,30 +797,30 @@ async def test_process_exit_handling(error_actor_cls) -> None:
     that exit the process trigger supervision errors properly.
     """
     # This test doesn't want the client process to crash during testing.
-    with override_fault_hook():
-        # This test doesn't work with the fake local proc mesh, because it exits
-        # the process.
-        proc = spawn_procs_on_this_host({"gpus": 1})
-        error_actor = proc.spawn("error", error_actor_cls)
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    # This test doesn't work with the fake local proc mesh, because it exits
+    # the process.
+    proc = spawn_procs_on_this_host({"gpus": 1})
+    error_actor = proc.spawn("error", error_actor_cls)
 
-        base_match = "Endpoint call {}\\(\\) failed, (Actor .*error.* exited because of the following reason|actor mesh is stopped due to proc mesh shutdown)"
-        # The call should raise a SupervisionError
-        with pytest.raises(
-            SupervisionError,
-            match=base_match.format("error.exit_process"),
-        ):
-            await error_actor.exit_process.call_one()
+    base_match = "Endpoint call {}\\(\\) failed, (Actor .*error.* exited because of the following reason|actor mesh is stopped due to proc mesh shutdown)"
+    # The call should raise a SupervisionError
+    with pytest.raises(
+        SupervisionError,
+        match=base_match.format("error.exit_process"),
+    ):
+        await error_actor.exit_process.call_one()
 
-        # Subsequent calls should fail with a health state error
-        with pytest.raises(
-            RuntimeError,
-            # Message changes depending on actor_queue_dispatch.
-            match="failure on mesh .*error.* at rank 0 with event: "
-            "The actor.*ErrorActor error.*was running on a process which and all its descendants have failed"
-            "|"
-            "Actor.*error.*exited because of the following reason",
-        ):
-            await error_actor.check.call()
+    # Subsequent calls should fail with a health state error
+    with pytest.raises(
+        RuntimeError,
+        # Message changes depending on actor_queue_dispatch.
+        match="failure on mesh .*error.* at rank 0 with event: "
+        "The actor.*ErrorActor error.*was running on a process which and all its descendants have failed"
+        "|"
+        "Actor.*error.*exited because of the following reason",
+    ):
+        await error_actor.check.call()
 
 
 class FaultActor(Actor):
@@ -846,40 +841,41 @@ class FaultActor(Actor):
 
 @pytest.mark.timeout(180)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_sigsegv_handling():
     # This test doesn't want the client process to crash during testing.
-    with override_fault_hook():
-        hosts = this_host()
-        procs = hosts.spawn_procs({"gpus": 2})
-        actor = procs.spawn("fault", FaultActor)
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    hosts = this_host()
+    procs = hosts.spawn_procs({"gpus": 2})
+    actor = procs.spawn("fault", FaultActor)
 
-        # Make sure the actor is healthy first
+    # Make sure the actor is healthy first
+    await actor.check.call()
+
+    with pytest.raises(
+        SupervisionError,
+        match="Actor .* and all its descendants have failed",
+    ):
+        await actor.sigsegv.call()
+
+    # Check that a second call still fails and doesn't hang.
+    with pytest.raises(
+        RuntimeError,
+        match="failure on mesh.*fault.*with event.*|"
+        "Actor.*fault.*exited because of the following reason",
+    ):
         await actor.check.call()
 
-        with pytest.raises(
-            SupervisionError,
-            match="Actor .* and all its descendants have failed",
-        ):
-            await actor.sigsegv.call()
+    # Check that proc_mesh.stop() still works, even though the processes are dead.
+    # It should check for the procs status without trying to kill them again.
+    await procs.stop()
 
-        # Check that a second call still fails and doesn't hang.
-        with pytest.raises(
-            RuntimeError,
-            match="failure on mesh.*fault.*with event.*|"
-            "Actor.*fault.*exited because of the following reason",
-        ):
-            await actor.check.call()
+    # Re-spawn on the same host mesh should work.
+    procs = hosts.spawn_procs({"gpus": 2})
+    actor = procs.spawn("fault", FaultActor)
 
-        # Check that proc_mesh.stop() still works, even though the processes are dead.
-        # It should check for the procs status without trying to kill them again.
-        await procs.stop()
-
-        # Re-spawn on the same host mesh should work.
-        procs = hosts.spawn_procs({"gpus": 2})
-        actor = procs.spawn("fault", FaultActor)
-
-        # Results don't matter, just make sure there's no exception.
-        await actor.check.call()
+    # Results don't matter, just make sure there's no exception.
+    await actor.check.call()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -889,40 +885,44 @@ async def test_sigsegv_handling():
     ids=["local_proc_mesh", "proc_mesh"],
 )
 @pytest.mark.timeout(30)
+@isolate_in_subprocess
 async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
-    with override_fault_hook():
-        proc = mesh({"gpus": 1})
-        actor_mesh = proc.spawn("healthy", HealthyActor)
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    proc = mesh({"gpus": 1})
+    actor_mesh = proc.spawn("healthy", HealthyActor)
 
+    await actor_mesh.check.call()
+
+    await proc.stop()
+
+    # new call should fail with check of health state of actor mesh
+    # after the proc mesh is stopped, the actor mesh is also stopped, and
+    # the ProcMeshAgent is no longer reachable.
+    with pytest.raises(
+        SupervisionError,
+        match="Endpoint call healthy.check\\(\\) failed, Actor.*healthy.*is "
+        "unhealthy with reason:.*timeout waiting for response from host mesh agent for"
+        "|actor mesh is stopped due to proc mesh shutdown"
+        "|The actor .* and all its descendants have failed",
+    ):
         await actor_mesh.check.call()
 
-        await proc.stop()
+    # proc mesh cannot spawn new actors anymore
+    with pytest.raises(RuntimeError, match="`ProcMesh` has already been stopped"):
+        await proc.spawn("immediate", Intermediate).initialized
 
-        # new call should fail with check of health state of actor mesh
-        # after the proc mesh is stopped, the actor mesh is also stopped, and
-        # the ProcMeshAgent is no longer reachable.
-        with pytest.raises(
-            SupervisionError,
-            match="Endpoint call healthy.check\\(\\) failed, Actor.*healthy.*is "
-            "unhealthy with reason:.*timeout waiting for response from host mesh agent for"
-            "|actor mesh is stopped due to proc mesh shutdown"
-            "|The actor .* and all its descendants have failed",
-        ):
-            await actor_mesh.check.call()
 
-        # proc mesh cannot spawn new actors anymore
-        with pytest.raises(RuntimeError, match="`ProcMesh` has already been stopped"):
-            await proc.spawn("immediate", Intermediate).initialized
+class Printer(Actor):
+    @endpoint
+    async def print(self, content: str) -> None:
+        print(f"{content}", flush=True)
 
 
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_actor_mesh_stop() -> None:
-    class Printer(Actor):
-        @endpoint
-        async def print(self, content: str) -> None:
-            print(f"{content}", flush=True)
-
+    monarch.actor.unhandled_fault_hook = lambda failure: None
     pm = this_host().spawn_procs(per_host={"gpus": 2})
     am_1 = pm.spawn("printer", Printer)
     am_2 = pm.spawn("printer2", Printer)
@@ -933,22 +933,22 @@ async def test_actor_mesh_stop() -> None:
     # actor, and thus would cause the client to hit unhandled_fault_hook. We
     # ignore that so we can make sure a case with an actor mesh ref would get
     # the right error message.
-    with override_fault_hook():
-        with pytest.raises(
-            SupervisionError,
-            match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
-        ):
-            await am_1.print.call("hello 2")
+    with pytest.raises(
+        SupervisionError,
+        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
+    ):
+        await am_1.print.call("hello 2")
 
-        # An independent actor mesh should be fine.
-        await am_2.print.call("hello 3")
+    # An independent actor mesh should be fine.
+    await am_2.print.call("hello 3")
 
-        await pm.stop()
+    await pm.stop()
 
 
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 async def test_supervision_with_sending_error() -> None:
     # This test doesn't want the client process to crash during testing.
     errors = []
@@ -957,40 +957,39 @@ async def test_supervision_with_sending_error() -> None:
         print(f"Fault hook called with {failure}")
         errors.append(str(failure))
 
-    with override_fault_hook(fault_hook):
-        with configured(
-            # Messages of length > this will cause a send error and a returned
-            # undeliverable.
-            codec_max_frame_length=50000000,
-            # Limit retries for sending before giving up.
-            message_delivery_timeout="5sec",
-        ):
-            proc = spawn_procs_on_this_host({"gpus": 1})
-            actor_mesh = proc.spawn("healthy", HealthyActor)
+    monarch.actor.unhandled_fault_hook = fault_hook
+    with configured(
+        # Messages of length > this will cause a send error and a returned
+        # undeliverable.
+        codec_max_frame_length=50000000,
+        # Limit retries for sending before giving up.
+        message_delivery_timeout="5sec",
+    ):
+        proc = spawn_procs_on_this_host({"gpus": 1})
+        actor_mesh = proc.spawn("healthy", HealthyActor)
 
-            await actor_mesh.check.call()
+        await actor_mesh.check.call()
 
-            # send a small payload to trigger success
-            await actor_mesh.check_with_payload.call(payload="a")
+        # send a small payload to trigger success
+        await actor_mesh.check_with_payload.call(payload="a")
 
-            # The host mesh agent sends or the proc mesh agent sends might break.
-            # Either case is an error that tells us that the send failed.
-            error_msg_regx = (
-                "Actor .* (is unhealthy with reason|exited because of the following reason)|"
-                "actor mesh is stopped due to proc mesh shutdown"
-            )
+        # The host mesh agent sends or the proc mesh agent sends might break.
+        # Either case is an error that tells us that the send failed.
+        error_msg_regx = (
+            "Actor .* (is unhealthy with reason|exited because of the following reason)|"
+            "actor mesh is stopped due to proc mesh shutdown"
+        )
 
-            # send a large payload to trigger send timeout error
-            error_msg = (
-                r"Endpoint call healthy\.check_with_payload\(\) failed, "
-                + error_msg_regx
-            )
-            # The returned exception here is about a timeout reaching the host,
-            # but it is actually a send error, and the remote actor is healthy.
-            # The unhandled_fault_hook is called first with a real send error,
-            # which would normally crash the process, tested below.
-            with pytest.raises(SupervisionError, match=error_msg):
-                await actor_mesh.check_with_payload.call(payload="a" * 55000000)
+        # send a large payload to trigger send timeout error
+        error_msg = (
+            r"Endpoint call healthy\.check_with_payload\(\) failed, " + error_msg_regx
+        )
+        # The returned exception here is about a timeout reaching the host,
+        # but it is actually a send error, and the remote actor is healthy.
+        # The unhandled_fault_hook is called first with a real send error,
+        # which would normally crash the process, tested below.
+        with pytest.raises(SupervisionError, match=error_msg):
+            await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
     # The global python actor __supervise__ hook should be called with the
     # failure containing the send error.
@@ -1020,56 +1019,60 @@ async def test_supervision_with_sending_error() -> None:
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_slice_supervision() -> None:
     # This test doesn't want the client process to crash during testing.
-    with override_fault_hook():
-        pm = spawn_procs_on_this_host({"gpus": 4})
-        healthy_mesh = pm.spawn("healthy", HealthyActor)
-        error_mesh = pm.spawn("error", ErrorActor)
-        slice_1 = error_mesh.slice(gpus=slice(2, 4))
-        slice_2 = error_mesh.slice(gpus=2)
-        slice_3 = error_mesh.slice(gpus=3)
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    pm = spawn_procs_on_this_host({"gpus": 4})
+    healthy_mesh = pm.spawn("healthy", HealthyActor)
+    error_mesh = pm.spawn("error", ErrorActor)
+    slice_1 = error_mesh.slice(gpus=slice(2, 4))
+    slice_2 = error_mesh.slice(gpus=2)
+    slice_3 = error_mesh.slice(gpus=3)
 
-        match = "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
-        print("before slice_3 fail")
-        # Trigger supervision error on gpus=3
-        with pytest.raises(SupervisionError, match=match):
-            await slice_3.fail_with_supervision_error.call()
+    match = (
+        "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
+    )
+    print("before slice_3 fail")
+    # Trigger supervision error on gpus=3
+    with pytest.raises(SupervisionError, match=match):
+        await slice_3.fail_with_supervision_error.call()
 
-        print("before error_mesh.check")
-        # Mesh containing all gpus is unhealthy
-        with pytest.raises(SupervisionError, match=match):
-            await error_mesh.check.call()
+    print("before error_mesh.check")
+    # Mesh containing all gpus is unhealthy
+    with pytest.raises(SupervisionError, match=match):
+        await error_mesh.check.call()
 
-        print("before slice_3.check")
-        # Slice containing only gpus=3 is unhealthy
-        with pytest.raises(
-            RuntimeError,
-            match="failure on mesh.*error.*at rank 3 with event: The actor.*ErrorActor error.* and all its descendants have failed|"
-            "Actor.*error.*exited because of the following",
-        ):
-            await slice_3.check.call()
+    print("before slice_3.check")
+    # Slice containing only gpus=3 is unhealthy
+    with pytest.raises(
+        RuntimeError,
+        match="failure on mesh.*error.*at rank 3 with event: The actor.*ErrorActor error.* and all its descendants have failed|"
+        "Actor.*error.*exited because of the following",
+    ):
+        await slice_3.check.call()
 
-        print("before slice_1.check")
-        # Slice containing gpus=3 is unhealthy
-        with pytest.raises(RuntimeError, match=match):
-            await slice_1.check.call()
+    print("before slice_1.check")
+    # Slice containing gpus=3 is unhealthy
+    with pytest.raises(RuntimeError, match=match):
+        await slice_1.check.call()
 
-        print("before slice_2.check")
-        # Slice not containing gpus=3 is healthy
-        check = await slice_2.check.call()
-        for _, item in check.items():
-            assert item == "this is a healthy check"
+    print("before slice_2.check")
+    # Slice not containing gpus=3 is healthy
+    check = await slice_2.check.call()
+    for _, item in check.items():
+        assert item == "this is a healthy check"
 
-        print("before healthy_mesh.check")
-        # Other actor mesh on the same proc mesh is healthy
-        check = await healthy_mesh.check.call()
-        for _, item in check.items():
-            assert item == "this is a healthy check"
+    print("before healthy_mesh.check")
+    # Other actor mesh on the same proc mesh is healthy
+    check = await healthy_mesh.check.call()
+    for _, item in check.items():
+        assert item == "this is a healthy check"
 
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_mesh_slices_inherit_parent_errors() -> None:
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -1188,6 +1191,7 @@ class ErrorActorWithSupervise(ErrorActor):
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_supervise_callback_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
     # TODO: When using the same proc mesh for both, it occasionally fails with:
@@ -1218,6 +1222,7 @@ async def test_supervise_callback_handled():
 
 @pytest.mark.timeout(120)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_supervise_callback_without_await_handled():
     pm = spawn_procs_on_this_host({"gpus": 4})
     # TODO: When using the same proc mesh for both, it occasionally fails with:
@@ -1248,6 +1253,7 @@ async def test_supervise_callback_without_await_handled():
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_supervise_callback_with_mesh_ref():
     # Ensure that supervision events go to the
     pm = spawn_procs_on_this_host({"gpus": 1})
@@ -1291,6 +1297,7 @@ async def test_supervise_callback_with_mesh_ref():
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_supervise_callback_when_procs_killed():
     pm = spawn_procs_on_this_host({"gpus": 1})
     second_mesh = spawn_procs_on_this_host({"gpus": 4})
@@ -1318,6 +1325,7 @@ async def test_supervise_callback_when_procs_killed():
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_supervise_callback_unhandled():
     # This test doesn't want the client process to crash during testing.
     monarch.actor.unhandled_fault_hook = lambda failure: None
@@ -1349,70 +1357,71 @@ async def test_supervise_callback_unhandled():
 # This test takes up to 3 minutes to run because the timeout on controller
 # unreachable is 120 seconds.
 @pytest.mark.timeout(180)
+@isolate_in_subprocess
 async def test_actor_mesh_supervision_controller_dead() -> None:
     """Tests what happens when the owner of an actor crashes ungracefully, and
     another proc has a ref to that actor. That actor should stop and the ref
     should get a supervision error"""
-    with override_fault_hook():
-        pm = spawn_procs_on_this_host({"gpus": 1})
-        second_mesh = spawn_procs_on_this_host({"gpus": 1})
-        wrapper_mesh = pm.spawn("wrapper", ErrorActorWithSupervise, second_mesh)
-        inner_mesh = await wrapper_mesh.get_mesh.call_one()
-        # First, stop the inner actors. We do this so we can guarantee both
-        # the wrapper and inner has exited.
-        await wrapper_mesh.stop_subworker.call()
+    monarch.actor.unhandled_fault_hook = lambda failure: None
+    pm = spawn_procs_on_this_host({"gpus": 1})
+    second_mesh = spawn_procs_on_this_host({"gpus": 1})
+    wrapper_mesh = pm.spawn("wrapper", ErrorActorWithSupervise, second_mesh)
+    inner_mesh = await wrapper_mesh.get_mesh.call_one()
+    # First, stop the inner actors. We do this so we can guarantee both
+    # the wrapper and inner has exited.
+    await wrapper_mesh.stop_subworker.call()
 
-        # Cause a hard crash to make the controller unreachable.
-        # This will deliver a supervision event to the client which is ignored
-        # with the override_fault_hook.
-        with pytest.raises(SupervisionError):
-            await wrapper_mesh.self_ungraceful_fail.call_one()
+    # Cause a hard crash to make the controller unreachable.
+    # This will deliver a supervision event to the client which is ignored
+    # by the no-op fault hook.
+    with pytest.raises(SupervisionError):
+        await wrapper_mesh.self_ungraceful_fail.call_one()
 
-        # The inner mesh should not be reachable, and have a good error message
-        # explaining the problem. This will take as long as SUPERVISION_WATCHDOG_TIMEOUT
-        # because that is how long we wait before assuming the controller is dead.
-        with pytest.raises(
-            SupervisionError,
-            match="timed out reaching controller.*for mesh error_actor",
-        ):
-            await inner_mesh.check.call()
+    # The inner mesh should not be reachable, and have a good error message
+    # explaining the problem. This will take as long as SUPERVISION_WATCHDOG_TIMEOUT
+    # because that is how long we wait before assuming the controller is dead.
+    with pytest.raises(
+        SupervisionError,
+        match="timed out reaching controller.*for mesh error_actor",
+    ):
+        await inner_mesh.check.call()
 
     await pm.stop()
 
 
+class AbortActor(Actor):
+    @endpoint
+    def abort(self, reason: Optional[str] = None) -> None:
+        context().actor_instance.abort(reason)
+
+
 @pytest.mark.timeout(60)
-async def test_actor_abort() -> None:
-    class AbortActor(Actor):
-        @endpoint
-        def abort(self, reason: Optional[str] = None) -> None:
-            context().actor_instance.abort(reason)
+@pytest.mark.parametrize("reason", [None, "test abort reason"])
+@isolate_in_subprocess
+async def test_actor_abort(reason) -> None:
+    fut: asyncio.Future[str] = asyncio.Future()
 
-    for reason in (None, "test abort reason"):
-        fut: asyncio.Future[str] = asyncio.Future()
+    def make_fault_hook(
+        future: asyncio.Future[str],
+    ):
+        loop = asyncio.get_running_loop()
 
-        def make_fault_hook(
-            future: asyncio.Future[str],
-        ) -> Callable[[MeshFailure], None]:
-            loop = asyncio.get_running_loop()
+        def fault_hook(failure: MeshFailure) -> None:
+            report = failure.report()
+            if "AbortActor" in report:
+                loop.call_soon_threadsafe(future.set_result, report)
 
-            def fault_hook(failure: MeshFailure) -> None:
-                report = failure.report()
-                # Due to poor test isolation, we might observe MeshFailures from
-                # other tests here, but we only care about the AbortActor.
-                if "AbortActor" in report:
-                    loop.call_soon_threadsafe(future.set_result, report)
+        return fault_hook
 
-            return fault_hook
-
-        with override_fault_hook(make_fault_hook(fut)):
-            pm = this_host().spawn_procs({"gpus": 1})
-            actor = pm.spawn("abort", AbortActor)
-            # This call will succeed, but the actor will abort.
-            await actor.abort.call(reason)
-            if reason is None:
-                assert "no reason provided" in await fut
-            else:
-                assert reason in await fut
+    monarch.actor.unhandled_fault_hook = make_fault_hook(fut)
+    pm = this_host().spawn_procs({"gpus": 1})
+    actor = pm.spawn("abort", AbortActor)
+    # This call will succeed, but the actor will abort.
+    await actor.abort.call(reason)
+    if reason is None:
+        assert "no reason provided" in await fut
+    else:
+        assert reason in await fut
 
 
 @pytest.mark.timeout(500)
