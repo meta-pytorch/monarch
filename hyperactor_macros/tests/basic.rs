@@ -166,6 +166,9 @@ struct SimpleStructMessage {
 
 #[cfg(test)]
 mod tests {
+    use hyperactor::id::Label;
+    use hyperactor::id::Uid;
+    use hyperactor::uid;
     use hyperactor::proc::Proc;
     use timed_test::async_timed_test;
 
@@ -187,5 +190,18 @@ mod tests {
 
         let actor_ref = actor_handle.bind::<TestVariantFormsActor>();
         assert_eq!(actor_ref.call_struct(&client, 10).await.unwrap(), 10,);
+    }
+
+    #[test]
+    fn test_uid_macro_singleton() {
+        let id = uid!(_my-singleton);
+        assert_eq!(id, Uid::Singleton(Label::new("my-singleton").unwrap()));
+        assert_eq!(id.to_string(), "_my-singleton");
+    }
+
+    #[test]
+    fn test_uid_macro_instance() {
+        let id = uid!(d5d54d7201103869);
+        assert_eq!(id, Uid::Instance(0xd5d54d7201103869));
     }
 }
