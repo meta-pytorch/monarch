@@ -18,6 +18,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 /// Python binding for [`hyperactor::channel::ChannelTransport`]
 ///
@@ -44,6 +45,27 @@ pub enum PyChannelTransport {
 impl PyChannelTransport {
     fn get(&self) -> Self {
         self.clone()
+    }
+
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyBytes>,))> {
+        let transport: ChannelTransport = (*self).into();
+        let bytes = bincode::serialize(&transport)
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        let py_bytes = PyBytes::new(py, &bytes);
+        let from_bytes = PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.channel")?
+            .getattr("ChannelTransport")?
+            .getattr("from_bytes")?;
+        Ok((from_bytes, (py_bytes,)))
+    }
+
+    #[staticmethod]
+    fn from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        let transport: ChannelTransport = bincode::deserialize(bytes.as_bytes())
+            .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+        transport.try_into()
     }
 }
 
