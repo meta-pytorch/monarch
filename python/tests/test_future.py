@@ -64,7 +64,12 @@ class TestFuture:
         assert 3 == f.result()
         f = Future(client)
         re = RemoteException(
-            0, Exception(), None, [], [], ActorId.from_string("unknown[0].unknown[0]")
+            0,
+            Exception(),
+            None,
+            [],
+            [],
+            ActorId.from_string("local:0,unknown,unknown[0]"),
         )
 
         the_messages = [(1, lambda: None), (2, lambda: f._set_result(re))]

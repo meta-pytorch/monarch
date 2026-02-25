@@ -5,19 +5,15 @@ The `Reference` enum is a type-erased, unified representation of all addressable
 ```rust
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash, Named)]
 pub enum Reference {
-    World(WorldId),
     Proc(ProcId),
     Actor(ActorId),
     Port(PortId),
-    Gang(GangId),
 }
 ```
 Each variant wraps one of the concrete identifier types:
-- [`WorldId`](world_id.md)
 - [`ProcId`](proc_id.md)
 - [`ActorId`](actor_id.md)
 - [`PortId`](port_id.md)
-- [`GangId`](gang_id.md)
 
 ## Use Cases
 
@@ -37,7 +33,7 @@ let reference: Reference = actor_id.into();
 ```
 From a string:
 ```rust
-let reference: Reference = "training[0].logger[1][42]".parse().unwrap();
+let reference: Reference = "tcp:[::1]:1234,myproc,logger[1][42]".parse().unwrap();
 ```
 You can match on the reference to access the underlying type:
 ```rust
@@ -53,20 +49,18 @@ match reference {
 ```rust
 impl Reference {
     pub fn is_prefix_of(&self, other: &Reference) -> bool;
-    pub fn world_id(&self) -> Option<&WorldId>;
     pub fn proc_id(&self) -> Option<&ProcId>;
     pub fn actor_id(&self) -> Option<&ActorId>;
 }
 ```
-- `.is_prefix_of(other)` checks whether one reference is a prefix of another (e.g., `WorldId` -> `ProcId` -> `ActorId`).
-- `.world_id()` returns the reference's associated world, if any.
+- `.is_prefix_of(other)` checks whether one reference is a prefix of another (e.g., `Proc` -> `Actor` -> `Port`).
 - `.proc_id()` and `.actor_id()` return their corresponding IDs if applicable.
 
 ## Ordering
 
 Reference implements a total order across all variants. Ordering is defined lexicographically:
 ```rust
-(world_id, rank, actor_name, pid, port)
+(proc_id, actor_name, pid, port)
 ```
 This allows references to be used in sorted maps or for prefix-based routing schemes.
 
@@ -74,6 +68,6 @@ This allows references to be used in sorted maps or for prefix-based routing sch
 
 Reference implements:
 - `Display` — formats to the same syntax accepted by `FromStr`
-- `FromStr` — parses strings like `"world[1].actor[2][port]"`
+- `FromStr` — parses strings like `"tcp:[::1]:1234,myproc,actor[2][port]"`
 - `Ord`, `Eq`, `Hash` — useful in sorted/routed contexts
 - `Named` — used for port assignment, reflection, and runtime dispatch
