@@ -17,7 +17,7 @@ pipe = pipeline(
         "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
         "low_cpu_mem_usage": True,
     },
-    device_map="auto", 
+    device_map="auto",
 )
 
 # 3. Define your prompt
@@ -39,5 +39,5 @@ generated_text = outputs[0]["generated_text"][-1]["content"]
 print("-" * 50)
 print(f"Prompt: {messages[0]['content']}")
 print("-" * 50)
-print(f"Response:\n{generated_text}")
+print(f"Response: {generated_text.replace(chr(10), '↵')}")
 print("-" * 50)

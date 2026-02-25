@@ -2,6 +2,6 @@
 
 set -ex
 
-source /scratch/cpuhrsch/venv_torch/bin/activate
-cd /scratch/cpuhrsch/venv
+source /tmp/myenv/bin/activate
+cd /tmp/myenv
 python -c "import torch; print(torch.randn(123).cuda().mean())"

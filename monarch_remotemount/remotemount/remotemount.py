@@ -160,9 +160,15 @@ class FUSEActor(Actor):
 
     @endpoint
     def mount(self, mount_point):
-        # Only set FUSE_LIBRARY_PATH on mast (slurm sets it via job script)
-        if self.backend == "mast":
-            os.environ["FUSE_LIBRARY_PATH"] = "/packages/monarch_default_workspace/conda/lib/libfuse.so.2.9.9"
+        if "FUSE_LIBRARY_PATH" not in os.environ:
+            # Try common locations for libfuse2
+            for candidate in [
+                os.path.expanduser("~/download/temp_fuse/lib/x86_64-linux-gnu/libfuse.so.2"),
+                "/packages/monarch_default_workspace/conda/lib/libfuse.so.2.9.9",
+            ]:
+                if os.path.exists(candidate):
+                    os.environ["FUSE_LIBRARY_PATH"] = candidate
+                    break
         from fuse import FUSE, FuseOSError, Operations
         import errno
         from itertools import count
