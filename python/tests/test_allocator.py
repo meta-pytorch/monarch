@@ -231,6 +231,7 @@ class TestSetupActorInAllocator(unittest.IsolatedAsyncioTestCase):
             await proc_mesh.stop()
 
 
+@pytest.mark.oss_skip
 class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
