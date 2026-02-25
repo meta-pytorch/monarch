@@ -34,7 +34,6 @@ use crate::actor_mesh::SupervisableActorMesh;
 use crate::actor_mesh::to_hy_sel;
 use crate::buffers::FrozenBuffer;
 use crate::context::PyInstance;
-use crate::mailbox::PyMailbox;
 use crate::mailbox::PythonPortRef;
 use crate::metrics::ENDPOINT_BROADCAST_ERROR;
 use crate::metrics::ENDPOINT_BROADCAST_THROUGHPUT;
@@ -51,6 +50,7 @@ use crate::metrics::ENDPOINT_STREAM_ERROR;
 use crate::metrics::ENDPOINT_STREAM_LATENCY_US_HISTOGRAM;
 use crate::metrics::ENDPOINT_STREAM_THROUGHPUT;
 use crate::pickle::PendingMessage;
+use crate::pickle::unpickle;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PythonTask;
 use crate::shape::PyExtent;
@@ -59,7 +59,6 @@ use crate::supervision::Supervisable;
 use crate::supervision::SupervisionError;
 use crate::value_mesh::PyValueMesh;
 
-py_global!(pickle_unflatten, "monarch._src.actor.pickle", "unflatten");
 py_global!(get_context, "monarch._src.actor.actor_mesh", "context");
 py_global!(
     create_endpoint_message,
@@ -73,45 +72,13 @@ py_global!(
 );
 py_global!(make_future, "monarch._src.actor.future", "Future");
 
-/// An infinite iterator that yields the same mailbox value forever.
-/// Used as local_state for unflatten, replacing Python's itertools.repeat(mailbox).
-#[pyclass(
-    name = "RepeatMailbox",
-    module = "monarch._rust_bindings.monarch_hyperactor.endpoint"
-)]
-struct RepeatMailbox {
-    mailbox: Py<PyAny>,
-}
-
-#[pymethods]
-impl RepeatMailbox {
-    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
-    }
-
-    fn __next__(&self) -> Py<PyAny> {
-        self.mailbox.clone()
-    }
-}
-
-fn unflatten<'py>(
-    py: Python<'py>,
-    part: &Part,
-    mailbox: impl Into<PyMailbox>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let unflatten_fn = pickle_unflatten(py);
-    let mailbox: PyMailbox = mailbox.into();
-    let mailbox_iter = RepeatMailbox {
-        mailbox: mailbox.into_pyobject(py)?.unbind().into(),
-    };
-
-    unflatten_fn.call1((
+fn unpickle_from_part<'py>(py: Python<'py>, part: Part) -> PyResult<Bound<'py, PyAny>> {
+    unpickle(
+        py,
         FrozenBuffer {
-            inner: part.to_bytes(),
-        }
-        .into_pyobject(py)?,
-        mailbox_iter,
-    ))
+            inner: part.into_bytes(),
+        },
+    )
 }
 
 /// The type of endpoint operation being performed.
@@ -123,17 +90,6 @@ enum EndpointAdverb {
     CallOne,
     Choose,
     Stream,
-}
-
-fn to_endpoint_adverb(adverb: &str) -> PyResult<EndpointAdverb> {
-    match adverb {
-        "call_one" => Ok(EndpointAdverb::CallOne),
-        "choose" => Ok(EndpointAdverb::Choose),
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "only literals ['call_one', 'choose'] expected to be received from Python, got: {}",
-            adverb
-        ))),
-    }
 }
 
 /// RAII guard for recording endpoint call telemetry.
@@ -292,13 +248,7 @@ async fn collect_value(
             kind: PythonMessageKind::Exception { .. },
             message,
             ..
-        }) => Python::attach(|py| {
-            Err(PyErr::from_value(unflatten(
-                py,
-                &message,
-                instance.mailbox_for_py().clone(),
-            )?))
-        }),
+        }) => Python::attach(|py| Err(PyErr::from_value(unpickle_from_part(py, message)?))),
         RaceResult::Message(msg) => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unexpected message kind {:?}",
             msg.kind
@@ -361,7 +311,7 @@ async fn collect_valuemesh(
                 .into_iter()
                 .map(|msg| {
                     let m = msg.expect("all responses should be filled");
-                    unflatten(py, &m, instance.mailbox_for_py().clone()).map(|obj| obj.unbind())
+                    unpickle_from_part(py, m).map(|obj| obj.unbind())
                 })
                 .collect::<PyResult<_>>()?,
         )?
@@ -392,9 +342,9 @@ fn value_collector(
         )
         .await
         {
-            Ok((message, _)) => Python::attach(|py| {
-                unflatten(py, &message, instance.mailbox_for_py().clone()).map(|obj| obj.unbind())
-            }),
+            Ok((message, _)) => {
+                Python::attach(|py| unpickle_from_part(py, message).map(|obj| obj.unbind()))
+            }
             Err(e) => {
                 record_guard.mark_error();
                 Err(e)
@@ -460,10 +410,9 @@ impl PyValueStream {
             )
             .await
             {
-                Ok((message, _)) => Python::attach(|py| {
-                    unflatten(py, &message, instance.mailbox_for_py().clone())
-                        .map(|obj| obj.unbind())
-                }),
+                Ok((message, _)) => {
+                    Python::attach(|py| unpickle_from_part(py, message).map(|obj| obj.unbind()))
+                }
                 Err(e) => {
                     record_guard.mark_error();
                     Err(e)
@@ -1209,7 +1158,6 @@ impl Remote {
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyValueStream>()?;
-    module.add_class::<RepeatMailbox>()?;
     module.add_class::<ActorEndpoint>()?;
     module.add_class::<Remote>()?;
 
