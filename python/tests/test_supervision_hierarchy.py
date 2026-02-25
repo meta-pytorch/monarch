@@ -139,5 +139,5 @@ def test_nested_mesh_kills_actor_actor_error():
         actor.nested.call_one(error).get()
         print("ERRORED THE ACTOR")
     capture.assert_fault_occurred(
-        "actor <root>\\.<.*tests\\.test_supervision_hierarchy\\.Nest actor>\\.<.*tests\\.test_supervision_hierarchy\\.Lambda nested\\{'a_dim': 0/1\\}> failed"
+        "actor <root>\\.<.*(tests\\.)?test_supervision_hierarchy\\.Nest actor>\\.<.*(tests\\.)?test_supervision_hierarchy\\.Lambda nested\\{'a_dim': 0/1\\}> failed"
     )
