@@ -15,6 +15,14 @@
 #include <time.h>
 #include <unistd.h>
 
+// Force the linker to include the EFA provider from libefa.a.
+// Without this reference, the linker strips the EFA provider object
+// (which self-registers via __attribute__((constructor))) because
+// nothing else in the binary references its symbols directly.
+// The mlx5 provider is pulled in implicitly via mlx5dv_* function calls.
+extern const struct verbs_device_ops verbs_provider_efa;
+const void *_rdmaxcel_force_efa_provider = &verbs_provider_efa;
+
 // ============================================================================
 // RDMAXCEL QP Wrapper Implementation
 // ============================================================================
