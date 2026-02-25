@@ -22,6 +22,7 @@
 
 #![allow(dead_code)] // Allow until this is used outside of tests.
 
+use std::cell::RefCell;
 use std::cmp::Ord;
 use std::cmp::Ordering;
 use std::cmp::PartialOrd;
@@ -30,12 +31,15 @@ use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::num::ParseIntError;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
 use hyperactor_config::Flattrs;
+use lru::LruCache;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -712,6 +716,24 @@ impl fmt::Display for ActorId {
             ProcId::Ranked(..) => write!(f, "{}.{}[{}]", proc_id, name, pid),
             ProcId::Direct(..) => write!(f, "{},{}[{}]", proc_id, name, pid),
         }
+    }
+}
+
+impl ActorId {
+    /// Return the Display string as an `Arc<str>`, using a thread-local LRU cache keyed by value.
+    pub fn cached_to_string(&self) -> std::sync::Arc<str> {
+        thread_local! {
+            static CACHE: RefCell<LruCache<ActorId, Arc<str>>> = RefCell::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
+        }
+        CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(s) = cache.get(self) {
+                return Arc::clone(s);
+            }
+            let s: Arc<str> = self.to_string().into();
+            cache.put(self.clone(), Arc::clone(&s));
+            s
+        })
     }
 }
 impl<A: Referable> From<ActorRef<A>> for ActorId {

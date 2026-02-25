@@ -353,7 +353,7 @@ impl Proc {
 
     /// Common spawn logic for both root and child actors.
     /// Creates a tracing span with the correct actor_id before starting the actor.
-    #[hyperactor::instrument(fields(actor_id = actor_id.to_string(), actor_name = actor_id.name(), actor_type = std::any::type_name::<A>()))]
+    #[hyperactor::instrument(fields(actor_id = actor_id.cached_to_string().to_string(), actor_name = actor_id.name(), actor_type = std::any::type_name::<A>()))]
     fn spawn_inner<A: Actor>(
         &self,
         actor_id: ActorId,
@@ -390,7 +390,7 @@ impl Proc {
                 timestamp: self.clock().system_time_now(),
                 mesh_id: mesh_id_hash,
                 rank: actor_id.2 as u64,
-                full_name: actor_id.to_string(),
+                full_name: actor_id.cached_to_string().to_string(),
             });
         }
 
@@ -428,7 +428,7 @@ impl Proc {
             "actor_instance",
             actor_name = name,
             actor_type = std::any::type_name::<A>(),
-            actor_id = actor_id.to_string(),
+            actor_id = %actor_id.cached_to_string(),
         );
         let _guard = span.enter();
         let (instance, actor_loop_receivers, work_rx) =
@@ -948,7 +948,7 @@ impl<A: Actor> Instance<A> {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = ordered_channel(
-            actor_id.to_string(),
+            actor_id.cached_to_string().to_string(),
             hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
         );
         let ports: Arc<Ports<A>> = Arc::new(Ports::new(mailbox.clone(), work_tx));
@@ -1873,7 +1873,7 @@ impl InstanceCell {
         parent: Option<InstanceCell>,
         ports: Arc<dyn Any + Send + Sync>,
     ) -> Self {
-        let _ais = actor_id.to_string();
+        let _ais = actor_id.cached_to_string();
         let cell = Self {
             inner: Arc::new(InstanceCellState {
                 actor_id: actor_id.clone(),
