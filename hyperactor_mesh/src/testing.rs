@@ -23,12 +23,12 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::id;
 use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::WorkCell;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor::testing::ids::test_proc_id;
 use ndslice::Extent;
 use tokio::process::Command;
 use tokio::sync::OnceCell;
@@ -173,7 +173,7 @@ async fn fresh_instance_with_router() -> (
 ) {
     static INSTANCE: OnceLock<(Instance<TestRootClient>, DialMailboxRouter)> = OnceLock::new();
     let router = DialMailboxRouter::new();
-    let proc = Proc::new(id!(test[0]), router.boxed());
+    let proc = Proc::new(test_proc_id("0"), router.boxed());
     let (actor, _handle, supervision_rx, signal_rx, work_rx) =
         proc.actor_instance("testclient").unwrap();
     // Use the OnceLock to get a 'static lifetime for the instance.
