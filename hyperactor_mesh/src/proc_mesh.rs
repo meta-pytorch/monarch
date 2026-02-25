@@ -136,50 +136,6 @@ impl ProcRef {
         }
     }
 
-    /// Get the supervision events for one actor with the given name.
-    #[allow(dead_code)]
-    async fn actor_state(
-        &self,
-        cx: &impl context::Actor,
-        name: Name,
-    ) -> crate::Result<resource::State<ActorState>> {
-        let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
-        self.agent
-            .send(
-                cx,
-                resource::GetState::<ActorState> {
-                    name: name.clone(),
-                    reply: port.bind(),
-                },
-            )
-            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
-        let state = rx
-            .recv()
-            .await
-            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
-        if let Some(ref inner) = state.state {
-            let rank = inner.create_rank;
-            if rank == self.create_rank {
-                Ok(state)
-            } else {
-                Err(Error::CallError(
-                    self.agent.actor_id().clone(),
-                    anyhow::anyhow!(
-                        "Rank on mesh agent not matching for Actor {}: returned {}, expected {}",
-                        name,
-                        rank,
-                        self.create_rank
-                    ),
-                ))
-            }
-        } else {
-            Err(Error::CallError(
-                self.agent.actor_id().clone(),
-                anyhow::anyhow!("Actor {} does not exist", name),
-            ))
-        }
-    }
-
     pub fn proc_id(&self) -> &ProcId {
         &self.proc_id
     }
@@ -778,23 +734,45 @@ impl ProcMeshRef {
         ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone(), None)
     }
 
-    /// The supervision events of procs in this mesh.
+    /// Query the state of all actors in this mesh matching "name".
     pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
         name: Name,
     ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
+        self.actor_states_with_keepalive(cx, name, None).await
+    }
+
+    /// Query the state of all actors in this mesh matching "name".
+    /// If keepalive is Some, use a message that indicates to the recipient
+    /// that the owner of the mesh is still alive, along with the expiry time
+    /// after which the actor should be considered orphaned. Else, use a normal
+    /// state query.
+    pub(crate) async fn actor_states_with_keepalive(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+        keepalive: Option<Duration>,
+    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
         let agent_mesh = self.agent_mesh();
         let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
         // TODO: Use accumulation to get back a single value (representing whether
         // *any* of the actors failed) instead of a mesh.
-        agent_mesh.cast(
-            cx,
-            resource::GetState::<ActorState> {
-                name: name.clone(),
-                reply: port.bind(),
-            },
-        )?;
+        let get_state = resource::GetState::<ActorState> {
+            name: name.clone(),
+            reply: port.bind(),
+        };
+        if let Some(expires_after) = keepalive {
+            agent_mesh.cast(
+                cx,
+                resource::KeepaliveGetState {
+                    expires_after,
+                    get_state,
+                },
+            )?;
+        } else {
+            agent_mesh.cast(cx, get_state)?;
+        }
         let expected = self.ranks.len();
         let mut states = Vec::with_capacity(expected);
         let timeout = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);

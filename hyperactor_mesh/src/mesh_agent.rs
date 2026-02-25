@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::RwLockReadGuard;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
@@ -53,12 +54,24 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::attrs::declare_attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 use crate::Name;
 use crate::resource;
+
+declare_attrs! {
+    /// Whether to self kill actors, procs, and hosts whose owner is not reachable.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ORPHAN_TIMEOUT".to_string()),
+        Some("mesh_orphan_timeout".to_string()),
+    ))
+    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(0);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
@@ -180,7 +193,23 @@ struct ActorInstanceState {
     /// If true, the actor has been stopped. There is no way to restart it, a new
     /// actor must be spawned.
     stopped: bool,
+    /// The time at which the actor should be considered expired if no further
+    /// keepalive is received. `None` meaning it will never expire.
+    expiry_time: Option<tokio::time::Instant>,
 }
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Named,
+    Bind,
+    Unbind
+)]
+struct SelfCheck {}
 
 /// A mesh agent is responsible for managing procs in a [`ProcMesh`].
 ///
@@ -211,6 +240,7 @@ struct ActorInstanceState {
         resource::Stop { cast = true },
         resource::StopAll { cast = true },
         resource::GetState<ActorState> { cast = true },
+        resource::KeepaliveGetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
     ]
 )]
@@ -230,6 +260,8 @@ pub struct ProcMeshAgent {
     /// channel instead of calling process::exit directly, allowing the
     /// caller to perform graceful shutdown (e.g. draining the mailbox server).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
+    /// If set, check for expired actors whose keepalive has lapsed.
+    mesh_orphan_timeout: Option<Duration>,
 }
 
 impl ProcMeshAgent {
@@ -252,6 +284,9 @@ impl ProcMeshAgent {
             record_supervision_events: false,
             supervision_events: HashMap::new(),
             shutdown_tx: None,
+            // v0 procs don't have an owner they can check for, so they should
+            // never try to kill the children.
+            mesh_orphan_timeout: None,
         };
         let handle = proc.spawn::<Self>("mesh", agent)?;
         Ok((proc, handle))
@@ -261,6 +296,15 @@ impl ProcMeshAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
+        // We can't use Option<Duration> directly in config attrs because AttrValue
+        // is not implemented for Option<Duration>. So we use a zero timeout to
+        // indicate no timeout.
+        let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
+        let orphan_timeout = if orphan_timeout.is_zero() {
+            None
+        } else {
+            Some(orphan_timeout)
+        };
         let agent = ProcMeshAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
@@ -269,6 +313,7 @@ impl ProcMeshAgent {
             record_supervision_events: true,
             supervision_events: HashMap::new(),
             shutdown_tx,
+            mesh_orphan_timeout: orphan_timeout,
         };
         proc.spawn::<Self>("agent", agent)
     }
@@ -289,6 +334,9 @@ impl ProcMeshAgent {
 impl Actor for ProcMeshAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         self.proc.set_supervision_coordinator(this.port())?;
+        if let Some(delay) = &self.mesh_orphan_timeout {
+            this.self_message_with_delay(SelfCheck::default(), *delay)?;
+        }
         Ok(())
     }
 
@@ -475,8 +523,9 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
     ) -> Result<StopActorResult, anyhow::Error> {
         tracing::info!(
             name = "StopActor",
-            actor_id = %actor_id,
+            %actor_id,
             actor_name = actor_id.name(),
+            %reason,
         );
 
         if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
@@ -621,6 +670,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                     )),
                     create_rank,
                     stopped: false,
+                    expiry_time: None,
                 },
             );
             return Ok(());
@@ -645,6 +695,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
                     )
                     .await,
                 stopped: false,
+                expiry_time: None,
             },
         );
 
@@ -681,6 +732,8 @@ impl Handler<resource::Stop> for ProcMeshAgent {
         };
         let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         if let Some(actor_id) = actor_id {
+            // The orphaned actor SelfCheck will consult the stopped field before
+            // trying to stop any actor again.
             // While this function returns a Result, it never returns an Err
             // value so we can simply expect without any failure handling.
             self.stop_actor(cx, actor_id, timeout.as_millis() as u64, message.reason)
@@ -756,6 +809,7 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
                 spawn: Ok(actor_id),
                 create_rank,
                 stopped,
+                ..
             }) => {
                 if *stopped {
                     (*create_rank, resource::Status::Stopped)
@@ -822,6 +876,7 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
                 create_rank,
                 spawn: Ok(actor_id),
                 stopped,
+                ..
             }) => {
                 let supervision_events = self
                     .supervision_events
@@ -875,6 +930,32 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
     }
 }
 
+#[async_trait]
+impl Handler<resource::KeepaliveGetState<ActorState>> for ProcMeshAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: resource::KeepaliveGetState<ActorState>,
+    ) -> anyhow::Result<()> {
+        // Same impl as GetState, but additionally update the expiry time on the actor.
+        if let Ok(instance_state) = self
+            .actor_states
+            .get_mut(&message.get_state.name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "attempting to register a keepalive for an actor that doesn't exist: {}",
+                    message.get_state.name
+                )
+            })
+        {
+            instance_state.expiry_time = Some(RealClock.now() + message.expires_after);
+        }
+
+        // Forward the rest of the impl to GetState.
+        <Self as Handler<resource::GetState<ActorState>>>::handle(self, cx, message.get_state).await
+    }
+}
+
 /// A local handler to get a new client instance on the proc.
 /// This is used to create root client instances.
 #[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
@@ -912,6 +993,64 @@ impl Handler<GetProc> for ProcMeshAgent {
         GetProc { proc }: GetProc,
     ) -> anyhow::Result<()> {
         proc.send(cx, self.proc.clone())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<SelfCheck> for ProcMeshAgent {
+    async fn handle(&mut self, cx: &Context<Self>, _: SelfCheck) -> anyhow::Result<()> {
+        // Check each actor's expiry time. If the current time is past the expiry,
+        // stop the actor. This allows automatic cleanup when a controller disappears
+        // but owned resources remain. It is important that this check runs on the
+        // same proc as the child actor itself, since the controller could be dead or
+        // disconnected.
+        let Some(duration) = &self.mesh_orphan_timeout else {
+            return Ok(());
+        };
+        let duration = duration.clone();
+        let now = RealClock.now();
+
+        // Collect expired actors before mutating, since stop_actor borrows &mut self.
+        let expired: Vec<(Name, ActorId)> = self
+            .actor_states
+            .iter()
+            .filter_map(|(name, state)| {
+                let expiry = state.expiry_time?;
+                // If the actor was already stopped we don't need to stop it again.
+                if now > expiry && !state.stopped {
+                    if let Ok(actor_id) = &state.spawn {
+                        return Some((name.clone(), actor_id.clone()));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if !expired.is_empty() {
+            tracing::info!(
+                "stopping {} orphaned actors past their keepalive expiry",
+                expired.len(),
+            );
+        }
+
+        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
+        for (name, actor_id) in expired {
+            if let Some(state) = self.actor_states.get_mut(&name) {
+                state.stopped = true;
+            }
+            self.stop_actor(
+                cx,
+                actor_id,
+                timeout.as_millis() as u64,
+                "orphaned".to_string(),
+            )
+            .await
+            .expect("stop_actor cannot fail");
+        }
+
+        // Reschedule.
+        cx.self_message_with_delay(SelfCheck::default(), duration)?;
         Ok(())
     }
 }

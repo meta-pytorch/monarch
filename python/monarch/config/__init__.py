@@ -78,6 +78,7 @@ def configure(
     proc_stop_max_idle: str | None = None,
     get_proc_state_max_idle: str | None = None,
     actor_queue_dispatch: bool | None = None,
+    mesh_orphan_timeout: str | None = None,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -242,6 +243,8 @@ def configure(
         params["get_proc_state_max_idle"] = get_proc_state_max_idle
     if actor_queue_dispatch is not None:
         params["actor_queue_dispatch"] = actor_queue_dispatch
+    if mesh_orphan_timeout is not None:
+        params["mesh_orphan_timeout"] = mesh_orphan_timeout
 
     _configure(**params)
 
