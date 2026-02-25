@@ -1047,13 +1047,14 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use hyperactor::id;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::Mailbox;
     use hyperactor::mailbox::MailboxSender;
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
+    use hyperactor::testing::ids::test_actor_id;
+    use hyperactor::testing::ids::test_port_id;
     use hyperactor_config::Flattrs;
 
     use super::*;
@@ -1088,8 +1089,8 @@ mod tests {
     // Helper function to create a test message envelope
     fn envelope(data: u64) -> MessageEnvelope {
         MessageEnvelope::serialize(
-            id!(world[0].sender),
-            id!(world[0].receiver[0][1]),
+            test_actor_id("world_0", "sender"),
+            test_port_id("world_0", "receiver", 1),
             &data,
             Flattrs::new(),
         )
@@ -1097,7 +1098,7 @@ mod tests {
     }
 
     fn return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
         let (port, _receiver) = mbox.open_port::<Undeliverable<MessageEnvelope>>();
         port
     }
