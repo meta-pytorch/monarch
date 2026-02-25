@@ -77,7 +77,7 @@ use hyperactor_mesh::Name;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::global_root_client;
 use hyperactor_mesh::host_mesh::HostMesh;
-use monarch_rdma::IbverbsConfig;
+use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
@@ -682,26 +682,26 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let devices = monarch_rdma::get_all_devices();
     // Configure RDMA for the two actors
     // For H100 machines, we use different devices for better performance
-    let device_1_ibv_config: IbverbsConfig;
-    let device_2_ibv_config: IbverbsConfig;
+    let device_1_ibv_config: IbvConfig;
+    let device_2_ibv_config: IbvConfig;
 
     // Check if we have enough devices for optimal configuration
     if devices.len() > 4 {
         // Use separate backend devices for H100 configuration
-        device_1_ibv_config = IbverbsConfig {
+        device_1_ibv_config = IbvConfig {
             device: devices.clone().into_iter().next().unwrap(),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
-        device_2_ibv_config = IbverbsConfig {
+        device_2_ibv_config = IbvConfig {
             device: devices.clone().into_iter().nth(3).unwrap(),
             ..Default::default()
         };
     } else {
         // For other configurations, use default settings
-        device_1_ibv_config = IbverbsConfig::default();
-        device_2_ibv_config = IbverbsConfig::default();
+        device_1_ibv_config = IbvConfig::default();
+        device_2_ibv_config = IbvConfig::default();
     }
 
     let instance = global_root_client();

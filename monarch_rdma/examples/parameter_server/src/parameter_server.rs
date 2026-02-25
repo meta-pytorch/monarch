@@ -76,7 +76,7 @@ use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::global_root_client;
-use monarch_rdma::IbverbsConfig;
+use monarch_rdma::IbvConfig;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
@@ -445,29 +445,29 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // In practice, this toy example could have a single ibverbs device shared across
     // all entities, but this serves to demonstrate that we can specify the underlying
     // device used.
-    let ps_ibv_config: IbverbsConfig;
-    let worker_ibv_config: IbverbsConfig;
+    let ps_ibv_config: IbvConfig;
+    let worker_ibv_config: IbvConfig;
 
     // Quick check for H100
     if devices.len() > 4 {
-        ps_ibv_config = IbverbsConfig {
+        ps_ibv_config = IbvConfig {
             device: devices.clone().into_iter().next().unwrap(),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
-        worker_ibv_config = IbverbsConfig {
+        worker_ibv_config = IbvConfig {
             device: devices.clone().into_iter().nth(3).unwrap(),
             ..Default::default()
         };
     } else {
         // For other configurations, use default settings (parameter server + workers all use the same ibv device)
         tracing::info!(
-            "using default IbverbsConfig as {} devices were found (expected > 4 for H100)",
+            "using default IbvConfig as {} devices were found (expected > 4 for H100)",
             devices.len()
         );
-        ps_ibv_config = IbverbsConfig::default();
-        worker_ibv_config = IbverbsConfig::default();
+        ps_ibv_config = IbvConfig::default();
+        worker_ibv_config = IbvConfig::default();
     }
 
     // As normal, create a proc mesh for the parameter server.

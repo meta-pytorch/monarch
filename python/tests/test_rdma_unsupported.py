@@ -52,6 +52,6 @@ async def test_rdma_manager_creation_fails_when_unsupported():
 
     error_message = str(exc_info.value)
     assert (
-        "Cannot create RdmaManagerActor because RDMA is not supported on this machine"
+        "Cannot create IbvManagerActor because RDMA is not supported on this machine"
         in error_message
     ), f"Expected specific error message not found. Actual error: {error_message}"
