@@ -18,6 +18,7 @@ This example shows:
 - How to provision GPU workers on Kubernetes using ``KubernetesJob`` with Python-native provisioning
 - How to connect to Kubernetes pods using ``KubernetesJob``
 - How to run multi-node DDP training using ``SPMDActor``
+- How to manage resources and gang scheduling with Kueue
 
 Prerequisites
 -------------
@@ -44,6 +45,24 @@ RBAC permissions to create CRDs and watch pods::
     kubectl cp train.py monarch-tests/ddp-controller:/tmp/train.py
     kubectl exec -it ddp-controller -n monarch-tests -- \\
         python /tmp/kubernetes_ddp.py --provision --num_hosts 2 --gpus_per_host 4
+
+Kueue Gang Scheduling
+---------------------
+
+To manage resources and ensure gang scheduling (where all worker pods start
+only when all resources are available), you can use [Kueue](https://kueue.sigs.k8s.io/). 
+First, follow the [instructions](https://kueue.sigs.k8s.io/docs/installation/) to install Kueue. 
+Then apply the quota and queue
+configuration::
+
+    kubectl apply -f manifests/kueue_quota.yaml
+
+Run the training script with the ``--queue`` argument to associate the
+provisioned mesh with the local queue::
+
+    kubectl exec -it ddp-controller -n monarch-tests -- \
+        python /tmp/kubernetes_ddp.py --provision \
+            --num_hosts 2 --gpus_per_host 4 --queue user-queue
 
 YAML Manifest Provisioning
 ---------------------------
@@ -83,6 +102,21 @@ Deploy with::
 
 See the `complete manifest on GitHub <https://github.com/meta-pytorch/monarch/tree/main/docs/source/examples/ddp/manifests>`_
 including RBAC configuration and controller pod.
+
+Kueue Gang Scheduling
+---------------------
+
+To manage resources and ensure gang scheduling (where all worker pods start
+only when all resources are available), you can use [Kueue](https://kueue.sigs.k8s.io/). 
+First, follow the [instructions](https://kueue.sigs.k8s.io/docs/installation/) to install Kueue. 
+Then apply the quota and queue
+configuration::
+
+    kubectl apply -f manifests/kueue_quota.yaml
+
+Then uncomment the kueue labels in ``manifests/ddp_mesh.yaml`` and apply it::
+
+    kubectl apply -f manifests/ddp_mesh.yaml
 
 Training Script
 ---------------
@@ -244,14 +278,16 @@ async def main(
     gpus_per_host: int = 4,
     mesh_name: str = "ddpmesh",
     provision: bool = False,
+    queue: str | None = None,
 ) -> None:
     """Run DDP training on Kubernetes.
-
+ 
     Args:
         num_hosts: Number of worker pods (must match MonarchMesh replicas)
         gpus_per_host: GPUs per pod (must match nvidia.com/gpu in MonarchMesh)
         mesh_name: Name of the MonarchMesh resource
         provision: If True, create MonarchMesh CRDs from Python
+        queue: Optional Kueue local queue name
     """
     print("=" * 60)
     print("Kubernetes DDP Example")
@@ -268,11 +304,13 @@ async def main(
     # it attaches to pre-provisioned pods.
 
     k8s_job = KubernetesJob(namespace="monarch-tests")
+    labels = {"kueue.x-k8s.io/queue-name": queue} if queue else None
     if provision:
         k8s_job.add_mesh(
             mesh_name,
             num_replicas=num_hosts,
             pod_spec=build_gpu_pod_spec(gpus_per_host),
+            labels=labels,
         )
     else:
         k8s_job.add_mesh(mesh_name, num_replicas=num_hosts)
@@ -403,7 +441,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
+    parser.add_argument(
+        "--queue",
+        type=str,
+        default=None,
+        help="Kueue local queue name",
+    )
     args = parser.parse_args()
     asyncio.run(
-        main(args.num_hosts, args.gpus_per_host, args.mesh_name, args.provision)
+        main(
+            args.num_hosts,
+            args.gpus_per_host,
+            args.mesh_name,
+            args.provision,
+            args.queue,
+        )
     )
