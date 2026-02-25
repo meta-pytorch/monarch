@@ -376,9 +376,3 @@ def hosts_from_config(name: str) -> HostMesh:
         ProcessAllocator(*_get_bootstrap_args()),
         bootstrap_cmd=_bootstrap_cmd(),
     )
-
-
-def host_mesh_from_alloc(
-    name: str, extent: Extent, allocator: AllocateMixin, constraints: AllocConstraints
-) -> HostMesh:
-    return HostMesh.allocate_nonblocking(name, extent, allocator, constraints)
