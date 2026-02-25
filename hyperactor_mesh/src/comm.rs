@@ -707,6 +707,14 @@ mod tests {
     use crate::test_utils::local_host_mesh;
     use crate::testing;
 
+    // Helper to look up the rank for a given actor ID using the rank_lookup table.
+    fn lookup_rank(actor_id: &hyperactor::ActorId, rank_lookup: &HashMap<ProcId, usize>) -> usize {
+        let proc_id = actor_id.proc_id();
+        *rank_lookup
+            .get(proc_id)
+            .unwrap_or_else(|| panic!("proc rank not found for {}", proc_id))
+    }
+
     struct Edge<T> {
         from: T,
         to: T,
@@ -835,17 +843,6 @@ mod tests {
         assert_eq!(paths.0, expected);
     }
 
-    fn proc_rank(actor_id: &ActorId, rank_lookup: &HashMap<ProcId, usize>) -> Index {
-        let proc_id = actor_id.proc_id();
-        match actor_id.proc_id().rank() {
-            Some(rank) => rank,
-            None => rank_lookup
-                .get(proc_id)
-                .copied()
-                .expect("proc rank not found"),
-        }
-    }
-
     //  Given a port tree,
     //     * remove the client port, i.e. the 1st element of the path;
     //     * verify all remaining ports are comm actor ports;
@@ -884,10 +881,10 @@ mod tests {
                     .into_iter()
                     .map(|p| {
                         assert!(p.actor_id().name().contains("comm"));
-                        proc_rank(p.actor_id(), rank_lookup)
+                        lookup_rank(p.actor_id(), rank_lookup)
                     })
                     .collect();
-                (proc_rank(&dst.into_actor_id(), rank_lookup), actor_path)
+                (lookup_rank(dst.actor_id(), rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
@@ -958,18 +955,18 @@ mod tests {
     ) {
         // Reply from each dest actor. The replies should be received by client.
         {
-            for (i, (dest_actor, (reply_to1, reply_to2))) in
+            for (rank, (dest_actor, (reply_to1, reply_to2))) in
                 ranks.iter().zip(reply_tos.iter()).enumerate()
             {
-                let value = i as u64;
-                reply_to1.send(instance, value).unwrap();
+                let rank_u64 = rank as u64;
+                reply_to1.send(instance, rank_u64).unwrap();
                 let my_reply = MyReply {
                     sender: dest_actor.actor_id().clone(),
-                    value,
+                    value: rank_u64,
                 };
                 reply_to2.send(instance, my_reply.clone()).unwrap();
 
-                assert_eq!(reply1_rx.recv().await.unwrap(), value);
+                assert_eq!(reply1_rx.recv().await.unwrap(), rank_u64);
                 assert_eq!(reply2_rx.recv().await.unwrap(), my_reply);
             }
         }

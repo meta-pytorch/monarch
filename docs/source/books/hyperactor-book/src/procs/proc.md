@@ -24,7 +24,7 @@ From `Host::new()`:
 ```rust
 let router = DialMailboxRouter::new();
 
-let service_proc_id = ProcId::Direct(
+let service_proc_id = ProcId(
     frontend_addr.clone(),
     "service".to_string()
 );
@@ -33,23 +33,23 @@ let service_proc = Proc::new(service_proc_id, router.boxed());
 ```
 
 Here:
-- The proc is identified by `ProcId::Direct(frontend_addr, "service")`
+- The proc is identified by `ProcId(frontend_addr, "service")`
 - All outbound messages use the `DialMailboxRouter` as their forwarder
 - The router will look up target procs and dial their backend addresses
 
-## ProcId: Direct Addressing
+## ProcId: Addressing
 
-Procs are identified using `ProcId::Direct`:
+Procs are identified using `ProcId`:
 
 ```rust
-ProcId::Direct(ChannelAddr, String)
+ProcId(ChannelAddr, String)
 ```
 
 Example:
 
 ```rust
 let addr: ChannelAddr = "unix:@abc123".parse()?;
-let proc_id = ProcId::Direct(addr, "service".to_string());
+let proc_id = ProcId(addr, "service".to_string());
 ```
 
 The proc is addressed by:
