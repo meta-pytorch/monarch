@@ -513,6 +513,21 @@ def test_all_params_together():
     assert config["actor_queue_dispatch"] is False
 
 
+def test_channel_transport_pickle() -> None:
+    import pickle
+
+    for transport in (
+        ChannelTransport.Unix,
+        ChannelTransport.TcpWithLocalhost,
+        ChannelTransport.TcpWithHostname,
+        ChannelTransport.MetaTlsWithHostname,
+        ChannelTransport.MetaTlsWithIpV6,
+        ChannelTransport.Tls,
+        ChannelTransport.Local,
+    ):
+        assert pickle.loads(pickle.dumps(transport)) == transport
+
+
 def test_params_type_errors():
     """Test that type errors are raised for incorrect parameter types."""
     # Duration param with wrong type
