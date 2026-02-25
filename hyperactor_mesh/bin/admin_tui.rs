@@ -1348,6 +1348,7 @@ where
 }
 
 /// Find a node by reference using algebraic fold.
+#[cfg(test)]
 fn find_node_by_ref<'a>(node: &'a TreeNode, reference: &str) -> Option<&'a TreeNode> {
     fold_tree(node, &|n, child_results| {
         if n.reference == reference {
@@ -1732,9 +1733,8 @@ fn derive_label(payload: &NodePayload) -> String {
             ..
         } => {
             let short = ProcId::from_str(proc_name)
-                .ok()
-                .and_then(|pid| pid.name().cloned())
-                .unwrap_or_else(|| proc_name.clone());
+                .map(|pid| pid.name().to_string())
+                .unwrap_or_else(|_| proc_name.clone());
             format!("{}  ({} actors)", short, num_actors)
         }
         NodeProperties::Actor { .. } => match ActorId::from_str(&payload.identity) {
@@ -2407,7 +2407,7 @@ fn render_host_detail(
     for child in &payload.children {
         let short = ProcId::from_str(child)
             .ok()
-            .and_then(|pid| pid.name().cloned())
+            .map(|pid| pid.name().to_string())
             .unwrap_or_else(|| child.clone());
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),

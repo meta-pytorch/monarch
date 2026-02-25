@@ -306,8 +306,8 @@ mod tests {
 
     use super::test_utils::TestLog;
     use super::*;
-    use crate::id;
     use crate::mailbox::log::SeqId;
+    use crate::testing::ids::test_actor_id;
 
     #[tokio::test]
     async fn test_local_write_ahead_log_basic() {
@@ -345,7 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_durable_mailbox_sender() {
-        let inner = Mailbox::new_detached(id!(world0[0].actor0));
+        let inner = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
         let write_ahead_log = TestLog::new();
         let mut durable_mbox = DurableMailboxSender::new(write_ahead_log.clone(), inner.clone());
 

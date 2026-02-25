@@ -28,9 +28,7 @@ use hyperactor::channel::serve;
 use hyperactor::mailbox::Mailbox;
 use hyperactor::mailbox::PortSender;
 use hyperactor::mailbox::monitored_return_handle;
-use hyperactor::reference::ActorId;
-use hyperactor::reference::ProcId;
-use hyperactor::reference::WorldId;
+use hyperactor::testing::ids::test_actor_id;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_multipart::Part;
@@ -252,8 +250,7 @@ fn bench_mailbox_message_sizes(c: &mut Criterion) {
         group.bench_function(BenchmarkId::from_parameter(size), move |b| {
             let mut b = b.to_async(Runtime::new().unwrap());
             b.iter_custom(|iters| async move {
-                let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
-                let actor_id = ActorId(proc_id, "actor".to_string(), 0);
+                let actor_id = test_actor_id("world_0", "actor");
                 let mbox = Mailbox::new_detached(actor_id);
                 let (port, mut receiver) = mbox.open_port::<Message>();
                 let port = port.bind();
@@ -283,8 +280,7 @@ fn bench_mailbox_message_rates(c: &mut Criterion) {
         group.bench_function(format!("rate_{}mps", rate), move |b| {
             let mut b = b.to_async(Runtime::new().unwrap());
             b.iter_custom(|iters| async move {
-                let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
-                let actor_id = ActorId(proc_id, "actor".to_string(), 0);
+                let actor_id = test_actor_id("world_0", "actor");
                 let mbox = Mailbox::new_detached(actor_id);
                 let (port, mut receiver) = mbox.open_port::<Message>();
                 let port = port.bind();
