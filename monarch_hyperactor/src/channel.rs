@@ -14,6 +14,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TcpMode;
 use hyperactor::channel::TlsAddr;
 use hyperactor::channel::TlsMode;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
@@ -44,6 +45,24 @@ pub enum PyChannelTransport {
 impl PyChannelTransport {
     fn get(&self) -> Self {
         self.clone()
+    }
+
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let getattr_fn = py.import("builtins")?.getattr("getattr")?;
+        let variant_name = match self {
+            PyChannelTransport::TcpWithLocalhost => "TcpWithLocalhost",
+            PyChannelTransport::TcpWithHostname => "TcpWithHostname",
+            PyChannelTransport::MetaTlsWithHostname => "MetaTlsWithHostname",
+            PyChannelTransport::MetaTlsWithIpV6 => "MetaTlsWithIpV6",
+            PyChannelTransport::Tls => "Tls",
+            PyChannelTransport::Local => "Local",
+            PyChannelTransport::Unix => "Unix",
+        };
+        let cls = py
+            .import("monarch._rust_bindings.monarch_hyperactor.channel")?
+            .getattr("ChannelTransport")?;
+        let args = (cls, variant_name).into_bound_py_any(py)?;
+        Ok((getattr_fn, args))
     }
 }
 
