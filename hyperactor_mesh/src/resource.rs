@@ -354,6 +354,52 @@ where
     }
 }
 
+/// Same as GetState, but additionally tells the receiver that the owner is still alive.
+/// If the receiver does not receive this message for a while, it might assume the owner is dead.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct KeepaliveGetState<S> {
+    /// The time at which the actor should be considered expired if no further
+    /// keepalive is received (now + duration because system time doesn't make sense
+    /// to send across multiple machines).
+    pub expires_after: Duration,
+    pub get_state: GetState<S>,
+}
+wirevalue::register_type!(KeepaliveGetState<ProcState>);
+wirevalue::register_type!(KeepaliveGetState<ActorState>);
+
+// Cannot derive Bind and Unbind for this generic, implement manually.
+impl<S> Unbind for KeepaliveGetState<S>
+where
+    S: RemoteMessage,
+    S: Unbind,
+{
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.get_state.unbind(bindings)
+    }
+}
+
+impl<S> Bind for KeepaliveGetState<S>
+where
+    S: RemoteMessage,
+    S: Bind,
+{
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.get_state.bind(bindings)
+    }
+}
+
+impl<S> Clone for KeepaliveGetState<S>
+where
+    S: RemoteMessage,
+{
+    fn clone(&self) -> Self {
+        Self {
+            expires_after: self.expires_after.clone(),
+            get_state: self.get_state.clone(),
+        }
+    }
+}
+
 /// List the set of resources managed by the controller.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
 pub struct List {
