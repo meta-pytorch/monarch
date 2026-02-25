@@ -4,28 +4,23 @@
 name = "monarch_hyperactor"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 
 [[bin]]
 name = "monarch_hyperactor_test_bootstrap"
 path = "test/bootstrap.rs"
-edition = "2024"
-
-[[bin]]
-name = "process_allocator"
-edition = "2024"
 
 [[test]]
 name = "test_monarch_hyperactor"
 path = "tests/lib.rs"
 
 [dependencies]
-anyhow = "1.0.98"
-async-once-cell = "0.4.2"
+anyhow = "1.0.101"
+async-once-cell = "0.4.4"
 async-trait = "0.1.86"
 bincode = "1.3.3"
-bytes = { version = "1.10", features = ["serde"] }
+bytes = { version = "1.11.1", features = ["serde"] }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 erased-serde = "0.4.9"
 fastrand = "2.1.1"
@@ -46,19 +41,22 @@ ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 once_cell = "1.21"
 opentelemetry = "0.29"
-pyo3 = { version = "0.24", features = ["anyhow", "multiple-pymethods"] }
-pyo3-async-runtimes = { version = "0.24", features = ["attributes", "tokio-runtime"] }
+pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
+pyo3-async-runtimes = { version = "0.26", features = ["attributes", "tokio-runtime"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
-serde_bytes = "0.11"
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 tempfile = "3.22"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
-tokio-util = { version = "0.7.15", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+typeuri = { version = "0.0.0", path = "../typeuri" }
+wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [dev-dependencies]
 buck-resources = "1"
-dir-diff = "0.3"
+dir-diff = "0.3.3"
+
+[build-dependencies]
+build_utils = { path = "../build_utils" }
 
 [features]
 default = []

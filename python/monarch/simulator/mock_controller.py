@@ -23,9 +23,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import (  # @manual=//monarc
     ActorId,
 )
 from monarch._src.actor.shape import iter_ranks, NDSlice, Slices as Ranks
-
 from monarch.common import messages
-
 from monarch.common.controller_api import DebuggerMessage, LogMessage, MessageResult
 from monarch.common.device_mesh import no_mesh
 from monarch.common.invocation import Invocation, RemoteException, Seq
@@ -191,12 +189,26 @@ class MockController:
                 tensors, unflatten = flatten(
                     fake_result, lambda x: isinstance(x, torch.Tensor)
                 )
-                fake_result = unflatten(
-                    torch.zeros(
-                        t.size(), dtype=t.dtype, device=t.device, requires_grad=False
-                    )
-                    for t in tensors
-                )
+
+                def create_zeros(t: torch.Tensor) -> torch.Tensor:
+                    """Create zeros tensor, falling back to CPU if CUDA fails."""
+                    try:
+                        return torch.zeros(
+                            t.size(),
+                            dtype=t.dtype,
+                            device=t.device,
+                            requires_grad=False,
+                        )
+                    except Exception:
+                        # CUDA not functional, use CPU instead
+                        return torch.zeros(
+                            t.size(),
+                            dtype=t.dtype,
+                            device="cpu",
+                            requires_grad=False,
+                        )
+
+                fake_result = unflatten(create_zeros(t) for t in tensors)
             for _ in iter_ranks(ranks):
                 self.responses.append(
                     self.history.future_completed(msg.ident, fake_result)

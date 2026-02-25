@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::channel::MetaTlsAddr;
+use hyperactor::channel::TlsAddr;
 use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::AllocConstraints;
 use hyperactor_mesh::alloc::AllocSpec;
@@ -27,9 +27,8 @@ use hyperactor_mesh::alloc::ProcessAllocator;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAlloc;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocHost;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocInitializer;
-use hyperactor_mesh::alloc::sim::SimAllocator;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
-use hyperactor_mesh::proc_mesh::default_transport;
+use hyperactor_mesh::transport::default_transport;
 use ndslice::Extent;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -38,9 +37,11 @@ use pyo3::types::PyDict;
 use tokio::process::Command;
 
 use crate::channel::PyChannelAddr;
+use crate::host_mesh::PyBootstrapCommand;
 use crate::pytokio::PyPythonTask;
 use crate::runtime::get_tokio_runtime;
-use crate::v1::host_mesh::PyBootstrapCommand;
+use crate::runtime::monarch_with_gil;
+use crate::runtime::monarch_with_gil_blocking;
 
 /// Convert a PyDict to an Extent
 fn pydict_to_extent(shape: &Bound<'_, PyDict>) -> PyResult<Extent> {
@@ -289,32 +290,6 @@ impl PyLocalAllocator {
 }
 
 #[pyclass(
-    name = "SimAllocatorBase",
-    module = "monarch._rust_bindings.monarch_hyperactor.alloc",
-    subclass
-)]
-pub struct PySimAllocator;
-
-#[pymethods]
-impl PySimAllocator {
-    #[new]
-    fn new() -> Self {
-        PySimAllocator {}
-    }
-
-    fn allocate_nonblocking(&self, spec: &PyAllocSpec) -> PyResult<PyPythonTask> {
-        let spec = spec.into();
-        PyPythonTask::new(async move {
-            SimAllocator
-                .allocate(spec)
-                .await
-                .map(|inner| PyAlloc::new(Box::new(inner), None))
-                .map_err(|e| PyRuntimeError::new_err(format!("{}", e)))
-        })
-    }
-}
-
-#[pyclass(
     name = "ProcessAllocatorBase",
     module = "monarch._rust_bindings.monarch_hyperactor.alloc",
     subclass
@@ -379,15 +354,16 @@ impl PyRemoteProcessAllocInitializer {
     ///   `monarch/python/monarch/_rust_bindings/monarch_hyperactor/alloc.pyi`
     async fn py_initialize_alloc(&self) -> PyResult<Vec<String>> {
         let args = (&self.constraints.match_labels,);
-        let coro = Python::with_gil(|py| -> PyResult<PyObject> {
+        let coro = monarch_with_gil(|py| -> PyResult<Py<PyAny>> {
             self.py_inner
                 .bind(py)
                 .call_method1("initialize_alloc", args)
                 .map(|x| x.unbind())
-        })?;
+        })
+        .await?;
         let r = get_tokio_runtime().spawn_blocking(move || -> PyResult<Vec<String>> {
             // call the function as implemented in python
-            Python::with_gil(|py| {
+            monarch_with_gil_blocking(|py| {
                 let asyncio = py.import("asyncio").unwrap();
                 let addrs = asyncio.call_method1("run", (coro,))?;
                 let addrs: PyResult<Vec<String>> = addrs.extract();
@@ -426,8 +402,7 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
             .map(|channel_addr| {
                 let addr = ChannelAddr::from_str(channel_addr)?;
                 let (id, hostname) = match addr {
-                    ChannelAddr::Tcp(socket)
-                    | ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket)) => {
+                    ChannelAddr::Tcp(socket) | ChannelAddr::MetaTls(TlsAddr::Socket(socket)) => {
                         if socket.is_ipv6() {
                             // ipv6 addresses need to be wrapped in square-brackets [ipv6_addr]
                             // since the return value here gets concatenated with 'port' to make up a sockaddr
@@ -438,7 +413,7 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
                             (ipv4_addr.clone(), ipv4_addr.clone())
                         }
                     }
-                    ChannelAddr::MetaTls(MetaTlsAddr::Host { hostname, .. }) => {
+                    ChannelAddr::MetaTls(TlsAddr::Host { hostname, .. }) => {
                         (hostname.clone(), hostname.clone())
                     }
                     ChannelAddr::Unix(_) => (addr.to_string(), addr.to_string()),
@@ -464,7 +439,7 @@ impl Clone for PyRemoteAllocator {
     fn clone(&self) -> Self {
         Self {
             world_id: self.world_id.clone(),
-            initializer: Python::with_gil(|py| Py::clone_ref(&self.initializer, py)),
+            initializer: monarch_with_gil_blocking(|py| Py::clone_ref(&self.initializer, py)),
         }
     }
 }
@@ -473,7 +448,7 @@ impl Allocator for PyRemoteAllocator {
     type Alloc = RemoteProcessAlloc;
 
     async fn allocate(&mut self, spec: AllocSpec) -> Result<Self::Alloc, AllocatorError> {
-        let py_inner = Python::with_gil(|py| Py::clone_ref(&self.initializer, py));
+        let py_inner = monarch_with_gil(|py| Py::clone_ref(&self.initializer, py)).await;
         let constraints = spec.constraints.clone();
         let initializer = PyRemoteProcessAllocInitializer {
             py_inner,
@@ -487,7 +462,7 @@ impl Allocator for PyRemoteAllocator {
 
         let mut spec = spec;
         if spec.transport != transport {
-            Python::with_gil(|py| -> PyResult<()> {
+            monarch_with_gil(|py| -> PyResult<()> {
                 // TODO(slurye): Temporary until we start enforcing that people have properly
                 // configured the default transport.
                 py.import("warnings")?.getattr("warn")?.call1((format!(
@@ -503,6 +478,7 @@ impl Allocator for PyRemoteAllocator {
                 spec.transport = transport;
                 Ok(())
             })
+            .await
             .map_err(|e| AllocatorError::Other(e.into()))?;
         }
 
@@ -551,7 +527,6 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
     hyperactor_mod.add_class::<PyAllocSpec>()?;
     hyperactor_mod.add_class::<PyProcessAllocator>()?;
     hyperactor_mod.add_class::<PyLocalAllocator>()?;
-    hyperactor_mod.add_class::<PySimAllocator>()?;
     hyperactor_mod.add_class::<PyRemoteAllocator>()?;
 
     Ok(())

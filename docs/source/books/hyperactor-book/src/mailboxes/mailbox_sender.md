@@ -8,10 +8,25 @@ This section introduces:
 - The `PortSender` extension
 - Standard implementations: `BoxedMailboxSender`, `PanickingMailboxSender`, `UndeliverableMailboxSender`
 
-`MailboxSender`s can send messages through ports to mailboxes.
+`MailboxSender`s can send messages through ports to mailboxes. The trait provides a unified interface for message delivery with TTL (time-to-live) handling:
 ```rust
-pub trait MailboxSender: Send + Sync + Debug + Any {
+pub trait MailboxSender: Send + Sync + Any {
+    /// Apply hop semantics (TTL decrement; undeliverable on 0), then
+    /// delegate to transport.
     fn post(
+        &self,
+        mut envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        if let Err(err) = envelope.dec_ttl_or_err() {
+            envelope.undeliverable(err, return_handle);
+            return;
+        }
+        self.post_unchecked(envelope, return_handle);
+    }
+
+    /// Raw transport: no TTL policy.
+    fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
@@ -65,13 +80,13 @@ All `MailboxSender`s are `PortSender`s too:
 ```rust
 impl<T: ?Sized + MailboxSender> PortSender for T {}
 ```
-This is a perpetually closed mailbox sender. It panics if any messages are posted on it. Some uses can be found for it here and there.
+This is a perpetually closed mailbox sender. It panics if any messages are posted on it. Useful for tests or detached mailboxes.
 ```rust
 #[derive(Debug, Clone)]
 pub struct PanickingMailboxSender;
 
 impl MailboxSender for PanickingMailboxSender {
-    fn post(
+    fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
         _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
@@ -80,18 +95,23 @@ impl MailboxSender for PanickingMailboxSender {
     }
 }
 ```
-This is a mailbox sender of last resort for undeliverable messages that writes to the error log:
+This is a mailbox sender of last resort for undeliverable messages that logs the failure:
 ```rust
 #[derive(Debug)]
 pub struct UndeliverableMailboxSender;
 
 impl MailboxSender for UndeliverableMailboxSender {
-    fn post(
+    fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
         _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::error!("message not delivered: {}", envelope);
+        tracing::error!(
+            name = "undelivered_message_abandoned",
+            actor_id = envelope.sender.to_string(),
+            dest = envelope.dest.to_string(),
+            "message not delivered"
+        );
     }
 }
 ```

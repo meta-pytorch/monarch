@@ -4,6 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from monarch._src.job.meta import MASTJob
+from monarch._src.job.meta.mast import MASTJob
 
 __all__ = ["MASTJob"]

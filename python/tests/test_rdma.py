@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.rdma import is_rdma_available, RDMAAction, RDMABuffer
+from monarch.rdma import get_rdma_backend, is_rdma_available, RDMAAction, RDMABuffer
 
 
 needs_cuda = pytest.mark.skipif(
@@ -24,6 +24,64 @@ needs_rdma = pytest.mark.skipif(
     not is_rdma_available(),
     reason="RDMA not available",
 )
+
+
+# ---------------------------------------------------------------------------
+# Utility function tests (no hardware needed)
+# ---------------------------------------------------------------------------
+
+
+def test_rdma_api_basics():
+    """is_rdma_available() and get_rdma_backend() return sane values."""
+    result = is_rdma_available()
+    assert isinstance(result, bool)
+
+    backend = get_rdma_backend()
+    assert backend in ("ibverbs", "none")
+
+
+def test_memoryview_addr_and_contiguity():
+    """memoryview from various backing stores produces valid addr/size,
+    and non-contiguous views are rejected."""
+    import mmap
+
+    from monarch._src.rdma.rdma import _assert_1d_contiguous, _get_addr_and_size
+
+    # bytearray-backed memoryview
+    buf = bytearray(4096)
+    mv = memoryview(buf)
+    addr, size = _get_addr_and_size(mv)
+    assert size == 4096
+    assert addr > 0
+
+    # mmap-backed memoryview (small)
+    mm = mmap.mmap(-1, 4096)
+    mv = memoryview(mm)
+    addr, size = _get_addr_and_size(mv)
+    assert size == 4096
+    assert addr > 0
+    del mv
+    mm.close()
+
+    # mmap-backed memoryview (large / potentially unfaulted pages)
+    mm = mmap.mmap(-1, 1024 * 1024)
+    mv = memoryview(mm)
+    addr, size = _get_addr_and_size(mv)
+    assert size == 1024 * 1024
+    assert addr > 0
+    del mv
+    mm.close()
+
+    # non-contiguous memoryview must be rejected
+    buf = bytearray(100)
+    mv = memoryview(buf)
+    with pytest.raises(ValueError):
+        _assert_1d_contiguous(mv[::2])
+
+
+# ---------------------------------------------------------------------------
+# RDMA tests (require hardware)
+# ---------------------------------------------------------------------------
 
 
 class ParameterServer(Actor):
@@ -177,9 +235,9 @@ async def test_rdma_buffer_drop():
 
     # Try to use the buffer after dropping - this should fail
     error_result = await consumer.test_buffer_after_drop.call_one(buffer)
-    assert error_result.startswith(
-        "EXPECTED_ERROR:"
-    ), f"Expected an error after drop, but got: {error_result}"
+    assert error_result.startswith("EXPECTED_ERROR:"), (
+        f"Expected an error after drop, but got: {error_result}"
+    )
 
     print(f"✓ Buffer operations failed after drop as expected: {error_result}")
 
@@ -230,9 +288,9 @@ class GeneratorActor(Actor):
         self.step += 1
         byte_tensor = self.generator.weight.data.view(torch.uint8).flatten()
         await self.handle.read_into(byte_tensor)
-        assert (
-            torch.sum(self.generator.weight.data) == self.step * 100
-        ), f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
+        assert torch.sum(self.generator.weight.data) == self.step * 100, (
+            f"{torch.sum(self.generator.weight.data)=}, {self.step=}"
+        )
 
 
 @needs_rdma
@@ -354,16 +412,16 @@ async def test_rdma_concurrent_2gb_writes_in_order():
     expected_result = torch.full((num_elem,), 2.0, dtype=torch.float32)
 
     # Verify using torch.allclose
-    assert torch.allclose(
-        tensor_a_actual, expected_result
-    ), "tensor_a does not match expected 2.0s"
-    assert torch.allclose(
-        tensor_b_actual, expected_result
-    ), "tensor_b does not match expected 2.0s"
+    assert torch.allclose(tensor_a_actual, expected_result), (
+        "tensor_a does not match expected 2.0s"
+    )
+    assert torch.allclose(tensor_b_actual, expected_result), (
+        "tensor_b does not match expected 2.0s"
+    )
 
-    assert torch.allclose(
-        buffer_data_actual, expected_result
-    ), "RDMABuffer does not contain expected 2.0s"
+    assert torch.allclose(buffer_data_actual, expected_result), (
+        "RDMABuffer does not contain expected 2.0s"
+    )
 
     print("✓ Concurrent 2GB operations completed successfully")
 

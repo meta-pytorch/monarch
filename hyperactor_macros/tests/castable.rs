@@ -9,13 +9,13 @@
 #![allow(dead_code)]
 
 use hyperactor::Bind;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::message::Bind;
 use hyperactor::message::Unbind;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Bind, Unbind)]
 struct MyUnitStruct;

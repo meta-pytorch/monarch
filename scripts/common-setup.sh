@@ -69,12 +69,12 @@ setup_tensor_engine() {
 
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
 setup_pytorch_with_headers() {
-    local gpu_arch_version=${1:-"12.6"}
-    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu126"}
+    local gpu_arch_version=${1:-"12.8"}
+    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
 
     echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
 
-    # Extract CUDA version for libtorch URL (remove dots: "12.6" -> "126")
+    # Extract CUDA version for libtorch URL (remove dots: "12.8" -> "128")
     local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
     local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
 
@@ -155,24 +155,13 @@ setup_test_environment() {
 }
 
 # Run Python test groups for Monarch.
-# Usage: run_test_groups <enable_actor_error_test: 0|1>
-#
-# Arguments:
-#   enable_actor_error_test:
-#       0 → skip python/tests/test_actor_error.py
-#       1 → include python/tests/test_actor_error.py
+# Usage: run_test_groups
 #
 # Tests are executed in 10 sequential groups with process cleanup
 # between runs.
 run_test_groups() {
   set +e
   local test_results_dir="${RUNNER_TEST_RESULTS_DIR:-test-results}"
-  local enable_actor_error_test="${2:-0}"
-  # Validate argument enable_actor_error_test
-  if [[ "$enable_actor_error_test" != "0" && "$enable_actor_error_test" != "1" ]]; then
-    echo "Usage: run_test_groups <enable_actor_error_test: 0|1>"
-    return 2
-  fi
   # Make sure the runtime linker uses the conda env's libstdc++
   # (which was used to compile monarch) instead of the system's.
   # TODO: Revisit this to determine if this is the proper/most
@@ -182,6 +171,7 @@ run_test_groups() {
   # Backtraces help with debugging remotely.
   export RUST_BACKTRACE=1
   local FAILED_GROUPS=()
+  local TEST_EXIT_CODE=0
   for GROUP in $(seq 1 10); do
     echo "Running test group $GROUP of 10..."
     # Kill any existing Python processes to ensure clean state
@@ -189,28 +179,19 @@ run_test_groups() {
     pkill -9 python || true
     pkill -9 pytest || true
     sleep 2
-    if [[ "$enable_actor_error_test" == "1" ]]; then
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-            --ignore-glob="**/meta/**" \
-            --dist=no \
-            --group="$GROUP" \
-            --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-            --splits=10
-    else
-        LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
-            --ignore-glob="**/meta/**" \
-            --dist=no \
-            --ignore=python/tests/test_actor_error.py \
-            --group="$GROUP" \
-            --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-            --splits=10
-    fi
+    LC_ALL=C pytest python/tests/ -s -v -m "not oss_skip" \
+        --ignore-glob="**/meta/**" \
+        --dist=no \
+        --group="$GROUP" \
+        --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
+        --splits=10
+    TEST_EXIT_CODE=$?
     # Check result and record failures
-    if [[ $? -eq 0 ]]; then
+    if [[ $TEST_EXIT_CODE -eq 0 ]]; then
         echo "✓ Test group $GROUP completed successfully"
     else
-        FAILED_GROUPS+=($GROUP)
-        echo "✗ Test group $GROUP failed with exit code $?"
+        FAILED_GROUPS+=("$GROUP")
+        echo "✗ Test group $GROUP failed with exit code $TEST_EXIT_CODE"
     fi
   done
   # Final cleanup after all groups

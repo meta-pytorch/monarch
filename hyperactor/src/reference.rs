@@ -35,27 +35,27 @@ use std::str::FromStr;
 
 use derivative::Derivative;
 use enum_as_inner::EnumAsInner;
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use rand::Rng;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
+use typeuri::ACTOR_PORT_BIT;
+use typeuri::Named;
+use wirevalue::TypeInfo;
 
-use crate as hyperactor;
 use crate::Actor;
 use crate::ActorHandle;
-use crate::Named;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
-use crate::accum::ReducerOpts;
+use crate::accum::ReducerMode;
 use crate::accum::ReducerSpec;
+use crate::accum::StreamingReducerOpts;
 use crate::actor::Referable;
 use crate::channel::ChannelAddr;
 use crate::context;
 use crate::context::MailboxExt;
-use crate::data::Serialized;
-use crate::data::TypeInfo;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MailboxSenderErrorKind;
 use crate::mailbox::PortSink;
@@ -111,7 +111,7 @@ pub enum ReferenceKind {
     PartialEq,
     Eq,
     Hash,
-    Named,
+    typeuri::Named,
     EnumAsInner
 )]
 pub enum Reference {
@@ -521,7 +521,7 @@ pub type Index = usize;
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct WorldId(pub String);
 
@@ -578,7 +578,7 @@ impl FromStr for WorldId {
     PartialOrd,
     Hash,
     Ord,
-    Named,
+    typeuri::Named,
     EnumAsInner
 )]
 pub enum ProcId {
@@ -655,7 +655,7 @@ impl FromStr for ProcId {
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct ActorId(pub ProcId, pub String, pub Index);
 
@@ -738,7 +738,7 @@ impl FromStr for ActorId {
 }
 
 /// ActorRefs are typed references to actors.
-#[derive(Debug, Named)]
+#[derive(typeuri::Named)]
 pub struct ActorRef<A: Referable> {
     pub(crate) actor_id: ActorId,
     // fn() -> A so that the struct remains Send
@@ -771,7 +771,7 @@ impl<A: Referable> ActorRef<A> {
     pub fn send_with_headers<M: RemoteMessage>(
         &self,
         cx: &impl context::Actor,
-        headers: Attrs,
+        headers: Flattrs,
         message: M,
     ) -> Result<(), MailboxSenderError>
     where
@@ -837,6 +837,16 @@ impl<'de, A: Referable> Deserialize<'de> for ActorRef<A> {
     }
 }
 
+// Implement Debug manually, without requiring A: Debug
+impl<A: Referable> fmt::Debug for ActorRef<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ActorRef")
+            .field("actor_id", &self.actor_id)
+            .field("type", &std::any::type_name::<A>())
+            .finish()
+    }
+}
+
 impl<A: Referable> fmt::Display for ActorRef<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.actor_id, f)?;
@@ -894,7 +904,7 @@ impl<A: Referable> Hash for ActorRef<A> {
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct PortId(pub ActorId, pub u64);
 
@@ -914,13 +924,23 @@ impl PortId {
         self.1
     }
 
+    pub(crate) fn is_actor_port(&self) -> bool {
+        self.1 & ACTOR_PORT_BIT != 0
+    }
+
     /// Send a serialized message to this port, provided a sending capability,
     /// such as [`crate::actor::Instance`]. It is the sender's responsibility
     /// to ensure that the provided message is well-typed.
-    pub fn send(&self, cx: &impl context::Actor, serialized: Serialized) {
-        let mut headers = Attrs::new();
+    pub fn send(&self, cx: &impl context::Actor, serialized: wirevalue::Any) {
+        let mut headers = Flattrs::new();
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized, true);
+        cx.post(
+            self.clone(),
+            headers,
+            serialized,
+            true,
+            context::SeqInfoPolicy::AssignNew,
+        );
     }
 
     /// Send a serialized message to this port, provided a sending capability,
@@ -929,11 +949,17 @@ impl PortId {
     pub fn send_with_headers(
         &self,
         cx: &impl context::Actor,
-        serialized: Serialized,
-        mut headers: Attrs,
+        serialized: wirevalue::Any,
+        mut headers: Flattrs,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        cx.post(self.clone(), headers, serialized, true);
+        cx.post(
+            self.clone(),
+            headers,
+            serialized,
+            true,
+            context::SeqInfoPolicy::AssignNew,
+        );
     }
 
     /// Split this port, returning a new port that relays messages to the port
@@ -942,13 +968,13 @@ impl PortId {
         &self,
         cx: &impl context::Actor,
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        reducer_mode: ReducerMode,
         return_undeliverable: bool,
     ) -> anyhow::Result<PortId> {
         cx.split(
             self.clone(),
             reducer_spec,
-            reducer_opts,
+            reducer_mode,
             return_undeliverable,
         )
     }
@@ -968,8 +994,8 @@ impl FromStr for PortId {
 impl fmt::Display for PortId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let PortId(actor_id, port) = self;
-        if port & (1 << 63) != 0 {
-            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !(1 << 63)));
+        if self.is_actor_port() {
+            let type_info = TypeInfo::get(*port).or_else(|| TypeInfo::get(*port & !ACTOR_PORT_BIT));
             let typename = type_info.map_or("unknown", TypeInfo::typename);
             write!(f, "{}[{}<{}>]", actor_id, port, typename)
         } else {
@@ -979,8 +1005,8 @@ impl fmt::Display for PortId {
 }
 
 /// A reference to a remote port. All messages passed through
-/// PortRefs will be serialized.
-#[derive(Debug, Serialize, Deserialize, Derivative, Named)]
+/// PortRefs will be serialized. PortRefs are always streaming.
+#[derive(Debug, Serialize, Deserialize, Derivative, typeuri::Named)]
 #[derivative(PartialEq, Eq, PartialOrd, Hash, Ord)]
 pub struct PortRef<M> {
     port_id: PortId,
@@ -997,7 +1023,7 @@ pub struct PortRef<M> {
         Ord = "ignore",
         Hash = "ignore"
     )]
-    reducer_opts: Option<ReducerOpts>,
+    streaming_opts: StreamingReducerOpts,
     phantom: PhantomData<M>,
     return_undeliverable: bool,
 }
@@ -1009,7 +1035,7 @@ impl<M: RemoteMessage> PortRef<M> {
         Self {
             port_id,
             reducer_spec: None,
-            reducer_opts: None,
+            streaming_opts: StreamingReducerOpts::default(),
             phantom: PhantomData,
             return_undeliverable: true,
         }
@@ -1020,12 +1046,12 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn attest_reducible(
         port_id: PortId,
         reducer_spec: Option<ReducerSpec>,
-        reducer_opts: Option<ReducerOpts>,
+        streaming_opts: StreamingReducerOpts,
     ) -> Self {
         Self {
             port_id,
             reducer_spec,
-            reducer_opts,
+            streaming_opts,
             phantom: PhantomData,
             return_undeliverable: true,
         }
@@ -1056,13 +1082,16 @@ impl<M: RemoteMessage> PortRef<M> {
     /// coerce it into OncePortRef so we can send messages to this port from
     /// APIs requires OncePortRef.
     pub fn into_once(self) -> OncePortRef<M> {
-        OncePortRef::attest(self.into_port_id())
+        let return_undeliverable = self.return_undeliverable;
+        let mut once = OncePortRef::attest(self.into_port_id());
+        once.return_undeliverable = return_undeliverable;
+        once
     }
 
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(&self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Flattrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1071,10 +1100,10 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn send_with_headers(
         &self,
         cx: &impl context::Actor,
-        headers: Attrs,
+        headers: Flattrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
-        let serialized = Serialized::serialize(&message).map_err(|err| {
+        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
@@ -1089,8 +1118,8 @@ impl<M: RemoteMessage> PortRef<M> {
     pub fn send_serialized(
         &self,
         cx: &impl context::Actor,
-        mut headers: Attrs,
-        message: Serialized,
+        mut headers: Flattrs,
+        message: wirevalue::Any,
     ) {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
         crate::mailbox::headers::set_rust_message_type::<M>(&mut headers);
@@ -1099,12 +1128,19 @@ impl<M: RemoteMessage> PortRef<M> {
             headers,
             message,
             self.return_undeliverable,
+            context::SeqInfoPolicy::AssignNew,
         );
     }
 
     /// Convert this port into a sink that can be used to send messages using the given capability.
     pub fn into_sink<C: context::Actor>(self, cx: C) -> PortSink<C, M> {
         PortSink::new(cx, self)
+    }
+
+    /// Get whether or not messages sent to this port that are undeliverable should
+    /// be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
     }
 
     /// Set whether or not messages sent to this port that are undeliverable
@@ -1119,7 +1155,7 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
         Self {
             port_id: self.port_id.clone(),
             reducer_spec: self.reducer_spec.clone(),
-            reducer_opts: self.reducer_opts.clone(),
+            streaming_opts: self.streaming_opts.clone(),
             phantom: PhantomData,
             return_undeliverable: self.return_undeliverable,
         }
@@ -1132,14 +1168,24 @@ impl<M: RemoteMessage> fmt::Display for PortRef<M> {
     }
 }
 
-/// The parameters extracted from [`PortRef`] to [`Bindings`].
+/// The kind of unbound port.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)]
+pub enum UnboundPortKind {
+    /// A streaming port, which should be reduced with the provided options.
+    Streaming(Option<StreamingReducerOpts>),
+    /// A OncePort, which must be one-shot aggregated.
+    Once,
+}
+
+/// The parameters extracted from [`PortRef`] to [`Bindings`].
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, typeuri::Named)]
 pub struct UnboundPort(
     pub PortId,
     pub Option<ReducerSpec>,
-    pub Option<ReducerOpts>,
     pub bool, // return_undeliverable
+    pub UnboundPortKind,
 );
+wirevalue::register_type!(UnboundPort);
 
 impl UnboundPort {
     /// Update the port id of this binding.
@@ -1153,8 +1199,8 @@ impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
         UnboundPort(
             port_ref.port_id.clone(),
             port_ref.reducer_spec.clone(),
-            port_ref.reducer_opts.clone(),
             port_ref.return_undeliverable,
+            UnboundPortKind::Streaming(Some(port_ref.streaming_opts.clone())),
         )
     }
 }
@@ -1167,11 +1213,17 @@ impl<M: RemoteMessage> Unbind for PortRef<M> {
 
 impl<M: RemoteMessage> Bind for PortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let bound = bindings.try_pop_front::<UnboundPort>()?;
-        self.port_id = bound.0;
-        self.reducer_spec = bound.1;
-        self.reducer_opts = bound.2;
-        self.return_undeliverable = bound.3;
+        let UnboundPort(port_id, reducer_spec, return_undeliverable, port_kind) =
+            bindings.try_pop_front::<UnboundPort>()?;
+        self.port_id = port_id;
+        self.reducer_spec = reducer_spec;
+        self.return_undeliverable = return_undeliverable;
+        self.streaming_opts = match port_kind {
+            UnboundPortKind::Streaming(opts) => opts.unwrap_or_default(),
+            UnboundPortKind::Once => {
+                anyhow::bail!("OncePortRef cannot be bound to PortRef")
+            }
+        };
         Ok(())
     }
 }
@@ -1182,6 +1234,8 @@ impl<M: RemoteMessage> Bind for PortRef<M> {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct OncePortRef<M> {
     port_id: PortId,
+    reducer_spec: Option<ReducerSpec>,
+    return_undeliverable: bool,
     phantom: PhantomData<M>,
 }
 
@@ -1189,8 +1243,26 @@ impl<M: RemoteMessage> OncePortRef<M> {
     pub(crate) fn attest(port_id: PortId) -> Self {
         Self {
             port_id,
+            reducer_spec: None,
+            return_undeliverable: true,
             phantom: PhantomData,
         }
+    }
+
+    /// The caller attests that the provided PortId can be
+    /// converted to a reachable, typed once port reference.
+    pub fn attest_reducible(port_id: PortId, reducer_spec: Option<ReducerSpec>) -> Self {
+        Self {
+            port_id,
+            reducer_spec,
+            return_undeliverable: true,
+            phantom: PhantomData,
+        }
+    }
+
+    /// The typehash of this port's reducer, if any.
+    pub fn reducer_spec(&self) -> &Option<ReducerSpec> {
+        &self.reducer_spec
     }
 
     /// This port's ID.
@@ -1206,7 +1278,7 @@ impl<M: RemoteMessage> OncePortRef<M> {
     /// Send a message to this port, provided a sending capability, such as
     /// [`crate::actor::Instance`].
     pub fn send(self, cx: &impl context::Actor, message: M) -> Result<(), MailboxSenderError> {
-        self.send_with_headers(cx, Attrs::new(), message)
+        self.send_with_headers(cx, Flattrs::new(), message)
     }
 
     /// Send a message to this port, provided a sending capability, such as
@@ -1214,18 +1286,36 @@ impl<M: RemoteMessage> OncePortRef<M> {
     pub fn send_with_headers(
         self,
         cx: &impl context::Actor,
-        mut headers: Attrs,
+        mut headers: Flattrs,
         message: M,
     ) -> Result<(), MailboxSenderError> {
         crate::mailbox::headers::set_send_timestamp(&mut headers);
-        let serialized = Serialized::serialize(&message).map_err(|err| {
+        let serialized = wirevalue::Any::serialize(&message).map_err(|err| {
             MailboxSenderError::new_bound(
                 self.port_id.clone(),
                 MailboxSenderErrorKind::Serialize(err.into()),
             )
         })?;
-        cx.post(self.port_id.clone(), headers, serialized, true);
+        cx.post(
+            self.port_id.clone(),
+            headers,
+            serialized,
+            self.return_undeliverable,
+            context::SeqInfoPolicy::AssignNew,
+        );
         Ok(())
+    }
+
+    /// Get whether or not messages sent to this port that are undeliverable should
+    /// be returned to the sender.
+    pub fn get_return_undeliverable(&self) -> bool {
+        self.return_undeliverable
+    }
+
+    /// Set whether or not messages sent to this port that are undeliverable
+    /// should be returned to the sender.
+    pub fn return_undeliverable(&mut self, return_undeliverable: bool) {
+        self.return_undeliverable = return_undeliverable;
     }
 }
 
@@ -1233,6 +1323,8 @@ impl<M: RemoteMessage> Clone for OncePortRef<M> {
     fn clone(&self) -> Self {
         Self {
             port_id: self.port_id.clone(),
+            reducer_spec: self.reducer_spec.clone(),
+            return_undeliverable: self.return_undeliverable,
             phantom: PhantomData,
         }
     }
@@ -1246,22 +1338,41 @@ impl<M: RemoteMessage> fmt::Display for OncePortRef<M> {
 
 impl<M: RemoteMessage> Named for OncePortRef<M> {
     fn typename() -> &'static str {
-        crate::data::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
+        wirevalue::intern_typename!(Self, "hyperactor::mailbox::OncePortRef<{}>", M)
     }
 }
 
-// We do not split PortRef, because it can only receive a single response, and
-// there is no meaningful performance gain to make that response going through
-// comm actors.
+impl<M: RemoteMessage> From<&OncePortRef<M>> for UnboundPort {
+    fn from(port_ref: &OncePortRef<M>) -> Self {
+        UnboundPort(
+            port_ref.port_id.clone(),
+            port_ref.reducer_spec.clone(),
+            true, // return_undeliverable
+            UnboundPortKind::Once,
+        )
+    }
+}
+
 impl<M: RemoteMessage> Unbind for OncePortRef<M> {
-    fn unbind(&self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        bindings.push_back(&UnboundPort::from(self))
     }
 }
 
 impl<M: RemoteMessage> Bind for OncePortRef<M> {
-    fn bind(&mut self, _bindings: &mut Bindings) -> anyhow::Result<()> {
-        Ok(())
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        let UnboundPort(port_id, reducer_spec, _return_undeliverable, port_kind) =
+            bindings.try_pop_front::<UnboundPort>()?;
+        match port_kind {
+            UnboundPortKind::Once => {
+                self.port_id = port_id;
+                self.reducer_spec = reducer_spec;
+                Ok(())
+            }
+            UnboundPortKind::Streaming(_) => {
+                anyhow::bail!("PortRef cannot be bound to OncePortRef")
+            }
+        }
     }
 }
 
@@ -1276,7 +1387,7 @@ impl<M: RemoteMessage> Bind for OncePortRef<M> {
     PartialOrd,
     Hash,
     Ord,
-    Named
+    typeuri::Named
 )]
 pub struct GangId(pub WorldId, pub String);
 
@@ -1419,8 +1530,16 @@ impl<'a, A: Referable> From<&'a GangRef<A>> for &'a GangId {
 mod tests {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     use super::*;
+    // for macros
+    use crate::Proc;
+    use crate::context::Mailbox as _;
+    use crate::mailbox::PortLocation;
+    use crate::ordering::SEQ_INFO;
+    use crate::ordering::SeqInfo;
 
     #[test]
     fn test_reference_parse() {
@@ -1561,8 +1680,9 @@ mod tests {
 
     #[test]
     fn test_port_type_annotation() {
-        #[derive(Named, Serialize, Deserialize)]
+        #[derive(typeuri::Named, Serialize, Deserialize)]
         struct MyType;
+        wirevalue::register_type!(MyType);
         let port_id = PortId(
             ActorId(
                 ProcId::Ranked(WorldId("test".into()), 234),
@@ -1575,5 +1695,139 @@ mod tests {
             port_id.to_string(),
             "test[234].testactor[1][17867850292987402005<hyperactor::reference::tests::MyType>]"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sequencing_from_port_handle_ref_and_id() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO);
+            tx.send(seq_info).unwrap();
+            Ok(())
+        });
+        port_handle.send(&client, ()).unwrap();
+        // Unordered is set for unbound port handle since handler's ordered
+        // channel is expecting the SEQ_INFO header to be set.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), SeqInfo::Direct);
+
+        port_handle.bind_actor_port();
+        let port_id = match port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        assert!(port_id.is_actor_port());
+        let port_ref = PortRef::attest(port_id.clone());
+
+        port_handle.send(&client, ()).unwrap();
+        let SeqInfo::Session {
+            session_id,
+            mut seq,
+        } = rx.try_recv().unwrap().unwrap()
+        else {
+            panic!("expected session info");
+        };
+        assert_eq!(session_id, client.sequencer().session_id());
+        assert_eq!(seq, 1);
+
+        fn assert_seq_info(
+            rx: &mut mpsc::UnboundedReceiver<Option<SeqInfo>>,
+            session_id: Uuid,
+            seq: &mut u64,
+        ) {
+            *seq += 1;
+            let SeqInfo::Session {
+                session_id: rcved_session_id,
+                seq: rcved_seq,
+            } = rx.try_recv().unwrap().unwrap()
+            else {
+                panic!("expected session info");
+            };
+            assert_eq!(rcved_session_id, session_id);
+            assert_eq!(rcved_seq, *seq);
+        }
+
+        // Interleave sends from port_handle, port_ref, and port_id
+        for _ in 0..10 {
+            // From port_handle
+            port_handle.send(&client, ()).unwrap();
+            assert_seq_info(&mut rx, session_id, &mut seq);
+
+            // From port_ref
+            for _ in 0..2 {
+                port_ref.send(&client, ()).unwrap();
+                assert_seq_info(&mut rx, session_id, &mut seq);
+            }
+
+            // From port_id
+            for _ in 0..3 {
+                port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
+                assert_seq_info(&mut rx, session_id, &mut seq);
+            }
+        }
+
+        assert_eq!(rx.try_recv().unwrap_err(), mpsc::error::TryRecvError::Empty);
+    }
+
+    #[tokio::test]
+    async fn test_sequencing_from_port_handle_bound_to_allocated_port() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let port_handle = client.mailbox().open_enqueue_port(move |headers, _m: ()| {
+            let seq_info = headers.get(SEQ_INFO);
+            tx.send(seq_info).unwrap();
+            Ok(())
+        });
+        port_handle.send(&client, ()).unwrap();
+        // Unordered be set for unbound port handle since handler's ordered
+        // channel is expecting the SEQ_INFO header to be set.
+        assert_eq!(rx.try_recv().unwrap().unwrap(), SeqInfo::Direct);
+
+        // Bind to the allocated port.
+        port_handle.bind();
+        let port_id = match port_handle.location() {
+            PortLocation::Bound(port_id) => port_id,
+            _ => panic!("port_handle should be bound"),
+        };
+        // This is a non-actor port, but it still gets seq info (per-port sequence).
+        assert!(!port_id.is_actor_port());
+
+        // After binding, non-actor ports get their own sequence.
+        port_handle.send(&client, ()).unwrap();
+        let SeqInfo::Session {
+            session_id,
+            seq: seq1,
+        } = rx
+            .try_recv()
+            .unwrap()
+            .expect("non-actor port should have seq info")
+        else {
+            panic!("expected Session variant");
+        };
+        assert_eq!(seq1, 1);
+        assert_eq!(session_id, client.sequencer().session_id());
+
+        let port_ref = PortRef::attest(port_id.clone());
+        port_ref.send(&client, ()).unwrap();
+        let SeqInfo::Session { seq: seq2, .. } = rx
+            .try_recv()
+            .unwrap()
+            .expect("non-actor port should have seq info")
+        else {
+            panic!("expected Session variant");
+        };
+        assert_eq!(seq2, 2);
+
+        port_id.send(&client, wirevalue::Any::serialize(&()).unwrap());
+        let SeqInfo::Session { seq: seq3, .. } = rx
+            .try_recv()
+            .unwrap()
+            .expect("non-actor port should have seq info")
+        else {
+            panic!("expected Session variant");
+        };
+        assert_eq!(seq3, 3);
     }
 }

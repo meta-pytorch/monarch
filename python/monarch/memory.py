@@ -26,9 +26,9 @@ def dump_memory_snapshot(*args, **kwargs) -> None:
     """
     This function wraps torch.cuda.memory._dump_snapshot() to dump memory snapshot remotely.
     """
-    assert isinstance(
-        kwargs.get(PATH_KEY, None), str
-    ), f"{PATH_KEY} must be passed and must be a string to represent the path to save the memory snapshots."
+    assert isinstance(kwargs.get(PATH_KEY, None), str), (
+        f"{PATH_KEY} must be passed and must be a string to represent the path to save the memory snapshots."
+    )
     id = next(_counter)
     _memory_controller_dump(id, *args, **kwargs)
 

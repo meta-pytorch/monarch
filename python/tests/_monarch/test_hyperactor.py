@@ -10,24 +10,52 @@ import multiprocessing
 import os
 import signal
 import time
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, cast, Coroutine, Iterable, Type, TYPE_CHECKING
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
+    PanicFlag,
+    PythonMessageKind,
+)
+from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     AllocConstraints,
     AllocSpec,
 )
 from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.allocator import LocalAllocator
 from monarch._src.actor.pickle import flatten, unflatten
+from monarch.actor import context
+
+
+if TYPE_CHECKING:
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
 
 class MyActor:
-    async def handle(self, *args: Any, **kwargs: Any) -> None:
-        raise NotImplementedError()
+    async def handle(
+        self,
+        ctx: Any,
+        method: MethodSpecifier,
+        message: bytes,
+        panic_flag: PanicFlag,
+        local_state: Iterable[Any],
+        response_port: "PortProtocol[Any]",
+    ) -> None:
+        match method:
+            case MethodSpecifier.Init():
+                # Handle init message - response_port may be None
+                if response_port is not None:
+                    response_port.send(None)
+                return None
+            case _:
+                raise NotImplementedError()
 
 
 def test_import() -> None:
@@ -83,17 +111,40 @@ async def test_proc_mesh() -> None:
     spec = AllocSpec(AllocConstraints(), replica=2)
     allocator = LocalAllocator()
     alloc = await allocator.allocate_nonblocking(spec)
-    proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
-    assert str(proc_mesh) == "<ProcMesh { shape: {replica=2} }>"
+    instance = context().actor_instance._as_rust()
+    proc_mesh = await ProcMesh.allocate_nonblocking(instance, alloc, "proc_mesh")
+    # v1 has a different repr format
+    assert "ProcMesh" in str(proc_mesh)
 
 
 @_python_task_test
 async def test_actor_mesh() -> None:
-    spec = AllocSpec(AllocConstraints(), replica=2)
-    allocator = LocalAllocator()
-    alloc = await allocator.allocate_nonblocking(spec)
-    proc_mesh = await ProcMesh.allocate_nonblocking(alloc)
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    async def task() -> ProcMesh:
+        spec = AllocSpec(AllocConstraints(), replica=2)
+        allocator = LocalAllocator()
+        alloc = await allocator.allocate_nonblocking(spec)
+        return await ProcMesh.allocate_nonblocking(
+            context().actor_instance._as_rust(), alloc, "test"
+        )
+
+    proc_mesh_task: Shared[ProcMesh] = PythonTask.from_coroutine(task()).spawn()
+
+    # Create an explicit init message
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
+        PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
+        init_state,
+    )
+
+    # Use spawn_async with the explicit init message
+    actor_mesh = ProcMesh.spawn_async(
+        proc_mesh_task,
+        context().actor_instance._as_rust(),
+        "test",
+        cast(Type["Actor"], MyActor),
+        init_message,
+        False,  # emulated
+    )
 
     await actor_mesh.initialized()
 
@@ -108,7 +159,6 @@ def test_buffer_read_write() -> None:
 
 def test_pickle_to_buffer() -> None:
     x = [bytes(100000)]
-    b = Buffer()
     args, b = flatten(x, lambda x: False)
-    y = unflatten(b, args)
+    y = unflatten(b.freeze(), args)
     assert x == y

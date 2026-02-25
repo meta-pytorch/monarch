@@ -304,6 +304,7 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// // `writer` is any AsyncWrite + Unpin (e.g. a tokio `WriteHalf`)
     /// let writer = FrameWrite::write_frame(writer, Bytes::from_static(b"hello"), 10usize).await?;
     /// ```
+    #[allow(dead_code)] // Not used outside tests.
     pub async fn write_frame(writer: W, buf: B, max: usize) -> Result<W, (W, io::Error)> {
         let mut fw = FrameWrite::new(writer, buf, max)?;
         let res = fw.send().await;
@@ -684,6 +685,7 @@ mod test_support {
         /// Convenience: wrap a raw writer and also return the shared
         /// handle (useful if you want to build multiple wrappers that
         /// share the writer).
+        #[allow(dead_code)] // Not used outside tests.
         pub(crate) fn from_writer(writer: W, gate: Gate) -> (SharedWriter<W>, Self) {
             let inner = SharedWriter::new(writer);
             let me = Self {
@@ -695,6 +697,7 @@ mod test_support {
 
         /// Access the underlying shared writer (e.g., if you need to
         /// flush/shutdown elsewhere).
+        #[allow(dead_code)] // Not used outside tests.
         pub(crate) fn inner(&self) -> &SharedWriter<W> {
             &self.inner
         }

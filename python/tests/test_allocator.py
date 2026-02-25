@@ -6,6 +6,8 @@
 
 # pyre-strict
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import importlib.resources
@@ -17,7 +19,7 @@ import sys
 import unittest
 from collections.abc import Callable
 from time import sleep
-from typing import Generator, Optional
+from typing import Generator, List, Optional
 from unittest import mock
 
 import cloudpickle
@@ -26,14 +28,12 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
     ChannelTransport,
 )
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-
 from monarch._src.actor.allocator import (
     ALLOC_LABEL_PROC_MESH_NAME,
     AllocateMixin,
@@ -45,10 +45,16 @@ from monarch._src.actor.allocator import (
 from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch._src.actor.sync_state import fake_sync_state
-from monarch.actor import Actor, current_rank, current_size, endpoint, ValueMesh
+from monarch.actor import (
+    Actor,
+    current_rank,
+    current_size,
+    endpoint,
+    MeshFailure,
+    ValueMesh,
+)
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
 from monarch.tools.network import get_sockaddr
-
 from torch.distributed.elastic.utils.distributed import get_free_port
 from torchx.specs import AppState
 
@@ -253,21 +259,24 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             Exception,
             r"exited with code 1: Traceback \(most recent call last\).*",
         ):
-            with remote_process_allocator(
-                envs={
-                    "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
-                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-                    "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-                }
-            ) as host1, remote_process_allocator(
-                envs={
-                    "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
-                    "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
-                    "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
-                    "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
-                }
-            ) as host2:
+            with (
+                remote_process_allocator(
+                    envs={
+                        "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
+                        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
+                        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
+                    }
+                ) as host1,
+                remote_process_allocator(
+                    envs={
+                        "MONARCH_ERROR_DURING_BOOTSTRAP_FOR_TESTING": "1",
+                        "HYPERACTOR_MESH_ENABLE_LOG_FORWARDING": "true",
+                        "HYPERACTOR_MESH_ENABLE_FILE_CAPTURE": "true",
+                        "HYPERACTOR_MESH_TAIL_LOG_LINES": "100",
+                    }
+                ) as host2,
+            ):
                 allocator = RemoteAllocator(
                     world_id="test_remote_allocator",
                     initializer=StaticRemoteAllocInitializer(host1, host2),
@@ -390,10 +399,18 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             alloc = allocator.allocate(spec)
             await alloc.initialized
 
-            with self.assertRaisesRegex(
-                Exception, r"no process has ever been allocated.*"
-            ):
-                await proc_mesh_from_alloc(allocator, spec).initialized
+            # This message gets undeliverable because it is sent to the wrong host
+            # That would normally crash the client
+            original_hook = monarch.actor.unhandled_fault_hook
+            monarch.actor.unhandled_fault_hook = lambda failure: None
+            try:
+                with self.assertRaisesRegex(
+                    Exception, r"no process has ever been allocated.*"
+                ):
+                    await proc_mesh_from_alloc(allocator, spec).initialized
+            finally:
+                # Restore the original hook
+                monarch.actor.unhandled_fault_hook = original_hook
 
     async def test_init_failure(self) -> None:
         class FailInitActor(Actor):
@@ -405,20 +422,40 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             def dummy(self) -> None:
                 pass
 
-        with remote_process_allocator() as host1, remote_process_allocator() as host2:
-            allocator = RemoteAllocator(
-                world_id="helloworld",
-                initializer=StaticRemoteAllocInitializer(host1, host2),
-            )
-            spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
-            proc_mesh = proc_mesh_from_alloc(allocator, spec)
-            actor_mesh = proc_mesh.spawn("actor", FailInitActor)
+        faults: List[MeshFailure] = []
+        faulted: asyncio.Event = asyncio.Event()
 
-            with self.assertRaisesRegex(
-                Exception,
-                r"(?s)fail on init(?s)",
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
+        def fault_hook(failure: MeshFailure) -> None:
+            # Due to poor test isolation, failures from other tests may
+            # arrive here, and we want to filter them out.
+            if "fail on init" in failure.report():
+                faults.append(failure)
+                loop.call_soon_threadsafe(faulted.set)
+
+        original_hook = monarch.actor.unhandled_fault_hook
+        # pyre-ignore
+        monarch.actor.unhandled_fault_hook = fault_hook
+        try:
+            with (
+                remote_process_allocator() as host1,
+                remote_process_allocator() as host2,
             ):
-                await actor_mesh.dummy.call()
+                allocator = RemoteAllocator(
+                    world_id="helloworld",
+                    initializer=StaticRemoteAllocInitializer(host1, host2),
+                )
+                spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
+                proc_mesh = proc_mesh_from_alloc(allocator, spec)
+                actor_mesh = proc_mesh.spawn("actor", FailInitActor)
+                await actor_mesh.initialized
+
+                await asyncio.wait_for(faulted.wait(), timeout=15.0)
+                self.assertTrue(len(faults) > 0)
+                self.assertRegex(str(faults[0]), r"fail on init")
+        finally:
+            monarch.actor.unhandled_fault_hook = original_hook
 
     @pytest.mark.skip("stop proc mesh not supported yet in v1")
     async def test_stop_proc_mesh(self) -> None:
@@ -533,6 +570,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # now we doing casting without accessing the wrapped type.
             del actor
 
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_remote_allocator_with_no_connection(self) -> None:
         spec = AllocSpec(AllocConstraints(), host=1, gpu=4)
 
@@ -553,7 +591,10 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         # create two stacked actor meshes on the same host
         # each actor mesh running on separate process-allocators
 
-        with remote_process_allocator() as host1_a, remote_process_allocator() as host1_b:
+        with (
+            remote_process_allocator() as host1_a,
+            remote_process_allocator() as host1_b,
+        ):
             allocator_a = RemoteAllocator(
                 world_id="a",
                 initializer=StaticRemoteAllocInitializer(host1_a),

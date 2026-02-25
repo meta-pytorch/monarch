@@ -177,6 +177,7 @@ mod tests {
     use anyhow::Result;
     use hyperactor::RemoteSpawn;
     use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
     use monarch_messages::controller::ControllerMessage;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessage;
@@ -201,12 +202,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await?,
             )
             .unwrap();
@@ -321,7 +325,7 @@ mod tests {
             .unwrap();
         assert!(result);
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
         let error_responses = controller_rx.drain();
         assert!(
@@ -353,12 +357,15 @@ mod tests {
         let worker_handle = proc
             .spawn::<WorkerActor>(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -436,7 +443,7 @@ mod tests {
             .await?;
 
         // Stop/drain worker before asserts to avoid hangs.
-        worker_handle.drain_and_stop()?;
+        worker_handle.drain_and_stop("test")?;
         worker_handle.await;
         let error_responses = controller_rx.drain();
 

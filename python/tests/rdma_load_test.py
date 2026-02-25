@@ -133,20 +133,20 @@ class RDMATest(Actor):
         tensor_addr = tensor.data_ptr()
 
         # Critical validation - this should catch the null pointer issue
-        assert (
-            tensor_addr != 0
-        ), f"CRITICAL: Tensor has null pointer! Device: {self.device}, Shape: {shape}"
+        assert tensor_addr != 0, (
+            f"CRITICAL: Tensor has null pointer! Device: {self.device}, Shape: {shape}"
+        )
         assert size_elem > 0, f"CRITICAL: Tensor has zero size! Size: {size_elem}"
 
         byte_view = tensor.view(torch.uint8).flatten()
         # Validate byte_view too
         byte_view_addr = byte_view.data_ptr()
-        assert (
-            byte_view_addr != 0
-        ), f"CRITICAL: Byte view has null pointer! Original addr: 0x{tensor_addr:x}"
-        assert (
-            byte_view_addr == tensor_addr
-        ), f"CRITICAL: Address mismatch! Tensor: 0x{tensor_addr:x}, ByteView: 0x{byte_view_addr:x}"
+        assert byte_view_addr != 0, (
+            f"CRITICAL: Byte view has null pointer! Original addr: 0x{tensor_addr:x}"
+        )
+        assert byte_view_addr == tensor_addr, (
+            f"CRITICAL: Address mismatch! Tensor: 0x{tensor_addr:x}, ByteView: 0x{byte_view_addr:x}"
+        )
 
         execution_start = time.time()
         buffer = RDMABuffer(byte_view)
@@ -225,27 +225,26 @@ class RDMATest(Actor):
         print(f"  Standard deviation: {std_time * 1000:.3f} ms")
 
         if calc_bwd:
-            # Calculate bandwidth (Gbps)
-            def calc_bandwidth_gbps(size_bytes: int, time_seconds: float) -> float:
+            # Calculate throughput (GB/s where GB = 1000^3 bytes)
+            def calc_throughput_gbs(size_bytes: int, time_seconds: float) -> float:
                 if time_seconds == 0:
                     return 0.0
-                bits_transferred = size_bytes * 8
-                return bits_transferred / (time_seconds * 1e9)
+                return size_bytes / (time_seconds * 1e9)
 
-            avg_bandwidth = calc_bandwidth_gbps(avg_size, avg_time)
-            max_bandwidth = calc_bandwidth_gbps(avg_size, min_time)
-            min_bandwidth = calc_bandwidth_gbps(avg_size, max_time)
+            avg_throughput = calc_throughput_gbs(avg_size, avg_time)
+            max_throughput = calc_throughput_gbs(avg_size, min_time)
+            min_throughput = calc_throughput_gbs(avg_size, max_time)
 
             # Print results
             print(f"Total iterations completed: {len(timings)}")
-            print(f"Average data per operation: {avg_size / (1024*1024):.1f} MB")
-            print(f"Total data transferred: {total_data / (1024*1024):.1f} MB")
+            print(f"Average data per operation: {avg_size / (1024 * 1024):.1f} MB")
+            print(f"Total data transferred: {total_data / (1024 * 1024):.1f} MB")
             print()
 
-            print("INDIVIDUAL OPERATION BANDWIDTH:")
-            print(f"  Average bandwidth: {avg_bandwidth:.2f} Gbps")
-            print(f"  Maximum bandwidth: {max_bandwidth:.2f} Gbps")
-            print(f"  Minimum bandwidth: {min_bandwidth:.2f} Gbps")
+            print("INDIVIDUAL OPERATION THROUGHPUT (GB = 1000^3 bytes):")
+            print(f"  Average throughput: {avg_throughput:.2f} GB/s")
+            print(f"  Maximum throughput: {max_throughput:.2f} GB/s")
+            print(f"  Minimum throughput: {min_throughput:.2f} GB/s")
             print("=" * 60)
 
     @endpoint
@@ -274,29 +273,28 @@ class RDMATest(Actor):
         print(f"  Minimum batch time: {min_batch_time * 1000:.3f} ms")
         print(f"  Maximum batch time: {max_batch_time * 1000:.3f} ms")
         print(f"  Standard deviation: {std_batch_time * 1000:.3f} ms")
-        print(f"  Average data per batch: {avg_batch_size / (1024*1024):.1f} MB")
+        print(f"  Average data per batch: {avg_batch_size / (1024 * 1024):.1f} MB")
 
-        # Calculate bandwidth (Gbps)
-        def calc_bandwidth_gbps(size_bytes: int, time_seconds: float) -> float:
+        # Calculate throughput (GB/s where GB = 1000^3 bytes)
+        def calc_throughput_gbs(size_bytes: int, time_seconds: float) -> float:
             if time_seconds == 0:
                 return 0.0
-            bits_transferred = size_bytes * 8
-            return bits_transferred / (time_seconds * 1e9)
+            return size_bytes / (time_seconds * 1e9)
 
-        avg_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, avg_batch_time)
-        max_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, min_batch_time)
-        min_aggregate_bw = calc_bandwidth_gbps(avg_batch_size, max_batch_time)
+        avg_aggregate_tp = calc_throughput_gbs(avg_batch_size, avg_batch_time)
+        max_aggregate_tp = calc_throughput_gbs(avg_batch_size, min_batch_time)
+        min_aggregate_tp = calc_throughput_gbs(avg_batch_size, max_batch_time)
 
-        print(f"\nAGGREGATE BANDWIDTH (concurrency={concurrency}):")
-        print(f"  Average aggregate bandwidth: {avg_aggregate_bw:.2f} Gbps")
-        print(f"  Maximum aggregate bandwidth: {max_aggregate_bw:.2f} Gbps")
-        print(f"  Minimum aggregate bandwidth: {min_aggregate_bw:.2f} Gbps")
+        print(f"\nAGGREGATE THROUGHPUT (concurrency={concurrency}, GB = 1000^3 bytes):")
+        print(f"  Average aggregate throughput: {avg_aggregate_tp:.2f} GB/s")
+        print(f"  Maximum aggregate throughput: {max_aggregate_tp:.2f} GB/s")
+        print(f"  Minimum aggregate throughput: {min_aggregate_tp:.2f} GB/s")
 
-        total_throughput = calc_bandwidth_gbps(total_data, total_elapsed_time)
-        print("\nTOTAL SUSTAINED THROUGHPUT:")
+        total_throughput = calc_throughput_gbs(total_data, total_elapsed_time)
+        print("\nTOTAL SUSTAINED THROUGHPUT (GB = 1000^3 bytes):")
         print(f"  Total wall-clock time: {total_elapsed_time:.3f} s")
-        print(f"  Total data transferred: {total_data / (1024*1024):.1f} MB")
-        print(f"  Sustained throughput: {total_throughput:.2f} Gbps")
+        print(f"  Total data transferred: {total_data / (1024 * 1024):.1f} MB")
+        print(f"  Sustained throughput: {total_throughput:.2f} GB/s")
         if concurrency > 1:
             print(f"  (Accounts for {concurrency}x concurrent overlapping operations)")
 
@@ -325,11 +323,11 @@ async def main(
 
     await actor_0.set_other_actor.call(actor_1)
 
-    for i in range(warmup_iterations):
+    for _ in range(warmup_iterations):
         await actor_0.send.call(is_warmup=True, concurrency=concurrency)
 
     total_start_time = time.time()
-    for i in range(iterations):
+    for _ in range(iterations):
         await actor_0.send.call(concurrency=concurrency)
     total_end_time = time.time()
     total_elapsed_time = total_end_time - total_start_time
@@ -380,7 +378,7 @@ if __name__ == "__main__":
                 validated_devices.append("cpu")
             elif device_id >= torch.cuda.device_count():
                 print(
-                    f"Warning: CUDA device {device_id} not available. Available devices: 0-{torch.cuda.device_count()-1}. Falling back to CPU."
+                    f"Warning: CUDA device {device_id} not available. Available devices: 0-{torch.cuda.device_count() - 1}. Falling back to CPU."
                 )
                 validated_devices.append("cpu")
             else:

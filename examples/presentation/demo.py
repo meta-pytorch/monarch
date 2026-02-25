@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import monarch
-
 import torch
 import torch.nn as nn
 import torch.optim as optim

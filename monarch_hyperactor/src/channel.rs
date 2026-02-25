@@ -8,16 +8,21 @@
 
 use std::str::FromStr;
 
+use hyperactor::channel::BindSpec;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::channel::MetaTlsAddr;
 use hyperactor::channel::TcpMode;
+use hyperactor::channel::TlsAddr;
 use hyperactor::channel::TlsMode;
 use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::PyTypeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Python binding for [`hyperactor::channel::ChannelTransport`]
+///
+/// This enum represents the basic transport types that can be represented
+/// as simple enum variants. For explicit addresses, use `PyBindSpec`.
 #[pyclass(
     name = "ChannelTransport",
     module = "monarch._rust_bindings.monarch_hyperactor.channel",
@@ -29,6 +34,7 @@ pub enum PyChannelTransport {
     TcpWithHostname,
     MetaTlsWithHostname,
     MetaTlsWithIpV6,
+    Tls,
     Local,
     Unix,
     // Sim(/*transport:*/ ChannelTransport), TODO kiuk@ add support
@@ -52,6 +58,7 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
                 Ok(PyChannelTransport::MetaTlsWithHostname)
             }
             ChannelTransport::MetaTls(TlsMode::IpV6) => Ok(PyChannelTransport::MetaTlsWithIpV6),
+            ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
             _ => Err(PyValueError::new_err(format!(
@@ -59,6 +66,78 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
                 transport
             ))),
         }
+    }
+}
+
+/// Python binding for [`hyperactor::channel::BindSpec`]
+#[pyclass(
+    name = "BindSpec",
+    module = "monarch._rust_bindings.monarch_hyperactor.channel"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PyBindSpec {
+    inner: BindSpec,
+}
+
+#[pymethods]
+impl PyBindSpec {
+    /// Create a new PyBindSpec from a ChannelTransport enum, a string representation,
+    /// or another PyBindSpec object.
+    ///
+    /// Examples:
+    ///     PyBindSpec(ChannelTransport.Unix)
+    ///     PyBindSpec("tcp://127.0.0.1:8080")
+    ///     PyBindSpec(PyBindSpec(ChannelTransport.Unix))
+    #[new]
+    pub fn new(spec: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // First try to extract as PyBindSpec (for when passing an existing spec)
+        if let Ok(bind_spec) = spec.extract::<PyBindSpec>() {
+            return Ok(bind_spec);
+        }
+
+        // Then try to extract as PyChannelTransport enum
+        if let Ok(py_transport) = spec.extract::<PyChannelTransport>() {
+            let transport: ChannelTransport = py_transport.into();
+            return Ok(PyBindSpec {
+                inner: BindSpec::Any(transport),
+            });
+        }
+
+        // Then try to extract as a string and parse it as a BindSpec
+        if let Ok(spec_str) = spec.extract::<String>() {
+            let bind_spec = BindSpec::from_str(&spec_str).map_err(|e| {
+                PyValueError::new_err(format!("invalid str for BindSpec '{}': {}", spec_str, e))
+            })?;
+            return Ok(PyBindSpec { inner: bind_spec });
+        }
+
+        Err(PyTypeError::new_err(
+            "expected ChannelTransport enum, BindSpec, or str",
+        ))
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyBindSpec({:?})", self.inner)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl From<PyBindSpec> for BindSpec {
+    fn from(spec: PyBindSpec) -> Self {
+        spec.inner
+    }
+}
+
+impl From<BindSpec> for PyBindSpec {
+    fn from(spec: BindSpec) -> Self {
+        PyBindSpec { inner: spec }
     }
 }
 
@@ -97,10 +176,12 @@ impl PyChannelAddr {
     /// Returns the port number (if any) of this channel address,
     /// `0` for transports for which unix ports do not apply (e.g. `unix`, `local`)
     pub fn get_port(&self) -> PyResult<u16> {
-        match self.inner {
+        match &self.inner {
             ChannelAddr::Tcp(socket_addr)
-            | ChannelAddr::MetaTls(MetaTlsAddr::Socket(socket_addr)) => Ok(socket_addr.port()),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host { port, .. }) => Ok(port),
+            | ChannelAddr::MetaTls(TlsAddr::Socket(socket_addr))
+            | ChannelAddr::Tls(TlsAddr::Socket(socket_addr)) => Ok(socket_addr.port()),
+            ChannelAddr::MetaTls(TlsAddr::Host { port, .. })
+            | ChannelAddr::Tls(TlsAddr::Host { port, .. }) => Ok(*port),
             ChannelAddr::Unix(_) | ChannelAddr::Local(_) => Ok(0),
             _ => Err(PyRuntimeError::new_err(format!(
                 "unsupported transport: `{:?}` for channel address: `{}`",
@@ -122,6 +203,7 @@ impl PyChannelAddr {
                 TlsMode::Hostname => Ok(PyChannelTransport::MetaTlsWithHostname),
                 TlsMode::IpV6 => Ok(PyChannelTransport::MetaTlsWithIpV6),
             },
+            ChannelTransport::Tls => Ok(PyChannelTransport::Tls),
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
             _ => Err(PyRuntimeError::new_err(format!(
@@ -140,15 +222,16 @@ impl From<PyChannelTransport> for ChannelTransport {
             PyChannelTransport::TcpWithHostname => ChannelTransport::Tcp(TcpMode::Hostname),
             PyChannelTransport::MetaTlsWithHostname => ChannelTransport::MetaTls(TlsMode::Hostname),
             PyChannelTransport::MetaTlsWithIpV6 => ChannelTransport::MetaTls(TlsMode::IpV6),
+            PyChannelTransport::Tls => ChannelTransport::Tls,
             PyChannelTransport::Local => ChannelTransport::Local,
             PyChannelTransport::Unix => ChannelTransport::Unix,
         }
     }
 }
 
-#[pymodule]
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
     hyperactor_mod.add_class::<PyChannelTransport>()?;
+    hyperactor_mod.add_class::<PyBindSpec>()?;
     hyperactor_mod.add_class::<PyChannelAddr>()?;
     Ok(())
 }
@@ -168,6 +251,7 @@ mod tests {
             PyChannelTransport::Unix,
             PyChannelTransport::MetaTlsWithHostname,
             PyChannelTransport::MetaTlsWithIpV6,
+            PyChannelTransport::Tls,
             PyChannelTransport::Local,
         ] {
             let address = PyChannelAddr::any(transport)?;

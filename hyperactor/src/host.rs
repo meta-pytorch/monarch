@@ -77,6 +77,7 @@ use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::context;
 use crate::mailbox::BoxableMailboxSender;
+use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::MailboxClient;
@@ -120,7 +121,6 @@ pub enum HostError {
 
 /// A host, managing the lifecycle of several procs, and their backend
 /// routing, as described in this module's documentation.
-#[derive(Debug)]
 pub struct Host<M> {
     procs: HashSet<String>,
     frontend_addr: ChannelAddr,
@@ -128,6 +128,7 @@ pub struct Host<M> {
     router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
+    local_proc: Proc,
     frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 
@@ -135,14 +136,27 @@ impl<M: ProcManager> Host<M> {
     /// Serve a host using the provided ProcManager, on the provided `addr`.
     /// On success, the host will multiplex messages for procs on the host
     /// on the address of the host.
-    #[crate::instrument(fields(addr=addr.to_string()))]
     pub async fn new(manager: M, addr: ChannelAddr) -> Result<Self, HostError> {
+        Self::new_with_default(manager, addr, None).await
+    }
+
+    /// Like [`new`], serves a host using the provided ProcManager, on the provided `addr`.
+    /// Unknown destinations are forwarded to the default sender.
+    #[crate::instrument(fields(addr=addr.to_string()))]
+    pub async fn new_with_default(
+        manager: M,
+        addr: ChannelAddr,
+        default_sender: Option<BoxedMailboxSender>,
+    ) -> Result<Self, HostError> {
         let (frontend_addr, frontend_rx) = channel::serve(addr)?;
 
         // We set up a cascade of routers: first, the outer router supports
         // sending to the the system proc, while the dial router manages dialed
         // connections.
-        let router = DialMailboxRouter::new();
+        let router = match default_sender {
+            Some(d) => DialMailboxRouter::new_with_default(d),
+            None => DialMailboxRouter::new(),
+        };
 
         // Establish a backend channel on the preferred transport. We currently simply
         // serve the same router on both.
@@ -152,10 +166,14 @@ impl<M: ProcManager> Host<M> {
         let service_proc_id = ProcId::Direct(frontend_addr.clone(), "service".to_string());
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
+        let local_proc_id = ProcId::Direct(frontend_addr.clone(), "local".to_string());
+        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
             backend_addr = backend_addr.to_string(),
             service_proc_id = service_proc_id.to_string(),
+            local_proc_id = local_proc_id.to_string(),
             "serving host"
         );
 
@@ -166,6 +184,7 @@ impl<M: ProcManager> Host<M> {
             router,
             manager,
             service_proc,
+            local_proc,
             frontend_rx: Some(frontend_rx),
         };
 
@@ -192,13 +211,21 @@ impl<M: ProcManager> Host<M> {
     }
 
     /// The system proc associated with this host.
+    /// This is used to run host-level system services like host managers.
     pub fn system_proc(&self) -> &Proc {
         &self.service_proc
     }
 
-    /// Spawn a new process with the given `name`. On success, the proc has been
-    /// spawned, and is reachable through the returned, direct-addressed ProcId,
-    /// which will be `ProcId::Direct(self.addr(), name)`.
+    /// The local proc associated with this host.
+    /// This is the local proc used in processes that are also hosts.
+    pub fn local_proc(&self) -> &Proc {
+        &self.local_proc
+    }
+
+    /// Spawn a new process with the given `name`. On success, the
+    /// proc has been spawned, and is reachable through the returned,
+    /// direct-addressed ProcId, which will be
+    /// `ProcId::Direct(self.addr(), name)`.
     pub async fn spawn(
         &mut self,
         name: String,
@@ -216,49 +243,29 @@ impl<M: ProcManager> Host<M> {
 
         // Await readiness (config-driven; 0s disables timeout).
         let to: Duration = hyperactor_config::global::get(crate::config::HOST_SPAWN_READY_TIMEOUT);
-        let ready: Result<(), HostError> = if to == Duration::from_secs(0) {
-            handle.ready().await.map_err(|e| {
-                HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
-            })
+        let ready = if to == Duration::from_secs(0) {
+            ReadyProc::ensure(&handle).await
         } else {
-            match RealClock.timeout(to, handle.ready()).await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(HostError::ProcessConfigurationFailure(
-                    proc_id.clone(),
-                    anyhow::anyhow!("{e:?}"),
-                )),
-                Err(_) => Err(HostError::ProcessConfigurationFailure(
-                    proc_id.clone(),
-                    anyhow::anyhow!(format!("timeout waiting for Ready after {to:?}")),
-                )),
+            match RealClock.timeout(to, ReadyProc::ensure(&handle)).await {
+                Ok(result) => result,
+                Err(_elapsed) => Err(ReadyProcError::Timeout),
             }
-        };
-
-        ready?;
-
-        // After Ready, addr() + agent_ref() must be present.
-        let addr = handle.addr().ok_or_else(|| {
-            HostError::ProcessConfigurationFailure(
-                proc_id.clone(),
-                anyhow::anyhow!("proc reported Ready but no addr() available"),
-            )
-        })?;
-        let agent_ref = handle.agent_ref().ok_or_else(|| {
-            HostError::ProcessConfigurationFailure(
-                proc_id.clone(),
-                anyhow::anyhow!("proc reported Ready but no agent_ref() available"),
-            )
+        }
+        .map_err(|e| {
+            HostError::ProcessConfigurationFailure(proc_id.clone(), anyhow::anyhow!("{e:?}"))
         })?;
 
-        self.router.bind(proc_id.clone().into(), addr.clone());
-        self.procs.insert(name);
+        self.router
+            .bind(proc_id.clone().into(), ready.addr().clone());
+        self.procs.insert(name.clone());
 
-        Ok((proc_id, agent_ref))
+        Ok((proc_id, ready.agent_ref().clone()))
     }
 
     fn forwarder(&self) -> ProcOrDial {
         ProcOrDial {
-            proc: self.service_proc.clone(),
+            service_proc: self.service_proc.clone(),
+            local_proc: self.local_proc.clone(),
             dialer: self.router.clone(),
         }
     }
@@ -266,9 +273,10 @@ impl<M: ProcManager> Host<M> {
 
 /// A router used to route to the system proc, or else fall back to
 /// the dial mailbox router.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ProcOrDial {
-    proc: Proc,
+    service_proc: Proc,
+    local_proc: Proc,
     dialer: DialMailboxRouter,
 }
 
@@ -278,8 +286,10 @@ impl MailboxSender for ProcOrDial {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if envelope.dest().actor_id().proc_id() == self.proc.proc_id() {
-            self.proc.post_unchecked(envelope, return_handle);
+        if envelope.dest().actor_id().proc_id() == self.service_proc.proc_id() {
+            self.service_proc.post_unchecked(envelope, return_handle);
+        } else if envelope.dest().actor_id().proc_id() == self.local_proc.proc_id() {
+            self.local_proc.post_unchecked(envelope, return_handle);
         } else {
             self.dialer.post_unchecked(envelope, return_handle)
         }
@@ -293,6 +303,26 @@ pub enum ReadyError<TerminalStatus> {
     Terminal(TerminalStatus),
     /// Implementation lost its status channel / cannot observe state.
     ChannelClosed,
+}
+
+/// Error returned by [`ready_proc`].
+#[derive(Debug, Clone)]
+pub enum ReadyProcError<TerminalStatus> {
+    /// Timed out waiting for ready.
+    Timeout,
+    /// The underlying `ready()` call failed.
+    Ready(ReadyError<TerminalStatus>),
+    /// The handle's `addr()` returned `None` after `ready()` succeeded.
+    MissingAddr,
+    /// The handle's `agent_ref()` returned `None` after `ready()`
+    /// succeeded.
+    MissingAgentRef,
+}
+
+impl<T> From<ReadyError<T>> for ReadyProcError<T> {
+    fn from(e: ReadyError<T>) -> Self {
+        ReadyProcError::Ready(e)
+    }
 }
 
 /// Error returned by [`ProcHandle::wait`].
@@ -411,12 +441,14 @@ pub trait SingleTerminate: Send + Sync {
     /// # Parameters
     /// - `timeout`: Per-child grace period before escalation to a
     ///   forceful stop.
+    /// - `reason`: Human-readable reason for termination.
     /// Returns a tuple of (polite shutdown actors vec, forceful stop actors vec)
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
         proc: &ProcId,
         timeout: std::time::Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error>;
 }
 
@@ -458,6 +490,7 @@ pub trait BulkTerminate: Send + Sync {
         cx: &impl context::Actor,
         timeout: std::time::Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary;
 }
 
@@ -482,8 +515,11 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary {
-        self.manager.terminate_all(cx, timeout, max_in_flight).await
+        self.manager
+            .terminate_all(cx, timeout, max_in_flight, reason)
+            .await
     }
 }
 
@@ -494,8 +530,59 @@ impl<M: ProcManager + SingleTerminate> SingleTerminate for Host<M> {
         cx: &impl context::Actor,
         proc: &ProcId,
         timeout: Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
-        self.manager.terminate_proc(cx, proc, timeout).await
+        self.manager.terminate_proc(cx, proc, timeout, reason).await
+    }
+}
+
+/// Capability proving a proc is ready.
+///
+/// [`ReadyProc::ensure`] validates that `addr()` and `agent_ref()`
+/// are available; this type carries that proof, providing infallible
+/// accessors.
+///
+/// Obtain a `ReadyProc` by calling `ready_proc(&handle).await`.
+pub struct ReadyProc<'a, H: ProcHandle> {
+    handle: &'a H,
+    addr: ChannelAddr,
+    agent_ref: ActorRef<H::Agent>,
+}
+
+impl<'a, H: ProcHandle> ReadyProc<'a, H> {
+    /// Wait for a proc to become ready, then return a capability that
+    /// provides infallible access to `addr()` and `agent_ref()`.
+    ///
+    /// This is the type-safe way to obtain the proc's address and
+    /// agent reference. After this function returns `Ok(ready)`, both
+    /// `ready.addr()` and `ready.agent_ref()` are guaranteed to
+    /// succeed.
+    pub async fn ensure(
+        handle: &'a H,
+    ) -> Result<ReadyProc<'a, H>, ReadyProcError<H::TerminalStatus>> {
+        handle.ready().await?;
+        let addr = handle.addr().ok_or(ReadyProcError::MissingAddr)?;
+        let agent_ref = handle.agent_ref().ok_or(ReadyProcError::MissingAgentRef)?;
+        Ok(ReadyProc {
+            handle,
+            addr,
+            agent_ref,
+        })
+    }
+
+    /// The proc's logical identity.
+    pub fn proc_id(&self) -> &ProcId {
+        self.handle.proc_id()
+    }
+
+    /// The proc's address (guaranteed available after ready).
+    pub fn addr(&self) -> &ChannelAddr {
+        &self.addr
+    }
+
+    /// The agent actor reference (guaranteed available after ready).
+    pub fn agent_ref(&self) -> &ActorRef<H::Agent> {
+        &self.agent_ref
     }
 }
 
@@ -554,10 +641,19 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     fn proc_id(&self) -> &ProcId;
 
     /// The proc's address (the one callers bind into the host
-    /// router).
+    /// router). May return `None` before `ready()` completes.
+    /// Guaranteed to return `Some` after `ready()` succeeds.
+    ///
+    /// **Prefer [`ready_proc()`]** for type-safe access that
+    /// guarantees availability at compile time.
     fn addr(&self) -> Option<ChannelAddr>;
 
-    /// The agent actor reference hosted in the proc.
+    /// The agent actor reference hosted in the proc. May return
+    /// `None` before `ready()` completes. Guaranteed to return `Some`
+    /// after `ready()` succeeds.
+    ///
+    /// **Prefer [`ready_proc()`]** for type-safe access that
+    /// guarantees availability at compile time.
     fn agent_ref(&self) -> Option<ActorRef<Self::Agent>>;
 
     /// Resolves when the proc becomes Ready. Multi-waiter,
@@ -578,10 +674,16 @@ pub trait ProcHandle: Clone + Send + Sync + 'static {
     /// value `wait()` will return). Never fabricates terminal states:
     /// this is only returned after the exit monitor observes
     /// termination.
+    ///
+    /// # Parameters
+    /// - `cx`: The actor context for sending messages.
+    /// - `timeout`: Grace period before escalation.
+    /// - `reason`: Human-readable reason for termination.
     async fn terminate(
         &self,
         cx: &impl context::Actor,
         timeout: Duration,
+        reason: &str,
     ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>>;
 
     /// Force the proc down immediately. For in-process managers this
@@ -675,6 +777,7 @@ where
         _cx: &impl context::Actor,
         timeout: std::time::Duration,
         max_in_flight: usize,
+        reason: &str,
     ) -> TerminateSummary {
         // Snapshot procs so we don't hold the lock across awaits.
         let procs: Vec<Proc> = {
@@ -686,7 +789,7 @@ where
 
         let results = stream::iter(procs.into_iter().map(|mut p| async move {
             // For local manager, graceful proc-level stop.
-            match p.destroy_and_wait::<()>(timeout, None).await {
+            match p.destroy_and_wait::<()>(timeout, None, reason).await {
                 Ok(_) => true,
                 Err(e) => {
                     tracing::warn!(error=%e, "terminate_all(local): destroy_and_wait failed");
@@ -718,6 +821,7 @@ where
         _cx: &impl context::Actor,
         proc: &ProcId,
         timeout: std::time::Duration,
+        reason: &str,
     ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
         // Snapshot procs so we don't hold the lock across awaits.
         let procs: Option<Proc> = {
@@ -725,7 +829,7 @@ where
             guard.remove(proc)
         };
         if let Some(mut p) = procs {
-            p.destroy_and_wait::<()>(timeout, None).await
+            p.destroy_and_wait::<()>(timeout, None, reason).await
         } else {
             Err(anyhow::anyhow!("proc {} doesn't exist", proc))
         }
@@ -749,7 +853,6 @@ where
 ///
 /// **Type parameter:** `A` is constrained by the `ProcHandle::Agent`
 /// bound (`Actor + Referable`).
-#[derive(Debug)]
 pub struct LocalHandle<A: Actor + Referable> {
     proc_id: ProcId,
     addr: ChannelAddr,
@@ -779,9 +882,11 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
     fn proc_id(&self) -> &ProcId {
         &self.proc_id
     }
+
     fn addr(&self) -> Option<ChannelAddr> {
         Some(self.addr.clone())
     }
+
     fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
@@ -802,6 +907,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         &self,
         _cx: &impl context::Actor,
         timeout: Duration,
+        reason: &str,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         let mut proc = {
             let guard = self.procs.lock().await;
@@ -818,7 +924,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         // Graceful stop of the *proc* (actors) with a deadline. This
         // will drain and then abort remaining actors at expiry.
         let _ = proc
-            .destroy_and_wait::<()>(timeout, None)
+            .destroy_and_wait::<()>(timeout, None, reason)
             .await
             .map_err(TerminateError::Io)?;
 
@@ -837,7 +943,7 @@ impl<A: Actor + Referable> ProcHandle for LocalHandle<A> {
         };
 
         let _ = proc
-            .destroy_and_wait::<()>(Duration::from_millis(0), None)
+            .destroy_and_wait::<()>(Duration::from_millis(0), None, "kill")
             .await
             .map_err(TerminateError::Io)?;
 
@@ -1005,9 +1111,11 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
     fn proc_id(&self) -> &ProcId {
         &self.proc_id
     }
+
     fn addr(&self) -> Option<ChannelAddr> {
         Some(self.addr.clone())
     }
+
     fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
         Some(self.agent_ref.clone())
     }
@@ -1028,6 +1136,7 @@ impl<A: Actor + Referable> ProcHandle for ProcessHandle<A> {
         &self,
         _cx: &impl context::Actor,
         _deadline: Duration,
+        _reason: &str,
     ) -> Result<(), TerminateError<Self::TerminalStatus>> {
         Err(TerminateError::Unsupported)
     }
@@ -1042,7 +1151,7 @@ impl<A> ProcManager for ProcessProcManager<A>
 where
     // Agent actor runs in the proc (`Actor`) and must be
     // referenceable (`Referable`).
-    A: Actor + Referable,
+    A: Actor + Referable + Sync,
 {
     type Handle = ProcessHandle<A>;
 
@@ -1327,7 +1436,6 @@ mod tests {
             ChannelAddr::any(host.addr().transport()),
             "test".to_string(),
         )
-        .await
         .unwrap();
         let (client_inst, _h) = client.instance("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
@@ -1428,6 +1536,7 @@ mod tests {
         fn proc_id(&self) -> &ProcId {
             &self.id
         }
+
         fn addr(&self) -> Option<ChannelAddr> {
             if self.omit_addr {
                 None
@@ -1435,6 +1544,7 @@ mod tests {
                 Some(self.addr.clone())
             }
         }
+
         fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
             if self.omit_agent {
                 None
@@ -1442,6 +1552,7 @@ mod tests {
                 Some(self.agent.clone())
             }
         }
+
         async fn ready(&self) -> Result<(), ReadyError<Self::TerminalStatus>> {
             match self.mode {
                 ReadyMode::OkAfter(d) => {
@@ -1461,6 +1572,7 @@ mod tests {
             &self,
             _cx: &impl context::Actor,
             _timeout: Duration,
+            _reason: &str,
         ) -> Result<Self::TerminalStatus, TerminateError<Self::TerminalStatus>> {
             Err(TerminateError::Unsupported)
         }

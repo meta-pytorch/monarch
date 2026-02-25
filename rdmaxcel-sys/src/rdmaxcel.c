@@ -53,6 +53,20 @@ rdmaxcel_qp_t* rdmaxcel_qp_create(
   // Store CQ pointers
   qp->send_cq = qp->ibv_qp->send_cq;
   qp->recv_cq = qp->ibv_qp->recv_cq;
+  qp->is_efa = (qp_type == RDMA_QP_TYPE_EFA) ? 1 : 0;
+
+  // Get extended QP handle for EFA
+  if (qp->is_efa) {
+    qp->qpex = ibv_qp_to_qp_ex(qp->ibv_qp);
+    if (!qp->qpex) {
+      fprintf(stderr, "ERROR: Failed to get ibv_qp_ex for EFA QP\n");
+      ibv_destroy_qp(qp->ibv_qp);
+      free(qp);
+      return NULL;
+    }
+  } else {
+    qp->qpex = NULL;
+  }
 
   // Initialize atomic counters
   atomic_init(&qp->send_wqe_idx, 0);
@@ -483,6 +497,25 @@ struct ibv_qp* create_qp(
       return qp;
     }
 
+    case RDMA_QP_TYPE_EFA: {
+      struct ibv_qp* qp = create_efa_qp(
+          context,
+          pd,
+          send_cq,
+          recv_cq,
+          max_send_wr,
+          max_recv_wr,
+          max_send_sge,
+          max_recv_sge);
+      if (!qp) {
+        ibv_destroy_cq(send_cq);
+        ibv_destroy_cq(recv_cq);
+        return NULL;
+      }
+
+      return qp;
+    }
+
     default: {
       perror("Invalid QP type");
       return NULL;
@@ -621,4 +654,347 @@ cudaError_t register_cuda_memory(
   }
 
   return cudaSuccess;
+}
+
+// ============================================================================
+// EFA device detection
+// ============================================================================
+
+int rdmaxcel_is_efa_dev(struct ibv_context* ctx) {
+  if (!ctx || !ctx->device) {
+    return 0;
+  }
+  struct efadv_device_attr efa_attr = {};
+  int ret = efadv_query_device(ctx, &efa_attr, sizeof(efa_attr));
+  return (ret == 0) ? 1 : 0;
+}
+
+// ============================================================================
+// EFA QP Creation
+// ============================================================================
+
+struct ibv_qp* create_efa_qp(
+    struct ibv_context* context,
+    struct ibv_pd* pd,
+    struct ibv_cq* send_cq,
+    struct ibv_cq* recv_cq,
+    int max_send_wr,
+    int max_recv_wr,
+    int max_send_sge,
+    int max_recv_sge) {
+  // EFA SRD queue pair via efadv_create_qp_ex
+  struct ibv_qp_init_attr_ex initAttributes = {
+      .qp_context = NULL,
+      .send_cq = send_cq,
+      .recv_cq = recv_cq,
+      .srq = NULL,
+      .cap =
+          {
+              .max_send_wr = max_send_wr,
+              .max_recv_wr = max_recv_wr,
+              .max_send_sge = max_send_sge,
+              .max_recv_sge = max_recv_sge,
+              .max_inline_data = 0,
+          },
+      .qp_type = IBV_QPT_DRIVER,
+      .sq_sig_all = 0,
+      .pd = pd,
+      .comp_mask = IBV_QP_INIT_ATTR_PD | IBV_QP_INIT_ATTR_SEND_OPS_FLAGS,
+      .send_ops_flags = IBV_QP_EX_WITH_RDMA_WRITE | IBV_QP_EX_WITH_RDMA_READ |
+          IBV_QP_EX_WITH_SEND,
+      .create_flags = 0,
+  };
+
+  struct efadv_qp_init_attr efaAttr = {
+      .driver_qp_type = EFADV_QP_DRIVER_TYPE_SRD,
+  };
+
+  struct ibv_qp* qp =
+      efadv_create_qp_ex(context, &initAttributes, &efaAttr, sizeof(efaAttr));
+  if (!qp) {
+    perror("failed to create EFA SRD queue pair (QP)");
+    return NULL;
+  }
+
+  return qp;
+}
+
+// ============================================================================
+// EFA Extended-Verbs Operation Posting
+// ============================================================================
+
+int rdmaxcel_efa_post_write(
+    rdmaxcel_qp_t* qp,
+    struct ibv_ah* ah,
+    uint32_t remote_qpn,
+    uint32_t qkey,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id) {
+  if (!qp || !qp->qpex || !ah) {
+    return RDMAXCEL_INVALID_PARAMS;
+  }
+
+  ibv_wr_start(qp->qpex);
+  qp->qpex->wr_id = wr_id;
+  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+
+  ibv_wr_rdma_write(qp->qpex, rkey, (uintptr_t)remote_addr);
+  ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
+  ibv_wr_set_ud_addr(qp->qpex, ah, remote_qpn, qkey);
+
+  int ret = ibv_wr_complete(qp->qpex);
+  if (ret != 0) {
+    fprintf(
+        stderr,
+        "ERROR: EFA ibv_wr_complete (write) failed: %d (%s)\n",
+        ret,
+        strerror(ret));
+    return RDMAXCEL_WR_COMPLETE_FAILED;
+  }
+  return RDMAXCEL_SUCCESS;
+}
+
+int rdmaxcel_efa_post_read(
+    rdmaxcel_qp_t* qp,
+    struct ibv_ah* ah,
+    uint32_t remote_qpn,
+    uint32_t qkey,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id) {
+  if (!qp || !qp->qpex || !ah) {
+    return RDMAXCEL_INVALID_PARAMS;
+  }
+
+  ibv_wr_start(qp->qpex);
+  qp->qpex->wr_id = wr_id;
+  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+
+  ibv_wr_rdma_read(qp->qpex, rkey, (uintptr_t)remote_addr);
+  ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
+  ibv_wr_set_ud_addr(qp->qpex, ah, remote_qpn, qkey);
+
+  int ret = ibv_wr_complete(qp->qpex);
+  if (ret != 0) {
+    fprintf(
+        stderr,
+        "ERROR: EFA ibv_wr_complete (read) failed: %d (%s)\n",
+        ret,
+        strerror(ret));
+    return RDMAXCEL_WR_COMPLETE_FAILED;
+  }
+  return RDMAXCEL_SUCCESS;
+}
+
+// ============================================================================
+// EFA Connect (INIT->RTR->RTS + Address Handle)
+// ============================================================================
+
+int rdmaxcel_efa_connect(
+    rdmaxcel_qp_t* qp,
+    uint8_t port_num,
+    uint16_t pkey_index,
+    uint32_t qkey,
+    uint32_t psn,
+    uint8_t gid_index,
+    const uint8_t* remote_gid,
+    uint32_t remote_qpn) {
+  if (!qp || !qp->ibv_qp) {
+    return RDMAXCEL_INVALID_PARAMS;
+  }
+
+  // Transition to INIT - EFA uses QKEY instead of ACCESS_FLAGS
+  struct ibv_qp_attr qp_attr;
+  memset(&qp_attr, 0, sizeof(qp_attr));
+  qp_attr.qp_state = IBV_QPS_INIT;
+  qp_attr.qkey = qkey;
+  qp_attr.port_num = port_num;
+  qp_attr.pkey_index = pkey_index;
+
+  int mask = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_QKEY;
+  int ret = ibv_modify_qp(qp->ibv_qp, &qp_attr, mask);
+  if (ret != 0) {
+    fprintf(
+        stderr,
+        "ERROR: EFA failed to transition QP to INIT: %d (%s)\n",
+        ret,
+        strerror(ret));
+    return RDMAXCEL_QP_MODIFY_FAILED;
+  }
+
+  // Transition to RTR - minimal attributes for EFA
+  memset(&qp_attr, 0, sizeof(qp_attr));
+  qp_attr.qp_state = IBV_QPS_RTR;
+
+  ret = ibv_modify_qp(qp->ibv_qp, &qp_attr, IBV_QP_STATE);
+  if (ret != 0) {
+    fprintf(
+        stderr,
+        "ERROR: EFA failed to transition QP to RTR: %d (%s)\n",
+        ret,
+        strerror(ret));
+    return RDMAXCEL_QP_MODIFY_FAILED;
+  }
+
+  // Transition to RTS
+  memset(&qp_attr, 0, sizeof(qp_attr));
+  qp_attr.qp_state = IBV_QPS_RTS;
+  qp_attr.sq_psn = psn;
+
+  ret = ibv_modify_qp(qp->ibv_qp, &qp_attr, IBV_QP_STATE | IBV_QP_SQ_PSN);
+  if (ret != 0) {
+    fprintf(
+        stderr,
+        "ERROR: EFA failed to transition QP to RTS: %d (%s)\n",
+        ret,
+        strerror(ret));
+    return RDMAXCEL_QP_MODIFY_FAILED;
+  }
+
+  // Create address handle for the remote peer
+  struct ibv_ah_attr ah_attr;
+  memset(&ah_attr, 0, sizeof(ah_attr));
+  ah_attr.port_num = port_num;
+
+  if (remote_gid) {
+    ah_attr.is_global = 1;
+    memcpy(&ah_attr.grh.dgid, remote_gid, 16);
+    ah_attr.grh.sgid_index = gid_index;
+  }
+
+  struct ibv_ah* ah = ibv_create_ah(qp->ibv_qp->pd, &ah_attr);
+  if (!ah) {
+    fprintf(
+        stderr,
+        "ERROR: EFA failed to create address handle: %s\n",
+        strerror(errno));
+    return RDMAXCEL_AH_CREATE_FAILED;
+  }
+
+  // Store EFA routing info in the QP struct
+  qp->efa_ah = ah;
+  qp->efa_remote_qpn = remote_qpn;
+  qp->efa_qkey = qkey;
+
+  // Record RTS timestamp
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  uint64_t rts_nanos =
+      (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+  rdmaxcel_qp_store_rts_timestamp(qp, rts_nanos);
+
+  return RDMAXCEL_SUCCESS;
+}
+
+// ============================================================================
+// EFA Unified Post Operation
+// ============================================================================
+
+int rdmaxcel_efa_post_op(
+    rdmaxcel_qp_t* qp,
+    struct ibv_ah* ah,
+    uint32_t remote_qpn,
+    uint32_t qkey,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id,
+    int op_type) {
+  if (!ah) {
+    return RDMAXCEL_INVALID_PARAMS;
+  }
+  if (op_type == 0) {
+    return rdmaxcel_efa_post_write(
+        qp,
+        ah,
+        remote_qpn,
+        qkey,
+        local_addr,
+        lkey,
+        length,
+        remote_addr,
+        rkey,
+        wr_id);
+  } else if (op_type == 1) {
+    return rdmaxcel_efa_post_read(
+        qp,
+        ah,
+        remote_qpn,
+        qkey,
+        local_addr,
+        lkey,
+        length,
+        remote_addr,
+        rkey,
+        wr_id);
+  }
+  return RDMAXCEL_UNSUPPORTED_OP;
+}
+
+// ============================================================================
+// EFA Post Operation with ibv_post_recv fallback
+// ============================================================================
+// Only called for EFA QPs; RC send/write/read is handled directly in Rust.
+// op_type: 0 = write, 1 = read, 2 = recv, 3 = write_with_imm
+int rdmaxcel_qp_post_op(
+    rdmaxcel_qp_t* qp,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id,
+    int signaled,
+    int op_type) {
+  if (!qp || !qp->ibv_qp) {
+    return RDMAXCEL_INVALID_PARAMS;
+  }
+
+  // Recv uses standard ibv_post_recv (works for all QP types)
+  if (op_type == 2) {
+    struct ibv_sge sge = {
+        .addr = (uintptr_t)local_addr,
+        .length = (uint32_t)length,
+        .lkey = lkey,
+    };
+    struct ibv_recv_wr wr = {
+        .wr_id = wr_id,
+        .sg_list = &sge,
+        .num_sge = 1,
+        .next = NULL,
+    };
+    struct ibv_recv_wr* bad_wr = NULL;
+    int ret = ibv_post_recv(qp->ibv_qp, &wr, &bad_wr);
+    if (ret != 0) {
+      fprintf(
+          stderr, "ERROR: ibv_post_recv failed: %d (%s)\n", ret, strerror(ret));
+      return RDMAXCEL_WR_COMPLETE_FAILED;
+    }
+    return RDMAXCEL_SUCCESS;
+  }
+
+  // EFA send/write/read: dispatch via extended verbs
+  // Map op_type 3 (write_with_imm) to 0 (write) for EFA
+  int efa_op = (op_type == 3) ? 0 : op_type;
+  return rdmaxcel_efa_post_op(
+      qp,
+      qp->efa_ah,
+      qp->efa_remote_qpn,
+      qp->efa_qkey,
+      local_addr,
+      lkey,
+      length,
+      remote_addr,
+      rkey,
+      wr_id,
+      efa_op);
 }

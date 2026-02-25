@@ -22,7 +22,7 @@ use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 
-use crate::v1;
+use crate::Name;
 
 /// LocalProcDialer dials local procs directly through a configured socket
 /// directory.
@@ -64,7 +64,7 @@ impl MailboxSender for LocalProcDialer {
             && addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
-            && name.parse::<v1::Name>().as_ref().is_ok_and(v1::Name::is_suffixed)
+            && name.parse::<Name>().as_ref().is_ok_and(Name::is_suffixed)
         {
             let senders = self.local_senders.read().unwrap();
             let senders = if senders.contains_key(name) {
@@ -113,12 +113,11 @@ mod tests {
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
-    use hyperactor::data::Serialized;
     use hyperactor::id;
-    use hyperactor_config::attrs::Attrs;
+    use hyperactor_config::Flattrs;
 
     use super::*;
-    use crate::v1::Name;
+    use crate::Name;
 
     #[tokio::test]
     async fn test_proc_dialer() {
@@ -170,8 +169,8 @@ mod tests {
         let envelope = MessageEnvelope::new(
             third_notexist_actor_id.clone(),
             PortId(first_actor_id.clone(), 0),
-            Serialized::serialize(&()).unwrap(),
-            Attrs::new(),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(
@@ -183,8 +182,8 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(third_notexist_actor_id.clone(), 0),
-            Serialized::serialize(&()).unwrap(),
-            Attrs::new(),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_matches!(
@@ -196,8 +195,8 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(id!(external[0].actor), 0),
-            Serialized::serialize(&()).unwrap(),
-            Attrs::new(),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
@@ -211,8 +210,8 @@ mod tests {
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(system_actor_id, 0),
-            Serialized::serialize(&()).unwrap(),
-            Attrs::new(),
+            wirevalue::Any::serialize(&()).unwrap(),
+            Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);

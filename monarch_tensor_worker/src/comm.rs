@@ -16,9 +16,8 @@ use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::actor::ActorHandle;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
@@ -33,12 +32,12 @@ use torch_sys_cuda::nccl::group_end;
 use torch_sys_cuda::nccl::group_start;
 use torch_sys2::CudaDevice;
 use torch_sys2::TensorCell;
+use typeuri::Named;
 
 /// Messages for NcclCommActor. See the underlying [`Communicator`] APIs for what
 /// these do.
 #[allow(dead_code)]
 #[derive(Handler, HandleClient, Debug, Named)]
-#[named(register = false)]
 pub enum CommMessage {
     AllReduce(TensorCell, ReduceOp, Stream, #[reply] OncePortHandle<Event>),
 
@@ -188,7 +187,7 @@ impl NcclCommActor {
 }
 
 #[async_trait]
-#[forward(CommMessage)]
+#[handle(CommMessage)]
 impl CommMessageHandler for NcclCommActor {
     async fn all_reduce(
         &mut self,
@@ -411,6 +410,7 @@ mod tests {
     use hyperactor::RemoteSpawn;
     use hyperactor::actor::ActorStatus;
     use hyperactor::proc::Proc;
+    use hyperactor_config::Flattrs;
     use monarch_messages::worker::ArgsKwargs;
     use monarch_messages::worker::WorkerMessageClient;
     use monarch_messages::worker::WorkerParams;
@@ -656,12 +656,15 @@ mod tests {
         let workers = try_join_all((0..world_size).map(async |rank| {
             proc.spawn(
                 &format!("worker{}", rank),
-                WorkerActor::new(WorkerParams {
-                    world_size,
-                    rank,
-                    device_index: Some(rank.try_into()?),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size,
+                        rank,
+                        device_index: Some(rank.try_into()?),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -816,7 +819,7 @@ mod tests {
         assert!(val, "allreduce sum produced unexpected value: {val}");
 
         for worker in workers.into_iter() {
-            worker.drain_and_stop().unwrap();
+            worker.drain_and_stop("test").unwrap();
             worker.await;
         }
 
@@ -840,12 +843,15 @@ mod tests {
         let handle1 = proc
             .spawn(
                 "worker1",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -853,12 +859,15 @@ mod tests {
         let handle2 = proc
             .spawn(
                 "worker2",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 1,
-                    device_index: Some(1),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 1,
+                        device_index: Some(1),
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -994,10 +1003,10 @@ mod tests {
             .unwrap();
         assert!(val, "send_tensor result was unexpected value: {val}");
 
-        handle1.drain_and_stop().unwrap();
-        assert_matches!(handle1.await, ActorStatus::Stopped);
-        handle2.drain_and_stop().unwrap();
-        assert_matches!(handle2.await, ActorStatus::Stopped);
+        handle1.drain_and_stop("test").unwrap();
+        assert_matches!(handle1.await, ActorStatus::Stopped(_));
+        handle2.drain_and_stop("test").unwrap();
+        assert_matches!(handle2.await, ActorStatus::Stopped(_));
 
         let error_responses = controller_rx.drain();
         assert!(
@@ -1019,12 +1028,15 @@ mod tests {
         let handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1135,8 +1147,8 @@ mod tests {
             .unwrap();
         assert!(val, "send_tensor_local result was unexpected value: {val}");
 
-        handle.drain_and_stop().unwrap();
-        assert_matches!(handle.await, ActorStatus::Stopped);
+        handle.drain_and_stop("test").unwrap();
+        assert_matches!(handle.await, ActorStatus::Stopped(_));
 
         let error_responses = controller_rx.drain();
         assert!(

@@ -9,7 +9,6 @@
 from unittest import TestCase
 
 import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.shape import ShapeExt
 

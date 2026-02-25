@@ -135,12 +135,6 @@ Use these functions to look up what actor is running the currently executing cod
    :inherited-members:
    :show-inheritance:
 
-.. autoclass:: Instance
-   :members:
-   :undoc-members:
-   :inherited-members:
-   :show-inheritance:
-
 .. autoclass:: Point
    :members:
    :undoc-members:

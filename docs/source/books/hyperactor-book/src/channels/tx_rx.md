@@ -21,7 +21,8 @@ Under the hood, network transports use a length-prefixed, multipart frame with c
 
 ```rust
 #[async_trait]
-pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
+pub trait Tx<M: RemoteMessage> {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>);
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>);
     fn post(&self, message: M);
     async fn send(&self, message: M) -> Result<(), SendError<M>>;
@@ -29,6 +30,9 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
     fn status(&self) -> &watch::Receiver<TxStatus>;
 }
 ```
+
+- **`do_post(message, return_channel)`**
+  Internal method used by `try_post` and `post`. Posts a message with an optional return channel for failures.
 
 - **`try_post(message, return_channel)`**
   Enqueues locally.
@@ -53,7 +57,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
 ### Rx<M: RemoteMessage> (receive end)
 ```rust
 #[async_trait]
-pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
+pub trait Rx<M: RemoteMessage> {
     async fn recv(&mut self) -> Result<M, ChannelError>;
     fn addr(&self) -> ChannelAddr;
 }

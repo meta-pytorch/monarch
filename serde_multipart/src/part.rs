@@ -79,6 +79,10 @@ impl Part {
     pub fn is_empty(&self) -> bool {
         self.0.iter().all(|b| b.is_empty())
     }
+
+    pub fn from_fragments(fragments: Vec<Bytes>) -> Self {
+        Self(fragments)
+    }
 }
 
 impl<T: Into<Bytes>> From<T> for Part {

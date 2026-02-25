@@ -6,7 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::casting::CAST_ACTOR_MESH_ID;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
+use crate::comm::multicast::CastEnvelope;
+use crate::comm::multicast::CastMessageV1;
+use crate::comm::multicast::ForwardMessageV1;
 use crate::reference::ActorMeshId;
 use crate::resource;
 pub mod multicast;
@@ -23,29 +27,51 @@ use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortRef;
-use hyperactor::WorldId;
-use hyperactor::data::Serialized;
+use hyperactor::RemoteMessage;
+use hyperactor::accum::ReducerMode;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::mailbox::UndeliverableMailboxSender;
 use hyperactor::mailbox::UndeliverableMessageError;
 use hyperactor::mailbox::monitored_return_handle;
+use hyperactor::message::ErasedUnbound;
+use hyperactor::ordering::SEQ_INFO;
+use hyperactor::ordering::SeqInfo;
 use hyperactor::reference::UnboundPort;
+use hyperactor::reference::UnboundPortKind;
+use hyperactor_config::CONFIG;
+use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
+use hyperactor_config::attrs::declare_attrs;
+use hyperactor_mesh_macros::sel;
+use ndslice::Point;
+use ndslice::Selection;
+use ndslice::View;
 use ndslice::selection::routing::RoutingFrame;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
 use crate::comm::multicast::ForwardMessage;
 use crate::comm::multicast::set_cast_info_on_headers;
 
+declare_attrs! {
+    /// Whether to use native v1 casting in v1 ActorMesh.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ENABLE_NATIVE_V1_CASTING".to_string()),
+        Some("enable_native_v1_casting".to_string()),
+    ))
+    pub attr ENABLE_NATIVE_V1_CASTING: bool = false;
+}
+
 /// Parameters to initialize the CommActor
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Default)]
 pub struct CommActorParams {}
+wirevalue::register_type!(CommActorParams);
 
 /// A message buffered due to out-of-order delivery.
 #[derive(Debug)]
@@ -79,9 +105,11 @@ struct ReceiveState {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        CommActorMode,
+        CommMeshConfig,
         CastMessage,
         ForwardMessage,
+        CastMessageV1,
+        ForwardMessageV1,
     ],
 )]
 pub struct CommActor {
@@ -90,69 +118,37 @@ pub struct CommActor {
     /// Each sender is a unique stream.
     recv_state: HashMap<(ActorMeshId, ActorId), ReceiveState>,
 
-    /// The comm actor's mode.
-    mode: CommActorMode,
+    /// The comm actor's mesh configuration.
+    mesh_config: Option<CommMeshConfig>,
 }
 
 /// Configuration for how a `CommActor` determines its own rank and locates peers.
-///
-/// - In `Mesh` mode, the comm actor is assigned an explicit rank and a mapping to each peer by rank.
-/// - In `Implicit` mode, the comm actor infers its rank and peers from its own actor ID.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
-#[derive(Default)]
-pub enum CommActorMode {
-    /// When configured as a mesh, the comm actor is assigned a rank
-    /// and a set of references for each peer rank.
-    Mesh(usize, HashMap<usize, ActorRef<CommActor>>),
-
-    /// In an implicit mode, the comm actor derives its rank and
-    /// peers from its own ID.
-    #[default]
-    Implicit,
-
-    /// Like `Implicit`, but override the destination world id.
-    /// This is useful for setups where comm actors may not reside
-    /// in the destination world. It is meant as a temporary bridge
-    /// until we are fully onto ActorMeshes.
-    // TODO: T224926642 Remove this once we are fully onto ActorMeshes.
-    ImplicitWithWorldId(WorldId),
+pub struct CommMeshConfig {
+    /// The rank of this comm actor on the root mesh.
+    rank: usize,
+    /// Key is the rank of the peer on the root mesh. Value is the peer's comm actor.
+    peers: HashMap<usize, ActorRef<CommActor>>,
 }
+wirevalue::register_type!(CommMeshConfig);
 
-impl CommActorMode {
-    /// Return the peer comm actor for the given rank, given a self id,
-    /// destination port, and rank.
-    fn peer_for_rank(&self, self_id: &ActorId, rank: usize) -> Result<ActorRef<CommActor>> {
-        match self {
-            Self::Mesh(_self_rank, peers) => peers
-                .get(&rank)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("no peer for rank {}", rank)),
-            Self::Implicit => {
-                let world_id = self_id
-                    .proc_id()
-                    .world_id()
-                    .ok_or_else(|| anyhow::anyhow!("comm actor must be on a ranked proc"))?;
-                let proc_id = world_id.proc_id(rank);
-                let actor_id = ActorId::root(proc_id, self_id.name().to_string());
-                Ok(ActorRef::<CommActor>::attest(actor_id))
-            }
-            Self::ImplicitWithWorldId(world_id) => {
-                let proc_id = world_id.proc_id(rank);
-                let actor_id = ActorId::root(proc_id, self_id.name().to_string());
-                Ok(ActorRef::<CommActor>::attest(actor_id))
-            }
-        }
+impl CommMeshConfig {
+    /// Create a new mesh configuration with the given rank and peer mapping.
+    pub fn new(rank: usize, peers: HashMap<usize, ActorRef<CommActor>>) -> Self {
+        Self { rank, peers }
     }
 
-    /// Return the rank of the comm actor, given a self id.
-    fn self_rank(&self, self_id: &ActorId) -> Result<usize> {
-        match self {
-            Self::Mesh(rank, _) => Ok(*rank),
-            Self::Implicit | Self::ImplicitWithWorldId(_) => self_id
-                .proc_id()
-                .rank()
-                .ok_or_else(|| anyhow::anyhow!("comm actor must be on a ranked proc")),
-        }
+    /// Return the peer comm actor for the given rank.
+    fn peer_for_rank(&self, rank: usize) -> Result<ActorRef<CommActor>> {
+        self.peers
+            .get(&rank)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no peer for rank {}", rank))
+    }
+
+    /// Return the rank of the comm actor.
+    fn self_rank(&self) -> usize {
+        self.rank
     }
 }
 
@@ -173,11 +169,15 @@ impl Actor for CommActor {
             let sender = message.sender();
             let return_port = PortRef::attest_message_port(sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
-                "comm actor {} failed to forward the cast message; return to \
-                its original sender's port {}",
+                "comm actor {} failed to forward the cast message; returning to origin {}",
                 cx.self_id(),
                 return_port.port_id(),
             )));
+
+            // Needed so that the receiver of the undeliverable message can easily find the
+            // original sender of the cast message.
+            message_envelope.set_header(CAST_ORIGINATING_SENDER, sender.clone());
+
             return_port
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
@@ -197,10 +197,10 @@ impl Actor for CommActor {
 
         // 2. Case delivery failure at a "deliver here" step.
         if let Some(sender) = message_envelope.headers().get(CAST_ORIGINATING_SENDER) {
-            let return_port = PortRef::attest_message_port(sender);
+            let return_port = PortRef::attest_message_port(&sender);
             message_envelope.set_error(DeliveryError::Multicast(format!(
                 "comm actor {} failed to deliver the cast message to the dest \
-                actor; return to its original sender's port {}",
+                actor; returning to origin {}",
                 cx.self_id(),
                 return_port.port_id(),
             )));
@@ -208,8 +208,8 @@ impl Actor for CommActor {
                 .send(cx, Undeliverable(message_envelope.clone()))
                 .map_err(|err| {
                     let error = DeliveryError::BrokenLink(format!(
-                        "error occured when returning cast message to the original \
-                        sender's port {}; error is: {}",
+                        "error occured when returning cast message to the origin \
+                        sender {}; error is: {}",
                         return_port.port_id(),
                         err,
                     ));
@@ -230,20 +230,30 @@ impl Actor for CommActor {
 
 impl CommActor {
     /// Forward the message to the comm actor on the given peer rank.
-    fn forward(
-        cx: &Instance<Self>,
-        mode: &CommActorMode,
+    fn forward<M: RemoteMessage>(
+        cx: &Context<Self>,
+        config: &CommMeshConfig,
         rank: usize,
-        message: ForwardMessage,
-    ) -> Result<()> {
-        let child = mode.peer_for_rank(cx.self_id(), rank)?;
-        child.send(cx, message)?;
+        message: M,
+    ) -> Result<()>
+    where
+        CommActor: hyperactor::RemoteHandles<M>,
+    {
+        let child = config.peer_for_rank(rank)?;
+        // TEMPORARY: until dropping v0 support
+        if let Some(cast_actor_mesh_id) = cx.headers().get(CAST_ACTOR_MESH_ID) {
+            let mut headers = Flattrs::new();
+            headers.set(CAST_ACTOR_MESH_ID, cast_actor_mesh_id);
+            child.send_with_headers(cx, headers, message)?;
+        } else {
+            child.send(cx, message)?;
+        }
         Ok(())
     }
 
     fn handle_message(
         cx: &Context<Self>,
-        mode: &CommActorMode,
+        config: &CommMeshConfig,
         deliver_here: bool,
         next_steps: HashMap<usize, Vec<RoutingFrame>>,
         sender: ActorId,
@@ -251,52 +261,15 @@ impl CommActor {
         seq: usize,
         last_seqs: &mut HashMap<usize, usize>,
     ) -> Result<()> {
-        // Split ports, if any, and update message with new ports. In this
-        // way, children actors will reply to this comm actor's ports, instead
-        // of to the original ports provided by parent.
-        message.data_mut().visit_mut::<UnboundPort>(
-            |UnboundPort(port_id, reducer_spec, reducer_opts, return_undeliverable)| {
-                let split = port_id.split(
-                    cx,
-                    reducer_spec.clone(),
-                    reducer_opts.clone(),
-                    *return_undeliverable,
-                )?;
-
-                #[cfg(test)]
-                tests::collect_split_port(port_id, &split, deliver_here);
-
-                *port_id = split;
-                Ok(())
-            },
-        )?;
+        split_ports(cx, message.data_mut(), deliver_here, &next_steps)?;
 
         // Deliver message here, if necessary.
         if deliver_here {
-            let rank_on_root_mesh = mode.self_rank(cx.self_id())?;
-            let cast_rank = message.relative_rank(rank_on_root_mesh)?;
-            // Replace ranks with self ranks.
-            message
-                .data_mut()
-                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                    *rank = Some(cast_rank);
-                    Ok(())
-                })?;
-            let cast_shape = message.shape();
-            let point = cast_shape
-                .extent()
-                .point_of_rank(cast_rank)
-                .expect("rank out of bounds");
-            let mut headers = cx.headers().clone();
-            set_cast_info_on_headers(&mut headers, point, message.sender().clone());
-            cx.post(
-                cx.self_id()
-                    .proc_id()
-                    .actor_id(message.dest_port().actor_name(), 0)
-                    .port_id(message.dest_port().port()),
-                headers,
-                Serialized::serialize(message.data())?,
-            );
+            // We should not copy cx.headers() because it contains auto-generated
+            // headers from mailbox. We want fresh headers only containing
+            // user-provided headers.
+            let headers = message.headers().clone();
+            Self::deliver_to_dest(cx, headers, &mut message, config)?;
         }
 
         // Forward to peers.
@@ -306,7 +279,7 @@ impl CommActor {
                 let last_seq = last_seqs.entry(peer).or_default();
                 Self::forward(
                     cx,
-                    mode,
+                    config,
                     peer,
                     ForwardMessage {
                         dests,
@@ -323,12 +296,94 @@ impl CommActor {
 
         Ok(())
     }
+
+    fn deliver_to_dest<M: CastEnvelope>(
+        cx: &Context<Self>,
+        mut headers: Flattrs,
+        message: &mut M,
+        config: &CommMeshConfig,
+    ) -> anyhow::Result<()> {
+        let cast_point = message.cast_point(config)?;
+        // Replace ranks with self ranks.
+        replace_with_self_ranks(&cast_point, message.data_mut())?;
+
+        set_cast_info_on_headers(&mut headers, cast_point, message.sender().clone());
+        cx.post_with_external_seq_info(
+            cx.self_id()
+                .proc_id()
+                .actor_id(message.dest_port().actor_name(), 0)
+                .port_id(message.dest_port().port()),
+            headers,
+            wirevalue::Any::serialize(message.data())?,
+        );
+
+        Ok(())
+    }
+}
+
+// Split ports, if any, and update message with new ports. In this
+// way, children actors will reply to this comm actor's ports, instead
+// of to the original ports provided by parent.
+fn split_ports(
+    cx: &Context<CommActor>,
+    data: &mut ErasedUnbound,
+    deliver_here: bool,
+    next_steps: &HashMap<usize, Vec<RoutingFrame>>,
+) -> anyhow::Result<()> {
+    // Split ports, if any, and update message with new ports. In this
+    // way, children actors will reply to this comm actor's ports, instead
+    // of to the original ports provided by parent.
+    data.visit_mut::<UnboundPort>(
+        |UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
+            let reducer_mode = match kind {
+                UnboundPortKind::Streaming(opts) => {
+                    ReducerMode::Streaming(opts.clone().unwrap_or_default())
+                }
+                UnboundPortKind::Once if reducer_spec.is_none() => {
+                    // We can only split OncePorts that have reducers.
+                    // Pass this through -- if it is used multiple times,
+                    // it will cause a delivery error downstream.
+                    // However we should reconsider this behavior
+                    // as it its semantics will now differ between
+                    // unicast and broadcast messages.
+                    return Ok(());
+                }
+                UnboundPortKind::Once => {
+                    // Compute peer count for OncePort splitting. This is the number of
+                    // destinations the message will be delivered to, so that the split
+                    // port can correctly accumulate responses.
+                    let peer_count = next_steps.len() + if deliver_here { 1 } else { 0 };
+                    ReducerMode::Once(peer_count)
+                }
+            };
+
+            let split = port_id.split(
+                cx,
+                reducer_spec.clone(),
+                reducer_mode,
+                *return_undeliverable,
+            )?;
+
+            #[cfg(test)]
+            tests::collect_split_port(port_id, &split, deliver_here);
+
+            *port_id = split;
+            Ok(())
+        },
+    )
+}
+
+fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyhow::Result<()> {
+    data.visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+        *rank = Some(cast_point.rank());
+        Ok(())
+    })
 }
 
 #[async_trait]
-impl Handler<CommActorMode> for CommActor {
-    async fn handle(&mut self, _cx: &Context<Self>, mode: CommActorMode) -> Result<()> {
-        self.mode = mode;
+impl Handler<CommMeshConfig> for CommActor {
+    async fn handle(&mut self, _cx: &Context<Self>, config: CommMeshConfig) -> Result<()> {
+        self.mesh_config = Some(config);
         Ok(())
     }
 }
@@ -336,7 +391,7 @@ impl Handler<CommActorMode> for CommActor {
 // TODO(T218630526): reliable casting for mutable topology
 #[async_trait]
 impl Handler<CastMessage> for CommActor {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessage) -> Result<()> {
         // Always forward the message to the root rank of the slice, casting starts from there.
         let slice = cast_message.dest.slice.clone();
@@ -358,16 +413,17 @@ impl Handler<CastMessage> for CommActor {
             last_seq,
         };
 
+        let config = self
+            .mesh_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CommMeshConfig has not been set yet"))?;
+
         // Optimization: if forwarding to ourselves, handle inline instead of
         // going through the message queue
-        if self
-            .mode
-            .self_rank(cx.self_id())
-            .is_ok_and(|self_rank| self_rank == rank)
-        {
+        if config.self_rank() == rank {
             Handler::<ForwardMessage>::handle(self, cx, fwd_message).await?;
         } else {
-            Self::forward(cx, &self.mode, rank, fwd_message)?;
+            Self::forward(cx, config, rank, fwd_message)?;
         }
         Ok(())
     }
@@ -375,7 +431,7 @@ impl Handler<CastMessage> for CommActor {
 
 #[async_trait]
 impl Handler<ForwardMessage> for CommActor {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
         let ForwardMessage {
             sender,
@@ -385,8 +441,13 @@ impl Handler<ForwardMessage> for CommActor {
             last_seq,
         } = fwd_message;
 
+        let config = self
+            .mesh_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CommMeshConfig has not been set yet"))?;
+
         // Resolve/dedup routing frames.
-        let rank = self.mode.self_rank(cx.self_id())?;
+        let rank = config.self_rank();
         let (deliver_here, next_steps) =
             ndslice::selection::routing::resolve_routing(rank, dests, &mut |_| {
                 panic!("Choice encountered in CommActor routing")
@@ -399,7 +460,7 @@ impl Handler<ForwardMessage> for CommActor {
                 // We got an in-order operation, so handle it now.
                 Self::handle_message(
                     cx,
-                    &self.mode,
+                    config,
                     deliver_here,
                     next_steps,
                     sender.clone(),
@@ -420,7 +481,7 @@ impl Handler<ForwardMessage> for CommActor {
                 {
                     Self::handle_message(
                         cx,
-                        &self.mode,
+                        config,
                         deliver_here,
                         next_steps,
                         sender.clone(),
@@ -461,6 +522,66 @@ impl Handler<ForwardMessage> for CommActor {
     }
 }
 
+#[async_trait]
+impl Handler<CastMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessageV1) -> Result<()> {
+        let slice = cast_message.dest_region.slice().clone();
+        let frame = RoutingFrame::root(sel!(*), slice);
+        let forward_message = ForwardMessageV1 {
+            dests: vec![frame],
+            message: cast_message,
+        };
+        self.handle(cx, forward_message).await
+    }
+}
+
+#[async_trait]
+impl Handler<ForwardMessageV1> for CommActor {
+    async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessageV1) -> Result<()> {
+        let ForwardMessageV1 { dests, mut message } = fwd_message;
+        let config = self
+            .mesh_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CommMeshConfig has not been set yet"))?;
+        // Resolve/dedup routing frames.
+        let rank_on_root_mesh = config.self_rank();
+        let (deliver_here, next_steps) =
+            ndslice::selection::routing::resolve_routing(rank_on_root_mesh, dests, &mut |_| {
+                panic!("choice encountered in CommActor routing")
+            })?;
+
+        split_ports(cx, &mut message.data, deliver_here, &next_steps)?;
+
+        // Deliver message here, if necessary.
+        if deliver_here {
+            let mut headers = message.headers().clone();
+            let seq = message
+                .seqs
+                .get(message.cast_point(config)?.rank())
+                .expect("mismatched seqs and dest_region");
+            headers.set(
+                SEQ_INFO,
+                SeqInfo::Session {
+                    session_id: message.session_id,
+                    seq,
+                },
+            );
+            Self::deliver_to_dest(cx, headers, &mut message, config)?;
+        }
+
+        // Forward to peers.
+        for (peer_rank_on_root_mesh, dests) in next_steps {
+            let forward_message = ForwardMessageV1 {
+                dests,
+                message: message.clone(),
+            };
+            Self::forward(cx, config, peer_rank_on_root_mesh, forward_message)?;
+        }
+
+        Ok(())
+    }
+}
+
 pub mod test_utils {
     use anyhow::Result;
     use async_trait::async_trait;
@@ -469,11 +590,11 @@ pub mod test_utils {
     use hyperactor::Bind;
     use hyperactor::Context;
     use hyperactor::Handler;
-    use hyperactor::Named;
     use hyperactor::PortRef;
     use hyperactor::Unbind;
     use serde::Deserialize;
     use serde::Serialize;
+    use typeuri::Named;
 
     use super::*;
 
@@ -496,6 +617,11 @@ pub mod test_utils {
             reply_to1: PortRef<u64>,
             #[binding(include)]
             reply_to2: PortRef<MyReply>,
+        },
+        CastAndReplyOnce {
+            arg: String,
+            #[binding(include)]
+            reply_to: hyperactor::OncePortRef<u64>,
         },
     }
 
@@ -524,7 +650,7 @@ pub mod test_utils {
     impl hyperactor::RemoteSpawn for TestActor {
         type Params = TestActorParams;
 
-        async fn new(params: Self::Params) -> Result<Self> {
+        async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self> {
             let Self::Params { forward_port } = params;
             Ok(Self { forward_port })
         }
@@ -547,18 +673,18 @@ mod tests {
     use std::hash::Hash;
     use std::ops::Deref;
     use std::ops::DerefMut;
-    use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::OnceLock;
 
     use hyperactor::PortId;
     use hyperactor::PortRef;
+    use hyperactor::ProcId;
     use hyperactor::accum;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
-    use hyperactor::channel::ChannelTransport;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
+    use hyperactor::context;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::mailbox::open_port;
@@ -577,14 +703,9 @@ mod tests {
     use tokio::time::Duration;
 
     use super::*;
-    use crate::ProcMesh;
-    use crate::actor_mesh::ActorMesh;
-    use crate::actor_mesh::RootActorMesh;
-    use crate::alloc::AllocSpec;
-    use crate::alloc::Allocator;
-    use crate::alloc::LocalAllocator;
-    use crate::proc_mesh::SharedSpawnable;
-    use crate::v1;
+    use crate::host_mesh::HostMesh;
+    use crate::test_utils::local_host_mesh;
+    use crate::testing;
 
     struct Edge<T> {
         from: T,
@@ -714,6 +835,17 @@ mod tests {
         assert_eq!(paths.0, expected);
     }
 
+    fn proc_rank(actor_id: &ActorId, rank_lookup: &HashMap<ProcId, usize>) -> Index {
+        let proc_id = actor_id.proc_id();
+        match actor_id.proc_id().rank() {
+            Some(rank) => rank,
+            None => rank_lookup
+                .get(proc_id)
+                .copied()
+                .expect("proc rank not found"),
+        }
+    }
+
     //  Given a port tree,
     //     * remove the client port, i.e. the 1st element of the path;
     //     * verify all remaining ports are comm actor ports;
@@ -733,7 +865,11 @@ mod tests {
     //     1 -> 0, 1
     //     2 -> 0, 2
     //     3 -> 0, 2, 3
-    fn get_ranks(paths: PathToLeaves<PortId>, client_reply: &PortId) -> PathToLeaves<Index> {
+    fn get_ranks(
+        paths: PathToLeaves<PortId>,
+        client_reply: &PortId,
+        rank_lookup: &HashMap<ProcId, usize>,
+    ) -> PathToLeaves<Index> {
         let ranks = paths
             .0
             .into_iter()
@@ -748,20 +884,13 @@ mod tests {
                     .into_iter()
                     .map(|p| {
                         assert!(p.actor_id().name().contains("comm"));
-                        p.actor_id().rank()
+                        proc_rank(p.actor_id(), rank_lookup)
                     })
                     .collect();
-                (dst.into_actor_id().rank(), actor_path)
+                (proc_rank(&dst.into_actor_id(), rank_lookup), actor_path)
             })
             .collect();
         PathToLeaves(ranks)
-    }
-
-    struct MeshSetup {
-        actor_mesh: RootActorMesh<'static, TestActor>,
-        reply1_rx: PortReceiver<u64>,
-        reply2_rx: PortReceiver<MyReply>,
-        reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     }
 
     struct NoneAccumulator;
@@ -789,6 +918,7 @@ mod tests {
         extent: &Extent,
         reply_port_ref1: &PortRef<u64>,
         reply_port_ref2: &PortRef<MyReply>,
+        rank_lookup: &HashMap<ProcId, usize>,
     ) {
         // Get the paths used in casting
         let sel_paths = PathToLeaves(
@@ -800,15 +930,17 @@ mod tests {
 
         // Get the split port paths collected in SPLIT_PORT_TREE during casting
         let (reply1_paths, reply2_paths) = {
-            let tree = SPLIT_PORT_TREE.get().unwrap();
+            let tree = SPLIT_PORT_TREE
+                .get()
+                .expect("not initialized; are Hosts in the same process as SPLIT_PORT_TREE?");
             let edges = tree.lock().unwrap();
             let (reply1, reply2): (BTreeMap<_, _>, BTreeMap<_, _>) = build_paths(&edges)
                 .0
                 .into_iter()
                 .partition(|(_dst, path)| &path[0] == reply_port_ref1.port_id());
             (
-                get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id()),
-                get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id()),
+                get_ranks(PathToLeaves(reply1), reply_port_ref1.port_id(), rank_lookup),
+                get_ranks(PathToLeaves(reply2), reply_port_ref2.port_id(), rank_lookup),
             )
         };
 
@@ -817,112 +949,27 @@ mod tests {
         assert_eq!(sel_paths, reply2_paths);
     }
 
-    async fn setup_mesh<A>(accum: Option<A>) -> MeshSetup
-    where
-        A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
-    {
-        let extent = extent!(replica = 4, host = 4, gpu = 4);
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent.clone(),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let proc_mesh = Arc::new(ProcMesh::allocate(alloc).await.unwrap());
-        let dest_actor_name = "dest_actor";
-        let (tx, mut rx) = hyperactor::mailbox::open_port(proc_mesh.client());
-        let params = TestActorParams {
-            forward_port: tx.bind(),
-        };
-        let instance = crate::v1::testing::instance().await;
-        let actor_mesh = Arc::clone(&proc_mesh)
-            .spawn::<TestActor>(&instance, dest_actor_name, &params)
-            .await
-            .unwrap();
-
-        let (reply_port_handle0, _) = open_port::<String>(proc_mesh.client());
-        let reply_port_ref0 = reply_port_handle0.bind();
-        let (reply_port_handle1, reply1_rx) = match accum {
-            Some(a) => proc_mesh.client().mailbox().open_accum_port(a),
-            None => open_port(proc_mesh.client()),
-        };
-        let reply_port_ref1 = reply_port_handle1.bind();
-        let (reply_port_handle2, reply2_rx) = open_port::<MyReply>(proc_mesh.client());
-        let reply_port_ref2 = reply_port_handle2.bind();
-        let message = TestMessage::CastAndReply {
-            arg: "abc".to_string(),
-            reply_to0: reply_port_ref0.clone(),
-            reply_to1: reply_port_ref1.clone(),
-            reply_to2: reply_port_ref2.clone(),
-        };
-
-        let selection = sel!(*);
-        clear_collected_tree();
-        actor_mesh
-            .cast(proc_mesh.client(), selection.clone(), message)
-            .unwrap();
-
-        let mut reply_tos = vec![];
-        for _ in extent.points() {
-            let msg = rx.recv().await.expect("missing");
-            match msg {
-                TestMessage::CastAndReply {
-                    arg,
-                    reply_to0,
-                    reply_to1,
-                    reply_to2,
-                } => {
-                    assert_eq!(arg, "abc");
-                    // port 0 is still the same as the original one because it
-                    // is not included in MutVisitor.
-                    assert_eq!(reply_to0, reply_port_ref0);
-                    // ports have been replaced by comm actor's split ports.
-                    assert_ne!(reply_to1, reply_port_ref1);
-                    assert_eq!(reply_to1.port_id().actor_id().name(), "comm");
-                    assert_ne!(reply_to2, reply_port_ref2);
-                    assert_eq!(reply_to2.port_id().actor_id().name(), "comm");
-                    reply_tos.push((reply_to1, reply_to2));
-                }
-                _ => {
-                    panic!("unexpected message: {:?}", msg);
-                }
-            }
-        }
-
-        verify_split_port_paths(&selection, &extent, &reply_port_ref1, &reply_port_ref2);
-
-        MeshSetup {
-            actor_mesh,
-            reply1_rx,
-            reply2_rx,
-            reply_tos,
-        }
-    }
-
     async fn execute_cast_and_reply(
         ranks: Vec<ActorRef<TestActor>>,
-        instance: &Instance<()>,
+        instance: &impl context::Actor,
         mut reply1_rx: PortReceiver<u64>,
         mut reply2_rx: PortReceiver<MyReply>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     ) {
         // Reply from each dest actor. The replies should be received by client.
         {
-            for (dest_actor, (reply_to1, reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-                let rank = dest_actor.actor_id().rank() as u64;
-                reply_to1.send(instance, rank).unwrap();
+            for (i, (dest_actor, (reply_to1, reply_to2))) in
+                ranks.iter().zip(reply_tos.iter()).enumerate()
+            {
+                let value = i as u64;
+                reply_to1.send(instance, value).unwrap();
                 let my_reply = MyReply {
                     sender: dest_actor.actor_id().clone(),
-                    value: rank,
+                    value,
                 };
                 reply_to2.send(instance, my_reply.clone()).unwrap();
 
-                assert_eq!(reply1_rx.recv().await.unwrap(), rank);
+                assert_eq!(reply1_rx.recv().await.unwrap(), value);
                 assert_eq!(reply2_rx.recv().await.unwrap(), my_reply);
             }
         }
@@ -934,12 +981,13 @@ mod tests {
         // be received in the same order as they were sent out.
         {
             let n = 100;
-            let mut expected2: HashMap<usize, Vec<MyReply>> = hashmap! {};
-            for (dest_actor, (_reply_to1, reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-                let rank = dest_actor.actor_id().rank();
+            let mut expected2: HashMap<ActorId, Vec<MyReply>> = hashmap! {};
+            for (i, (dest_actor, (_reply_to1, reply_to2))) in
+                ranks.iter().zip(reply_tos.iter()).enumerate()
+            {
                 let mut sent2 = vec![];
-                for i in 0..n {
-                    let value = (rank * 100 + i) as u64;
+                for j in 0..n {
+                    let value = (i * 100 + j) as u64;
                     let my_reply = MyReply {
                         sender: dest_actor.actor_id().clone(),
                         value,
@@ -948,37 +996,25 @@ mod tests {
                     sent2.push(my_reply);
                 }
                 assert!(
-                    expected2.insert(rank, sent2).is_none(),
-                    "duplicate rank {rank} in map"
+                    expected2
+                        .insert(dest_actor.actor_id().clone(), sent2)
+                        .is_none(),
+                    "duplicate actor_id {} in map",
+                    dest_actor.actor_id()
                 );
             }
 
-            let mut received2: HashMap<usize, Vec<MyReply>> = hashmap! {};
+            let mut received2: HashMap<ActorId, Vec<MyReply>> = hashmap! {};
 
             for _ in 0..(n * ranks.len()) {
                 let my_reply = reply2_rx.recv().await.unwrap();
                 received2
-                    .entry(my_reply.sender.rank())
+                    .entry(my_reply.sender.clone())
                     .or_default()
                     .push(my_reply);
             }
             assert_eq!(received2, expected2);
         }
-    }
-
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply() {
-        let MeshSetup {
-            actor_mesh,
-            reply1_rx,
-            reply2_rx,
-            reply_tos,
-            ..
-        } = setup_mesh::<NoneAccumulator>(None).await;
-        let proc_mesh_client = actor_mesh.proc_mesh().client();
-
-        let ranks = actor_mesh.ranks().clone();
-        execute_cast_and_reply(ranks, proc_mesh_client, reply1_rx, reply2_rx, reply_tos).await;
     }
 
     async fn wait_for_with_timeout(
@@ -1002,7 +1038,7 @@ mod tests {
 
     async fn execute_cast_and_accum(
         ranks: Vec<ActorRef<TestActor>>,
-        instance: &Instance<()>,
+        instance: &impl context::Actor,
         mut reply1_rx: PortReceiver<u64>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
     ) {
@@ -1011,15 +1047,16 @@ mod tests {
         // be received in the same order as they were sent out.
         let mut sum = 0;
         let n = 100;
-        for (dest_actor, (reply_to1, _reply_to2)) in ranks.iter().zip(reply_tos.iter()) {
-            let rank = dest_actor.actor_id().rank();
-            for i in 0..n {
-                let value = (rank + i) as u64;
+        for (i, (_dest_actor, (reply_to1, _reply_to2))) in
+            ranks.iter().zip(reply_tos.iter()).enumerate()
+        {
+            for j in 0..n {
+                let value = (i + j) as u64;
                 reply_to1.send(instance, value).unwrap();
                 sum += value;
             }
         }
-        wait_for_with_timeout(&mut reply1_rx, sum, Duration::from_secs(2))
+        wait_for_with_timeout(&mut reply1_rx, sum, Duration::from_secs(8))
             .await
             .unwrap();
         // no more messages
@@ -1028,50 +1065,26 @@ mod tests {
         assert_eq!(msg, None);
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_accum() {
-        let config = hyperactor_config::global::lock();
-        // Use temporary config for this test
-        let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
-
-        let MeshSetup {
-            actor_mesh,
-            reply1_rx,
-            reply_tos,
-            ..
-        } = setup_mesh(Some(accum::sum::<u64>())).await;
-        let proc_mesh_client = actor_mesh.proc_mesh().client();
-        let ranks = actor_mesh.ranks().clone();
-        execute_cast_and_accum(ranks, proc_mesh_client, reply1_rx, reply_tos).await;
-    }
-
     struct MeshSetupV1 {
-        instance: &'static Instance<()>,
-        actor_mesh_ref: v1::ActorMeshRef<TestActor>,
+        instance: &'static Instance<testing::TestRootClient>,
+        actor_mesh_ref: crate::ActorMeshRef<TestActor>,
         reply1_rx: PortReceiver<u64>,
         reply2_rx: PortReceiver<MyReply>,
         reply_tos: Vec<(PortRef<u64>, PortRef<MyReply>)>,
+        // Keep the host mesh alive so comm actors aren't shut down.
+        host_mesh: HostMesh,
     }
 
     async fn setup_mesh_v1<A>(accum: Option<A>) -> MeshSetupV1
     where
         A: Accumulator<Update = u64, State = u64> + Send + Sync + 'static,
     {
-        let instance = v1::testing::instance().await;
-
-        let extent = extent!(replica = 4, host = 4, gpu = 4);
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent.clone(),
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await
-            .unwrap();
-
-        let proc_mesh = v1::ProcMesh::allocate(instance, Box::new(alloc), "test_local")
+        let instance = crate::testing::instance();
+        // We have to use a in process host mesh, because SPLIT_PORT_TREE only
+        // can collect paths from the same process.
+        let host_mesh = local_host_mesh(8).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", extent!(gpu = 8))
             .await
             .unwrap();
 
@@ -1079,8 +1092,15 @@ mod tests {
         let params = TestActorParams {
             forward_port: tx.bind(),
         };
-        let actor_mesh = proc_mesh.spawn(&instance, "test", &params).await.unwrap();
-        let actor_mesh_ref = actor_mesh.deref().clone();
+        let actor_name = crate::Name::new("test").expect("valid test name");
+        // Make this actor a "system" actor to avoid spawning a controller actor.
+        // This test is verifying the whole comm tree, so we want fewer actors
+        // involved.
+        let actor_mesh = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .await
+            .unwrap();
+        let actor_mesh_ref: crate::ActorMeshRef<TestActor> = actor_mesh.deref().clone();
 
         let (reply_port_handle0, _) = open_port::<String>(instance);
         let reply_port_ref0 = reply_port_handle0.bind();
@@ -1102,7 +1122,7 @@ mod tests {
         actor_mesh_ref.cast(instance, message).unwrap();
 
         let mut reply_tos = vec![];
-        for _ in extent.points() {
+        for _ in proc_mesh.extent().points() {
             let msg = rx.recv().await.expect("missing");
             match msg {
                 TestMessage::CastAndReply {
@@ -1128,9 +1148,24 @@ mod tests {
             }
         }
 
+        // [collect_commactor_routing_tree] only returns ranks,So we need to
+        // map proc Ids collected in SPLIT_PORT_TREE to ranks.
+        let rank_lookup = proc_mesh
+            .ranks()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.proc_id().clone(), i))
+            .collect::<HashMap<ProcId, usize>>();
+
         // v1 always uses sel!(*) when casting to a mesh.
         let selection = sel!(*);
-        verify_split_port_paths(&selection, &extent, &reply_port_ref1, &reply_port_ref2);
+        verify_split_port_paths(
+            &selection,
+            &proc_mesh.extent(),
+            &reply_port_ref1,
+            &reply_port_ref2,
+            &rank_lookup,
+        );
 
         MeshSetupV1 {
             instance,
@@ -1138,39 +1173,201 @@ mod tests {
             reply1_rx,
             reply2_rx,
             reply_tos,
+            host_mesh,
         }
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_reply_v1() {
-        let MeshSetupV1 {
-            instance,
-            actor_mesh_ref,
-            reply1_rx,
-            reply2_rx,
-            reply_tos,
-            ..
-        } = setup_mesh_v1::<NoneAccumulator>(None).await;
+    async fn execute_cast_and_reply_v1() {
+        let mut setup = setup_mesh_v1::<NoneAccumulator>(None).await;
 
-        let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
-        execute_cast_and_reply(ranks, instance, reply1_rx, reply2_rx, reply_tos).await;
+        let ranks = setup.actor_mesh_ref.values().collect::<Vec<_>>();
+        execute_cast_and_reply(
+            ranks,
+            setup.instance,
+            setup.reply1_rx,
+            setup.reply2_rx,
+            setup.reply_tos,
+        )
+        .await;
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 30)]
-    async fn test_cast_and_accum_v1() {
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_reply_v1_retrofit() {
         let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            false,
+        );
+        execute_cast_and_reply_v1().await
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_reply_v1_native() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        execute_cast_and_reply_v1().await
+    }
+
+    async fn execute_cast_and_accum_v1(config: &hyperactor_config::global::ConfigLock) {
         // Use temporary config for this test
         let _guard1 = config.override_key(hyperactor::config::SPLIT_MAX_BUFFER_SIZE, 1);
 
-        let MeshSetupV1 {
-            instance,
-            actor_mesh_ref,
-            reply1_rx,
-            reply_tos,
-            ..
-        } = setup_mesh_v1(Some(accum::sum::<u64>())).await;
+        let mut setup = setup_mesh_v1(Some(accum::sum::<u64>())).await;
 
-        let ranks = actor_mesh_ref.values().collect::<Vec<_>>();
-        execute_cast_and_accum(ranks, instance, reply1_rx, reply_tos).await;
+        let ranks = setup.actor_mesh_ref.values().collect::<Vec<_>>();
+        execute_cast_and_accum(ranks, setup.instance, setup.reply1_rx, setup.reply_tos).await;
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_accum_v1_retrofit() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            false,
+        );
+        execute_cast_and_accum_v1(&config).await
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_accum_v1_native() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(
+            hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER,
+            true,
+        );
+        execute_cast_and_accum_v1(&config).await
+    }
+
+    struct OncePortMeshSetupV1 {
+        instance: &'static Instance<testing::TestRootClient>,
+        reply_rx: hyperactor::mailbox::OncePortReceiver<u64>,
+        reply_tos: Vec<hyperactor::OncePortRef<u64>>,
+        _reply_port_ref: hyperactor::OncePortRef<u64>,
+        host_mesh: HostMesh,
+    }
+
+    async fn setup_once_port_mesh<A>(reducer: Option<A>) -> OncePortMeshSetupV1
+    where
+        A: Accumulator<State = u64, Update = u64> + Send + Sync + 'static,
+    {
+        let instance = crate::testing::instance();
+        // We have to use a in process host mesh, because SPLIT_PORT_TREE only
+        // can collect paths from the same process.
+        let host_mesh = local_host_mesh(8).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", extent!(gpu = 8))
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = hyperactor::mailbox::open_port(instance);
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_name = crate::Name::new("test").expect("valid test name");
+        // Make this actor a "system" actor to avoid spawning a controller actor.
+        let actor_mesh: crate::ActorMesh<TestActor> = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .await
+            .unwrap();
+        let actor_mesh_ref = actor_mesh.deref().clone();
+
+        let has_reducer = reducer.is_some();
+        let (reply_port_handle, reply_rx) = match reducer {
+            Some(reducer) => instance.mailbox().open_reduce_port(reducer),
+            None => instance.mailbox().open_once_port::<u64>(),
+        };
+        let reply_port_ref = reply_port_handle.bind();
+
+        let message = TestMessage::CastAndReplyOnce {
+            arg: "abc".to_string(),
+            reply_to: reply_port_ref.clone(),
+        };
+
+        clear_collected_tree();
+        actor_mesh_ref.cast(instance, message).unwrap();
+
+        let mut reply_tos = vec![];
+        for _ in proc_mesh.extent().points() {
+            let msg = rx.recv().await.expect("missing");
+            match msg {
+                TestMessage::CastAndReplyOnce { arg, reply_to } => {
+                    assert_eq!(arg, "abc");
+                    if has_reducer {
+                        // With reducer: port is split by comm actor.
+                        assert_ne!(reply_to, reply_port_ref);
+                        assert!(reply_to.port_id().actor_id().name().contains("comm"));
+                    } else {
+                        // Without reducer: port is passed through unchanged.
+                        assert_eq!(reply_to, reply_port_ref);
+                    }
+                    reply_tos.push(reply_to);
+                }
+                _ => {
+                    panic!("unexpected message: {:?}", msg);
+                }
+            }
+        }
+
+        OncePortMeshSetupV1 {
+            instance,
+            reply_rx,
+            reply_tos,
+            _reply_port_ref: reply_port_ref,
+            host_mesh,
+        }
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_reply_once_v1() {
+        // Test OncePort without accumulator - port is NOT split.
+        // All destinations receive the same original port.
+        // First reply is delivered, others fail at receiver (port closed).
+        let mut setup = setup_once_port_mesh::<NoneAccumulator>(None).await;
+
+        // All reply_tos point to the same port (not split).
+        // Only the first message will be delivered successfully.
+        let num_replies = setup.reply_tos.len();
+        for (i, reply_to) in setup.reply_tos.into_iter().enumerate() {
+            reply_to.send(setup.instance, i as u64).unwrap();
+        }
+
+        // OncePort receives exactly one value (the first to arrive)
+        let result = setup.reply_rx.recv().await.unwrap();
+        // The result should be one of the values sent
+        assert!(result < num_replies as u64);
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_cast_and_accum_once_v1() {
+        // Test OncePort splitting with sum accumulator.
+        // Each destination actor replies with its rank.
+        // The sum of all ranks should be received at the original port.
+        let mut setup = setup_once_port_mesh(Some(accum::sum::<u64>())).await;
+
+        // Each actor replies with its index
+        let mut expected_sum = 0u64;
+        for (i, reply_to) in setup.reply_tos.into_iter().enumerate() {
+            reply_to.send(setup.instance, i as u64).unwrap();
+            expected_sum += i as u64;
+        }
+
+        // OncePort should receive the sum of all responses
+        let result = setup.reply_rx.recv().await.unwrap();
+        assert_eq!(result, expected_sum);
+
+        let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 }

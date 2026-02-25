@@ -29,6 +29,7 @@ use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 use tokio::time::Duration;
+use tokio::time::Interval;
 use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -37,6 +38,7 @@ use tracing::Span;
 use super::serialize_response;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
+use crate::channel::ChannelTransport;
 use crate::channel::net::Frame;
 use crate::channel::net::NetRx;
 use crate::channel::net::NetRxResponse;
@@ -45,6 +47,7 @@ use crate::channel::net::framed::FrameReader;
 use crate::channel::net::framed::FrameWrite;
 use crate::channel::net::framed::WriteState;
 use crate::channel::net::meta;
+use crate::channel::net::tls;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
@@ -56,26 +59,18 @@ fn process_state_span(
     dest: &ChannelAddr,
     session_id: u64,
     next: &Next,
-    rcv_raw_frame_count: u64,
-    last_ack_time: tokio::time::Instant,
 ) -> Span {
-    let since_last_ack_str = humantime::format_duration(last_ack_time.elapsed()).to_string();
-
-    let pending_ack_count = if next.seq > next.ack {
-        next.seq - next.ack - 1
-    } else {
-        0
-    };
+    // No span at INFO
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return Span::none();
+    }
 
     hyperactor_telemetry::context_span!(
         "net i/o loop",
-        session_id = format!("{}.{}", dest, session_id),
-        source = source.to_string(),
+        dest = %dest,
+        session_id = session_id,
+        source = %source,
         next_seq = next.seq,
-        last_ack = next.ack,
-        pending_ack_count = pending_ack_count,
-        rcv_raw_frame_count = rcv_raw_frame_count,
-        since_last_ack = since_last_ack_str.as_str(),
     )
 }
 
@@ -140,6 +135,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
         ack_time_interval: Duration,
         ack_msg_interval: u64,
         log_id: &str,
+        read_bytes_span: Span,
     ) -> (Next, Option<(Result<(), anyhow::Error>, RejectConn)>) {
         let mut next = next.clone();
         if self.write_state.is_idle()
@@ -191,7 +187,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             // We have to be careful to manage the ack write state here, so that we do not
             // write partial acks in the presence of cancellation.
-            ack_result = self.write_state.send().instrument(hyperactor_telemetry::context_span!("write ack")) => {
+            ack_result = self.write_state.send() => {
                 match ack_result {
                     Ok(acked_seq) => {
                         *last_ack_time = RealClock.now();
@@ -216,7 +212,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
             _ = cancel_token.cancelled() => return (next, Some((Ok(()), RejectConn::ServerClosing))),
 
-            bytes_result = self.reader.next().instrument(hyperactor_telemetry::context_span!("read bytes")) => {
+            bytes_result = self.reader.next().instrument(read_bytes_span) => {
                 *rcv_raw_frame_count += 1;
                 // First handle transport-level I/O errors, and EOFs.
                 let bytes = match bytes_result {
@@ -314,12 +310,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                                 ))
                             )
                         }
-                        match self.send_with_buffer_metric(session_id, tx, message)
-                            .instrument(hyperactor_telemetry::context_span!(
-                                "send_with_buffer_metric",
-                                seq = seq,
-                            ))
-                            .await
+                        match self.send_with_buffer_metric(session_id, tx, message).await
                         {
                             Ok(()) => {
                                 // Track throughput for this channel pair
@@ -406,16 +397,10 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
         let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
         let ack_msg_interval = hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
+        let read_bytes_span = tracing::debug_span!("read bytes");
 
         let (mut final_next, final_result, reject_conn) = loop {
-            let span = process_state_span(
-                &self.source,
-                &self.dest,
-                session_id,
-                &next,
-                rcv_raw_frame_count,
-                last_ack_time,
-            );
+            let span = process_state_span(&self.source, &self.dest, session_id, &next);
 
             let (new_next, break_info) = self
                 .process_step(
@@ -428,6 +413,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     ack_time_interval,
                     ack_msg_interval,
                     &log_id,
+                    read_bytes_span.clone(),
                 )
                 .instrument(span)
                 .await;
@@ -689,6 +675,11 @@ where
     let child_cancel_token = CancellationToken::new();
 
     let manager = SessionManager::new();
+
+    // Heartbeat timer for server health metrics
+    let heartbeat_interval = hyperactor_config::global::get(config::SERVER_HEARTBEAT_INTERVAL);
+    let mut heartbeat_timer: Interval = tokio::time::interval(heartbeat_interval);
+
     let result: Result<(), ServerError> = loop {
         let _ = tracing::info_span!("channel_listen_accept_loop");
         tokio::select! {
@@ -698,7 +689,7 @@ where
                         let source : ChannelAddr = addr.into();
                         tracing::debug!(
                             source = %source,
-                            addr = %listener_channel_addr,
+                            dest = %listener_channel_addr,
                             "new connection accepted"
                         );
                         metrics::CHANNEL_CONNECTIONS.add(
@@ -715,7 +706,12 @@ where
                         let manager = manager.clone();
                         connections.spawn(async move {
                             let res = if is_tls {
-                                let conn = ServerConn::new(meta::tls_acceptor(true)?
+                                // Choose TLS acceptor based on transport type
+                                let tls_acceptor = match dest.transport() {
+                                    ChannelTransport::Tls => tls::tls_acceptor()?,
+                                    _ => meta::tls_acceptor(true)?,
+                                };
+                                let conn = ServerConn::new(tls_acceptor
                                     .accept(stream)
                                     .await?, source.clone(), dest.clone());
                                 manager.serve(conn, tx, child_cancel_token).await
@@ -764,7 +760,7 @@ where
                         );
 
                         tracing::info!(
-                            addr = %listener_channel_addr,
+                            dest = %listener_channel_addr,
                             error = %err,
                             "accept error"
                         );
@@ -772,9 +768,18 @@ where
                 }
             }
 
+            _ = heartbeat_timer.tick() => {
+                metrics::SERVER_HEARTBEAT.add(
+                    1,
+                    hyperactor_telemetry::kv_pairs!(
+                        "dest" => listener_channel_addr.to_string()
+                    ),
+                );
+            }
+
             _ = parent_cancel_token.cancelled() => {
                 tracing::info!(
-                    addr = %listener_channel_addr,
+                    dest = %listener_channel_addr,
                     "received parent token cancellation"
                 );
                 break Ok(());
@@ -783,7 +788,7 @@ where
             result = join_nonempty(&mut connections) => {
                 if let Err(err) = result {
                     tracing::info!(
-                        addr = %listener_channel_addr,
+                        dest = %listener_channel_addr,
                         error = %err,
                         "connection task join error"
                     );
@@ -833,7 +838,7 @@ impl ServerHandle {
     pub(crate) fn stop(&self, reason: &str) {
         tracing::info!(
             name = "ChannelServerStatus",
-            addr = %self.channel_addr,
+            dest = %self.channel_addr,
             status = "Stop::Sent",
             reason,
             "sent Stop signal; check server logs for the stop progress"

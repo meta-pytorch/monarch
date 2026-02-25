@@ -55,12 +55,12 @@ use hyperactor::Actor;
 use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
 use hyperactor::reference::ActorId;
+use hyperactor_config::Flattrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
 use monarch_hyperactor::shape::PyPoint;
@@ -98,6 +98,7 @@ use torch_sys2::Layout;
 use torch_sys2::ScalarType;
 use torch_sys2::TensorCell;
 use torch_sys2::factory_zeros;
+use typeuri::Named;
 
 #[derive(Debug)]
 struct RemoteProcessGroupState {
@@ -228,8 +229,9 @@ impl RemoteSpawn for WorkerActor {
             device_index,
             controller_actor,
         }: Self::Params,
+        _environment: Flattrs,
     ) -> Result<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             py.import("monarch.safe_torch").unwrap();
         });
         Ok(Self {
@@ -262,7 +264,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
         let point = cx.cast_point();
         self.rank = point.rank();
         self.respond_with_python_message = true;
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mesh_controller = py.import("monarch.mesh_controller").unwrap();
             let p: PyPoint = point.into();
             mesh_controller
@@ -279,6 +281,7 @@ impl Handler<AssignRankMessage> for WorkerActor {
 pub enum AssignRankMessage {
     AssignRank(),
 }
+wirevalue::register_type!(AssignRankMessage);
 
 #[async_trait]
 impl Handler<WorkerMessage> for WorkerActor {
@@ -694,7 +697,7 @@ impl WorkerMessageHandler for WorkerActor {
         error: Option<(Option<ActorId>, String)>,
     ) -> Result<()> {
         for (_, stream) in self.streams.drain() {
-            stream.drain_and_stop()?;
+            stream.drain_and_stop("tensor worker exit cleanup")?;
             Arc::into_inner(stream)
                 .expect("there should be no owners of this stream handle except the worker stream table")
                 .await;
@@ -734,7 +737,7 @@ impl WorkerMessageHandler for WorkerActor {
             tracing::info!("stopping the worker process, exit code: {}", exit_code);
             std::process::exit(exit_code);
         }
-        cx.stop()?;
+        cx.stop("tensor worker exit")?;
         Ok(())
     }
 
@@ -1099,7 +1102,7 @@ mod tests {
     use pyo3::types::PyList;
     use pyo3::types::PyString;
     use rand::Rng;
-    use rand::distributions::Alphanumeric;
+    use rand::distr::Alphanumeric;
     use timed_test::async_timed_test;
 
     use super::*;
@@ -1115,12 +1118,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1198,7 +1204,7 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
         let error_responses = controller_rx.drain();
         assert!(
@@ -1221,12 +1227,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1254,7 +1263,7 @@ mod tests {
             .await
             .unwrap();
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
         let response_message = controller_rx.recv().await.unwrap();
         match response_message {
@@ -1281,12 +1290,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1323,7 +1335,7 @@ mod tests {
             .await?;
 
         // Stop/drain worker before asserts to avoid hangs.
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
 
         let mutated_ref = result
@@ -1352,12 +1364,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1398,7 +1413,7 @@ mod tests {
             .await
             .unwrap();
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
 
         let responses = controller_rx.drain();
@@ -1428,18 +1443,21 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
             .unwrap();
         let (split_arg, sort_list, dim, layout, none, scalar, device, memory_format) =
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let split_arg: PickledPyObject = PyString::new(py, "/fbs/fbc/foo/bar")
                     .into_any()
                     .try_into()?;
@@ -1700,7 +1718,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
         let error_responses = controller_rx.drain();
         assert!(
@@ -1727,12 +1745,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1783,7 +1804,7 @@ mod tests {
             .await
             .unwrap();
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
 
         assert!(result, "should be able to get a non-deleted ref");
@@ -1802,12 +1823,15 @@ mod tests {
         let worker_handle = proc
             .spawn(
                 "worker",
-                WorkerActor::new(WorkerParams {
-                    world_size: 1,
-                    rank: 0,
-                    device_index: None,
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 1,
+                        rank: 0,
+                        device_index: None,
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1857,7 +1881,7 @@ mod tests {
             .await
             .unwrap();
 
-        worker_handle.drain_and_stop().unwrap();
+        worker_handle.drain_and_stop("test").unwrap();
         worker_handle.await;
 
         let mut responses = controller_rx.drain();
@@ -1888,12 +1912,15 @@ mod tests {
         let worker_handle1 = proc
             .spawn(
                 "worker0",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 0,
-                    device_index: Some(0),
-                    controller_actor: controller_ref.clone(),
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 0,
+                        device_index: Some(0),
+                        controller_actor: controller_ref.clone(),
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1901,12 +1928,15 @@ mod tests {
         let worker_handle2 = proc
             .spawn(
                 "worker1",
-                WorkerActor::new(WorkerParams {
-                    world_size: 2,
-                    rank: 1,
-                    device_index: Some(1),
-                    controller_actor: controller_ref,
-                })
+                WorkerActor::new(
+                    WorkerParams {
+                        world_size: 2,
+                        rank: 1,
+                        device_index: Some(1),
+                        controller_actor: controller_ref,
+                    },
+                    Flattrs::default(),
+                )
                 .await
                 .unwrap(),
             )
@@ -1922,15 +1952,15 @@ mod tests {
             .await
             .unwrap();
 
-        worker_handle1.drain_and_stop().unwrap();
+        worker_handle1.drain_and_stop("test").unwrap();
         worker_handle1.await;
-        worker_handle2.drain_and_stop().unwrap();
+        worker_handle2.drain_and_stop("test").unwrap();
         worker_handle2.await;
     }
 
     #[allow(dead_code)]
     fn get_random_channel_addr() -> ChannelAddr {
-        let random_string = rand::thread_rng()
+        let random_string = rand::rng()
             .sample_iter(&Alphanumeric)
             .take(24)
             .map(char::from)

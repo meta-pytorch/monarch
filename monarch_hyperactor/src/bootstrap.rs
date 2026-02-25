@@ -9,11 +9,11 @@
 use futures::future::try_join_all;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::Bootstrap;
+use hyperactor_mesh::HostMeshRef;
+use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap_or_die;
-use hyperactor_mesh::v1::HostMeshRef;
-use hyperactor_mesh::v1::Name;
-use hyperactor_mesh::v1::host_mesh::HostMesh;
+use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
 use pyo3::PyAny;
@@ -26,8 +26,9 @@ use pyo3::types::PyModule;
 use pyo3::types::PyModuleMethods;
 use pyo3::wrap_pyfunction;
 
+use crate::host_mesh::PyHostMesh;
 use crate::pytokio::PyPythonTask;
-use crate::v1::host_mesh::PyHostMesh;
+use crate::runtime::monarch_with_gil;
 
 #[pyfunction]
 #[pyo3(signature = ())]
@@ -37,7 +38,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
         fbinit::perform_init();
     };
 
-    hyperactor::tracing::debug!("entering async bootstrap");
+    hyperactor::internal_macro_support::tracing::debug!("entering async bootstrap");
     crate::runtime::future_into_py::<_, ()>(py, async move {
         // SAFETY:
         // - Only one of these is ever created.
@@ -96,6 +97,9 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
         addr,
         config: None,
         command,
+        // This function is the entry point of the program, and no one else
+        // will terminate this process. So it needs to exit on its own.
+        exit_on_shutdown: true,
     };
 
     PyPythonTask::new(async {
@@ -120,7 +124,7 @@ pub fn attach_to_workers<'py>(
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 
-        let addresses: Result<Vec<ChannelAddr>, anyhow::Error> = Python::with_gil(|py| {
+        let addresses: Result<Vec<ChannelAddr>, anyhow::Error> = monarch_with_gil(|py| {
             results
                 .into_iter()
                 .map(|result| {
@@ -128,7 +132,8 @@ pub fn attach_to_workers<'py>(
                     ChannelAddr::from_zmq_url(&url_str)
                 })
                 .collect()
-        });
+        })
+        .await;
         let addresses = addresses?;
 
         let host_mesh = HostMesh::take(HostMeshRef::from_hosts(name, addresses));

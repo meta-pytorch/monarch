@@ -35,8 +35,6 @@ use syn::Index;
 use syn::ItemFn;
 use syn::ItemImpl;
 use syn::Lit;
-use syn::Meta;
-use syn::MetaNameValue;
 use syn::Token;
 use syn::Type;
 use syn::bracketed;
@@ -540,12 +538,12 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// use hyperactor::HandleClient;
 /// use hyperactor::Handler;
 /// use hyperactor::Instance;
-/// use hyperactor::Named;
 /// use hyperactor::OncePortRef;
 /// use hyperactor::RefClient;
 /// use hyperactor::proc::Proc;
 /// use serde::Deserialize;
 /// use serde::Serialize;
+/// use typeuri::Named;
 ///
 /// #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 /// enum ShoppingList {
@@ -583,7 +581,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// // We implement the trait here for the actor, defining a handler for
 /// // each ShoppingList message.
 /// //
-/// // The `forward` attribute installs a handler that forwards messages
+/// // The `handle` attribute installs a handler that routes messages
 /// // to the `ShoppingListHandler` implementation directly. This can also
 /// // be done manually:
 /// //
@@ -592,7 +590,7 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// //     ::handle(self, comm, message).await
 /// // ```
 /// #[async_trait]
-/// #[hyperactor::forward(ShoppingList)]
+/// #[hyperactor::handle(ShoppingList)]
 /// impl ShoppingListHandler for ShoppingListActor {
 ///     async fn add(&mut self, _cx: &Context<Self>, item: String) -> Result<(), anyhow::Error> {
 ///         eprintln!("insert {}", item);
@@ -732,7 +730,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &mut self,
                         cx: &hyperactor::Context<Self>,
                         #(#arg_names: #arg_types),*)
-                        -> Result<#return_type, hyperactor::anyhow::Error>;
+                        -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 client_trait_methods.push(quote! {
@@ -741,41 +739,29 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<#return_type, hyperactor::anyhow::Error>;
+                        -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<#return_type, hyperactor::anyhow::Error>;
+                        -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 let (reply_port_arg, _) = message.reply_port_arg().unwrap();
                 let constructor = variant.constructor();
                 let result_ident = Ident::new("result", Span::mixed_site());
                 let construct_result_future = quote! { use hyperactor::Message; let #result_ident = self.#variant_name_snake(cx, #(#arg_names),*).await?; };
-                if reply_port.is_handle {
-                    match_arms.push(quote! {
-                        #constructor => {
-                            #log_message
-                            // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
-                            // This would require Result<Result<..., in order to handle RPC errors.
-                            #construct_result_future
-                            #reply_port_arg.send(#result_ident).map_err(hyperactor::anyhow::Error::from)
-                        }
-                    });
-                } else {
-                    match_arms.push(quote! {
-                        #constructor => {
-                            #log_message
-                            // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
-                            // This would require Result<Result<..., in order to handle RPC errors.
-                            #construct_result_future
-                            #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::anyhow::Error::from)
-                        }
-                    });
-                }
+                match_arms.push(quote! {
+                    #constructor => {
+                        #log_message
+                        // TODO: should we propagate this error (to supervision), or send it back as an "RPC error"?
+                        // This would require Result<Result<..., in order to handle RPC errors.
+                        #construct_result_future
+                        #reply_port_arg.send(cx, #result_ident).map_err(hyperactor::internal_macro_support::anyhow::Error::from)
+                    }
+                });
             }
             Message::OneWay { variant, log_level } => {
                 let (arg_names, arg_types): (Vec<_>, Vec<_>) = message.args().into_iter().unzip();
@@ -806,7 +792,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &mut self,
                         cx: &hyperactor::Context<Self>,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error>;
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 client_trait_methods.push(quote! {
@@ -815,14 +801,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error>;
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error>;
 
                     #[doc = "The DEPRECATED DO NOT USE generated client method for this enum variant."]
                     async fn #variant_name_snake_deprecated(
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error>;
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error>;
                 });
 
                 let constructor = variant.constructor();
@@ -852,14 +838,14 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
         param.bounds.push(syn::parse_quote!(Send));
         param.bounds.push(syn::parse_quote!(Sync));
         param.bounds.push(syn::parse_quote!(std::fmt::Debug));
-        param.bounds.push(syn::parse_quote!(hyperactor::Named));
+        param.bounds.push(syn::parse_quote!(typeuri::Named));
     }
     let (handler_impl_generics, _, _) = handler_generics.split_for_impl();
     let (client_impl_generics, _, _) = input.generics.split_for_impl();
 
     let expanded = quote! {
         #[doc = "The custom handler trait for this message type."]
-        #[hyperactor::async_trait::async_trait]
+        #[hyperactor::internal_macro_support::async_trait::async_trait]
         pub trait #handler_trait_name #handler_impl_generics: hyperactor::Actor + Send + Sync  {
             #(#handler_trait_methods)*
 
@@ -868,7 +854,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
                 &mut self,
                 cx: &hyperactor::Context<Self>,
                 message: #name #ty_generics,
-            ) -> hyperactor::anyhow::Result<()>  {
+            ) -> hyperactor::internal_macro_support::anyhow::Result<()>  {
                  // Dispatch based on message type.
                  match message {
                      #(#match_arms)*
@@ -877,7 +863,7 @@ pub fn derive_handler(input: TokenStream) -> TokenStream {
         }
 
         #[doc = "The custom client trait for this message type."]
-        #[hyperactor::async_trait::async_trait]
+        #[hyperactor::internal_macro_support::async_trait::async_trait]
         pub trait #client_trait_name #client_impl_generics: Send + Sync  {
             #(#client_trait_methods)*
         }
@@ -912,11 +898,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     // The client implementation methods.
     let mut impl_methods = Vec::new();
 
-    let send_message = if is_handle {
-        quote! { self.send(message)? }
-    } else {
-        quote! { self.send(cx, message)? }
-    };
+    let send_message = quote! { self.send(cx, message)? };
     let global_log_level = parse_log_level(&input.attrs).ok().unwrap_or(None);
 
     for message in &messages {
@@ -967,13 +949,13 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
 
                         #[hyperactor::instrument(level=#log_level, rpc = "call", message_type=#name)]
@@ -981,13 +963,13 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
                     });
                 } else {
@@ -997,14 +979,14 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let #reply_port_arg = #reply_port_arg.bind();
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
 
                         #[hyperactor::instrument(level=#log_level, rpc="call", message_type=#name)]
@@ -1012,14 +994,14 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                             &self,
                             cx: &impl hyperactor::context::Actor,
                             #(#arg_names: #arg_types),*)
-                            -> Result<#return_type, hyperactor::anyhow::Error> {
+                            -> Result<#return_type, hyperactor::internal_macro_support::anyhow::Error> {
                             let (#reply_port_arg, #rx_mod reply_receiver) =
                                 #open_port::<#return_type>(cx);
                             let #reply_port_arg = #reply_port_arg.bind();
                             let message = #constructor;
                             #log_message;
                             #send_message;
-                            reply_receiver.recv().await.map_err(hyperactor::anyhow::Error::from)
+                            reply_receiver.recv().await.map_err(hyperactor::internal_macro_support::anyhow::Error::from)
                         }
                     });
                 }
@@ -1058,7 +1040,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error> {
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error> {
                         let message = #constructor;
                         #log_message;
                         #send_message;
@@ -1069,7 +1051,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
                         &self,
                         cx: &impl hyperactor::context::Actor,
                         #(#arg_names: #arg_types),*)
-                        -> Result<(), hyperactor::anyhow::Error> {
+                        -> Result<(), hyperactor::internal_macro_support::anyhow::Error> {
                         let message = #constructor;
                         #log_message;
                         #send_message;
@@ -1110,14 +1092,14 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
         param.bounds.push(syn::parse_quote!(Send));
         param.bounds.push(syn::parse_quote!(Sync));
         param.bounds.push(syn::parse_quote!(std::fmt::Debug));
-        param.bounds.push(syn::parse_quote!(hyperactor::Named));
+        param.bounds.push(syn::parse_quote!(typeuri::Named));
     }
 
     let (impl_generics, _, _) = trait_generics.split_for_impl();
 
     let expanded = if is_handle {
         quote! {
-            #[hyperactor::async_trait::async_trait]
+            #[hyperactor::internal_macro_support::async_trait::async_trait]
             impl #impl_generics #trait_name #ty_generics for hyperactor::ActorHandle<#actor_ident>
               where #actor_ident: hyperactor::Handler<#name #ty_generics> {
                 #(#impl_methods)*
@@ -1125,7 +1107,7 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
         }
     } else {
         quote! {
-            #[hyperactor::async_trait::async_trait]
+            #[hyperactor::internal_macro_support::async_trait::async_trait]
             impl #impl_generics #trait_name #ty_generics for hyperactor::ActorRef<#actor_ident>
               where #actor_ident: hyperactor::actor::RemoteHandles<#name #ty_generics> {
                 #(#impl_methods)*
@@ -1136,19 +1118,19 @@ fn derive_client(input: TokenStream, is_handle: bool) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-const FORWARD_ARGUMENT_ERROR: &str = indoc! {r#"
-`forward` expects the message type that is being forwarded
+const HANDLE_ARGUMENT_ERROR: &str = indoc! {r#"
+`handle` expects the message type that is being handled
 
-= help: use `#[forward(MessageType)]`
+= help: use `#[handle(MessageType)]`
 "#};
 
-/// Forward messages of the provided type to this handler implementation.
+/// Install a [`Handler`] that routes messages of the provided type to this handler trait implementation.
 #[proc_macro_attribute]
-pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn handle(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_args = parse_macro_input!(attr with Punctuated::<syn::PathSegment, syn::Token![,]>::parse_terminated);
     if attr_args.len() != 1 {
         return TokenStream::from(
-            syn::Error::new_spanned(attr_args, FORWARD_ARGUMENT_ERROR).to_compile_error(),
+            syn::Error::new_spanned(attr_args, HANDLE_ARGUMENT_ERROR).to_compile_error(),
         );
     }
 
@@ -1162,7 +1144,7 @@ pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
         _ => {
             return TokenStream::from(
-                syn::Error::new_spanned(input.self_ty, "`forward` argument must be a type")
+                syn::Error::new_spanned(input.self_ty, "`handle` argument must be a type")
                     .to_compile_error(),
             );
         }
@@ -1181,13 +1163,13 @@ pub fn forward(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input
 
-        #[hyperactor::async_trait::async_trait]
+        #[hyperactor::internal_macro_support::async_trait::async_trait]
         impl hyperactor::Handler<#message_type> for #self_type {
             async fn handle(
                 &mut self,
                 cx: &hyperactor::Context<Self>,
                 message: #message_type,
-            ) -> hyperactor::anyhow::Result<()> {
+            ) -> hyperactor::internal_macro_support::anyhow::Result<()> {
                 <Self as #trait_name>::handle(self, cx, message).await
             }
         }
@@ -1214,7 +1196,7 @@ pub fn instrument(args: TokenStream, input: TokenStream) -> TokenStream {
         parse_macro_input!(args with Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated);
     let input = parse_macro_input!(input as ItemFn);
     let output = quote! {
-        #[hyperactor::tracing::instrument(err, skip_all, #args)]
+        #[hyperactor::internal_macro_support::tracing::instrument(err, skip_all, #args)]
         #input
     };
 
@@ -1238,177 +1220,11 @@ pub fn instrument_infallible(args: TokenStream, input: TokenStream) -> TokenStre
     let input = parse_macro_input!(input as ItemFn);
 
     let output = quote! {
-        #[hyperactor::tracing::instrument(skip_all, #args)]
+        #[hyperactor::internal_macro_support::tracing::instrument(skip_all, #args)]
         #input
     };
 
     TokenStream::from(output)
-}
-
-/// Derive the [`hyperactor::data::Named`] trait for a struct with the
-/// provided type URI. The name of the type is its fully-qualified Rust
-/// path. The name may be overridden by providing a string value for the
-/// `name` attribute.
-///
-/// In addition to deriving [`hyperactor::data::Named`], this macro will
-/// register the type using the [`hyperactor::register_type`] macro for
-/// concrete types. This behavior can be overridden by providing a literal
-/// booolean for the `register` attribute.
-///
-/// This also requires the type to implement [`serde::Serialize`]
-/// and [`serde::Deserialize`].
-#[proc_macro_derive(Named, attributes(named))]
-pub fn derive_named(input: TokenStream) -> TokenStream {
-    // Parse the input struct or enum
-    let input = parse_macro_input!(input as DeriveInput);
-    let struct_name = &input.ident;
-
-    let mut typename = quote! {
-        concat!(std::module_path!(), "::", stringify!(#struct_name))
-    };
-
-    let type_params: Vec<_> = input.generics.type_params().collect();
-    let has_generics = !type_params.is_empty();
-    // By default, register concrete types.
-    let mut register = !has_generics;
-
-    for attr in &input.attrs {
-        if attr.path().is_ident("named") {
-            if let Ok(meta) = attr.parse_args_with(
-                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-            ) {
-                for item in meta {
-                    if let Meta::NameValue(MetaNameValue {
-                        path,
-                        value: Expr::Lit(expr_lit),
-                        ..
-                    }) = item
-                    {
-                        if path.is_ident("name") {
-                            if let Lit::Str(name) = expr_lit.lit {
-                                typename = quote! { #name };
-                            } else {
-                                return TokenStream::from(
-                                    syn::Error::new_spanned(path, "invalid name")
-                                        .to_compile_error(),
-                                );
-                            }
-                        } else if path.is_ident("register") {
-                            if let Lit::Bool(flag) = expr_lit.lit {
-                                register = flag.value;
-                            } else {
-                                return TokenStream::from(
-                                    syn::Error::new_spanned(path, "invalid registration flag")
-                                        .to_compile_error(),
-                                );
-                            }
-                        } else {
-                            return TokenStream::from(
-                                syn::Error::new_spanned(
-                                    path,
-                                    "unsupported attribute (only `name` or `register` is supported)",
-                                )
-                                .to_compile_error(),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Create a version of generics with Named bounds for the impl block
-    let mut generics_with_bounds = input.generics.clone();
-    if has_generics {
-        for param in generics_with_bounds.type_params_mut() {
-            param
-                .bounds
-                .push(syn::parse_quote!(hyperactor::data::Named));
-        }
-    }
-    let (impl_generics_with_bounds, _, _) = generics_with_bounds.split_for_impl();
-
-    // Generate typename implementation based on whether we have generics
-    let (typename_impl, typehash_impl) = if has_generics {
-        // Create format string with placeholders for each generic parameter
-        let placeholders = vec!["{}"; type_params.len()].join(", ");
-        let placeholders_format_string = format!("<{}>", placeholders);
-        let format_string = quote! { concat!(std::module_path!(), "::", stringify!(#struct_name), #placeholders_format_string) };
-
-        let type_param_idents: Vec<_> = type_params.iter().map(|p| &p.ident).collect();
-        (
-            quote! {
-                hyperactor::data::intern_typename!(Self, #format_string, #(#type_param_idents),*)
-            },
-            quote! {
-                hyperactor::cityhasher::hash(Self::typename())
-            },
-        )
-    } else {
-        (
-            typename,
-            quote! {
-                static TYPEHASH: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-                    hyperactor::cityhasher::hash(<#struct_name as hyperactor::data::Named>::typename())
-                });
-                *TYPEHASH
-            },
-        )
-    };
-
-    // Generate 'arm' for enums only.
-    let arm_impl = match &input.data {
-        Data::Enum(DataEnum { variants, .. }) => {
-            let match_arms = variants.iter().map(|v| {
-                let variant_name = &v.ident;
-                let variant_str = variant_name.to_string();
-                match &v.fields {
-                    Fields::Unit => quote! { Self::#variant_name => Some(#variant_str) },
-                    Fields::Unnamed(_) => quote! { Self::#variant_name(..) => Some(#variant_str) },
-                    Fields::Named(_) => quote! { Self::#variant_name { .. } => Some(#variant_str) },
-                }
-            });
-            quote! {
-                fn arm(&self) -> Option<&'static str> {
-                    match self {
-                        #(#match_arms,)*
-                    }
-                }
-            }
-        }
-        _ => quote! {},
-    };
-
-    // Try to register the type so we can get runtime TypeInfo.
-    // We can only do this for concrete types.
-    //
-    // TODO: explore making type hashes "structural", so that we
-    // can derive generic type hashes and reconstruct their runtime
-    // TypeInfos.
-    let registration = if register {
-        quote! {
-            hyperactor::register_type!(#struct_name);
-        }
-    } else {
-        quote! {
-            // Registration not requested
-        }
-    };
-
-    let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-    // Ideally we would compute the has directly in the macro itself, however, we don't
-    // have access to the fully expanded pathname here as we use the intrinsic std::module_path!() macro.
-    let expanded = quote! {
-        impl #impl_generics_with_bounds hyperactor::data::Named for #struct_name #ty_generics #where_clause {
-            fn typename() -> &'static str { #typename_impl }
-            fn typehash() -> u64 { #typehash_impl }
-            #arm_impl
-        }
-
-        #registration
-    };
-
-    TokenStream::from(expanded)
 }
 
 struct HandlerSpec {
@@ -1567,7 +1383,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             ports.bind::<#ty>();
         });
         type_registrations.push(quote! {
-            hyperactor::register_type!(#ty);
+            wirevalue::register_type!(#ty);
         });
     }
 
@@ -1583,6 +1399,9 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Always export the `Signal` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
 
+        // Always export the `IntrospectMessage` type.
+        impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
+
         impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
             fn bind(ports: &hyperactor::proc::Ports<Self>) {
                 #(#bindings)*
@@ -1590,7 +1409,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         // TODO: just use Named derive directly here.
-        impl #impl_generics hyperactor::data::Named for #data_type_name #ty_generics #where_clause {
+        impl #impl_generics typeuri::Named for #data_type_name #ty_generics #where_clause {
             fn typename() -> &'static str { concat!(std::module_path!(), "::", stringify!(#data_type_name #ty_generics)) }
         }
     };
@@ -1662,7 +1481,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
     // Add bounds to generics for Named, Serialize, Deserialize
     let mut bounded_generics = generics.clone();
     for param in bounded_generics.type_params_mut() {
-        param.bounds.push(syn::parse_quote!(hyperactor::Named));
+        param.bounds.push(syn::parse_quote!(typeuri::Named));
         param.bounds.push(syn::parse_quote!(serde::Serialize));
         param.bounds.push(syn::parse_quote!(std::marker::Send));
         param.bounds.push(syn::parse_quote!(std::marker::Sync));
@@ -1707,10 +1526,10 @@ pub fn behavior(input: TokenStream) -> TokenStream {
         let type_param_idents: Vec<_> = type_params.iter().map(|p| &p.ident).collect();
         (
             quote! {
-                hyperactor::data::intern_typename!(Self, #format_string, #(#type_param_idents),*)
+                typeuri::intern_typename!(Self, #format_string, #(#type_param_idents),*)
             },
             quote! {
-                hyperactor::cityhasher::hash(Self::typename())
+                typeuri::cityhasher::hash(Self::typename())
             },
         )
     } else {
@@ -1720,7 +1539,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
             },
             quote! {
                 static TYPEHASH: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-                    hyperactor::cityhasher::hash(<#behavior as hyperactor::data::Named>::typename())
+                    typeuri::cityhasher::hash(<#behavior as typeuri::Named>::typename())
                 });
                 *TYPEHASH
             },
@@ -1736,7 +1555,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
             _phantom: std::marker::PhantomData<(#(#type_param_idents),*)>
         }
 
-        impl #impl_generics hyperactor::Named for #behavior #ty_generics #where_clause {
+        impl #impl_generics typeuri::Named for #behavior #ty_generics #where_clause {
             fn typename() -> &'static str {
                 #typename_impl
             }
@@ -2331,57 +2150,4 @@ pub fn observe_async(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
-}
-
-/// Derive the [`hyperactor::attrs::AttrValue`] trait for a struct or enum.
-///
-/// This macro generates an implementation that uses the type's `ToString` and `FromStr`
-/// implementations for the `display` and `parse` methods respectively.
-///
-/// The type must already implement the required super-traits:
-/// `Named + Sized + Serialize + DeserializeOwned + Send + Sync + Clone + 'static`
-/// as well as `ToString` and `FromStr`.
-///
-/// # Example
-///
-/// ```
-/// #[derive(AttrValue, Named, Serialize, Deserialize, Clone)]
-/// struct MyCustomType {
-///     value: String,
-/// }
-///
-/// impl std::fmt::Display for MyCustomType {
-///     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-///         write!(f, "{}", self.value)
-///     }
-/// }
-///
-/// impl std::str::FromStr for MyCustomType {
-///     type Err = std::io::Error;
-///
-///     fn from_str(s: &str) -> Result<Self, Self::Err> {
-///         Ok(MyCustomType {
-///             value: s.to_string(),
-///         })
-///     }
-/// }
-/// ```
-#[proc_macro_derive(AttrValue)]
-pub fn derive_attr_value(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    TokenStream::from(quote! {
-        impl #impl_generics hyperactor_config::attrs::AttrValue for #name #ty_generics #where_clause {
-            fn display(&self) -> String {
-                self.to_string()
-            }
-
-            fn parse(value: &str) -> Result<Self, anyhow::Error> {
-                value.parse().map_err(|e| anyhow::anyhow!("failed to parse {}: {}", stringify!(#name), e))
-            }
-        }
-    })
 }

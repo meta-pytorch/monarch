@@ -12,7 +12,18 @@ META_VAL = []
 
 @contextlib.contextmanager
 def set_meta(new_value):
-    # Sets the metadata for any tasks created under this
+    """
+    Context manager that sets metadata for simulator tasks created within its scope.
+
+    Args:
+        new_value: The metadata value to associate with tasks created in this context.
+
+    Example::
+
+        with set_meta("training_phase"):
+            # Tasks created here will have "training_phase" metadata
+            ...
+    """
     global META_VAL
     META_VAL.append(new_value)
     try:

@@ -16,9 +16,10 @@ Monarch v1's logging subsystem streams `stdout`/`stderr` from remote procs back 
 
 ## Quick mental model
 
-- **Three moving parts**: a client-side coordinator (`LogClientActor`) and two per-proc meshes (`LogForwardActor`, `LoggerRuntimeActor`).
-- **Two planes**: raw FD streams (stdout/stderr) → forwarders; and Python logging (levels/handlers) → logger runtime.
+- **Three moving parts**: a client-side coordinator (`LogClientActor`) and two per-proc meshes (`LogForwardActor` (optional), `LoggerRuntimeActor`).
+- **Two planes**: raw FD streams (stdout/stderr) → forwarders (if enabled); and Python logging (levels/handlers) → logger runtime.
 - **Barriers**: versioned sync flush guarantees all logs up to a point have been delivered.
+- **Conditional forwarding**: The `LogForwardActor` mesh is only spawned if `MESH_ENABLE_LOG_FORWARDING` is true; otherwise logs stay local.
 
 ## Quickstart (Python)
 

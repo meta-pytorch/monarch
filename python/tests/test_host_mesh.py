@@ -12,23 +12,14 @@ import time
 from unittest.mock import patch
 
 import cloudpickle
-import monarch._src.actor.host_mesh
 import pytest
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
-from monarch._src.actor.actor_mesh import (
-    _this_host_for_fake_in_process_host,
-    Actor,
-    context,
-)
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
+from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import (
-    create_local_host_mesh,
-    fake_in_process_host,
-    HostMesh,
-    this_host,
-)
+from monarch._src.actor.host_mesh import fake_in_process_host, HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
+from monarch._src.job.process import ProcessJob
 
 
 @pytest.mark.timeout(60)
@@ -43,10 +34,10 @@ def test_fake_in_process_host() -> None:
 
 
 @pytest.mark.timeout(60)
-def test_create_local_host_mesh() -> None:
-    host = create_local_host_mesh()
-    assert host.extent.labels == []
-    assert host.extent.sizes == []
+def test_process_job_host_mesh() -> None:
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    assert host.extent.labels == ["hosts"]
+    assert host.extent.sizes == [1]
     assert not host.stream_logs
     hy_host = host._hy_host_mesh.block_on()
     assert hy_host.region.labels == host.region.labels
@@ -54,20 +45,18 @@ def test_create_local_host_mesh() -> None:
 
 
 @pytest.mark.timeout(60)
-def test_multi_dim_host_mesh() -> None:
-    host = create_local_host_mesh(
-        Extent(["replicas", "hosts"], [2, 4]),
-    )
-    assert host.extent.labels == ["replicas", "hosts"]
-    assert host.extent.sizes == [2, 4]
+def test_multi_host_mesh() -> None:
+    host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
+    assert host.extent.labels == ["hosts"]
+    assert host.extent.sizes == [8]
     assert not host.stream_logs
-    assert host._ndslice == Slice(offset=0, sizes=[2, 4], strides=[4, 1])
-    assert host._labels == ("replicas", "hosts")
+    assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
+    assert host._labels == ("hosts",)
     hy_host = host._hy_host_mesh.block_on()
     assert hy_host.region.labels == host.region.labels
     assert hy_host.region.slice() == host.region.slice()
 
-    # Hosts 1 and 3 on replica 1
+    # Hosts 5 and 7
     sliced = host._new_with_shape(
         Shape(labels=["hosts"], slice=Slice(offset=5, sizes=[2], strides=[2]))
     )
@@ -83,9 +72,7 @@ def test_multi_dim_host_mesh() -> None:
 
 @pytest.mark.timeout(120)
 def test_spawn_proc_mesh() -> None:
-    host = create_local_host_mesh(
-        Extent(["replicas", "hosts"], [2, 4]),
-    )
+    host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="proc")
     assert proc_mesh._host_mesh is host
     assert proc_mesh._ndslice == host._ndslice
@@ -94,7 +81,7 @@ def test_spawn_proc_mesh() -> None:
     assert tuple(hy_proc_mesh.region.labels) == host._labels
     assert hy_proc_mesh.region.slice() == host.region.slice()
 
-    # Hosts 1 and 3 on replica 1
+    # Hosts 5 and 7
     sliced_host = host._new_with_shape(
         Shape(labels=["hosts"], slice=Slice(offset=5, sizes=[2], strides=[2]))
     )
@@ -111,17 +98,16 @@ def test_spawn_proc_mesh() -> None:
 
 @pytest.mark.timeout(60)
 def test_pickle() -> None:
-    host = create_local_host_mesh(
-        Extent(["replicas", "hosts"], [2, 4]),
-    )
+    host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
+    host.initialized.get()
     _unused, pickled = flatten(host, lambda _: False)
-    unpickled = unflatten(pickled, _unused)
+    unpickled = unflatten(pickled.freeze(), _unused)
     assert isinstance(unpickled, HostMesh)
-    assert host.extent.labels == ["replicas", "hosts"]
-    assert host.extent.sizes == [2, 4]
+    assert host.extent.labels == ["hosts"]
+    assert host.extent.sizes == [8]
     assert not host.stream_logs
-    assert host._ndslice == Slice(offset=0, sizes=[2, 4], strides=[4, 1])
-    assert host._labels == ("replicas", "hosts")
+    assert host._ndslice == Slice(offset=0, sizes=[8], strides=[1])
+    assert host._labels == ("hosts",)
     hy_host = host._hy_host_mesh.block_on()
     assert hy_host.region.labels == host.region.labels
     assert hy_host.region.slice() == host.region.slice()
@@ -135,7 +121,7 @@ class RankActor(Actor):
 
 @pytest.mark.timeout(60)
 def test_shutdown_host_mesh() -> None:
-    hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     pm = hm.spawn_procs(per_host={"gpus": 2})
     am = pm.spawn("actor", RankActor)
     am.get_rank.choose().get()
@@ -144,7 +130,7 @@ def test_shutdown_host_mesh() -> None:
 
 @pytest.mark.timeout(60)
 def test_shutdown_sliced_host_mesh_throws_exception() -> None:
-    hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     hm_sliced = hm.slice(hosts=1)
     with pytest.raises(RuntimeError):
         hm_sliced.shutdown().get()
@@ -152,7 +138,8 @@ def test_shutdown_sliced_host_mesh_throws_exception() -> None:
 
 @pytest.mark.timeout(60)
 def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
-    hm = create_local_host_mesh(Extent(["hosts"], [2]))
+    hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
+    hm.initialized.get()
     hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
     with pytest.raises(RuntimeError):
         hm_unpickled.shutdown().get()
@@ -209,13 +196,9 @@ def test_this_host_on_controllers_can_spawn_actual_os_processes() -> None:
 
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_host_meshes() -> None:
-    orig_get_in_process_host = _this_host_for_fake_in_process_host.get
-    with patch.object(
-        _this_host_for_fake_in_process_host, "get"
-    ) as mock_get_in_process_host, patch.object(
-        monarch._src.actor.host_mesh, "create_local_host_mesh"
-    ) as mock_create_local:
-        mock_get_in_process_host.side_effect = orig_get_in_process_host
+    orig_get_client_context = _client_context.get
+    with patch.object(_client_context, "get") as mock_get_client_context:
+        mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():
             time.sleep(0.1)
@@ -230,9 +213,4 @@ def test_root_client_does_not_leak_host_meshes() -> None:
         for t in threads:
             t.join()
 
-        assert mock_get_in_process_host.call_count == 100
-        # If this test is run in isolation, the local host mesh will
-        # be created once. But if it runs with other tests, the host mesh
-        # will have already been initialized and the function never gets
-        # called.
-        assert mock_create_local.call_count in (0, 1)
+        assert mock_get_client_context.call_count == 100

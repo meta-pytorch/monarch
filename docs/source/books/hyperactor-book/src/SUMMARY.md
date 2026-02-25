@@ -51,7 +51,7 @@
   - [`#[derive(RefClient)]`](macros/ref_client.md)
   - [`#[derive(Named)]`](macros/named.md)
   - [`#[export]`](macros/export.md)
-  - [`#[forward]`](macros/forward.md)
+  - [`#[handle]`](macros/forward.md)
   - [`#[behavior]`](macros/behavior.md)
 - [Appendix](appendix/index.md)
   - [Typed Message Lifecycle](appendix/lifecycle.md)

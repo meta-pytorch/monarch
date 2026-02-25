@@ -60,11 +60,7 @@ enum FrameReaderState {
     /// Accumulating 8-byte length prefix.
     ReadLen { buf: [u8; 8], off: usize },
     /// Accumulating body of exactly `len` bytes.
-    ReadBody {
-        buf: Vec<u8>,
-        off: usize,
-        len: usize,
-    }, // off <= len
+    ReadBody { buf: Vec<u8>, len: usize }, // buf.len() <= len
 }
 ```
 - `new(reader, max_frame_length)` initializes `state = ReadLen { buf: [0;8], off: 0 }`.
@@ -93,7 +89,7 @@ pub struct FrameWrite<W, B> {
 
 impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// Create a new frame writer, writing `body` to `writer`.
-    pub fn new(writer: W, body: B) -> Self { /* builds 8-byte BE prefix */ }
+    pub fn new(writer: W, body: B, max_len: usize) -> Result<Self, (W, io::Error)> { /* builds 8-byte BE prefix */ }
 
     /// Drive the underlying state machine. The frame is written when this
     /// returns `Ok(())`.
@@ -103,13 +99,13 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     pub fn complete(self) -> W { /* … */ }
 
     /// Convenience: write a single frame and return the writer.
-    pub async fn write_frame(writer: W, buf: B) -> io::Result<W> { /* … */ }
+    pub async fn write_frame(writer: W, buf: B, max: usize) -> Result<W, (W, io::Error)> { /* … */ }
 }
 ```
 
 ### What it does
 
-- Length-prefix first. `new()` precomputes an 8-byte big-endian prefix with `body.remaining()` and freezes it (`BytesMut::put_u64(..).freeze()`).
+- Length-prefix first. `new()` precomputes an 8-byte big-endian prefix with `body.remaining()` and freezes it (`BytesMut::put_u64(..).freeze()`). Returns an error if `body.remaining()` exceeds `max_len`.
 - Then the body. `send()` writes the prefix, then the body:
   - Uses **vectored I/O** when possible: builds up to 4 `IoSlice`s from `B: Buf` via `chunks_vectored`, then calls `write_vectored`.
   - Falls back to scalar writes if the underlying writer isn't vectored.
@@ -143,7 +139,7 @@ Pass a multipart buffer to `new()`:
 use serde_multipart::Message;
 let msg: Message = // serialized typed message
 let body = msg.framed(); // impl Buf with chunks_vectored()
-let mut fw = FrameWrite::new(writer, body);
+let mut fw = FrameWrite::new(writer, body, max_len).map_err(|(_, e)| e)?;
 fw.send().await?; // writes [len][body][part0]...[partN] via writev
 let writer = fw.complete(); // reuse for the next frame
 ```
@@ -152,7 +148,7 @@ let writer = fw.complete(); // reuse for the next frame
 
 ```rust
 // Send exactly one frame, then get the writer back.
-let writer = FrameWrite::write_frame(writer, msg.framed()).await?;
+let writer = FrameWrite::write_frame(writer, msg.framed(), max_len).await.map_err(|(_, e)| e)?;
 ```
 
 ## TL;DR

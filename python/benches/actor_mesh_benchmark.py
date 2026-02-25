@@ -22,18 +22,15 @@ from pathlib import Path
 from subprocess import check_output
 
 import humanfriendly
-
-from monarch._rust_bindings.monarch_hyperactor.config import (  # @manual=//monarch/monarch_extension:monarch_extension_no_torch
+from monarch._rust_bindings.monarch_hyperactor.config import (  # @manual=//monarch/monarch_extension:monarch_extension
     reload_config_from_env,
 )
-
-from monarch.actor import (  # @manual=//monarch/python/monarch/actor:actor_no_torch
+from monarch.actor import (  # @manual=//monarch/python/monarch/actor:actor
     Actor,
     endpoint,
-    proc_mesh,
     ProcMesh,
+    this_host,
 )
-
 from windtunnel.benchmarks.python_benchmark_runner.benchmark import (
     main,
     register_benchmark,
@@ -211,7 +208,9 @@ class ActorLatency(Benchmark):
 
     async def setup(self) -> None:
         reload_config_from_env()
-        pong_mesh = proc_mesh(hosts=self.host_count, gpus=self.gpu_count)
+        pong_mesh = this_host().spawn_procs(
+            per_host={"hosts": self.host_count, "gpus": self.gpu_count},
+        )
         await pong_mesh.logging_option(stream_to_client=True, aggregate_window_sec=None)
 
         self.pong_actors = pong_mesh.spawn("pong", Pong)

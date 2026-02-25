@@ -15,7 +15,6 @@ use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::Result;
-use indexmap::IndexMap;
 use tracing_core::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
@@ -23,6 +22,8 @@ use crate::config::MONARCH_FILE_LOG_LEVEL;
 use crate::trace_dispatcher::FieldValue;
 use crate::trace_dispatcher::TraceEvent;
 use crate::trace_dispatcher::TraceEventSink;
+use crate::trace_dispatcher::TraceFields;
+use crate::trace_dispatcher::get_field;
 
 const MAX_LINE_SIZE: usize = 4096;
 const TRUNCATION_SUFFIX_RESERVE: usize = 32;
@@ -98,7 +99,7 @@ pub struct GlogSink {
     writer: Box<dyn Write + Send>,
     prefix: Option<String>,
     /// Track active spans by ID with (name, fields, parent_id) to show span context in event logs
-    active_spans: HashMap<u64, (String, IndexMap<String, FieldValue>, Option<u64>)>,
+    active_spans: HashMap<u64, (String, TraceFields, Option<u64>)>,
     targets: Targets,
     /// Reusable buffer for formatting log lines to ensure atomic writes.
     /// We build the entire line in this buffer, then write it atomically to avoid
@@ -195,7 +196,7 @@ impl GlogSink {
                     self.write_span_context(*parent_id)?;
                 }
 
-                if let Some(v) = fields.get("message") {
+                if let Some(v) = get_field(fields, "message") {
                     match v {
                         FieldValue::Str(s) => write!(&mut self.line_buffer, "{}", s)?,
                         FieldValue::Debug(s) => write!(&mut self.line_buffer, "{}", s)?,
@@ -206,7 +207,7 @@ impl GlogSink {
                 }
 
                 for (k, v) in fields.iter() {
-                    if k != "message" {
+                    if *k != "message" {
                         write!(&mut self.line_buffer, ", {}:", k)?;
                         match v {
                             FieldValue::Bool(b) => write!(&mut self.line_buffer, "{}", b)?,

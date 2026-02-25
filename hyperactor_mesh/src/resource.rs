@@ -27,7 +27,6 @@ use enum_as_inner::EnumAsInner;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteMessage;
@@ -41,10 +40,14 @@ use ndslice::Region;
 use ndslice::ViewExt;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
+use crate::Name;
+use crate::StatusOverlay;
 use crate::bootstrap;
-use crate::v1::Name;
-use crate::v1::StatusOverlay;
+use crate::host_mesh::mesh_agent::ProcState;
+use crate::mesh_agent::ActorSpec;
+use crate::mesh_agent::ActorState;
 
 /// The current lifecycle status of a resource.
 #[derive(
@@ -120,6 +123,7 @@ impl From<bootstrap::ProcStatus> for Status {
 /// instances with the delivered rank.
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Default)]
 pub struct Rank(pub Option<usize>);
+wirevalue::register_type!(Rank);
 
 impl Rank {
     /// Create a new rank with the provided value.
@@ -175,11 +179,11 @@ pub struct GetRankStatus {
 
 impl GetRankStatus {
     pub async fn wait(
-        mut rx: PortReceiver<crate::v1::StatusMesh>,
+        mut rx: PortReceiver<crate::StatusMesh>,
         num_ranks: usize,
         max_idle_time: Duration,
         region: Region, // used only for fallback
-    ) -> Result<crate::v1::StatusMesh, crate::v1::StatusMesh> {
+    ) -> Result<crate::StatusMesh, crate::StatusMesh> {
         debug_assert_eq!(region.num_ranks(), num_ranks, "region/num_ranks mismatch");
 
         let mut alarm = hyperactor::time::Alarm::new();
@@ -187,7 +191,7 @@ impl GetRankStatus {
 
         // Fallback snapshot if we time out before receiving anything.
         let mut snapshot =
-            crate::v1::StatusMesh::from_single(region, crate::resource::Status::NotExist);
+            crate::StatusMesh::from_single(region, crate::resource::Status::NotExist);
 
         loop {
             let mut sleeper = alarm.sleeper();
@@ -260,6 +264,8 @@ pub struct CreateOrUpdate<S> {
     /// The specification of the resource.
     pub spec: S,
 }
+wirevalue::register_type!(CreateOrUpdate<ProcSpec>);
+wirevalue::register_type!(CreateOrUpdate<ActorSpec>);
 
 /// Stop a resource according to a spec.
 #[derive(
@@ -277,7 +283,10 @@ pub struct CreateOrUpdate<S> {
 pub struct Stop {
     /// The name of the resource to stop.
     pub name: Name,
+    /// The reason for stopping the resource.
+    pub reason: String,
 }
+wirevalue::register_type!(Stop);
 
 /// Stop all resources owned by the receiver of this message.
 /// No reply, this just issues the stop command.
@@ -294,7 +303,11 @@ pub struct Stop {
     Bind,
     Unbind
 )]
-pub struct StopAll {}
+pub struct StopAll {
+    /// The reason for stopping.
+    pub reason: String,
+}
+wirevalue::register_type!(StopAll);
 
 /// Retrieve the current state of the resource.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
@@ -305,6 +318,8 @@ pub struct GetState<S> {
     #[reply]
     pub reply: PortRef<State<S>>,
 }
+wirevalue::register_type!(GetState<ProcState>);
+wirevalue::register_type!(GetState<ActorState>);
 
 // Cannot derive Bind and Unbind for this generic, implement manually.
 impl<S> Unbind for GetState<S>
@@ -346,14 +361,25 @@ pub struct List {
     #[reply]
     pub reply: PortRef<Vec<Name>>,
 }
+wirevalue::register_type!(List);
 
 /// A trait that bundles a set of types that together define a resource.
 pub trait Resource {
     /// The spec specification for this resource.
-    type Spec: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type Spec: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 
     /// The state for this resource.
-    type State: Named + Serialize + for<'de> Deserialize<'de> + Send + Sync + std::fmt::Debug;
+    type State: typeuri::Named
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + Send
+        + Sync
+        + std::fmt::Debug;
 }
 
 // A behavior defining the interface for a mesh controller.
@@ -607,6 +633,7 @@ pub(crate) struct ProcSpec {
     /// at the `ClientOverride` layer.
     pub(crate) client_config_override: Attrs,
 }
+wirevalue::register_type!(ProcSpec);
 
 impl ProcSpec {
     pub(crate) fn new(client_config_override: Attrs) -> Self {

@@ -14,6 +14,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::LazyLock;
 
+use hyperactor_config::Flattrs;
+
 use crate::Actor;
 use crate::Data;
 use crate::proc::Proc;
@@ -23,7 +25,7 @@ use crate::reference::ActorId;
 pub const USER_PORT_OFFSET: u64 = 1024;
 
 /// Register an actor type so that it can be spawned remotely. The actor
-/// type must implement [`crate::data::Named`], which will be used to identify
+/// type must implement [`typeuri::Named`], which will be used to identify
 /// the actor globally.
 ///
 /// Example:
@@ -36,10 +38,10 @@ pub const USER_PORT_OFFSET: u64 = 1024;
 #[macro_export]
 macro_rules! remote {
     ($actor:ty) => {
-        $crate::paste! {
+        $crate::internal_macro_support::paste! {
             static [<$actor:snake:upper _NAME>]: std::sync::LazyLock<&'static str> =
-              std::sync::LazyLock::new(|| <$actor as $crate::data::Named>::typename());
-            $crate::submit! {
+              std::sync::LazyLock::new(|| <$actor as $crate::internal_macro_support::typeuri::Named>::typename());
+            $crate::internal_macro_support::inventory::submit! {
                 $crate::actor::remote::SpawnableActor {
                     name: &[<$actor:snake:upper _NAME>],
                     gspawn: <$actor as $crate::actor::RemoteSpawn>::gspawn,
@@ -66,6 +68,7 @@ pub struct SpawnableActor {
         &Proc,
         &str,
         Data,
+        Flattrs,
     ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>>,
 
     /// A function to retrieve the type id of the actor itself. This is
@@ -122,12 +125,13 @@ impl Remote {
         actor_type: &str,
         actor_name: &str,
         params: Data,
+        environment: Flattrs,
     ) -> Result<ActorId, anyhow::Error> {
         let entry = self
             .by_name
             .get(actor_type)
             .ok_or_else(|| anyhow::anyhow!("actor type {} not registered", actor_type))?;
-        (entry.gspawn)(proc, actor_name, params).await
+        (entry.gspawn)(proc, actor_name, params, environment).await
     }
 }
 
@@ -136,6 +140,7 @@ mod tests {
     use std::assert_matches::assert_matches;
 
     use async_trait::async_trait;
+    use hyperactor_config::Flattrs;
 
     use super::*;
     use crate as hyperactor; // for macros
@@ -154,7 +159,7 @@ mod tests {
     impl RemoteSpawn for MyActor {
         type Params = bool;
 
-        async fn new(params: bool) -> Result<Self, anyhow::Error> {
+        async fn new(params: bool, _environment: Flattrs) -> Result<Self, anyhow::Error> {
             if params {
                 Ok(MyActor)
             } else {
@@ -186,6 +191,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
                 bincode::serialize(&true).unwrap(),
+                Flattrs::default(),
             )
             .await
             .unwrap();
@@ -196,6 +202,7 @@ mod tests {
                 "hyperactor::actor::remote::tests::MyActor",
                 "actor",
                 bincode::serialize(&false).unwrap(),
+                Flattrs::default(),
             )
             .await
             .unwrap_err();

@@ -164,9 +164,9 @@ def stream(futures: Sequence[Future], timeout: Optional[float] = None):
     ttl = TTL(timeout)
     pyspy_ttl = _periodic_TTL(PYSPY_REPORT_INTERVAL)
 
-    assert (
-        len({f._client for f in futures if f._client is not None}) <= 1
-    ), "all futures must be from the same controller"
+    assert len({f._client for f in futures if f._client is not None}) <= 1, (
+        "all futures must be from the same controller"
+    )
 
     todo = futures
     while True:

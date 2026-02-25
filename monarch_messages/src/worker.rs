@@ -9,6 +9,11 @@
 // NOTE: Until https://github.com/PyO3/pyo3/pull/4674, `pyo3::pymethods` trigger
 // and unsafe-op-in-unsafe-fn warnings.
 #![allow(unsafe_op_in_unsafe_fn)]
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
 
 use std::collections::HashMap;
 use std::fmt;
@@ -23,7 +28,6 @@ use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::reference::ActorId;
@@ -44,6 +48,7 @@ use torch_sys2::BorrowError;
 use torch_sys2::Device;
 use torch_sys2::Layout;
 use torch_sys2::ScalarType;
+use typeuri::Named;
 
 use crate::controller::ControllerActor;
 use crate::controller::Seq;
@@ -348,7 +353,7 @@ impl ArgsKwargs {
         args: Vec<WireValue>,
         kwargs: HashMap<String, WireValue>,
     ) -> PyResult<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Convert WireValue args to Python objects
             let py_args: Vec<Bound<'_, PyAny>> = args
                 .into_iter()
@@ -495,9 +500,9 @@ impl Factory {
     pub fn new(
         py: Python<'_>,
         size: Vec<i64>,
-        dtype: PyObject,
-        layout: PyObject,
-        device: PyObject,
+        dtype: Py<PyAny>,
+        layout: Py<PyAny>,
+        device: Py<PyAny>,
     ) -> PyResult<Self> {
         // TODO: Add some validation around dtype / layout. We should have pyre types on
         // the python side to help in the short term.
@@ -562,7 +567,6 @@ pub enum StreamCreationMode {
 /// action associated with the sequence number, or if it was defined by
 /// another action that dependend on the failing one.
 #[derive(Debug, Named)]
-#[named(register = false)]
 pub struct SeqError {
     pub seq: Seq,
     pub error: anyhow::Error,
@@ -578,7 +582,6 @@ impl Display for SeqError {
 /// failed (Error) or because an input to the function already had an error value
 /// DependentError.
 #[derive(Error, Debug, Named)]
-#[named(register = false)]
 pub enum CallFunctionError {
     #[error("{0}")]
     Error(#[from] anyhow::Error),
@@ -951,6 +954,7 @@ pub struct WorkerParams {
     // Actor Ref for the controller that the worker is associated with.
     pub controller_actor: ActorRef<ControllerActor>,
 }
+wirevalue::register_type!(WorkerParams);
 
 hyperactor::behavior!(
     WorkerActor,

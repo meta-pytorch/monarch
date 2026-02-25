@@ -6,11 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::Named;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct PickledPyObject {

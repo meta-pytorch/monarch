@@ -7,11 +7,9 @@
 # pyre-strict
 
 from datetime import timedelta
-
 from typing import Dict, final, Optional
 
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-
 from typing_extensions import Self
 
 class Alloc:
@@ -101,9 +99,6 @@ class ProcessAllocatorBase(AllocatorBase):
         ...
 
 class LocalAllocatorBase(AllocatorBase):
-    pass
-
-class SimAllocatorBase(AllocatorBase):
     pass
 
 class RemoteAllocatorBase(AllocatorBase):

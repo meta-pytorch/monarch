@@ -74,6 +74,13 @@ class PortRef:
         ...
 
     @property
+    def return_undeliverable(self) -> bool:
+        """Whether to return undeliverable messages to the sender. By default, this is true"""
+        ...
+
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None: ...
+    @property
     def port_id(self) -> PortId: ...
     def __repr__(self) -> str: ...
 
@@ -107,7 +114,7 @@ class OncePortHandle:
     A variant of PortHandle that can only send a single message.
     """
 
-    def send(self, message: PythonMessage) -> None:
+    def send(self, instance: Instance, message: PythonMessage) -> None:
         """Send a single message to the port's receiver."""
         ...
 
@@ -125,6 +132,13 @@ class OncePortRef:
         """Send a single message to the port's receiver."""
         ...
 
+    @property
+    def return_undeliverable(self) -> bool:
+        """Whether to return undeliverable messages to the sender. By default, this is true."""
+        ...
+
+    @return_undeliverable.setter
+    def return_undeliverable(self, value: bool) -> None: ...
     @property
     def port_id(self) -> PortId: ...
     def __repr__(self) -> str: ...

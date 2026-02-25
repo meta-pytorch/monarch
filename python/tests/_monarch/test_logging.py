@@ -12,10 +12,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from unittest.mock import Mock, patch
 
 import pytest
-
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as HyProcMeshV1,
-)
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._src.actor.logging import flush_all_proc_mesh_logs, LoggingManager
 
 
@@ -86,8 +83,13 @@ class LoggingManagerTest(TestCase):
         mock_future_instance.get.assert_called_once_with(timeout=3)
 
     @patch("monarch._src.actor.logging.Future")
-    def test_flush_handles_exception_gracefully(self, mock_future: Mock) -> None:
-        # Setup: mock client and Future that raises exception
+    @patch("monarch._src.actor.logging.context")
+    def test_flush_handles_exception_gracefully(
+        self, mock_context: Mock, mock_future: Mock
+    ) -> None:
+        # Setup: mock context, client, and Future that raises exception
+        mock_instance = Mock()
+        mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
         mock_client = Mock()
         self.logging_manager._logging_mesh_client = mock_client
 
@@ -135,7 +137,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.logging_manager = LoggingManager()
 
-    @patch("monarch._src.actor.logging.LoggingMeshClientV1")
+    @patch("monarch._src.actor.logging.LoggingMeshClient")
     @patch("monarch._src.actor.logging.context")
     async def test_init_with_hyprocmesh_creates_logging_mesh_client(
         self, mock_context: Mock, mock_logging_client: Mock
@@ -143,7 +145,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         # Setup: mock the context and LoggingMeshClient
         mock_instance = Mock()
         mock_context.return_value.actor_instance._as_rust.return_value = mock_instance
-        mock_proc_mesh = Mock(spec=HyProcMeshV1)
+        mock_proc_mesh = Mock(spec=HyProcMesh)
 
         mock_client: Mock = Mock()
 
@@ -153,7 +155,7 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
 
         mock_logging_client.spawn = mock_spawn
 
-        # Execute: initialize the logging manager with HyProcMeshV1
+        # Execute: initialize the logging manager with HyProcMesh
         await self.logging_manager.init(mock_proc_mesh, stream_to_client=True)
 
         # Assert: set_mode was called with correct parameters
@@ -189,11 +191,14 @@ class LoggingManagerAsyncTest(IsolatedAsyncioTestCase):
         mock_client = Mock()
         self.logging_manager._logging_mesh_client = mock_client
 
-        with patch.object(
-            self.logging_manager, "register_flusher_if_in_ipython"
-        ) as mock_register, patch.object(
-            self.logging_manager, "enable_fd_capture_if_in_ipython"
-        ) as mock_enable:
+        with (
+            patch.object(
+                self.logging_manager, "register_flusher_if_in_ipython"
+            ) as mock_register,
+            patch.object(
+                self.logging_manager, "enable_fd_capture_if_in_ipython"
+            ) as mock_enable,
+        ):
             # Execute: call logging_option with valid parameters
             await self.logging_manager.logging_option(
                 stream_to_client=False,

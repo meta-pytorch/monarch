@@ -11,6 +11,7 @@ use hyperactor::context;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use ndslice::Extent;
 use ndslice::Point;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
@@ -24,20 +25,23 @@ use crate::shape::PyPoint;
 pub struct PyInstance {
     inner: Instance<PythonActor>,
     #[pyo3(get, set)]
-    proc_mesh: Option<PyObject>,
+    proc_mesh: Option<Py<PyAny>>,
     #[pyo3(get, set, name = "_controller_controller")]
-    controller_controller: Option<PyObject>,
+    controller_controller: Option<Py<PyAny>>,
     #[pyo3(get, set)]
     pub(crate) rank: PyPoint,
     #[pyo3(get, set, name = "_children")]
-    children: Option<PyObject>,
+    children: Option<Py<PyAny>>,
 
     #[pyo3(get, set, name = "name")]
     name: String,
     #[pyo3(get, set, name = "class_name")]
     class_name: Option<String>,
     #[pyo3(get, set, name = "creator")]
-    creator: Option<PyObject>,
+    creator: Option<Py<PyAny>>,
+
+    #[pyo3(get, set, name = "_mock_tensor_engine_factory")]
+    mock_tensor_engine_factory: Option<Py<PyAny>>,
 }
 
 impl Clone for PyInstance {
@@ -51,6 +55,7 @@ impl Clone for PyInstance {
             name: self.name.clone(),
             class_name: self.class_name.clone(),
             creator: self.creator.clone(),
+            mock_tensor_engine_factory: self.mock_tensor_engine_factory.clone(),
         }
     }
 }
@@ -76,6 +81,21 @@ impl PyInstance {
     pub fn actor_id(&self) -> PyActorId {
         self.inner.self_id().clone().into()
     }
+
+    #[pyo3(signature = (reason = None))]
+    fn abort(&self, reason: Option<&str>) -> PyResult<()> {
+        let reason = reason.unwrap_or("(no reason provided)");
+        Ok(self.inner.abort(reason).map_err(anyhow::Error::from)?)
+    }
+
+    #[pyo3(signature = (reason = None))]
+    fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
+        tracing::info!(actor_id = %self.inner.self_id(), "stopping PyInstance");
+        let reason = reason.unwrap_or("(no reason provided)");
+        self.inner
+            .stop(reason)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
 }
 
 impl PyInstance {
@@ -95,12 +115,13 @@ impl<I: context::Actor<A = PythonActor>> From<I> for PyInstance {
             name: "root".to_string(),
             class_name: None,
             creator: None,
+            mock_tensor_engine_factory: None,
         }
     }
 }
 
 #[pyclass(name = "Context", module = "monarch._src.actor.actor_mesh")]
-pub(crate) struct PyContext {
+pub struct PyContext {
     instance: Py<PyInstance>,
     rank: Point,
 }
@@ -121,6 +142,17 @@ impl PyContext {
     fn _root_client_context(py: Python<'_>) -> PyResult<PyContext> {
         let _guard = runtime::get_tokio_runtime().enter();
         let instance: PyInstance = root_client_actor(py).into();
+        Ok(PyContext {
+            instance: instance.into_pyobject(py)?.into(),
+            rank: Extent::unity().point_of_rank(0).unwrap(),
+        })
+    }
+
+    /// Create a context from an existing instance.
+    /// This is used when the root client was bootstrapped via bootstrap_host()
+    /// instead of the default bootstrap_client().
+    #[staticmethod]
+    fn _from_instance(py: Python<'_>, instance: PyInstance) -> PyResult<PyContext> {
         Ok(PyContext {
             instance: instance.into_pyobject(py)?.into(),
             rank: Extent::unity().point_of_rank(0).unwrap(),

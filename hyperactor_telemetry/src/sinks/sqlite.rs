@@ -154,7 +154,7 @@ impl SqliteSink {
                     FieldValue::Str(s) => JValue::String(s.clone()),
                     FieldValue::Debug(d) => JValue::String(d.clone()),
                 };
-                visitor.0.insert(key.clone(), json_value);
+                visitor.0.insert(key.to_string(), json_value);
             }
 
             let table = if &**target == sqlite::TableName::ACTOR_LIFECYCLE_STR {

@@ -49,7 +49,6 @@ use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
-use crate::data::Serialized;
 
 static HANDLE: OnceLock<SimNetHandle> = OnceLock::new();
 
@@ -263,7 +262,7 @@ pub(crate) struct ScheduledEvent {
 #[async_trait]
 pub trait Dispatcher<A> {
     /// Send a raw data blob to the given target.
-    async fn send(&self, target: A, data: Serialized) -> Result<(), SimNetError>;
+    async fn send(&self, target: A, data: wirevalue::Any) -> Result<(), SimNetError>;
 }
 
 /// SimNetError is used to indicate errors that occur during
@@ -869,7 +868,6 @@ mod tests {
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;
-    use crate::data::Serialized;
     use crate::id;
     use crate::simnet;
     use crate::simnet::Dispatcher;
@@ -880,7 +878,7 @@ mod tests {
     struct MessageDeliveryEvent {
         src_addr: SimAddr,
         dest_addr: SimAddr,
-        data: Serialized,
+        data: wirevalue::Any,
         duration: tokio::time::Duration,
         dispatcher: Option<TestDispatcher>,
     }
@@ -912,7 +910,7 @@ mod tests {
         fn new(
             src_addr: SimAddr,
             dest_addr: SimAddr,
-            data: Serialized,
+            data: wirevalue::Any,
             dispatcher: Option<TestDispatcher>,
             duration: tokio::time::Duration,
         ) -> Self {
@@ -928,7 +926,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct TestDispatcher {
-        pub mbuffers: Arc<Mutex<HashMap<SimAddr, Vec<Serialized>>>>,
+        pub mbuffers: Arc<Mutex<HashMap<SimAddr, Vec<wirevalue::Any>>>>,
     }
 
     impl Default for TestDispatcher {
@@ -941,7 +939,7 @@ mod tests {
 
     #[async_trait]
     impl Dispatcher<SimAddr> for TestDispatcher {
-        async fn send(&self, target: SimAddr, data: Serialized) -> Result<(), SimNetError> {
+        async fn send(&self, target: SimAddr, data: wirevalue::Any) -> Result<(), SimNetError> {
             let mut buf = self.mbuffers.lock().await;
             buf.entry(target).or_default().push(data);
             Ok(())
@@ -1043,7 +1041,7 @@ mod tests {
                 .send_event(Box::new(MessageDeliveryEvent::new(
                     alice.clone(),
                     bob.clone(),
-                    Serialized::serialize(&"123".to_string()).unwrap(),
+                    wirevalue::Any::serialize(&"123".to_string()).unwrap(),
                     None,
                     latency,
                 )))
@@ -1084,9 +1082,9 @@ mod tests {
             );
         }
 
-        let messages: Vec<Serialized> = vec!["First 0 1", "First 2 3", "Second 0 1"]
+        let messages: Vec<wirevalue::Any> = vec!["First 0 1", "First 2 3", "Second 0 1"]
             .into_iter()
-            .map(|s| Serialized::serialize(&s.to_string()).unwrap())
+            .map(|s| wirevalue::Any::serialize(&s.to_string()).unwrap())
             .collect();
 
         let addr_0 = SimAddr::new(addresses[0].clone()).unwrap();

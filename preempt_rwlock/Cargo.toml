@@ -4,15 +4,12 @@
 name = "preempt_rwlock"
 version = "0.0.0"
 authors = ["Meta"]
-edition = "2021"
-license = "BSD-3-Clause"
-
-[lib]
 edition = "2024"
+license = "BSD-3-Clause"
 
 [dependencies]
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.101"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }

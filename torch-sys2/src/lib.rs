@@ -207,7 +207,7 @@ pub enum LayoutDef {
 
 impl FromPyObject<'_> for Layout {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let strided = torch_strided(py);
             let sparse_coo = torch_sparse_coo(py);
 
@@ -351,7 +351,7 @@ pub enum ScalarTypeDef {
 
 impl FromPyObject<'_> for ScalarType {
     fn extract_bound(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Map of PyTorch dtype getters to ScalarType
             let dtype_map = [
                 (torch_uint8(py), ScalarType::Byte),
@@ -448,12 +448,12 @@ impl<'py> IntoPyObject<'py> for ScalarType {
 
 #[derive(Debug)]
 pub struct Tensor {
-    inner: PyObject,
+    inner: Py<PyAny>,
 }
 
 impl Clone for Tensor {
     fn clone(&self) -> Self {
-        Python::with_gil(|py| Tensor {
+        Python::attach(|py| Tensor {
             inner: self.inner.clone_ref(py),
         })
     }
@@ -461,7 +461,7 @@ impl Clone for Tensor {
 
 impl Tensor {
     pub fn scalar_type(&self) -> ScalarType {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             let dtype = tensor.getattr("dtype").unwrap();
             ScalarType::extract_bound(&dtype).unwrap()
@@ -469,7 +469,7 @@ impl Tensor {
     }
 
     pub fn device(&self) -> Device {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             let device = tensor.getattr("device").unwrap();
             Device::extract_bound(&device).unwrap()
@@ -477,14 +477,14 @@ impl Tensor {
     }
 
     pub fn numel(&self) -> i64 {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             tensor.call_method0("numel").unwrap().extract().unwrap()
         })
     }
 
     pub fn data_ptr(&self) -> *const std::ffi::c_void {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             let ptr: usize = tensor.call_method0("data_ptr").unwrap().extract().unwrap();
             ptr as *const std::ffi::c_void
@@ -496,7 +496,7 @@ impl Tensor {
     }
 
     pub fn defined(&self) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             // A tensor is defined if it's not None and has storage
             !tensor.is_none()
@@ -504,21 +504,21 @@ impl Tensor {
     }
 
     pub fn is_cuda(&self) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             tensor.getattr("is_cuda").unwrap().extract().unwrap()
         })
     }
 
     pub fn is_sparse(&self) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             tensor.getattr("is_sparse").unwrap().extract().unwrap()
         })
     }
 
     pub fn is_contiguous(&self) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             tensor
                 .call_method0("is_contiguous")
@@ -529,14 +529,14 @@ impl Tensor {
     }
 
     pub fn nbytes(&self) -> i64 {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             tensor.getattr("nbytes").unwrap().extract().unwrap()
         })
     }
 
     pub fn sizes(&self) -> Vec<i64> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.inner.bind(py);
             let size = tensor.call_method0("size").unwrap();
             size.try_iter()
@@ -593,7 +593,7 @@ impl TensorCell {
 
     pub fn aliases(&self, other: &TensorCell) -> bool {
         // Check if two tensors share the same underlying storage
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let self_ptr = self.tensor.data_ptr();
             let other_ptr = other.tensor.data_ptr();
             self_ptr == other_ptr && !self_ptr.is_null()
@@ -615,7 +615,7 @@ impl TensorCell {
     }
 
     pub fn try_cpu(&self) -> Result<TensorCell, BorrowError> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let tensor = self.tensor.inner.bind(py);
             let cpu_tensor = tensor
                 .call_method0("cpu")
@@ -661,7 +661,7 @@ impl std::ops::DerefMut for BorrowGuardMut {
 
 impl BorrowGuardMut {
     pub fn copy_(&mut self, src: &Tensor) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let dst_tensor = self.tensor.inner.bind(py);
             let src_tensor = src.inner.bind(py);
             dst_tensor.call_method1("copy_", (src_tensor,)).unwrap();
@@ -716,7 +716,7 @@ pub struct MultiBorrow {
 // ============================================================================
 
 pub fn factory_zeros(size: &[i64], dtype: ScalarType, layout: Layout, device: Device) -> Tensor {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let size_tuple = pyo3::types::PyTuple::new(py, size).unwrap();
         let dtype_obj = dtype.into_pyobject(py).unwrap();
         let device_obj = device.into_pyobject(py).unwrap();
@@ -736,7 +736,7 @@ pub fn factory_zeros(size: &[i64], dtype: ScalarType, layout: Layout, device: De
 }
 
 pub fn factory_empty(size: &[i64], dtype: ScalarType, layout: Layout, device: Device) -> Tensor {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let size_tuple = pyo3::types::PyTuple::new(py, size).unwrap();
         let dtype_obj = dtype.into_pyobject(py).unwrap();
         let device_obj = device.into_pyobject(py).unwrap();
@@ -756,7 +756,7 @@ pub fn factory_empty(size: &[i64], dtype: ScalarType, layout: Layout, device: De
 }
 
 pub fn factory_float_tensor(data: &[f32], device: Device) -> Tensor {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let data_list = pyo3::types::PyList::new(py, data).unwrap();
         let device_obj = device.into_pyobject(py).unwrap();
 
@@ -773,7 +773,7 @@ pub fn factory_float_tensor(data: &[f32], device: Device) -> Tensor {
 }
 
 pub fn deep_clone(tensor: &Tensor) -> Tensor {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let tensor_obj = tensor.inner.bind(py);
         let cloned = tensor_obj.call_method0("clone").unwrap();
         Tensor {
@@ -793,7 +793,7 @@ pub fn is_float8_type(scalar_type: ScalarType) -> bool {
 }
 
 pub fn suggest_memory_format(tensor: &Tensor) -> MemoryFormat {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let tensor_obj = tensor.inner.bind(py);
 
         // Call suggest_memory_format method on the tensor

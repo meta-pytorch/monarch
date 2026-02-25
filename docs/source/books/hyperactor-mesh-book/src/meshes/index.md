@@ -49,6 +49,8 @@ After that, it's just "send messages to the mesh."
 - **Proc meshes & ProcMeshAgent** — deep dive on the proc-level agent: how it turns `CreateOrUpdate<ActorSpec>` and `MeshAgentMessage::Gspawn` into actor spawns via hyperactor's `Remote` registry.
 - **Process-backed hosts: BootstrapProcManager** — the "real OS child, real bootstrap command" path the host delegates to.
 - **Bootstrapping from Python** — show that `this_host().spawn_procs(...).spawn(...)` is using the same Rust v1 path, just through the Python bindings.
+- **Error handling by supervision** - how errors in actors and procs are sent to
+  the owner for handling
 - **Appendix: `bootstrap_canonical_simple`** — the Rust teaching example all of this is mirroring.
 
 So: this section isn't "a test walkthrough." It's "here's how v1 meshes are built, and here are the two front doors (Rust and Python) that call the same code."

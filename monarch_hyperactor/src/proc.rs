@@ -16,7 +16,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
-use hyperactor::data::Serialized;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
@@ -33,7 +32,6 @@ use pyo3::types::PyType;
 
 use crate::actor::PythonActor;
 use crate::actor::PythonActorHandle;
-use crate::mailbox::PyMailbox;
 use crate::runtime::signal_safe_block_on;
 
 /// Wrapper around a proc that provides utilities to implement a python actor.
@@ -78,11 +76,6 @@ impl PyProc {
         self.inner.proc_id().to_string()
     }
 
-    fn attach(&self, name: String) -> PyResult<PyMailbox> {
-        let mailbox = self.inner.attach(&name)?;
-        Ok(PyMailbox { inner: mailbox })
-    }
-
     fn destroy<'py>(
         &mut self,
         timeout_in_secs: u64,
@@ -91,7 +84,7 @@ impl PyProc {
         let mut inner = self.inner.clone();
         let (_stopped, aborted) = signal_safe_block_on(py, async move {
             inner
-                .destroy_and_wait::<()>(Duration::from_secs(timeout_in_secs), None)
+                .destroy_and_wait::<()>(Duration::from_secs(timeout_in_secs), None, "destroy")
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })??;
@@ -117,7 +110,7 @@ impl PyProc {
             Ok(PythonActorHandle {
                 inner: proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type)?,
+                    PythonActor::new(pickled_type, None, None)?,
                 )?,
             })
         })
@@ -136,7 +129,7 @@ impl PyProc {
             inner: signal_safe_block_on(py, async move {
                 proc.spawn(
                     name.as_deref().unwrap_or("anon"),
-                    PythonActor::new(pickled_type)?,
+                    PythonActor::new(pickled_type, None, None)?,
                 )
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))??,
@@ -264,7 +257,7 @@ enum InstanceStatus {
     Stopped,
 }
 
-/// Wrapper around a [`Serialized`] that allows returning it to python and
+/// Wrapper around a [`Any`] that allows returning it to python and
 /// passed to python based detached actors to send to other actors.
 #[pyclass(
     frozen,
@@ -273,7 +266,7 @@ enum InstanceStatus {
 )]
 #[derive(Debug)]
 pub struct PySerialized {
-    inner: Serialized,
+    inner: wirevalue::Any,
     /// The message port (type) of the message.
     port: u64,
 }
@@ -281,10 +274,11 @@ pub struct PySerialized {
 impl PySerialized {
     pub fn new<M: RemoteMessage>(message: &M) -> PyResult<Self> {
         Ok(Self {
-            inner: Serialized::serialize(message).map_err(|err| {
+            inner: wirevalue::Any::serialize(message).map_err(|err| {
                 PyRuntimeError::new_err(format!(
-                    "failed to serialize message ({:?}) to Serialized: {}",
-                    message, err
+                    "failed to serialize message of type {} to Any: {}",
+                    std::any::type_name::<M>(),
+                    err
                 ))
             })?,
             port: M::port(),
@@ -305,8 +299,7 @@ impl PySerialized {
 
 /// Wrapper around an instance of an actor that provides utilities to implement
 /// a python actor. This helps by allowing users to specialize the actor to the
-/// message type they want to handle. [`PickledMessageClientActor``] is a specialization of this
-/// for handling messages that are serialized to bytes using pickle.
+/// message type they want to handle.
 pub struct InstanceWrapper<M: RemoteMessage> {
     instance: Instance<()>,
     message_receiver: PortReceiver<M>,
@@ -346,9 +339,9 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
     /// Send a message to any actor. It is the responsibility of the caller to ensure the right
     /// payload accepted by the target actor has been serialized and provided to this function.
     pub fn send(&self, actor_id: &PyActorId, message: &PySerialized) -> PyResult<()> {
-        hyperactor::tracing::debug!(
+        hyperactor::internal_macro_support::tracing::debug!(
             name = "py_send_message",
-            actor_id = hyperactor::tracing::field::display(self.actor_id()),
+            actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id()),
             receiver_actor_id = tracing::field::display(&actor_id.inner),
             ?message,
         );
@@ -374,7 +367,10 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         // flow for this.
         // TODO: T208289078
         let signals = self.signal_receiver.drain();
-        if signals.into_iter().any(|sig| matches!(sig, Signal::Stop)) {
+        if signals
+            .into_iter()
+            .any(|sig| matches!(sig, Signal::Stop(_)))
+        {
             self.status = InstanceStatus::Stopped;
             anyhow::bail!("actor has been stopped");
         }
@@ -384,7 +380,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
 
     /// Get the next message from the queue. It will wait until a message is received
     /// or the timeout is reached in which case it will return None.
-    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(level = "trace", fields(actor_id = hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
     pub async fn next_message(&mut self, timeout_msec: Option<u64>) -> Result<Option<M>> {
         hyperactor::declare_static_timer!(
             PY_NEXT_MESSAGE_TIMER,
@@ -431,7 +427,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
     }
 
     /// Put the actor in stopped mode and return any messages that were received.
-    #[hyperactor::instrument(fields(actor_id=hyperactor::tracing::field::display(self.actor_id())))]
+    #[hyperactor::instrument(fields(actor_id=hyperactor::internal_macro_support::tracing::field::display(self.actor_id())))]
     pub fn drain_and_stop(&mut self) -> Result<Vec<M>> {
         self.ensure_detached_and_alive()?;
         let messages: Vec<M> = self.message_receiver.drain().into_iter().collect();

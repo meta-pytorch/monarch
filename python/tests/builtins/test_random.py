@@ -8,7 +8,6 @@
 import pytest
 import torch
 from monarch import fetch_shard
-
 from monarch._testing import TestingContext
 from monarch.builtins.random import (
     get_rng_state_all_cuda_remote,

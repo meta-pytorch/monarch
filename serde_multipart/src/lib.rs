@@ -28,7 +28,6 @@
 
 #![feature(min_specialization)]
 #![feature(assert_matches)]
-#![feature(vec_deque_pop_if)]
 
 use std::cell::UnsafeCell;
 use std::cmp::min;

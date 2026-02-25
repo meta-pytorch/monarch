@@ -26,18 +26,16 @@ use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor_mesh::actor_mesh::ActorMesh;
+use hyperactor::context;
+use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
-use hyperactor_mesh::sel;
 #[cfg(feature = "packaged_rsync")]
 use lazy_static::lazy_static;
-use ndslice::Selection;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
@@ -54,6 +52,7 @@ use tokio::process::Command;
 #[cfg(feature = "packaged_rsync")]
 use tokio::sync::OnceCell;
 use tracing::warn;
+use typeuri::Named;
 
 use crate::code_sync::WorkspaceLocation;
 
@@ -135,6 +134,7 @@ pub struct RsyncResult {
     /// All changes that occurred during the rsync operation
     pub changes: Vec<Change>,
 }
+wirevalue::register_type!(RsyncResult);
 
 impl RsyncResult {
     /// Create an empty rsync result
@@ -335,6 +335,7 @@ pub struct RsyncMessage {
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
 }
+wirevalue::register_type!(RsyncMessage);
 
 #[derive(Debug, Default)]
 #[hyperactor::export(spawn = true, handlers = [RsyncMessage { cast = true }])]
@@ -385,39 +386,38 @@ impl Handler<RsyncMessage> for RsyncActor {
     }
 }
 
-pub async fn rsync_mesh<M>(
-    actor_mesh: &M,
+pub async fn rsync_mesh<C: context::Actor + Copy + Unpin>(
+    cx: C,
+    actor_mesh: &ActorMesh<RsyncActor>,
     local_workspace: PathBuf,
     remote_workspace: WorkspaceLocation,
-) -> Result<Vec<RsyncResult>>
-where
-    M: ActorMesh<Actor = RsyncActor>,
-{
+) -> Result<Vec<RsyncResult>> {
+    use ndslice::View;
+
     // Spawn a rsync daemon to accept incoming connections from actors.
     let daemon = RsyncDaemon::spawn(TcpListener::bind(("::1", 0)).await?, &local_workspace).await?;
     let daemon_addr = daemon.addr();
 
-    let instance = actor_mesh.proc_mesh().client();
-    let (rsync_conns_tx, rsync_conns_rx) = instance.open_port::<Connect>();
+    let (rsync_conns_tx, rsync_conns_rx) = cx.mailbox().open_port::<Connect>();
+    let num_actors = actor_mesh.region().num_ranks();
 
     let res = try_join!(
         rsync_conns_rx
-            .take(actor_mesh.shape().slice().len())
+            .take(num_actors)
             .err_into::<anyhow::Error>()
             .try_for_each_concurrent(None, |connect| async move {
                 let (mut local, mut stream) = try_join!(
                     TcpStream::connect(daemon_addr.clone()).err_into(),
-                    accept(instance, instance.self_id().clone(), connect),
+                    accept(cx, cx.instance().self_id().clone(), connect),
                 )?;
                 tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
                 anyhow::Ok(())
             })
             .boxed(),
         async move {
-            let (result_tx, result_rx) = instance.open_port::<Result<RsyncResult, String>>();
+            let (result_tx, result_rx) = cx.mailbox().open_port::<Result<RsyncResult, String>>();
             actor_mesh.cast(
-                instance,
-                sel!(*),
+                &cx,
                 RsyncMessage {
                     connect: rsync_conns_tx.bind(),
                     result: result_tx.bind(),
@@ -425,7 +425,7 @@ where
                 },
             )?;
             let res: Vec<RsyncResult> = result_rx
-                .take(actor_mesh.shape().slice().len())
+                .take(num_actors)
                 .map(|res| res?.map_err(anyhow::Error::msg))
                 .try_collect()
                 .await?;
@@ -456,13 +456,9 @@ where
 mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
-    use hyperactor::channel::ChannelTransport;
-    use hyperactor_mesh::alloc::AllocSpec;
-    use hyperactor_mesh::alloc::Allocator;
-    use hyperactor_mesh::alloc::local::LocalAllocator;
-    use hyperactor_mesh::proc_mesh::ProcMesh;
-    use hyperactor_mesh::proc_mesh::global_root_client;
-    use ndslice::extent;
+    use hyperactor_mesh::ActorMesh;
+    use hyperactor_mesh::global_root_client;
+    use hyperactor_mesh::test_utils;
     use tempfile::TempDir;
     use tokio::fs;
     use tokio::net::TcpListener;
@@ -505,29 +501,19 @@ mod tests {
         fs::write(target_workspace.path().join("foo.txt"), "something").await?;
 
         // Set up actor mesh with 2 RsyncActors
-        let alloc = LocalAllocator
-            .allocate(AllocSpec {
-                extent: extent! { replica = 1 },
-                constraints: Default::default(),
-                proc_name: None,
-                transport: ChannelTransport::Local,
-                proc_allocation_mode: Default::default(),
-            })
-            .await?;
-
-        let proc_mesh = ProcMesh::allocate(alloc).await?;
-
-        // TODO: thread through context, or access the actual python context;
-        // for now this is basically equivalent (arguably better) to using the proc mesh client.
         let instance = global_root_client();
-
+        let mut host_mesh = test_utils::local_host_mesh(1).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "rsync_test", ndslice::Extent::unity())
+            .await
+            .unwrap();
         // Spawn actor mesh with RsyncActors
-        let actor_mesh = proc_mesh
-            .spawn::<RsyncActor>(&instance, "rsync_test", &())
-            .await?;
+        let actor_mesh: ActorMesh<RsyncActor> =
+            proc_mesh.spawn(instance, "rsync_test", &()).await?;
 
         // Test rsync_mesh function - this coordinates rsync operations across the mesh
         let results = rsync_mesh(
+            instance,
             &actor_mesh,
             source_workspace.path().to_path_buf(),
             WorkspaceLocation::Constant(target_workspace.path().to_path_buf()),
@@ -550,6 +536,7 @@ mod tests {
                 .map_err(|e| anyhow!("{:?}", e))?
         );
 
+        let _ = host_mesh.shutdown(instance).await;
         Ok(())
     }
 

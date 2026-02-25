@@ -56,6 +56,7 @@ pub mod in_memory_reader;
 mod meta;
 mod otel;
 mod pool;
+mod rate_limit;
 pub mod recorder;
 pub mod sinks;
 mod spool;
@@ -63,11 +64,15 @@ pub mod sqlite;
 pub mod task;
 pub mod trace;
 pub mod trace_dispatcher;
+
+// Re-export key types for external sink implementations
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use lazy_static::lazy_static;
 pub use opentelemetry;
@@ -75,6 +80,10 @@ pub use opentelemetry::Key;
 pub use opentelemetry::KeyValue;
 pub use opentelemetry::Value;
 pub use opentelemetry::global::meter;
+pub use trace_dispatcher::DispatcherControl;
+pub use trace_dispatcher::FieldValue;
+pub use trace_dispatcher::TraceEvent;
+pub use trace_dispatcher::TraceEventSink;
 pub use tracing;
 pub use tracing::Level;
 use tracing_appender::non_blocking::NonBlocking;
@@ -199,7 +208,15 @@ pub fn log_file_path(
     env: env::Env,
     suffix: Option<&str>,
 ) -> Result<(String, String), anyhow::Error> {
-    let suffix = suffix.map(|s| format!("_{}", s)).unwrap_or_default();
+    let suffix = suffix
+        .map(|s| {
+            if s.is_empty() {
+                String::new()
+            } else {
+                format!("_{}", s)
+            }
+        })
+        .unwrap_or_default();
     match env {
         env::Env::Local | env::Env::MastEmulator => {
             let username = if whoami::username().is_empty() {
@@ -260,6 +277,205 @@ fn writer() -> Box<dyn Write + Send> {
 lazy_static! {
     static ref TELEMETRY_CLOCK: Arc<Mutex<Box<dyn TelemetryClock + Send>>> =
         Arc::new(Mutex::new(Box::new(DefaultTelemetryClock {})));
+    /// Global control channel for sink registration.
+    /// Created upfront so sinks can be registered at any time (before or after telemetry init).
+    /// The receiver is taken once when the TraceEventDispatcher is created.
+    static ref SINK_CONTROL_CHANNEL: (
+        mpsc::Sender<DispatcherControl>,
+        Mutex<Option<mpsc::Receiver<DispatcherControl>>>
+    ) = {
+        let (sender, receiver) = mpsc::channel();
+        (sender, Mutex::new(Some(receiver)))
+    };
+    /// Global unified entity event dispatcher.
+    /// Receives all entity lifecycle events (actors, meshes, etc.) directly (not via tracing).
+    /// Only one dispatcher is supported; setting a new dispatcher replaces the previous one.
+    static ref ENTITY_EVENT_DISPATCHER: Mutex<Option<Box<dyn EntityEventDispatcher>>> = Mutex::new(None);
+}
+
+/// Event data for actor creation.
+/// This is passed to EntityEventDispatcher implementations when an actor is spawned.
+#[derive(Debug, Clone)]
+pub struct ActorEvent {
+    /// Unique identifier for this actor (hashed from ActorId)
+    pub id: u64,
+    /// Timestamp when the actor was created
+    pub timestamp: SystemTime,
+    /// ID of the mesh this actor belongs to (hashed from actor_name)
+    pub mesh_id: u64,
+    /// Rank index into the mesh shape
+    pub rank: u64,
+    /// Full hierarchical name of this actor
+    pub full_name: String,
+}
+
+/// Notify the registered dispatcher that an actor was created.
+/// This is called from hyperactor when an actor is spawned.
+pub fn notify_actor_created(event: ActorEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(EntityEvent::Actor(event)) {
+                tracing::error!("Failed to dispatch actor event: {:?}", e);
+            }
+        }
+    }
+}
+
+/// Event data for actor mesh creation.
+/// This is passed to EntityEventDispatcher implementations when an actor mesh is spawned.
+#[derive(Debug, Clone)]
+pub struct ActorMeshEvent {
+    /// Unique identifier for this mesh (hashed)
+    pub id: u64,
+    /// Timestamp when the mesh was created
+    pub timestamp: SystemTime,
+    /// Mesh class (e.g., "Proc", "Host", "Python<SomeUserDefinedActor>")
+    pub class: String,
+    /// User-provided name for this mesh
+    pub given_name: String,
+    /// Full hierarchical name as it appears in supervision events
+    pub full_name: String,
+    /// Shape of the mesh, serialized from ndslice::Extent
+    pub shape_json: String,
+    /// Parent mesh ID (None for root meshes)
+    pub parent_mesh_id: Option<u64>,
+    /// Region over which the parent spawned this mesh, serialized from ndslice::Region
+    pub parent_view_json: Option<String>,
+}
+
+/// Notify the registered dispatcher that an actor mesh was created.
+/// This is called from hyperactor_mesh when an actor mesh is spawned.
+pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(EntityEvent::ActorMesh(event)) {
+                tracing::error!("Failed to dispatch actor mesh event: {}", e);
+            }
+        }
+    }
+}
+
+/// Event data for actor status changes.
+/// This is passed to EntityEventDispatcher implementations when an actor changes status.
+#[derive(Debug, Clone)]
+pub struct ActorStatusEvent {
+    /// Actor ID as a string (e.g. "proc_id/actor_name")
+    pub actor_id: String,
+    /// Timestamp when the status change occurred
+    pub timestamp: SystemTime,
+    /// The new status arm name (e.g. "Created", "Idle", "Failed")
+    pub new_status: String,
+    /// The previous status arm name
+    pub prev_status: String,
+    /// Reason for the status change (e.g. error details for Failed)
+    pub reason: Option<String>,
+}
+
+/// Notify the registered dispatcher that an actor changed status.
+/// This is called from hyperactor when an actor transitions between states.
+pub fn notify_actor_status_changed(event: ActorStatusEvent) {
+    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
+        if let Some(ref d) = *dispatcher {
+            if let Err(e) = d.dispatch(EntityEvent::ActorStatus(event)) {
+                tracing::error!("Failed to dispatch actor status event: {:?}", e);
+            }
+        }
+    }
+}
+
+/// Unified event enum for all entity lifecycle events.
+///
+/// This enum wraps all entity events (actors, meshes, and future event types)
+/// into a single type. This enables a single sink to handle all entity events,
+/// simplifying the registration and notification infrastructure.
+///
+/// # Future Extensions
+/// Additional variants can be added for:
+/// - `Message(MessageEvent)` - message sends/receives
+/// - `SentMessage(SentMessageEvent)` - outgoing message tracking
+#[derive(Debug, Clone)]
+pub enum EntityEvent {
+    /// An actor was created.
+    Actor(ActorEvent),
+    /// An actor mesh was created.
+    ActorMesh(ActorMeshEvent),
+    /// An actor changed status.
+    ActorStatus(ActorStatusEvent),
+}
+
+/// Trait for dispatchers that receive unified entity events.
+///
+/// This is the preferred way to receive entity lifecycle events. Implement this
+/// trait and register with `set_entity_dispatcher` to receive notifications for
+/// all entity types (actors, meshes, etc.) through a single callback.
+///
+/// The dispatcher pattern routes events to appropriate handlers based on the
+/// event type (Actor, Mesh, etc.), distinguishing this from TraceEventSink
+/// which handles tracing spans and events.
+///
+/// # Example
+/// ```ignore
+/// use hyperactor_telemetry::{set_entity_dispatcher, EntityEventDispatcher, EntityEvent};
+///
+/// struct MyEntityDispatcher;
+/// impl EntityEventDispatcher for MyEntityDispatcher {
+///     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
+///         match event {
+///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
+///             EntityEvent::ActorMesh(mesh) => println!("Mesh: {}", mesh.full_name),
+///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
+///         }
+///         Ok(())
+///     }
+/// }
+///
+/// set_entity_dispatcher(Box::new(MyEntityDispatcher));
+/// ```
+pub trait EntityEventDispatcher: Send + Sync {
+    /// Dispatch an entity event to the appropriate handler.
+    fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error>;
+}
+
+/// Set the dispatcher to receive all entity events.
+///
+/// This can be called at any time. The dispatcher will receive all subsequent entity
+/// events (actors, meshes, etc.) through a single callback.
+///
+/// Note: Only one dispatcher is supported. Setting a new dispatcher replaces any
+/// previously set dispatcher.
+pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
+    if let Ok(mut slot) = ENTITY_EVENT_DISPATCHER.lock() {
+        *slot = Some(dispatcher);
+    }
+}
+
+/// Register a sink to receive trace events.
+/// This can be called at any time - before or after telemetry initialization.
+/// The sink will receive all trace events on the background worker thread.
+///
+/// # Example
+/// ```ignore
+/// use hyperactor_telemetry::{register_sink, TraceEventSink, TraceEvent};
+///
+/// struct MySink;
+/// impl TraceEventSink for MySink {
+///     fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error> { Ok(()) }
+///     fn flush(&mut self) -> Result<(), anyhow::Error> { Ok(()) }
+/// }
+///
+/// register_sink(Box::new(MySink));
+/// ```
+pub fn register_sink(sink: Box<dyn TraceEventSink>) {
+    let sender = &SINK_CONTROL_CHANNEL.0;
+    if let Err(e) = sender.send(DispatcherControl::AddSink(sink)) {
+        eprintln!("[telemetry] failed to register sink: {}", e);
+    }
+}
+
+/// Take the control receiver for use by the TraceEventDispatcher.
+/// This can only be called once; subsequent calls return None.
+pub(crate) fn take_sink_control_receiver() -> Option<mpsc::Receiver<DispatcherControl>> {
+    SINK_CONTROL_CHANNEL.1.lock().unwrap().take()
 }
 
 /// The recorder singleton that is configured as a layer in the the default tracing
@@ -680,18 +896,35 @@ fn initialize_logging_with_log_prefix_impl(
                 file_log_level,
             )));
 
-            let mut max_level = None;
-
             let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
 
             if sqlite_enabled {
                 match create_sqlite_sink() {
                     Ok(sink) => {
-                        max_level = Some(tracing::level_filters::LevelFilter::TRACE);
                         sinks.push(Box::new(sink));
                     }
                     Err(e) => {
                         tracing::warn!("failed to create SqliteSink: {}", e);
+                    }
+                }
+            }
+
+            if hyperactor_config::global::get(sinks::perfetto::PERFETTO_TRACE_MODE)
+                != sinks::perfetto::PerfettoTraceMode::Off
+            {
+                let exec_id = env::execution_id();
+                let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
+                    .unwrap_or_else(|_| "client".to_string());
+                match sinks::perfetto::PerfettoFileSink::new(
+                    sinks::perfetto::default_trace_dir(),
+                    &exec_id,
+                    &process_name,
+                ) {
+                    Ok(sink) => {
+                        sinks.push(Box::new(sink));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create PerfettoFileSink: {}", e);
                     }
                 }
             }
@@ -726,15 +959,15 @@ fn initialize_logging_with_log_prefix_impl(
                 }
             }
 
+            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+
             if let Err(err) = Registry::default()
                 .with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
                     Some(recorder().layer())
                 } else {
                     None
                 })
-                .with(trace_dispatcher::TraceEventDispatcher::new(
-                    sinks, max_level,
-                ))
+                .with(dispatcher)
                 .try_init()
             {
                 tracing::debug!("logging already initialized for this process: {}", err);
@@ -861,16 +1094,29 @@ fn initialize_logging_with_log_prefix_impl(
 
         if use_unified {
             let mut sinks: Vec<Box<dyn trace_dispatcher::TraceEventSink>> = Vec::new();
+
+            let sqlite_enabled = hyperactor_config::global::get(ENABLE_SQLITE_TRACING);
+
+            if sqlite_enabled {
+                match create_sqlite_sink() {
+                    Ok(sink) => {
+                        sinks.push(Box::new(sink));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create SqliteSink: {}", e);
+                    }
+                }
+            }
+
             sinks.push(Box::new(sinks::glog::GlogSink::new(
                 writer(),
                 prefix_env_var.clone(),
                 file_log_level,
             )));
 
-            if let Err(err) = registry
-                .with(trace_dispatcher::TraceEventDispatcher::new(sinks, None))
-                .try_init()
-            {
+            let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
+
+            if let Err(err) = registry.with(dispatcher).try_init() {
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         } else {
@@ -914,7 +1160,7 @@ fn create_sqlite_sink() -> anyhow::Result<sinks::sqlite::SqliteSink> {
         .expect("failed to determine trace db path");
     let db_file = format!("{}/hyperactor_trace_{}.db", db_path, std::process::id());
 
-    Ok(sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)?)
+    sinks::sqlite::SqliteSink::new_with_file(&db_file, 100)
 }
 
 /// Create a context span at ERROR level with skip_record enabled.
@@ -1018,7 +1264,7 @@ pub mod env {
                 let datetime: chrono::DateTime<chrono::Local> = now.into();
                 datetime.format("%b-%d_%H:%M").to_string()
             };
-            let random_number: u16 = (rand::thread_rng().next_u32() % 1000) as u16;
+            let random_number: u16 = (rand::rng().next_u32() % 1000) as u16;
             let execution_id = format!("{}_{}_{}", username, now, random_number);
             execution_id
         });

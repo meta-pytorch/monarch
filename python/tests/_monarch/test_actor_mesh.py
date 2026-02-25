@@ -7,43 +7,48 @@
 # pyre-unsafe
 
 import pickle
-from typing import Any, Callable, cast, Coroutine, Iterable, List, TYPE_CHECKING, Union
+from typing import Any, Callable, cast, Coroutine, Iterable, List, Type, TYPE_CHECKING
 
-import monarch
 import pytest
-
 from monarch._rust_bindings.monarch_hyperactor.actor import (
     MethodSpecifier,
     PanicFlag,
-    PythonMessage,
     PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-
 from monarch._rust_bindings.monarch_hyperactor.alloc import (  # @manual=//monarch/monarch_extension:monarch_extension
     Alloc,
     AllocConstraints,
     AllocSpec,
 )
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Slice
-from monarch._src.actor.allocator import LocalAllocator
-from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcessAllocator
+from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
+from monarch._src.actor.proc_mesh import _get_bootstrap_args
 
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
-from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
-from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-from monarch._rust_bindings.monarch_hyperactor.v1.host_mesh import (
+from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
     BootstrapCommand,
     HostMesh,
 )
-from monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh import (
-    ProcMesh as ProcMeshV1,
-)
+from monarch._rust_bindings.monarch_hyperactor.mailbox import PortReceiver
+from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import Context, context, Instance
+
+
+def _to_frozen_buffer(data: bytes) -> FrozenBuffer:
+    """Helper to convert bytes to FrozenBuffer."""
+    buf = Buffer()
+    buf.write(data)
+    return buf.freeze()
 
 
 def run_on_tokio(
@@ -62,16 +67,13 @@ async def alloc() -> Alloc:
     return await allocator.allocate_nonblocking(spec)
 
 
-async def allocate() -> ProcMesh:
-    proc_mesh = await ProcMesh.allocate_nonblocking(await alloc())
-    return proc_mesh
+def allocate() -> Shared[ProcMesh]:
+    async def task() -> ProcMesh:
+        return await ProcMesh.allocate_nonblocking(
+            context().actor_instance._as_rust(), await alloc(), "proc_mesh"
+        )
 
-
-async def allocate_v1() -> ProcMeshV1:
-    proc_mesh = await ProcMeshV1.allocate_nonblocking(
-        context().actor_instance._as_rust(), await alloc(), "proc_mesh"
-    )
-    return proc_mesh
+    return PythonTask.from_coroutine(task()).spawn()
 
 
 class MyActor:
@@ -95,7 +97,8 @@ class MyActor:
                 # Since this actor is spawn from the root proc mesh, the rank
                 # passed from init should be the rank on the root mesh.
                 self._rank_on_root_mesh = ctx.message_rank.rank
-                response_port.send(None)
+                if response_port is not None:
+                    response_port.send(None)
                 return None
             case MethodSpecifier.ReturnsResponse(name=_):
                 response_port.send(self._rank_on_root_mesh)
@@ -110,56 +113,53 @@ class MyActor:
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("use_v1", [True, False])
-async def test_bind_and_pickling(use_v1: bool) -> None:
+async def test_bind_and_pickling() -> None:
     @run_on_tokio
     async def run() -> None:
-        if not use_v1:
-            proc_mesh = await allocate()
-            actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-        else:
-            proc_mesh = await allocate_v1()
-            actor_mesh = await proc_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(), "test", MyActor
-            )
+        proc_mesh_task = allocate()
+        actor_mesh = spawn_actor_mesh(proc_mesh_task)
+
+        # Need to make sure the mesh is initialized before pickling to
+        # prevent blocking the tokio runtime.
+        await actor_mesh.initialized()
+
         pickle.dumps(actor_mesh)
 
+        # Get the actual ProcMesh to access its region
+        proc_mesh = await proc_mesh_task
+
         actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
+
+        # Need to make sure the mesh is initialized before pickling to
+        # prevent blocking the tokio runtime.
+        await actor_mesh_ref.initialized()
+
         obj = pickle.dumps(actor_mesh_ref)
         pickle.loads(obj)
-        if not use_v1:
-            assert isinstance(proc_mesh, ProcMesh)
-            await proc_mesh.stop_nonblocking()
-        else:
-            assert isinstance(proc_mesh, ProcMeshV1)
-            instance = context().actor_instance._as_rust()
-            await proc_mesh.stop_nonblocking(instance)
+
+        instance = context().actor_instance._as_rust()
+        await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
     run()
 
 
-async def spawn_actor_mesh(proc_mesh: Union[ProcMesh, ProcMeshV1]) -> PythonActorMesh:
-    if isinstance(proc_mesh, ProcMeshV1):
-        actor_mesh = await proc_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(), "test", MyActor
-        )
-    else:
-        actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
-    # init actors to record their root ranks
-    receiver: PortReceiver
-    instance = context().actor_instance
-    client = instance._mailbox
-    handle, receiver = client.open_port()
-    port_ref = handle.bind()
-
-    message = PythonMessage(
-        PythonMessageKind.CallMethod(MethodSpecifier.Init(), port_ref),
-        pickle.dumps(None),
+def spawn_actor_mesh(proc_mesh_task: Shared[ProcMesh]) -> PythonActorMesh:
+    # Create an explicit init message
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
+        PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
+        init_state,
     )
-    actor_mesh.cast(message, "all", instance._as_rust())
-    # wait for init to complete
-    for _ in range(len(proc_mesh.region.as_shape().ndslice)):
-        await receiver.recv_task()
+
+    # Use spawn_async with the explicit init message
+    actor_mesh = ProcMesh.spawn_async(
+        proc_mesh_task,
+        context().actor_instance._as_rust(),
+        "test",
+        cast(Type["Actor"], MyActor),
+        init_message,
+        False,  # emulated
+    )
 
     return actor_mesh
 
@@ -167,9 +167,9 @@ async def spawn_actor_mesh(proc_mesh: Union[ProcMesh, ProcMeshV1]) -> PythonActo
 async def cast_to_call(
     actor_mesh: PythonActorMesh,
     instance: Instance,
-    message: PythonMessage,
+    message: PendingMessage,
 ) -> None:
-    actor_mesh.cast(message, "all", instance._as_rust())
+    actor_mesh.cast_unresolved(message, "all", instance._as_rust())
 
 
 async def verify_cast_to_call(
@@ -182,9 +182,10 @@ async def verify_cast_to_call(
     port_ref = handle.bind()
 
     # Now send the real message
-    message = PythonMessage(
+    state = monarch_pickle("ping")
+    message = PendingMessage(
         PythonMessageKind.CallMethod(MethodSpecifier.ReturnsResponse("echo"), port_ref),
-        pickle.dumps("ping"),
+        state,
     )
     await cast_to_call(actor_mesh, instance, message)
 
@@ -199,12 +200,12 @@ async def verify_cast_to_call(
         rcv_ranks.append((cast_rank, root_rank))
     rcv_ranks.sort(key=lambda pair: pair[0])
     recv_cast_ranks, recv_root_ranks = zip(*rcv_ranks)
-    assert recv_root_ranks == tuple(
-        root_ranks
-    ), f"recv_root_ranks={recv_root_ranks}, root_ranks={tuple(root_ranks)}"
-    assert recv_cast_ranks == tuple(
-        range(len(root_ranks))
-    ), f"recv_cast_ranks={recv_cast_ranks}, root_ranks={tuple(root_ranks)}"
+    assert recv_root_ranks == tuple(root_ranks), (
+        f"recv_root_ranks={recv_root_ranks}, root_ranks={tuple(root_ranks)}"
+    )
+    assert recv_cast_ranks == tuple(range(len(root_ranks))), (
+        f"recv_cast_ranks={recv_cast_ranks}, root_ranks={tuple(root_ranks)}"
+    )
     # verify no more messages are received
     with pytest.raises(TimeoutError):
         await receiver.recv_task().with_timeout(1)
@@ -213,26 +214,18 @@ async def verify_cast_to_call(
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("use_v1", [True, False])
-async def test_cast_handle(use_v1: bool) -> None:
+async def test_cast_handle() -> None:
     @run_on_tokio
     async def run() -> None:
-        if use_v1:
-            proc_mesh = await allocate_v1()
-        else:
-            proc_mesh = await allocate()
-        actor_mesh = await spawn_actor_mesh(proc_mesh)
+        proc_mesh_task = allocate()
+        actor_mesh = spawn_actor_mesh(proc_mesh_task)
         await verify_cast_to_call(
             actor_mesh, context().actor_instance, list(range(3 * 8 * 8))
         )
 
-        if not use_v1:
-            assert isinstance(proc_mesh, ProcMesh)
-            await proc_mesh.stop_nonblocking()
-        else:
-            assert isinstance(proc_mesh, ProcMeshV1)
-            instance = context().actor_instance._as_rust()
-            await proc_mesh.stop_nonblocking(instance)
+        proc_mesh = await proc_mesh_task
+        instance = context().actor_instance._as_rust()
+        await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
     run()
 
@@ -240,26 +233,18 @@ async def test_cast_handle(use_v1: bool) -> None:
 # TODO - re-enable after resolving T232206970
 @pytest.mark.oss_skip
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("use_v1", [True, False])
-async def test_cast_ref(use_v1: bool) -> None:
+async def test_cast_ref() -> None:
     @run_on_tokio
     async def run() -> None:
-        if use_v1:
-            proc_mesh = await allocate_v1()
-        else:
-            proc_mesh = await allocate()
-        actor_mesh = await spawn_actor_mesh(proc_mesh)
+        proc_mesh_task = allocate()
+        actor_mesh = spawn_actor_mesh(proc_mesh_task)
+        proc_mesh = await proc_mesh_task
         actor_mesh_ref = actor_mesh.new_with_region(proc_mesh.region)
         await verify_cast_to_call(
             actor_mesh_ref, context().actor_instance, list(range(3 * 8 * 8))
         )
-        if not use_v1:
-            assert isinstance(proc_mesh, ProcMesh)
-            await proc_mesh.stop_nonblocking()
-        else:
-            assert isinstance(proc_mesh, ProcMeshV1)
-            instance = context().actor_instance._as_rust()
-            await proc_mesh.stop_nonblocking(instance)
+        instance = context().actor_instance._as_rust()
+        await proc_mesh.stop_nonblocking(instance, "test cleanup")
 
     run()
 
@@ -290,12 +275,16 @@ async def test_host_mesh() -> None:
         assert host_mesh.region.labels == ["hosts"]
         assert host_mesh.region.slice() == Slice(offset=0, sizes=[2], strides=[1])
 
-        proc_mesh = await host_mesh.spawn_nonblocking(
-            context().actor_instance._as_rust(),
-            "proc_mesh",
-            Extent(["gpus", "replicas"], [2, 4]),
-        ).spawn()
-        actor_mesh = await spawn_actor_mesh(proc_mesh)
+        # Create spawned proc_mesh task
+        async def proc_mesh_task() -> ProcMesh:
+            return await host_mesh.spawn_nonblocking(
+                context().actor_instance._as_rust(),
+                "proc_mesh",
+                Extent(["gpus", "replicas"], [2, 4]),
+            ).spawn()
+
+        proc_mesh_shared = PythonTask.from_coroutine(proc_mesh_task()).spawn()
+        actor_mesh = spawn_actor_mesh(proc_mesh_shared)
 
         await verify_cast_to_call(actor_mesh, context().actor_instance, list(range(16)))
 
@@ -309,12 +298,16 @@ async def test_host_mesh() -> None:
         assert sliced_hm.region.labels == ["hosts"]
         assert sliced_hm.region.slice() == Slice(offset=1, sizes=[1], strides=[1])
 
-        sliced_pm = await sliced_hm.spawn_nonblocking(
-            context().actor_instance._as_rust(),
-            "sliced_pm",
-            Extent(["gpus", "replicas"], [2, 3]),
-        )
-        sliced_am = await spawn_actor_mesh(sliced_pm)
+        # Create spawned sliced_pm task
+        async def sliced_pm_task() -> ProcMesh:
+            return await sliced_hm.spawn_nonblocking(
+                context().actor_instance._as_rust(),
+                "sliced_pm",
+                Extent(["gpus", "replicas"], [2, 3]),
+            )
+
+        sliced_pm_shared = PythonTask.from_coroutine(sliced_pm_task()).spawn()
+        sliced_am = spawn_actor_mesh(sliced_pm_shared)
 
         await verify_cast_to_call(sliced_am, context().actor_instance, list(range(6)))
 

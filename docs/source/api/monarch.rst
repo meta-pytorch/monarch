@@ -44,3 +44,77 @@ These API functions define monarch's distributed tensor computation API. See :do
 .. autofunction:: grad_function
 
 .. autofunction:: grad_generator
+
+.. autofunction:: timer
+
+.. autofunction:: world_mesh
+
+.. autofunction:: function_resolvers
+
+
+Types
+=====
+
+.. autoclass:: Extent
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: Shape
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: Selection
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: NDSlice
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: OpaqueRef
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: Future
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: ActorFuture
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
+Distributed Computing
+=====================
+
+.. autoclass:: RemoteProcessGroup
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
+Simulation
+==========
+
+.. autoclass:: Simulator
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autofunction:: set_meta
+
+
+Builtins
+========
+
+.. automodule:: monarch.builtins
+   :members:
+   :undoc-members:
+   :show-inheritance:

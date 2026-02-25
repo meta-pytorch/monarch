@@ -14,7 +14,8 @@ use monarch_types::py_global;
 use nccl_sys::cudaError_t;
 use nccl_sys::cudaSetDevice;
 use nccl_sys::cudaStream_t;
-use pyo3::PyObject;
+use pyo3::Py;
+use pyo3::PyAny;
 use pyo3::prelude::*;
 use thiserror::Error;
 use torch_sys2::CudaDevice;
@@ -35,12 +36,12 @@ py_global!(cuda_set_device, "torch.cuda", "set_device");
 #[derive(Debug, Into)]
 #[into(ref)]
 pub struct Stream {
-    inner: PyObject,
+    inner: Py<PyAny>,
 }
 
 impl Clone for Stream {
     fn clone(&self) -> Self {
-        Python::with_gil(|py| Self {
+        Python::attach(|py| Self {
             inner: self.inner.clone_ref(py),
         })
     }
@@ -49,7 +50,7 @@ impl Clone for Stream {
 impl Stream {
     /// Create a new stream on the current device, at priority 0.
     pub fn new() -> Self {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let stream = cuda_stream_class(py).call0().unwrap();
             Self {
                 inner: stream.into(),
@@ -66,7 +67,7 @@ impl Stream {
 
     /// Create a new stream on the specified device, at priority 0.
     pub fn new_with_device(device: CudaDevice) -> Self {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let device_idx: i8 = device.index().into();
             let stream = cuda_stream_class(py).call1((device_idx,)).unwrap();
             Self {
@@ -77,7 +78,7 @@ impl Stream {
 
     /// Get the current stream on the current device.
     pub fn get_current_stream() -> Self {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let stream = cuda_current_stream(py).call0().unwrap();
             Self {
                 inner: stream.into(),
@@ -87,7 +88,7 @@ impl Stream {
 
     /// Get the current stream on the specified device.
     pub fn get_current_stream_on_device(device: CudaDevice) -> Self {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let device_idx: i8 = device.index().into();
             let stream = cuda_current_stream(py).call1((device_idx,)).unwrap();
             Self {
@@ -99,7 +100,7 @@ impl Stream {
     /// Set the provided stream as the current stream. Also sets the current
     /// device to be the same as the stream's device.
     pub fn set_current_stream(stream: &Stream) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let stream_obj = stream.inner.bind(py);
 
             // Get current device and stream device
@@ -148,7 +149,7 @@ impl Stream {
 
     /// Check if all work submitted to this stream has completed.
     pub fn query(&self) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
             stream_obj
                 .call_method0("query")
@@ -160,14 +161,14 @@ impl Stream {
 
     /// Wait for all kernels in this stream to complete.
     pub fn synchronize(&self) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
             stream_obj.call_method0("synchronize").unwrap();
         })
     }
 
     pub fn stream(&self) -> cudaStream_t {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
             let cuda_stream = stream_obj.getattr("cuda_stream").unwrap();
 
@@ -199,12 +200,12 @@ impl PartialEq for Stream {
 /// See the docs of `torch.cuda.Event` for more details.
 #[derive(Debug)]
 pub struct Event {
-    inner: PyObject,
+    inner: Py<PyAny>,
 }
 
 impl Clone for Event {
     fn clone(&self) -> Self {
-        Python::with_gil(|py| Self {
+        Python::attach(|py| Self {
             inner: self.inner.clone_ref(py),
         })
     }
@@ -214,7 +215,7 @@ impl Event {
     /// Create a new event.
     // TODO: add support for flags.
     pub fn new() -> Self {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let event = cuda_event_class(py).call0().unwrap();
             Self {
                 inner: event.into(),
@@ -226,7 +227,7 @@ impl Event {
     ///
     /// Uses the current stream if no stream is provided.
     pub fn record(&mut self, stream: Option<&Stream>) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let event_obj = self.inner.bind(py);
 
             match stream {
@@ -245,7 +246,7 @@ impl Event {
     ///
     /// Uses the current stream if no stream is specified.
     pub fn wait(&mut self, stream: Option<&Stream>) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let event_obj = self.inner.bind(py);
 
             match stream {
@@ -262,7 +263,7 @@ impl Event {
 
     /// Check if all work currently captured by event has completed.
     pub fn query(&self) -> bool {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let event_obj = self.inner.bind(py);
             event_obj
                 .call_method0("query")
@@ -277,7 +278,7 @@ impl Event {
     /// Time reported in after the event was recorded and before the end_event
     /// was recorded.
     pub fn elapsed_time(&self, end_event: &Event) -> Duration {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let event_obj = self.inner.bind(py);
             let end_event_obj = end_event.inner.bind(py);
 
@@ -295,7 +296,7 @@ impl Event {
     /// Waits until the completion of all work currently captured in this event.
     /// This prevents the CPU thread from proceeding until the event completes.
     pub fn synchronize(&self) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let event_obj = self.inner.bind(py);
             event_obj.call_method0("synchronize").unwrap();
         })

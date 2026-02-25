@@ -15,7 +15,6 @@ buck run //monarch/python/monarch/timer:example_monarch
 import logging
 
 import torch
-
 from monarch import inspect, remote
 from monarch.actor import this_host
 

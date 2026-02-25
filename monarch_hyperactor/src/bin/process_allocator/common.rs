@@ -9,7 +9,6 @@
 use std::result::Result;
 
 use clap::Parser;
-use clap::command;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::alloc::remoteprocess::RemoteProcessAllocator;
 use tokio::process::Command;

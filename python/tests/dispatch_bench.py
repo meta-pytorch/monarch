@@ -14,7 +14,6 @@ import torch.utils.benchmark as benchmark
 # this function helps get a local device mesh for testing
 from monarch._testing import mock_mesh
 from monarch.builtins.log import set_logging_level_remote
-
 from monarch.common._coalescing import coalescing
 from monarch.common.remote import remote
 from monarch.fetch import fetch_shard

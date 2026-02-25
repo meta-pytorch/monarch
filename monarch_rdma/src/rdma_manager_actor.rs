@@ -42,15 +42,17 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::clock::Clock;
 use hyperactor::supervision::ActorSupervisionEvent;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
+use crate::efa::is_efa_device;
 use crate::ibverbs_primitives::IbverbsConfig;
 use crate::ibverbs_primitives::RdmaMemoryRegionView;
 use crate::ibverbs_primitives::RdmaQpInfo;
@@ -138,6 +140,7 @@ pub enum RdmaManagerMessage {
         reply: OncePortRef<u32>,
     },
 }
+wirevalue::register_type!(RdmaManagerMessage);
 
 #[derive(Debug)]
 #[hyperactor::export(
@@ -175,35 +178,15 @@ pub struct RdmaManagerActor {
 
 impl Drop for RdmaManagerActor {
     fn drop(&mut self) {
-        // Helper function to manually destroy QP and CQs
+        // Helper function to destroy QP resources
         // We can't use Drop on RdmaQueuePair because it derives Clone
-        fn destroy_queue_pair(qp: &RdmaQueuePair, context: &str) {
+        // Note: rdmaxcel_qp_destroy handles destroying both the QP and its CQs internally,
+        // so we must NOT call ibv_destroy_cq separately (would cause double-free/SIGSEGV)
+        fn destroy_queue_pair(qp: &RdmaQueuePair, _context: &str) {
             unsafe {
                 if qp.qp != 0 {
                     let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
                     rdmaxcel_sys::rdmaxcel_qp_destroy(rdmaxcel_qp);
-                }
-                if qp.send_cq != 0 {
-                    let result =
-                        rdmaxcel_sys::ibv_destroy_cq(qp.send_cq as *mut rdmaxcel_sys::ibv_cq);
-                    if result != 0 {
-                        tracing::debug!(
-                            "ibv_destroy_cq (send) returned {} for {} (may be busy during shutdown)",
-                            result,
-                            context
-                        );
-                    }
-                }
-                if qp.recv_cq != 0 {
-                    let result =
-                        rdmaxcel_sys::ibv_destroy_cq(qp.recv_cq as *mut rdmaxcel_sys::ibv_cq);
-                    if result != 0 {
-                        tracing::debug!(
-                            "ibv_destroy_cq (recv) returned {} for {} (may be busy during shutdown)",
-                            result,
-                            context
-                        );
-                    }
                 }
             }
         }
@@ -278,8 +261,9 @@ impl RdmaManagerActor {
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
         crate::print_device_info_if_debug_enabled(domain.context);
 
-        // Create loopback QP for this domain if mlx5dv is supported
-        let qp = if mlx5dv_supported() {
+        // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
+        // For EFA, we don't need a loopback QP for segment scanning
+        let qp = if mlx5dv_supported() && !is_efa_device() {
             let mut qp = RdmaQueuePair::new(domain.context, domain.pd, self.config.clone())
                 .map_err(|e| {
                     anyhow::anyhow!(
@@ -400,10 +384,14 @@ impl RdmaManagerActor {
             // Get or create domain and loopback QP for this device
             let (domain, qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
 
-            let access = rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
-                | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC;
+            let access = if is_efa_device() {
+                crate::efa::mr_access_flags()
+            } else {
+                rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
+                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE
+                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_READ
+                    | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_ATOMIC
+            };
 
             let mut mr: *mut rdmaxcel_sys::ibv_mr = std::ptr::null_mut();
             let mrv;
@@ -501,7 +489,7 @@ impl RdmaManagerActor {
 impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbverbsConfig>;
 
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error> {
+    async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         if !ibverbs_supported() {
             return Err(anyhow::anyhow!(
                 "Cannot create RdmaManagerActor because RDMA is not supported on this machine"
@@ -569,7 +557,7 @@ impl Actor for RdmaManagerActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(RdmaManagerMessage)]
+#[hyperactor::handle(RdmaManagerMessage)]
 impl RdmaManagerMessageHandler for RdmaManagerActor {
     /// Requests a buffer to be registered with the RDMA domain.
     ///

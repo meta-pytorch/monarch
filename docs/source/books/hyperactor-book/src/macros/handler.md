@@ -65,14 +65,14 @@ Each method in the trait corresponds to a variant of the message enum. For examp
 ```rust
 use async_trait::async_trait;
 use hyperactor::anyhow::Error;
-use hyperactor::cap::{CanSend, CanOpenPort};
+use hyperactor::context::Actor;
 
 #[async_trait]
 pub trait ShoppingListClient: Send + Sync {
-    async fn add(&self, caps: &impl CanSend, item: String) -> Result<(), Error>;
-    async fn remove(&self, caps: &impl CanSend, item: String) -> Result<(), Error>;
-    async fn exists(&self, caps: &impl CanSend + CanOpenPort, item: String) -> Result<bool, Error>;
-    async fn list(&self, caps: &impl CanSend + CanOpenPort) -> Result<Vec<String>, Error>;
+    async fn add(&self, cx: &impl Actor, item: String) -> Result<(), Error>;
+    async fn remove(&self, cx: &impl Actor, item: String) -> Result<(), Error>;
+    async fn exists(&self, cx: &impl Actor, item: String) -> Result<bool, Error>;
+    async fn list(&self, cx: &impl Actor) -> Result<Vec<String>, Error>;
 }
 ```
 
@@ -102,7 +102,7 @@ pub trait GetItemCountHandler<
         + Send
         + Sync
         + std::fmt::Debug
-        + hyperactor::Named,
+        + typeuri::Named,
 >: hyperactor::Actor + Send + Sync  {
     async fn get_item_count(
         &mut self,
@@ -132,7 +132,7 @@ pub trait GetItemCountHandler<
 pub trait GetItemCountClient: Send + Sync {
     async fn get_item_count(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &impl Actor,
         category_filter: String,
     ) -> Result<(), anyhow::Error>;
 }
@@ -140,11 +140,7 @@ pub trait GetItemCountClient: Send + Sync {
 
 
 #### Capability Parameter
-Each method takes a caps argument that provides the runtime capabilities required to send the message:
-- All methods require `CanSend`.
-- Methods with `#[reply]` arguments additionally require `CanOpenPort`.
-
-In typical usage, `caps` is a `Mailbox`.
+The `cx` parameter provides the actor context required to send messages and open ports. In typical usage, `cx` is a `Mailbox` or other type implementing the `Actor` trait.
 
 #### Example Usage
 ```rust

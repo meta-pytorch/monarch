@@ -72,7 +72,7 @@ def tensor_to_table(
     ndim = orig_ndim
     while len(axis_labels) < ndim:
         dim_size = data.shape[-(len(axis_labels) + 1)]
-        axis_labels.insert(0, [f"D{len(axis_labels)}_{i+1}" for i in range(dim_size)])
+        axis_labels.insert(0, [f"D{len(axis_labels)}_{i + 1}" for i in range(dim_size)])
     axis_labels = axis_labels[-ndim:]
 
     # Convert to internal format (depth, rows, cols)

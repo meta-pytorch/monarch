@@ -6,12 +6,14 @@ In the runtime, a **host** is the thing that owns "all the procs on this machine
 // from hyperactor/src/host.rs
 
 pub struct Host<M> {
-    procs: HashMap<String, ChannelAddr>,
+    procs: HashSet<String>,
     frontend_addr: ChannelAddr,
     backend_addr: ChannelAddr,
     router: DialMailboxRouter,
     manager: M,
     service_proc: Proc,
+    local_proc: Proc,
+    frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 ```
 Visually, you can think of it like this:
@@ -37,10 +39,12 @@ Visually, you can think of it like this:
 ## What the fields mean
 
 - **`frontend_addr`**: the single, public entry point. Messages from the rest of the mesh arrive here.
-- **`procs`**: the fan-out table. Given a proc name, the host knows which backend channel to forward to.
+- **`procs`**: a set of proc names managed by this host.
 - **`router: DialMailboxRouter`**: the machinery that actually multiplexes/demultiplexes between `*` and the per-proc channels.
 - **`manager: M`**: the thing that can create and destroy procs on this host. In the real bootstrapped case this is a `BootstrapProcManager`; in tests it can be a local manager.
-- **`service_proc`**: the host's own proc handle, so the host can participate in the same message world it is hosting.
+- **`service_proc`**: the host's system proc handle, so the host can participate in the same message world it is hosting.
+- **`local_proc`**: an additional local proc for in-process operations.
+- **`frontend_rx`**: the optional channel receiver for the frontend address (consumed when serving starts).
 
 ## Why this matters for bootstrapping
 
@@ -94,6 +98,8 @@ pub struct Host<M> {
     router: DialMailboxRouter,
     manager: M,             // e.g. BootstrapProcManager
     service_proc: Proc,
+    local_proc: Proc,
+    frontend_rx: Option<ChannelRx<MessageEnvelope>>,
 }
 ```
 
@@ -114,17 +120,19 @@ The agent is exported with exactly these handlers:
         resource::CreateOrUpdate<ProcSpec>,
         resource::Stop,
         resource::GetState<ProcState>,
-        resource::GetRankStatus,
+        resource::GetRankStatus { cast = true },
+        resource::List,
         ShutdownHost,
     ]
 )]
 pub struct HostMeshAgent {
     host: Option<HostAgentMode>,
     created: HashMap<Name, ProcCreationState>,
+    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
 }
 ```
 
-So everything it does is one of those 5 messages.
+So everything it does is one of those 6 messages.
 
 ### 1. CreateOrUpdate<ProcSpec>
 
@@ -152,7 +160,11 @@ So everything it does is one of those 5 messages.
   - the proc's own `ProcMeshAgent` ref,
   - and any bootstrap/process status the host's manager could provide.
 
-### 5. ShutdownHost
+### 5. List
+
+- Return all the proc names that have been created on this host (the keys from the `created` map).
+
+### 6. ShutdownHost
 
 - Ack first so the caller can await.
 - Take the host out of `self`.

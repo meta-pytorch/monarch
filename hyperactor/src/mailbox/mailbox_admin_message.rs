@@ -12,7 +12,6 @@ use serde::Serialize;
 pub use crate as hyperactor;
 use crate::HandleClient;
 use crate::Handler;
-use crate::Named;
 use crate::ProcId;
 use crate::RefClient;
 use crate::mailbox::ChannelAddr;
@@ -27,7 +26,7 @@ use crate::mailbox::ChannelAddr;
     Deserialize,
     Clone,
     PartialEq,
-    Named
+    typeuri::Named
 )]
 pub enum MailboxAdminMessage {
     /// An address update.

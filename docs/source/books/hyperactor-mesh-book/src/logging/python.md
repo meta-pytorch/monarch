@@ -27,7 +27,7 @@ See: [Client actor → Barrier protocol](client.md#barrier-protocol-sync-flush) 
 ## Minimal example
 
 ```python
-from monarch._rust_bindings.monarch_hyperactor.v1.logging import LoggingMeshClient
+from monarch._rust_bindings.monarch_hyperactor.logging import LoggingMeshClient
 import logging
 
 client = await LoggingMeshClient.spawn(instance, proc_mesh)  # one client actor in driver

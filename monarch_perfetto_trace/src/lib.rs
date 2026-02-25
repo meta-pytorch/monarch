@@ -39,7 +39,7 @@ use tracing_perfetto_sdk_schema::track_event::Type as TrackEventType;
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct RawEvent {
     pub time: u64,
-    pub time_us: u64,
+    pub time_ns: u64,
     pub span_id: u64,
     pub parent_span_id: Option<u64>,
     pub name: Option<String>,
@@ -62,7 +62,7 @@ pub struct RawEvent {
 impl PartialEq for RawEvent {
     fn eq(&self, other: &Self) -> bool {
         self.time == other.time
-            && self.time_us == other.time_us
+            && self.time_ns == other.time_ns
             && self.span_id == other.span_id
             && self.parent_span_id == other.parent_span_id
             && self.name == other.name
@@ -90,7 +90,7 @@ impl PartialOrd for RawEvent {
 
 impl Ord for RawEvent {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        if self.time_us == other.time_us {
+        if self.time_ns == other.time_ns {
             return match (self.event_type.as_str(), other.event_type.as_str()) {
                 ("start_span", "start_span") => std::cmp::Ordering::Equal,
                 ("start_span", _) => std::cmp::Ordering::Less,
@@ -99,7 +99,7 @@ impl Ord for RawEvent {
                 _ => std::cmp::Ordering::Equal,
             };
         }
-        self.time_us.cmp(&other.time_us)
+        self.time_ns.cmp(&other.time_ns)
     }
 }
 
@@ -217,22 +217,22 @@ impl<'a, T: Sink> Track<'a, T> {
     }
 }
 
-pub struct TimeUs(u64);
+pub struct TimeNs(u64);
 
-impl From<TimeUs> for Timestamp {
-    fn from(value: TimeUs) -> Self {
-        Timestamp::TimestampAbsoluteUs((value.0 * 1000) as i64)
+impl From<TimeNs> for Timestamp {
+    fn from(value: TimeNs) -> Self {
+        Timestamp::TimestampAbsoluteUs(value.0 as i64)
     }
 }
 
-impl From<TimeUs> for u64 {
-    fn from(value: TimeUs) -> Self {
-        value.0 * 1000
+impl From<TimeNs> for u64 {
+    fn from(value: TimeNs) -> Self {
+        value.0
     }
 }
-impl From<TimeUs> for Option<u64> {
-    fn from(value: TimeUs) -> Self {
-        Some(value.0 * 1000)
+impl From<TimeNs> for Option<u64> {
+    fn from(value: TimeNs) -> Self {
+        Some(value.0)
     }
 }
 
@@ -248,7 +248,7 @@ pub trait Annotable {
 
 pub struct Instant<'a, T: Sink> {
     event: TrackEvent,
-    ts: TimeUs,
+    ts: TimeNs,
     ctx: &'a mut Ctx<T>,
 }
 
@@ -299,7 +299,7 @@ impl<'a, T: Sink> Annotable for Instant<'a, T> {
 
 pub struct Counter<'a, T: Sink> {
     event: TrackEvent,
-    ts: TimeUs,
+    ts: TimeNs,
     ctx: &'a mut Ctx<T>,
 }
 
@@ -339,7 +339,7 @@ impl<'a, T: Sink> Counter<'a, T> {
 
 pub struct StartSlice<'a, T: Sink> {
     event: TrackEvent,
-    ts: TimeUs,
+    ts: TimeNs,
     ctx: &'a mut Ctx<T>,
 }
 
@@ -395,7 +395,7 @@ impl<'a, T: Sink> Annotable for StartSlice<'a, T> {
 
 pub struct EndSlice<'a, T: Sink> {
     event: TrackEvent,
-    ts: TimeUs,
+    ts: TimeNs,
     ctx: &'a mut Ctx<T>,
 }
 
@@ -467,40 +467,40 @@ impl<T: Sink> Ctx<T> {
         self.consume(id);
     }
 
-    pub fn instant(&mut self, track: u64, time_us: u64) -> Instant<'_, T> {
+    pub fn instant(&mut self, track: u64, time_ns: u64) -> Instant<'_, T> {
         let te = TrackEvent {
             track_uuid: Some(track),
             ..Default::default()
         };
         Instant {
             event: te,
-            ts: TimeUs(time_us),
+            ts: TimeNs(time_ns),
             ctx: self,
         }
     }
 
-    pub fn start_slice(&mut self, track: u64, time_us: u64) -> StartSlice<'_, T> {
+    pub fn start_slice(&mut self, track: u64, time_ns: u64) -> StartSlice<'_, T> {
         let te = TrackEvent {
             track_uuid: Some(track),
             ..Default::default()
         };
         StartSlice {
             event: te,
-            ts: TimeUs(time_us),
+            ts: TimeNs(time_ns),
             ctx: self,
         }
     }
 
-    pub fn counter(&mut self, time_us: u64) -> Counter<'_, T> {
+    pub fn counter(&mut self, time_ns: u64) -> Counter<'_, T> {
         let te = TrackEvent::default();
         Counter {
             event: te,
-            ts: TimeUs(time_us),
+            ts: TimeNs(time_ns),
             ctx: self,
         }
     }
 
-    pub fn end_slice(&mut self, track: u64, time_us: u64) -> EndSlice<'_, T> {
+    pub fn end_slice(&mut self, track: u64, time_ns: u64) -> EndSlice<'_, T> {
         let te = TrackEvent {
             track_uuid: Some(track),
             ..Default::default()
@@ -508,7 +508,7 @@ impl<T: Sink> Ctx<T> {
         // Note: timestamp_absolute_us field doesn't exist, timestamp is set at TracePacket level
         EndSlice {
             event: te,
-            ts: TimeUs(time_us),
+            ts: TimeNs(time_ns),
             ctx: self,
         }
     }

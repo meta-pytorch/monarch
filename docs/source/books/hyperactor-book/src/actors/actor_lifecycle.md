@@ -32,12 +32,12 @@ pub enum ActorStatus {
 - `Loading`: The actor is loading a previously saved state.
 - `Stopping`: The actor is in shutdown mode and draining its mailbox.
 - `Stopped`: The actor has exited and will no longer process messages.
-- `Failed`: The actor terminated abnormally. Contains an error description.
+- `Failed`: The actor terminated abnormally. Contains an `ActorErrorKind` describing the error.
 
 ### Methods
 - `is_terminal(&self) -> bool`: Returns true if the actor has either stopped or failed.
 - `is_failed(&self) -> bool`: Returns true if the actor is in the Failed state.
-- `passthrough(&self) -> ActorStatus`: Returns a clone of the status. Used internally during joins.
+- `generic_failure(message: impl Into<String>) -> Self`: Creates a generic failure status with the provided error message.
 - `span_string(&self) -> &'static str`: Returns the active handler/arm name if available. Used for tracing.
 
 ## `Signal`
@@ -45,17 +45,15 @@ pub enum ActorStatus {
 `Signal` is used to control actor lifecycle transitions externally. These messages are sent internally by the runtime (or explicitly by users) to initiate operations like shutdown.
 ```rust
 pub enum Signal {
-    Stop,
     DrainAndStop,
-    Save,
-    Load,
+    Stop,
+    ChildStopped(Index),
 }
 ```
 Variants
-- `Stop`: Immediately halts the actor, even if messages remain in its mailbox.
 - `DrainAndStop`: Gracefully stops the actor by first draining all queued messages.
-- `Save`: Triggers a state snapshot using the actor’s Checkpointable::save method.
-- `Load`: Requests state restoration via Checkpointable::load.
+- `Stop`: Immediately halts the actor, even if messages remain in its mailbox.
+- `ChildStopped`: Internal signal sent when a direct child with the given index was stopped.
 
 These signals are routed like any other message, typically sent using `ActorHandle::send` or by the runtime during supervision and recovery procedures.
 
@@ -64,8 +62,8 @@ These signals are routed like any other message, typically sent using `ActorHand
 `ActorError` represents a failure encountered while serving an actor. It includes the actor's identity and the underlying cause.
 ```rust
 pub struct ActorError {
-    actor_id: ActorId,
-    kind: ActorErrorKind,
+    pub actor_id: Box<ActorId>,
+    pub kind: Box<ActorErrorKind>,
 }
 ```
 This error type is returned in various actor lifecycle operations such as initialization, message handling, checkpointing, and shutdown. It is structured and extensible, allowing the runtime to distinguish between different classes of failure.
@@ -74,11 +72,7 @@ This error type is returned in various actor lifecycle operations such as initia
 ```rust
 impl ActorError {
     /// Constructs a new `ActorError` with the given ID and kind.
-    pub(crate) fn new(actor_id: ActorId, kind: ActorErrorKind) -> Self
-
-    /// Returns a cloneable version of this error, discarding error structure
-    /// and retaining only the formatted string.
-    fn passthrough(&self) -> Self
+    pub(crate) fn new(actor_id: &ActorId, kind: ActorErrorKind) -> Self
 }
 ```
 
@@ -86,27 +80,24 @@ impl ActorError {
 
 ```rust
 pub enum ActorErrorKind {
-    Processing(anyhow::Error),
-    Panic(anyhow::Error),
-    Init(anyhow::Error),
-    Mailbox(MailboxError),
-    MailboxSender(MailboxSenderError),
-    Checkpoint(CheckpointError),
-    MessageLog(MessageLogError),
-    IndeterminateState,
-    Passthrough(anyhow::Error),
+    Generic(String),
+    ErrorDuringHandlingSupervision(String, Box<ActorSupervisionEvent>),
+    UnhandledSupervisionEvent(Box<ActorSupervisionEvent>),
 }
 ```
 ### Variants
 
-- `Processing`: The actor's `handle()` method returned an error.
-- `Panic`: A panic occurred during message handling or actor logic.
-- `Init`: Actor initialization failed.
-- `Mailbox`: A lower-level mailbox error occurred.
-- `MailboxSender`: A lower-level sender error occurred.
-- `Checkpoint`: Error during save/load of actor state.
-- `MessageLog`: Failure in the underlying message log.
-- `IndeterminateState`: The actor reached an invalid or unknown internal state.
-- `Passthrough`: A generic error, preserving only the error message.
+- `Generic`: A generic error with a formatted message.
+- `ErrorDuringHandlingSupervision`: An error that occurred while trying to handle a supervision event.
+- `UnhandledSupervisionEvent`: The actor did not attempt to handle a supervision event.
 
-`Passthrough` is used when a structured error needs to be simplified for cloning or propagation across boundaries.
+The `ActorErrorKind` also provides several constructor methods:
+- `processing(err: anyhow::Error)`: Error while processing a message
+- `panic(err: anyhow::Error)`: A panic occurred during message handling
+- `init(err: anyhow::Error)`: Actor initialization failed
+- `cleanup(err: anyhow::Error)`: Error during actor cleanup
+- `mailbox(err: MailboxError)`: A lower-level mailbox error occurred
+- `mailbox_sender(err: MailboxSenderError)`: A lower-level sender error occurred
+- `checkpoint(err: CheckpointError)`: Error during save/load of actor state
+- `message_log(err: MessageLogError)`: Failure in the underlying message log
+- `indeterminate_state()`: The actor reached an invalid or unknown internal state

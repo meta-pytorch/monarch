@@ -110,7 +110,7 @@ StreamFwder { teer, recent_lines_buf, stop }
 - `LocalLogSender::new(log_channel, pid)` dials the child's served channel (`channel::dial::<LogMessage>`), holds a `ChannelTx<LogMessage>` and a `Receiver<TxStatus>` for liveness.
 - `send(..)` checks `TxStatus::Active` and uses `tx.post(..)` (non-blocking) to emit:
 ```rust
-LogMessage::Log { hostname, pid, output_target, payload: Serialized::serialize(&Vec<Vec<u8>>) }
+LogMessage::Log { hostname, pid, output_target, payload: wirevalue::Any::serialize(&Vec<Vec<u8>>) }
 ```
 - `flush()` also checks status and uses `tx.post(..)` to emit:
 ```rust

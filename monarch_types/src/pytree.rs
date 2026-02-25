@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::Named;
 use pyo3::Bound;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
@@ -26,6 +25,7 @@ use pyo3::types::PyModule;
 use pyo3::types::PyTuple;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 use crate::PickledPyObject;
 use crate::python::TryIntoPyObjectUnsafe;
@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn flatten_unflatten() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             assert_eq!(tree.leaves, vec![1u64, 2u64]);
@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn try_map() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let tree = py.eval(c_str!("[1, 2]"), None, None)?;
             let tree: PyTree<u64> = PyTree::flatten(&tree)?;
             let tree = tree.try_map(|v| anyhow::Ok(v + 1))?;

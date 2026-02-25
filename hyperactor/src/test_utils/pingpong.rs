@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -18,7 +19,6 @@ use crate::ActorRef;
 use crate::Context;
 use crate::Handler;
 use crate::Instance;
-use crate::Named;
 use crate::OncePortRef;
 use crate::PortRef;
 use crate::RemoteSpawn;
@@ -32,8 +32,9 @@ use crate::mailbox::UndeliverableMessageError;
 /// 0. the TTL of this PingPong game
 /// 1. the next actor to send the message to
 /// 2. a port to send a true value to when TTL = 0.
-#[derive(Serialize, Deserialize, Debug, Named)]
+#[derive(Serialize, Deserialize, Debug, typeuri::Named)]
 pub struct PingPongMessage(pub u64, pub ActorRef<PingPongActor>, pub OncePortRef<bool>);
+wirevalue::register_type!(PingPongMessage);
 
 /// A PingPong actor that can play the PingPong game by sending messages around.
 #[derive(Debug)]
@@ -74,7 +75,10 @@ impl RemoteSpawn for PingPongActor {
         Option<Duration>,
     );
 
-    async fn new((undeliverable_port_ref, error_ttl, delay): Self::Params) -> anyhow::Result<Self> {
+    async fn new(
+        (undeliverable_port_ref, error_ttl, delay): Self::Params,
+        _environment: Flattrs,
+    ) -> anyhow::Result<Self> {
         Ok(Self::new(undeliverable_port_ref, error_ttl, delay))
     }
 }

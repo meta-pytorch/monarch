@@ -14,10 +14,8 @@ from unittest.mock import patch
 
 import monarch
 import pytest
-
 import torch
 from monarch import fetch_shard, inspect, OpaqueRef, remote, Stream
-
 from monarch._testing import TestingContext
 from monarch.builtins.log import log_remote
 from monarch.builtins.random import set_manual_seed_remote
@@ -26,7 +24,6 @@ from monarch.common import remote as remote_module
 from monarch.common.device_mesh import DeviceMesh, no_mesh
 from monarch.common.remote import call_on_shard_and_fetch
 from monarch.mesh_controller import RemoteException
-
 from monarch.opaque_module import OpaqueModule
 from monarch.opaque_object import opaque_method, OpaqueObject
 from monarch_supervisor.logging import fix_exception_lines

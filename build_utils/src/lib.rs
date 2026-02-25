@@ -352,11 +352,12 @@ pub fn link_libstdcpp_static() {
 /// Configuration for rdma-core static libraries from monarch_cpp_static_libs.
 ///
 /// Use `CppStaticLibsConfig::from_env()` to get the paths, then use the include
-/// paths for bindgen/cc, and call `emit_link_directives()` to link.
+/// directory for bindgen/cc, and call `emit_link_directives()` to link.
 pub struct CppStaticLibsConfig {
-    pub rdma_include: String,
-    pub rdma_lib_dir: String,
-    pub rdma_util_dir: String,
+    /// Include directory for rdma-core headers
+    pub rdma_include_dir: String,
+    /// Paths to static libraries (.a files) to link
+    pub rdma_static_libraries: Vec<String>,
 }
 
 impl CppStaticLibsConfig {
@@ -364,35 +365,30 @@ impl CppStaticLibsConfig {
     ///
     /// The monarch_cpp_static_libs crate must be listed as a build-dependency.
     pub fn from_env() -> Self {
+        let rdma_include_dir = std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE_DIR")
+            .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE_DIR not set - add monarch_cpp_static_libs as build-dependency");
+
+        let rdma_static_libraries = std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_STATIC_LIBRARIES")
+            .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_STATIC_LIBRARIES not set - add monarch_cpp_static_libs as build-dependency")
+            .split(';')
+            .map(|s| s.to_string())
+            .collect();
+
         Self {
-            rdma_include: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE")
-                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_INCLUDE not set - add monarch_cpp_static_libs as build-dependency"),
-            rdma_lib_dir: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_LIB_DIR")
-                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_LIB_DIR not set - add monarch_cpp_static_libs as build-dependency"),
-            rdma_util_dir: std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_UTIL_DIR")
-                .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_UTIL_DIR not set - add monarch_cpp_static_libs as build-dependency"),
+            rdma_include_dir,
+            rdma_static_libraries,
         }
     }
 
     /// Emit all cargo link directives for static linking of rdma-core.
     ///
-    /// This emits search paths and link-lib directives for:
-    /// - libmlx5.a
-    /// - libibverbs.a
-    /// - librdma_util.a
+    /// This uses direct paths to the .a files we built, avoiding any path ordering
+    /// issues where the linker might find system libraries or libraries built with
+    /// different flags (e.g., ENABLE_RESOLVE_NEIGH=1).
     pub fn emit_link_directives(&self) {
-        // Emit link search paths
-        println!("cargo::rustc-link-search=native={}", self.rdma_lib_dir);
-        println!("cargo::rustc-link-search=native={}", self.rdma_util_dir);
-
-        // Use whole-archive for rdma-core static libraries
-        println!("cargo::rustc-link-arg=-Wl,--whole-archive");
-        println!("cargo::rustc-link-lib=static=mlx5");
-        println!("cargo::rustc-link-lib=static=ibverbs");
-        println!("cargo::rustc-link-arg=-Wl,--no-whole-archive");
-
-        // rdma_util helper library
-        println!("cargo::rustc-link-lib=static=rdma_util");
+        for lib_path in &self.rdma_static_libraries {
+            println!("cargo::rustc-link-arg={}", lib_path);
+        }
     }
 }
 
@@ -404,12 +400,33 @@ impl CppStaticLibsConfig {
 /// Example:
 /// ```ignore
 /// let config = build_utils::setup_cpp_static_libs();
-/// // Use config.rdma_include for bindgen/cc
+/// // Use config.rdma_include_dir for bindgen/cc
 /// ```
 pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
     let config = CppStaticLibsConfig::from_env();
     config.emit_link_directives();
     config
+}
+
+/// Set rpath for Python library directory
+///
+/// This emits cargo directives to add the Python library directory to the rpath,
+/// allowing binaries to find libpython at runtime. This is safe to call
+/// unconditionally - when building extension modules with pyo3's extension-module
+/// feature, the rpath won't cause issues since libpython won't be linked anyway.
+///
+/// Note: This function only works in OSS builds (Cargo). In BUCK builds, it's a no-op
+/// since BUCK handles library paths differently.
+pub fn set_python_rpath() {
+    // pyo3-build-config is only available in OSS builds (Cargo), not in BUCK builds
+    #[cfg(not(fbcode_build))]
+    {
+        let python_config = pyo3_build_config::get();
+
+        if let Some(lib_dir) = &python_config.lib_dir {
+            println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+        }
+    }
 }
 
 #[cfg(test)]

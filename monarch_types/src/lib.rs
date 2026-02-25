@@ -28,13 +28,23 @@ pub use pytree::PyTree;
 macro_rules! py_global {
     ($fn_name:ident, $python_module:literal, $python_class:literal) => {
         fn $fn_name<'py>(py: ::pyo3::Python<'py>) -> ::pyo3::Bound<'py, ::pyo3::PyAny> {
-            static CACHE: ::pyo3::sync::GILOnceCell<::pyo3::PyObject> =
-                ::pyo3::sync::GILOnceCell::new();
+            static CACHE: ::pyo3::sync::PyOnceLock<::pyo3::Py<::pyo3::PyAny>> =
+                ::pyo3::sync::PyOnceLock::new();
             CACHE
                 .import(py, $python_module, $python_class)
                 .unwrap()
                 .clone()
         }
+    };
+}
+
+/// Macro to register a function to a Python module.
+#[macro_export]
+macro_rules! py_module_add_function {
+    ($mod:ident, $mod_name:literal, $fn:ident) => {
+        let f = pyo3::wrap_pyfunction!($fn, $mod)?;
+        f.setattr("__module__", $mod_name)?;
+        $mod.add_function(f)?;
     };
 }
 

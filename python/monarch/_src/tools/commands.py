@@ -20,16 +20,15 @@ from typing import Any, Callable, Mapping, Optional, Union
 
 from monarch.tools.colors import CYAN, ENDC
 from monarch.tools.components.hyperactor import DEFAULT_NAME
-
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
     defaults,
 )
 from monarch.tools.mesh_spec import mesh_spec_from_metadata, ServerSpec
 from monarch.tools.utils import MONARCH_HOME
-
 from torchx.runner import Runner  # @manual=//torchx/runner:lib_core
 from torchx.specs import AppDef, AppDryRunInfo, AppState, CfgVal, parse_app_handle
+from torchx.specs.api import is_terminal
 from torchx.specs.builders import parse_args
 from torchx.util.types import decode, decode_optional
 
@@ -281,7 +280,23 @@ async def server_ready(
                 await asyncio.sleep(check_interval_seconds)
                 continue
 
-        return server_spec
+            # All meshes are ready, return the server spec
+            return server_spec
+
+        # If we reach here, the server is in a terminal state
+        # Return terminal states so the caller can see what happened
+        if is_terminal(server_spec.state):
+            return server_spec
+
+        # If we reach here with a non-terminal, non-RUNNING state (e.g., UNKNOWN),
+        # it's likely a transient state during a transition - wait and retry
+        print(
+            f"Server {server_handle} in unexpected state {server_spec.state}; "
+            f"will check again in {check_interval_seconds} seconds. "
+            f"Total wait time: {datetime.now() - start}",
+            end="\r",
+        )
+        await asyncio.sleep(check_interval_seconds)
 
 
 # TODO: this API is overloaded. Ideally, we do not need config to get or an handle to create.
@@ -317,7 +332,9 @@ async def get_or_create(
         created server.
 
     """
-    assert not config.dryrun, "dryrun is not supported for get_or_create(), for dryrun use the create() API instead"
+    assert not config.dryrun, (
+        "dryrun is not supported for get_or_create(), for dryrun use the create() API instead"
+    )
 
     server_handle = f"{config.scheduler}:///{name}"
     server_info = await server_ready(server_handle, check_interval)

@@ -13,10 +13,10 @@ use super::*;
 /// A [`DurableMailboxSender`] is a [`MailboxSender`] that writes messages to a write-ahead log
 /// before the receiver consume any of them. It allows the receiver to recover from crashes by
 /// replaying the log. It supports any implementation of [`MailboxSender`].
-#[derive(Debug)]
 struct DurableMailboxSender(Buffer<MessageEnvelope>);
 
 impl DurableMailboxSender {
+    #[allow(dead_code)]
     fn new(
         write_ahead_log: impl MessageLog<MessageEnvelope> + 'static,
         inner: impl MailboxSender + 'static,
@@ -63,6 +63,7 @@ impl DurableMailboxSender {
         Self(sequencer)
     }
 
+    #[allow(dead_code)]
     async fn flush(&mut self) -> Result<(), watch::error::RecvError> {
         self.0.flush().await
     }
@@ -133,7 +134,7 @@ pub mod log {
     /// crash without requesting resending the messages. The log is append-only and the messages are
     /// persisted in order with sequence ids.
     #[async_trait]
-    pub trait MessageLog<M: RemoteMessage>: Sync + Send + Debug {
+    pub trait MessageLog<M: RemoteMessage>: Sync + Send {
         /// The type of the stream returned from read operations on this log.
         type Stream<'a>: Stream<Item = Result<(SeqId, M), MessageLogError>> + Send
         where
@@ -177,7 +178,7 @@ pub mod test_utils {
     use super::*;
 
     /// An in-memory log for testing.
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct TestLog<M: RemoteMessage> {
         queue: Arc<Mutex<VecDeque<(SeqId, M)>>>,
         current_seq_id: Arc<Mutex<SeqId>>,
@@ -358,21 +359,21 @@ mod tests {
         durable_mbox.post(
             MessageEnvelope::new_unknown(
                 port1.port_id().clone(),
-                Serialized::serialize(&1u64).unwrap(),
+                wirevalue::Any::serialize(&1u64).unwrap(),
             ),
             monitored_return_handle(),
         );
         durable_mbox.post(
             MessageEnvelope::new_unknown(
                 port2.port_id().clone(),
-                Serialized::serialize(&2u64).unwrap(),
+                wirevalue::Any::serialize(&2u64).unwrap(),
             ),
             monitored_return_handle(),
         );
         durable_mbox.post(
             MessageEnvelope::new_unknown(
                 port1.port_id().clone(),
-                Serialized::serialize(&3u64).unwrap(),
+                wirevalue::Any::serialize(&3u64).unwrap(),
             ),
             monitored_return_handle(),
         );

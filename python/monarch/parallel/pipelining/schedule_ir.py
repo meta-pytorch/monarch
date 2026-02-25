@@ -122,28 +122,28 @@ class _Action(NamedTuple):
     def __repr__(self):
         repr = str(self.stage_index)
         if self.computation_type == SEND_B_RECV_F:
-            assert (
-                self.microbatch_index is not None
-            ), "SEND_B_RECV_F requires microbatch_index"
-            assert (
-                self.other_stage_index is not None
-            ), "SEND_B_RECV_F requires other_stage_index"
-            assert (
-                self.other_microbatch_index is not None
-            ), "SEND_B_RECV_F requires other_microbatch_index"
+            assert self.microbatch_index is not None, (
+                "SEND_B_RECV_F requires microbatch_index"
+            )
+            assert self.other_stage_index is not None, (
+                "SEND_B_RECV_F requires other_stage_index"
+            )
+            assert self.other_microbatch_index is not None, (
+                "SEND_B_RECV_F requires other_microbatch_index"
+            )
             repr += str(SEND_B) + str(self.microbatch_index)
             repr += "_" + str(self.other_stage_index)
             repr += str(RECV_F) + str(self.other_microbatch_index)
         elif self.computation_type == SEND_F_RECV_B:
-            assert (
-                self.microbatch_index is not None
-            ), "SEND_F_RECV_B requires microbatch_index"
-            assert (
-                self.other_stage_index is not None
-            ), "SEND_F_RECV_B requires other_stage_index"
-            assert (
-                self.other_microbatch_index is not None
-            ), "SEND_F_RECV_B requires other_microbatch_index"
+            assert self.microbatch_index is not None, (
+                "SEND_F_RECV_B requires microbatch_index"
+            )
+            assert self.other_stage_index is not None, (
+                "SEND_F_RECV_B requires other_stage_index"
+            )
+            assert self.other_microbatch_index is not None, (
+                "SEND_F_RECV_B requires other_microbatch_index"
+            )
             repr += str(SEND_F) + str(self.microbatch_index)
             repr += "_" + str(self.other_stage_index)
             repr += str(RECV_B) + str(self.other_microbatch_index)
@@ -425,9 +425,9 @@ def _add_send_recv(
                 ops = new_comms[rank][peer]
                 peer_ops = new_comms[peer][rank]
                 if len(ops) == 0:
-                    assert (
-                        len(peer_ops) == 0
-                    ), f"ops was empty but peer_ops was not, {peer_ops}"
+                    assert len(peer_ops) == 0, (
+                        f"ops was empty but peer_ops was not, {peer_ops}"
+                    )
 
                 batched_ops = list(ops)
                 batched_peer_ops = list(peer_ops)

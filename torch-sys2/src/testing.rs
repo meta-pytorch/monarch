@@ -16,7 +16,7 @@ use crate::torch_full;
 use crate::torch_stack;
 
 pub fn allclose(a: &Tensor, b: &Tensor) -> Result<bool, String> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let a_obj = a.inner.bind(py);
         let b_obj = b.inner.bind(py);
 
@@ -29,7 +29,7 @@ pub fn allclose(a: &Tensor, b: &Tensor) -> Result<bool, String> {
 }
 
 pub fn cuda_full(size: &[i64], value: f32) -> Tensor {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let size_tuple = pyo3::types::PyTuple::new(py, size).unwrap();
 
         let kwargs = pyo3::types::PyDict::new(py);
@@ -46,7 +46,7 @@ pub fn cuda_full(size: &[i64], value: f32) -> Tensor {
 }
 
 pub fn stack(tensors: &[Tensor]) -> Tensor {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         // Convert Rust tensor slice to Python list
         let tensor_list = pyo3::types::PyList::empty(py);
         for tensor in tensors {

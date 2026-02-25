@@ -32,16 +32,18 @@ pub struct PortHandle<M: Message> {
     port_index: u64,
     sender: UnboundedPortSender<M>,
     bound: Arc<OnceLock<PortId>>,
-    reducer_typehash: Option<u64>,
+    reducer_spec: Option<ReducerSpec>,
+    reducer_opts: Option<ReducerOpts>,
 }
 ```
 ### Fields
 
-- **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor ID and bind itself into the mailbox’s internal port map.
+- **`mailbox`**: The `Mailbox` this port was created from. Stored so the handle can access the actor ID and bind itself into the mailbox's internal port map.
 - **`port_index`**: The local index of the port within the mailbox. Used as the key in the mailbox's port map.
 - **`sender`**: The internal message delivery mechanism (e.g., MPSC channel). This determines how messages of type `M` are actually enqueued.
 - **`bound`**: A lazily initialized `PortId` stored in a `OnceLock`. This is populated when the port is formally bound into the mailbox, enabling external references via `PortRef<M>`.
-- **`reducer_typehash`**: An optional type hash representing a reducer function for accumulating messages. Used in specialized delivery modes (e.g., incremental updates).
+- **`reducer_spec`**: An optional specification for a reducer function for accumulating messages.
+- **`reducer_opts`**: Optional reducer configuration options.
 
 ### Construction and Use
 
@@ -53,7 +55,8 @@ impl<M: Message> PortHandle<M> {
             port_index,
             sender,
             bound: Arc::new(OnceLock::new()),
-            reducer_typehash: None,
+            reducer_spec: None,
+            reducer_opts: None,
         }
     }
 
@@ -65,7 +68,9 @@ impl<M: Message> PortHandle<M> {
     }
 
     pub fn send(&self, message: M) -> Result<(), MailboxSenderError> {
-        self.sender.send(message).map_err(|err| {
+        let mut headers = Attrs::new();
+        // ... set headers ...
+        self.sender.send(headers, message).map_err(|err| {
             MailboxSenderError::new_unbound::<M>(
                 self.mailbox.actor_id().clone(),
                 MailboxSenderErrorKind::Other(err),
@@ -136,21 +141,25 @@ impl<M: RemoteMessage> OncePortHandle<M> {
 
 A `PortRef<M>` is a cloneable, sendable reference to a bound typed port. These are used to send messages to an actor from outside its mailbox, typically after calling `.bind()` on a `PortHandle<M>`:
 ```rust
-pub struct PortRef<M: RemoteMessage> {
+pub struct PortRef<M> {
     port_id: PortId,
-    reducer_typehash: Option<u64>,
+    reducer_spec: Option<ReducerSpec>,
+    reducer_opts: Option<ReducerOpts>,
     phantom: PhantomData<M>,
+    return_undeliverable: bool,
 }
 ```
 ### Fields
 
 - **`port_id`**: The globally unique identifier for this port. Used during message routing to locate the destination mailbox.
-- **`reducer_typehash`**: Optional hash of the reducer type, used to validate compatibility when delivering messages to reducer-style ports.
+- **`reducer_spec`**: Optional specification for the reducer type, used to validate compatibility when delivering messages to reducer-style ports.
+- **`reducer_opts`**: Optional reducer configuration options.
 - **`phantom`**: Phantom data to retain the `M` type parameter. This enforces compile-time type safety without storing a value of type `M`.
+- **`return_undeliverable`**: Whether undeliverable messages should be returned to the sender.
 
 A `OncePortRef<M>` is a reference to a one-shot port. Unlike `PortRef`, it allows exactly one message to be sent. These are created by binding a `OncePortHandle<M>`.
 ```rust
-pub struct OncePortRef<M: RemoteMessage> {
+pub struct OncePortRef<M> {
     port_id: PortId,
     phantom: PhantomData<M>,
 }
@@ -169,7 +178,7 @@ pub struct PortReceiver<M> {
     receiver: mpsc::UnboundedReceiver<M>,
     port_id: PortId,
     coalesce: bool,
-    state: Arc<State>,
+    mailbox: Mailbox,
 }
 ```
 ### Fields
@@ -177,7 +186,7 @@ pub struct PortReceiver<M> {
 - **`receiver`**: The unbounded MPSC channel receiver used to retrieve messages sent to this port.
 - **`port_id`**: The unique identifier for the port associated with this receiver. Used to deregister the port when the receiver is dropped.
 - **`coalesce`**: If `true`, enables coalescing behavior — only the most recent message is retained when multiple are queued, and earlier ones are discarded.
-- **`state`**: Shared internal mailbox state. Used to cleanly deregister the port from the mailbox when the receiver is dropped.
+- **`mailbox`**: The owning mailbox. Used to cleanly deregister the port from the mailbox when the receiver is dropped.
 
 ### Usage
 
@@ -199,13 +208,13 @@ impl<M> PortReceiver<M> {
       receiver: mpsc::UnboundedReceiver<M>,
       port_id: PortId,
       coalesce: bool,
-      state: Arc<State>
+      mailbox: Mailbox
   ) -> Self {
         Self {
             receiver,
             port_id,
             coalesce,
-            state,
+            mailbox,
         }
     }
 }
@@ -215,7 +224,7 @@ Dropping the `PortReceiver<M>` automatically deregisters the associated port, pr
 ```rust
 impl<M> Drop for PortReceiver<M> {
     fn drop(&mut self) {
-        self.state.ports.remove(&self.port());
+        self.mailbox.inner.ports.remove(&self.port());
     }
 }
 ```

@@ -10,7 +10,6 @@ import asyncio
 import logging
 
 import click
-
 from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configure
 

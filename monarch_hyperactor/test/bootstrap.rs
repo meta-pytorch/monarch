@@ -24,7 +24,7 @@ async fn main() {
     // code runs. Some per-proc actors (e.g. LoggerRuntimeActor) call
     // into Python during `new()`. If Python isn't initialized yet,
     // PyO3 will panic ("The Python interpreter is not initialized").
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
 
     // Enter the hyperactor-mesh bootstrap protocol.
     hyperactor_mesh::bootstrap_or_die().await;

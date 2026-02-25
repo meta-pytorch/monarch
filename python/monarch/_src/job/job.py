@@ -26,9 +26,16 @@ from monarch.actor import enable_transport, HostMesh, this_host
 
 class JobState:
     """
-    Job State
+    Container for the current state of a job.
 
-    Currently this just has a property for each HostMesh.
+    Provides access to the HostMesh objects for each mesh requested in the job
+    specification. Each mesh is accessible as an attribute.
+
+    Example::
+
+        state = job.state()
+        state.trainers    # HostMesh for the "trainers" mesh
+        state.dataloaders # HostMesh for the "dataloaders" mesh
     """
 
     def __init__(self, hosts: Dict[str, HostMesh]):
@@ -38,7 +45,10 @@ class JobState:
         try:
             return self._hosts[attr]
         except KeyError:
-            raise AttributeError(attr)
+            available = ", ".join(sorted(self._hosts.keys()))
+            raise AttributeError(
+                f"'{attr}' is not a valid host mesh name. Available names: {available}"
+            )
 
 
 class CachedRunning(NamedTuple):
@@ -52,19 +62,15 @@ logger.propagate = False
 
 
 class JobTrait(ABC):
-    def __init__(self):
-        super().__init__()
-        self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
-
     """
     A job object represents a specification and set of machines that can be
     used to create monarch HostMeshes and run actors on them.
 
     A job object comprises a declarative specification for the job and
-    optionally the job's *state*. The `apply()` operation applies the job's
+    optionally the job's *state*. The ``apply()`` operation applies the job's
     specification to the scheduler, creating or updating the job as
     required. If the job exists and there are no changes in its
-    specification, `apply()` is a no-op. Once applied, we can query the
+    specification, ``apply()`` is a no-op. Once applied, we can query the
     job's *state*. The state of the job contains the set of hosts currently
     allocated, arranged into the requested host meshes. Conceptually, the
     state can be retrieved directly from the scheduler, but we may also
@@ -75,16 +81,26 @@ class JobTrait(ABC):
     any other aspect of the job.
 
     Conceptually, dynamic jobs (e.g., to enable consistently fast restarts,
-    elasticity, etc.), Monarch can simply poll the state for changes. In
-    practice we'd develop notification mechanisms so that polling isn't
-    jobs can also be "templates". But the model also supports having the job
-    job's *specification* is. The model allows for late resolution of some
-    parts of the specification. For example, a job that does not specify a
-    name may instead resolve the name on the first `apply()`. In this way,
+    elasticity, etc.) can simply poll the state for changes. In practice,
+    notification mechanisms would be developed so that polling isn't
+    required. The model allows for late resolution of some parts of the
+    job's *specification*. For example, a job that does not specify a
+    name may instead resolve the name on the first ``apply()``. In this way,
     jobs can also be "templates". But the model also supports having the job
     refer to a *specific instance* by including the resolved job name in the
     specification itself.
+
+    Note:
+        Subclasses must NOT set ``_status`` directly. The ``state()`` method
+        manages status transitions and pickle caching. If a subclass
+        pre-emptively sets ``_status = "running"``, the ``state()`` method
+        will skip the cache dump, breaking job persistence. Instead, let
+        ``apply()`` set the status after ``_create()`` returns.
     """
+
+    def __init__(self):
+        super().__init__()
+        self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
 
     @property
     def _running(self) -> "Optional[JobTrait]":
@@ -150,6 +166,8 @@ class JobTrait(ABC):
             return cached._state()
         logger.info("Applying current job")
         self.apply()
+        logger.info("Job has started, connecting to current state")
+        result = self._state()
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
             cache_dir = os.path.dirname(cached_path)
@@ -157,8 +175,7 @@ class JobTrait(ABC):
                 os.makedirs(cache_dir, exist_ok=True)
             logger.info("Saving job to cache at %s", cached_path)
             self.dump(cached_path)
-        logger.info("Job has started, connecting to current state")
-        return self._state()
+        return result
 
     def _load_cached(self, cached_path: Optional[str]) -> "Optional[JobTrait]":
         if cached_path is None:
@@ -176,7 +193,10 @@ class JobTrait(ABC):
             return None
         if not running.can_run(self):
             logger.info("Cached job cannot run this spec, removing cache")
-            running._kill()
+            try:
+                running._kill()
+            except NotImplementedError as e:
+                logger.info("Failed to kill cached job: %s", e)
             os.remove(cached_path)
             return None
         return job
@@ -204,7 +224,15 @@ class JobTrait(ABC):
     def _state(self) -> JobState: ...
 
     @abstractmethod
-    def _create(self, client_script: Optional[str]): ...
+    def _create(self, client_script: Optional[str]):
+        """Create the job resources.
+
+        Called by `apply()` when the job is not yet running. Implementations
+        should schedule the job with the appropriate scheduler but must NOT
+        set `_status` directly; `apply()` handles status transitions after
+        this method returns.
+        """
+        ...
 
     @abstractmethod
     def can_run(self, spec: "JobTrait") -> bool:
@@ -226,11 +254,29 @@ class JobTrait(ABC):
 
 
 def job_loads(data: bytes) -> JobTrait:
+    """
+    Deserialize a job from bytes.
+
+    Args:
+        data: Pickled job bytes, typically from :meth:`JobTrait.dumps`.
+
+    Returns:
+        The deserialized job object.
+    """
     # @lint-ignore PYTHONPICKLEISBAD
     return pickle.loads(data)
 
 
 def job_load(filename: str) -> JobTrait:
+    """
+    Load a job from a file.
+
+    Args:
+        filename: Path to the pickled job file, typically from :meth:`JobTrait.dump`.
+
+    Returns:
+        The deserialized job object.
+    """
     with open(filename, "rb") as file:
         # @lint-ignore PYTHONPICKLEISBAD
         job: "JobTrait" = pickle.load(file)
@@ -238,12 +284,18 @@ def job_load(filename: str) -> JobTrait:
 
 
 class LocalJob(JobTrait):
+    """
+    Job that runs on the local host.
+
+    This job calls ``this_host()`` for each host mesh requested. It serves as a
+    stand-in in configuration so a job can be switched between remote and local
+    execution by changing the job configuration.
+    """
+
     def __init__(self, hosts: Sequence["str"] = ("hosts",)):
         """
-        Job that is just running on the local host.
-        This job will just call this_host() for each host mesh requested.
-        It is used as standin in config so a job can be configured to either use
-        a remote or local job just by changing the job configuration.
+        Args:
+            hosts: Names of the host meshes to create.
         """
         self._host_names = hosts
         # if launched with client_script, the proc corresponding to the

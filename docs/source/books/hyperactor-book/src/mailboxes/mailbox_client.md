@@ -124,7 +124,7 @@ impl MailboxClient {
             let return_handle_0 = return_handle.clone();
             tokio::spawn(async move {
                 let result = return_receiver.await;
-                if let Ok(SendError(e, message)) = result {
+                if let Ok(SendError{error: e, message, ..}) = result {
                     message.undeliverable(
                         DeliveryError::BrokenLink(format!(
                             "failed to enqueue in MailboxClient when processing buffer: {e}"

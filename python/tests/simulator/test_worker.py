@@ -10,7 +10,6 @@ from typing import Tuple
 
 import torch
 from monarch.common.fake import fake_call
-
 from monarch.simulator.profiling import RuntimeEstimator
 from monarch.simulator.task import Task
 from monarch.simulator.tensor import FakeTensorTracker

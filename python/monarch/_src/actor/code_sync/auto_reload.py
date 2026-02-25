@@ -67,8 +67,18 @@ class SysAuditHookMultiplexer:
         self._hooks: Dict[int, Callable[[str, tuple[Any, ...]], None]] = {}
 
     def _callback(self, event: str, args: tuple[Any, ...]) -> None:
-        for hook in self._hooks.values():
-            hook(event, args)
+        # Guard against being called during interpreter shutdown when
+        # self._hooks may have been garbage collected or cleared
+        hooks = self._hooks
+        if hooks is None:
+            return
+        # Copy values to avoid iteration issues if hooks dict is modified
+        for hook in list(hooks.values()):
+            try:
+                hook(event, args)
+            except Exception:
+                # Swallow errors during shutdown to prevent crashes
+                pass
 
     def add(self, hook: Callable[[str, tuple[Any, ...]], None]) -> SysAuditHookGuard:
         idx = next(self._idx)

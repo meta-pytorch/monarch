@@ -35,7 +35,6 @@ from typing import (
 )
 
 import torch
-
 import zmq
 import zmq.asyncio
 
@@ -992,7 +991,7 @@ def FunctionCall(target: str, *args, **kwargs) -> _FunctionCall:
     if target.startswith("__main__."):
         file = sys.modules["__main__"].__file__
         sys.modules["__entry__"] = sys.modules["__main__"]
-        target = f'{file}:{target.split(".", 1)[1]}'
+        target = f"{file}:{target.split('.', 1)[1]}"
     return _FunctionCall(target, args, kwargs)
 
 

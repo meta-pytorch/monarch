@@ -577,7 +577,7 @@ struct GradientGenerator {
           std::find(stages.begin(), stages.end(), ib.needed) == stages.end()) {
         stages.push_back(ib.needed);
         ready->last_stage = std::max(ready->last_stage, ib.needed);
-        ready_heap_.push(std::make_pair(ib.needed, ready));
+        ready_heap_.emplace(ib.needed, ready);
       }
     }
   }

@@ -7,7 +7,7 @@
 # pyre-unsafe
 
 """
-Distributed PPO-like Reinforcement Learning with Monarch Actors
+Reinforcement Learning with Actors
 ==============================================================
 This example demonstrates implementing a distributed PPO-like reinforcement learning
 algorithm using the Monarch actor framework. The implementation features:

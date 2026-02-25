@@ -9,7 +9,6 @@
 use std::time::Duration;
 
 use clap::Parser;
-use clap::command;
 use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelTransport;

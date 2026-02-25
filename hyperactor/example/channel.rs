@@ -9,7 +9,6 @@
 use clap::Parser;
 use clap::Subcommand;
 use enum_as_inner::EnumAsInner;
-use hyperactor::Named;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelRx;
@@ -20,6 +19,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
 use tokio::time::Instant;
+use typeuri::Named;
 
 #[derive(Clone, Debug, Named, Serialize, Deserialize, EnumAsInner)]
 enum Message {

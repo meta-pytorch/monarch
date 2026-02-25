@@ -1,0 +1,80 @@
+name: Build Monarch Wheels
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        description: 'JSON array of Python versions to build (e.g., ["3.10", "3.11", "3.12", "3.13"])'
+        type: string
+        default: '["3.10", "3.11", "3.12", "3.13"]'
+      torch-spec:
+        description: 'Torch installation specification'
+        type: string
+        default: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      gpu-arch-type:
+        description: 'GPU architecture type'
+        type: string
+        default: 'cuda'
+      gpu-arch-version:
+        description: 'GPU architecture version'
+        type: string
+        default: '12.8'
+      runner:
+        description: 'Runner to use for the build'
+        type: string
+        default: 'linux.g5.4xlarge.nvidia.gpu'
+      version:
+        description: 'Version string for the wheel (default: $current_version.dev<date>)'
+        type: string
+        default: ''
+      timeout:
+        description: 'Job timeout in minutes'
+        type: number
+        default: 60
+
+jobs:
+  build:
+    name: ${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}-py${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: ${{ inputs.timeout }}
+      runner: ${{ inputs.runner }}
+      gpu-arch-type: ${{ inputs.gpu-arch-type }}
+      gpu-arch-version: ${{ inputs.gpu-arch-version }}
+      submodules: recursive
+      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}
+      script: |
+        source scripts/common-setup.sh
+        setup_build_environment ${{ matrix.python-version }}
+
+        # Install torch before building the wheel
+        pip install ${{ inputs.torch-spec }}
+        pip install -r build-requirements.txt
+
+        # Setup Tensor Engine dependencies
+        setup_tensor_engine
+
+        cargo install --path monarch_hyperactor
+
+        # Build wheel
+        if [ -n "${{ inputs.version }}" ]; then
+          export MONARCH_VERSION="${{ inputs.version }}"
+        else
+          export MONARCH_VERSION=0.4.0.dev$(date +'%Y%m%d')
+        fi
+        export MONARCH_BUILD_MESH_ONLY=0
+
+        python setup.py bdist_wheel
+
+        # Rename to manylinux2014 for PyPI compatibility
+        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
+        ls -la dist/
+
+        # Verify the wheel can be installed and imported
+        install_python_test_dependencies
+        pip install dist/*.whl
+        python -c "import monarch"

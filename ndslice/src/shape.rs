@@ -356,9 +356,9 @@ impl FromStr for Shape {
 }
 
 static SHAPE_CACHED_TYPEHASH: std::sync::LazyLock<u64> =
-    std::sync::LazyLock::new(|| cityhasher::hash(<Shape as hyperactor_named::Named>::typename()));
+    std::sync::LazyLock::new(|| cityhasher::hash(<Shape as typeuri::Named>::typename()));
 
-impl hyperactor_named::Named for Shape {
+impl typeuri::Named for Shape {
     fn typename() -> &'static str {
         "ndslice::shape::Shape"
     }

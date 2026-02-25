@@ -4,7 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""SPMD (Single Program Multiple Data) distributed training support."""
+"""
+Internal implementation of SPMD primitives.
+
+Provides functions to configure torch elastic environment variables across a Monarch
+ProcMesh, enabling torchrun-style SPMD scripts to run on Monarch's actor system.
+"""
 
 from typing import Optional
 
@@ -25,9 +30,9 @@ def setup_torch_elastic_env(
     If master_addr and master_port are None, it will automatically select a master node and port.
     It selects the first proc in the proc_mesh to be the master node.
     """
-    assert (
-        (master_addr is None) == (master_port is None)
-    ), "Either both master_addr and master_port must be specified or neither must be specified."
+    assert (master_addr is None) == (master_port is None), (
+        "Either both master_addr and master_port must be specified or neither must be specified."
+    )
     am = proc_mesh.spawn("_SPMDActor", SPMDActor)
     if master_addr is None:
         # Select the first actor (all coordinates = 0) to get the master host/port
@@ -51,9 +56,9 @@ async def setup_torch_elastic_env_async(
     If master_addr and master_port are None, it will automatically select a master node and port.
     It selects the first proc in the proc_mesh to be the master node.
     """
-    assert (
-        (master_addr is None) == (master_port is None)
-    ), "Either both master_addr and master_port must be specified or neither must be specified."
+    assert (master_addr is None) == (master_port is None), (
+        "Either both master_addr and master_port must be specified or neither must be specified."
+    )
     am = proc_mesh.spawn("_SPMDActor", SPMDActor)
     if master_addr is None:
         # Select the first actor (all coordinates = 0) to get the master host/port

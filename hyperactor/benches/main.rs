@@ -17,7 +17,6 @@ use criterion::Throughput;
 use criterion::criterion_group;
 use criterion::criterion_main;
 use futures::future::join_all;
-use hyperactor::Named;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
@@ -38,6 +37,7 @@ use serde_multipart::Part;
 use tokio::runtime;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
+use typeuri::Named;
 
 fn new_runtime() -> Runtime {
     runtime::Builder::new_current_thread()

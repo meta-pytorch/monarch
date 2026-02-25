@@ -14,7 +14,7 @@
 use std::any::type_name;
 use std::time::SystemTime;
 
-use hyperactor_config::attrs::Attrs;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_config::global;
 
@@ -31,7 +31,7 @@ declare_attrs! {
 }
 
 /// Set the send timestamp for latency tracking if timestamp not already set.
-pub fn set_send_timestamp(headers: &mut Attrs) {
+pub fn set_send_timestamp(headers: &mut Flattrs) {
     if !headers.contains_key(SEND_TIMESTAMP) {
         let time = RealClock.system_time_now();
         headers.set(SEND_TIMESTAMP, time);
@@ -39,14 +39,14 @@ pub fn set_send_timestamp(headers: &mut Attrs) {
 }
 
 /// Set the send timestamp for latency tracking if timestamp not already set.
-pub fn set_rust_message_type<M>(headers: &mut Attrs) {
+pub fn set_rust_message_type<M>(headers: &mut Flattrs) {
     headers.set(RUST_MESSAGE_TYPE, type_name::<M>().to_string());
 }
 
 /// This function checks the configured sampling rate and, if the random sample passes,
 /// calculates the latency between the send timestamp and the current time, then records
 /// the latency metric with the associated actor ID.
-pub fn log_message_latency_if_sampling(headers: &Attrs, actor_id: String) {
+pub fn log_message_latency_if_sampling(headers: &Flattrs, actor_id: String) {
     if fastrand::f32() > global::get(crate::config::MESSAGE_LATENCY_SAMPLING_RATE) {
         return;
     }
@@ -66,6 +66,6 @@ pub fn log_message_latency_if_sampling(headers: &Attrs, actor_id: String) {
         return;
     };
     let now = RealClock.system_time_now();
-    let latency = now.duration_since(*send_timestamp).unwrap_or_default();
+    let latency = now.duration_since(send_timestamp).unwrap_or_default();
     MESSAGE_LATENCY_MICROS.record(latency.as_micros() as f64, metric_pairs);
 }

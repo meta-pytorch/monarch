@@ -69,18 +69,19 @@
 
 pub mod accum;
 pub mod actor;
+pub mod actor_local;
 pub mod channel;
 pub mod checkpoint;
 pub mod clock;
 pub mod config;
 pub mod context;
-pub mod data;
 pub mod host;
 mod init;
+pub mod introspect;
 pub mod mailbox;
 pub mod message;
 pub mod metrics;
-mod ordering;
+pub mod ordering;
 pub mod panic_handler;
 pub mod proc;
 pub mod reference;
@@ -93,30 +94,36 @@ pub mod sync;
 pub mod test_utils;
 pub mod time;
 
+#[cfg(fbcode_build)]
+mod meta;
+
+/// Re-exports of external crates used by hyperactor_macros codegen.
+/// This module is not part of the public API and should not be used directly.
+#[doc(hidden)]
+pub mod internal_macro_support {
+    pub use anyhow;
+    pub use async_trait;
+    pub use inventory;
+    pub use opentelemetry;
+    pub use paste::paste;
+    pub use serde_json;
+    pub use tracing;
+    pub use typeuri;
+}
+
 pub use actor::Actor;
 pub use actor::ActorHandle;
 pub use actor::Handler;
+pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
-// Re-export public dependencies of hyperactor_macros codegen.
-#[doc(hidden)]
-pub use anyhow;
-#[doc(hidden)]
-pub use async_trait;
-// Re-exported to use in Named derive macro.
-#[doc(hidden)]
-pub use cityhasher;
-#[doc(hidden)]
-pub use dashmap; // For intern_typename!
-pub use data::Named;
+pub use actor_local::ActorLocal;
 #[doc(inline)]
 pub use hyperactor_macros::Bind;
 #[doc(inline)]
 pub use hyperactor_macros::HandleClient;
 #[doc(inline)]
 pub use hyperactor_macros::Handler;
-#[doc(inline)]
-pub use hyperactor_macros::Named;
 #[doc(inline)]
 pub use hyperactor_macros::RefClient;
 #[doc(inline)]
@@ -126,15 +133,13 @@ pub use hyperactor_macros::behavior;
 #[doc(inline)]
 pub use hyperactor_macros::export;
 #[doc(inline)]
-pub use hyperactor_macros::forward;
+pub use hyperactor_macros::handle;
 #[doc(inline)]
 pub use hyperactor_macros::instrument;
 #[doc(inline)]
 pub use hyperactor_macros::instrument_infallible;
 pub use hyperactor_macros::observe_async;
 pub use hyperactor_macros::observe_result;
-#[doc(hidden)]
-pub use hyperactor_named; // For declare_attrs! macro
 pub use hyperactor_telemetry::declare_static_counter;
 pub use hyperactor_telemetry::declare_static_gauge;
 pub use hyperactor_telemetry::declare_static_histogram;
@@ -147,23 +152,17 @@ pub use init::initialize;
 pub use init::initialize_with_current_runtime;
 #[doc(inline)]
 pub use init::initialize_with_log_prefix;
-// Re-exported to make this available to callers of the `register!` macro.
-#[doc(hidden)]
-pub use inventory::submit;
 pub use mailbox::Data;
 pub use mailbox::Mailbox;
 pub use mailbox::Message;
 pub use mailbox::OncePortHandle;
 pub use mailbox::PortHandle;
 pub use mailbox::RemoteMessage;
-// Re-exported to support opentelemetry in hyperactor_macros codegen.
-#[doc(hidden)]
-pub use opentelemetry;
-#[doc(hidden)]
-pub use paste::paste;
 pub use proc::Context;
 pub use proc::Instance;
+pub use proc::InstanceCell;
 pub use proc::Proc;
+pub use proc::WeakProc;
 pub use reference::ActorId;
 pub use reference::ActorRef;
 pub use reference::GangId;
@@ -173,9 +172,6 @@ pub use reference::PortId;
 pub use reference::PortRef;
 pub use reference::ProcId;
 pub use reference::WorldId;
-// Re-exported to support tracing in hyperactor_macros codegen.
-#[doc(hidden)]
-pub use serde_json;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
 #[doc(inline)]
@@ -190,9 +186,6 @@ pub use signal_handler::register_signal_cleanup_scoped;
 pub use signal_handler::sigpipe_disposition;
 #[doc(inline)]
 pub use signal_handler::unregister_signal_cleanup;
-// Re-exported to support tracing in hyperactor_macros codegen.
-#[doc(hidden)]
-pub use tracing;
 
 mod private {
     /// Public trait in a private module for sealing traits within this crate:

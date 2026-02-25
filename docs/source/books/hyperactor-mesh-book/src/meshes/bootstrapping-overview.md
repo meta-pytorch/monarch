@@ -26,4 +26,4 @@
 3. Promote those runtimes into real **hosts** (start HostMeshAgent).
 4. **Spawn procs and actors** on those hosts (start proc/ProcMeshAgent, spawn  actors).
 
-_For the full, runnable test (see `bootstrap_cannonical_simple`), see the appendix._
+_For the full, runnable test (see `bootstrap_canonical_simple`), see the appendix._

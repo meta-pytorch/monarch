@@ -29,7 +29,7 @@ where
                     Ok(())
                 }
                 status => Err(anyhow::anyhow!(
-                    "didn't receive expected status. got: {:?}",
+                    "didn't receive expected status, got: {:?}",
                     status
                 )),
             },

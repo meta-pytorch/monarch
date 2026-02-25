@@ -15,67 +15,13 @@ mod inner {
     #![allow(non_snake_case)]
     #![allow(unused_attributes)]
     #[cfg(not(cargo))]
+    use crate::ibv_wc_flags;
+    #[cfg(not(cargo))]
     use crate::ibv_wc_opcode;
     #[cfg(not(cargo))]
     use crate::ibv_wc_status;
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-    // Manually define ibv_wc_flags as a bitfield (bindgen can't generate it from static const)
-    // Only needed in fbcode builds - OSS/cargo builds have bindgen generate these from enums
-    #[cfg(not(cargo))]
-    #[repr(transparent)]
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-    pub struct ibv_wc_flags(pub u32);
-
-    #[cfg(not(cargo))]
-    impl ibv_wc_flags {
-        pub const IBV_WC_GRH: Self = Self(1 << 0);
-        pub const IBV_WC_WITH_IMM: Self = Self(1 << 1);
-        pub const IBV_WC_IP_CSUM_OK: Self = Self(1 << 2);
-        pub const IBV_WC_WITH_INV: Self = Self(1 << 3);
-        pub const IBV_WC_TM_SYNC_REQ: Self = Self(1 << 4);
-        pub const IBV_WC_TM_MATCH: Self = Self(1 << 5);
-        pub const IBV_WC_TM_DATA_VALID: Self = Self(1 << 6);
-    }
-
-    #[cfg(not(cargo))]
-    impl std::ops::BitAnd for ibv_wc_flags {
-        type Output = Self;
-        fn bitand(self, rhs: Self) -> Self {
-            Self(self.0 & rhs.0)
-        }
-    }
-
-    // Manually define ibv_access_flags as a bitfield (bindgen can't generate it from static const)
-    // Only needed in fbcode builds - OSS/cargo builds have bindgen generate these from enums
-    #[cfg(not(cargo))]
-    #[repr(transparent)]
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-    pub struct ibv_access_flags(pub u32);
-
-    #[cfg(not(cargo))]
-    impl ibv_access_flags {
-        pub const IBV_ACCESS_LOCAL_WRITE: Self = Self(1 << 0);
-        pub const IBV_ACCESS_REMOTE_WRITE: Self = Self(1 << 1);
-        pub const IBV_ACCESS_REMOTE_READ: Self = Self(1 << 2);
-        pub const IBV_ACCESS_REMOTE_ATOMIC: Self = Self(1 << 3);
-        pub const IBV_ACCESS_MW_BIND: Self = Self(1 << 4);
-        pub const IBV_ACCESS_ZERO_BASED: Self = Self(1 << 5);
-        pub const IBV_ACCESS_ON_DEMAND: Self = Self(1 << 6);
-        pub const IBV_ACCESS_HUGETLB: Self = Self(1 << 7);
-        pub const IBV_ACCESS_RELAXED_ORDERING: Self = Self(1 << 8);
-        pub const IBV_ACCESS_FLUSH_GLOBAL: Self = Self(1 << 9);
-        pub const IBV_ACCESS_FLUSH_PERSISTENT: Self = Self(1 << 10);
-    }
-
-    #[cfg(not(cargo))]
-    impl std::ops::BitOr for ibv_access_flags {
-        type Output = Self;
-        fn bitor(self, rhs: Self) -> Self {
-            Self(self.0 | rhs.0)
-        }
-    }
 
     #[repr(C, packed(1))]
     #[derive(Debug, Default, Clone, Copy)]
@@ -307,4 +253,35 @@ unsafe extern "C" {
 
     /// Debug: Print comprehensive device attributes
     pub fn rdmaxcel_print_device_info(context: *mut ibv_context);
+
+    // EFA functions
+
+    /// Check if the device is an EFA device (via efadv_query_device)
+    pub fn rdmaxcel_is_efa_dev(ctx: *mut ibv_context) -> std::os::raw::c_int;
+
+    /// EFA connect: INIT->RTR->RTS + AH creation, stored directly in qp struct
+    pub fn rdmaxcel_efa_connect(
+        qp: *mut rdmaxcel_qp_t,
+        port_num: u8,
+        pkey_index: u16,
+        qkey: u32,
+        psn: u32,
+        gid_index: u8,
+        remote_gid: *const u8,
+        remote_qpn: u32,
+    ) -> std::os::raw::c_int;
+
+    /// EFA post operation with ibv_post_recv fallback
+    /// op_type: 0 = write, 1 = read, 2 = recv, 3 = write_with_imm
+    pub fn rdmaxcel_qp_post_op(
+        qp: *mut rdmaxcel_qp_t,
+        local_addr: *mut std::ffi::c_void,
+        lkey: u32,
+        length: usize,
+        remote_addr: *mut std::ffi::c_void,
+        rkey: u32,
+        wr_id: u64,
+        signaled: std::os::raw::c_int,
+        op_type: std::os::raw::c_int,
+    ) -> std::os::raw::c_int;
 }

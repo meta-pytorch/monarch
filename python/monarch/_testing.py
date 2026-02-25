@@ -12,11 +12,9 @@ import time
 from contextlib import contextmanager, ExitStack
 from typing import Any, Callable, Dict, Generator, Literal, Optional
 
-from monarch._src.actor.endpoint import Extent
-from monarch._src.actor.host_mesh import create_local_host_mesh
-from monarch._src.actor.proc_mesh import proc_mesh, ProcMesh
+from monarch._src.actor.proc_mesh import ProcMesh
 from monarch._src.actor.shape import NDSlice
-from monarch._src.actor.v1 import enabled as v1_enabled
+from monarch._src.job.process import ProcessJob
 from monarch.common.client import Client
 from monarch.common.device_mesh import DeviceMesh
 from monarch.common.invocation import DeviceException, RemoteException
@@ -54,14 +52,11 @@ class TestingContext:
     ) -> Generator[DeviceMesh, None, None]:
         key = (num_hosts, gpu_per_host)
         if key not in self._proc_mesh_cache:
-            if v1_enabled:
-                self._proc_mesh_cache[key] = create_local_host_mesh(
-                    Extent(["hosts"], [num_hosts])
-                ).spawn_procs(per_host={"gpus": gpu_per_host})
-            else:
-                self._proc_mesh_cache[key] = proc_mesh(
-                    hosts=num_hosts, gpus=gpu_per_host
-                )  # type: ignore
+            job = ProcessJob({"hosts": num_hosts})
+            host = job.state(cached_path=None).hosts
+            self._proc_mesh_cache[key] = host.spawn_procs(
+                per_host={"gpus": gpu_per_host}
+            )
 
         dm = spawn_tensor_engine(self._proc_mesh_cache[key])
         dm = dm.rename(hosts="host", gpus="gpu")

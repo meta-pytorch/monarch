@@ -8,18 +8,15 @@
 
 use anyhow::Result;
 use anyhow::anyhow;
-use hyperactor::Proc;
-use hyperactor::channel::ChannelTransport;
-use hyperactor_mesh::actor_mesh::ActorMesh;
-use hyperactor_mesh::alloc::AllocSpec;
-use hyperactor_mesh::alloc::Allocator;
-use hyperactor_mesh::alloc::local::LocalAllocator;
-use hyperactor_mesh::mesh::Mesh;
-use hyperactor_mesh::proc_mesh::ProcMesh;
+use hyperactor::context::Mailbox;
+use hyperactor_mesh::ActorMesh;
+use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::test_utils;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadActor;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadMessage;
 use monarch_hyperactor::code_sync::auto_reload::AutoReloadParams;
-use ndslice::extent;
+use monarch_hyperactor::runtime::monarch_with_gil_blocking;
+use ndslice::View;
 use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use tempfile::TempDir;
@@ -29,8 +26,8 @@ use tokio::fs;
 // TODO: OSS: ModuleNotFoundError: No module named 'monarch'
 #[cfg_attr(not(fbcode_build), ignore)]
 async fn test_auto_reload_actor() -> Result<()> {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(|py| py.run(c_str!("import monarch._rust_bindings"), None, None))?;
+    pyo3::Python::initialize();
+    monarch_with_gil_blocking(|py| py.run(c_str!("import monarch._rust_bindings"), None, None))?;
 
     // Create a temporary directory for Python files
     let temp_dir = TempDir::new()?;
@@ -46,37 +43,28 @@ CONSTANT = "initial_constant"
 "#;
     fs::write(&py_file_path, initial_content).await?;
 
-    // Set up a single AutoReloadActor
-    let alloc = LocalAllocator
-        .allocate(AllocSpec {
-            extent: extent! { replica = 1 },
-            constraints: Default::default(),
-            proc_name: None,
-            transport: ChannelTransport::Local,
-            proc_allocation_mode: Default::default(),
-        })
-        .await?;
-
-    let (instance, _) = Proc::local().instance("client").unwrap();
-
-    let proc_mesh = ProcMesh::allocate(alloc).await?;
+    let instance = global_root_client();
+    let mut host_mesh = test_utils::local_host_mesh(1).await;
+    let proc_mesh = host_mesh
+        .spawn(instance, "auto_reload_test", ndslice::Extent::unity())
+        .await
+        .unwrap();
     let params = AutoReloadParams {};
-    let actor_mesh = proc_mesh
-        .spawn::<AutoReloadActor>(&instance, "auto_reload_test", &params)
+    let actor_mesh: ActorMesh<AutoReloadActor> = proc_mesh
+        .spawn(instance, "auto_reload_test", &params)
         .await?;
 
     // Get a reference to the single actor
     let actor_ref = actor_mesh
         .get(0)
         .ok_or_else(|| anyhow!("No actor at index 0"))?;
-    let mailbox = actor_mesh.proc_mesh().client();
 
     // First, we need to import the module to get it tracked by the AutoReloader
     // We'll do this by running Python code that imports our test module
     let temp_path = temp_dir.path().to_path_buf();
     let import_result = tokio::task::spawn_blocking({
         move || {
-            Python::with_gil(|py| -> PyResult<String> {
+            monarch_with_gil_blocking(|py| -> PyResult<String> {
                 // Add the temp directory to Python path
                 let sys = py.import("sys")?;
                 let path = sys.getattr("path")?;
@@ -110,9 +98,9 @@ CONSTANT = "modified_constant"
     println!("Modified Python file");
 
     // Send AutoReloadMessage to trigger reload
-    let (result_tx, mut result_rx) = mailbox.open_port::<Result<(), String>>();
+    let (result_tx, mut result_rx) = instance.mailbox().open_port::<Result<(), String>>();
     actor_ref.send(
-        &mailbox,
+        instance,
         AutoReloadMessage {
             result: result_tx.bind(),
         },
@@ -126,7 +114,7 @@ CONSTANT = "modified_constant"
     // Now import the module again and verify the changes were propagated
     let final_result = tokio::task::spawn_blocking({
         move || {
-            Python::with_gil(|py| -> PyResult<String> {
+            monarch_with_gil_blocking(|py| -> PyResult<String> {
                 // Re-import the test module (it should be reloaded now)
                 let test_module = py.import("test_module")?;
                 let get_value_func = test_module.getattr("get_value")?;
@@ -146,5 +134,6 @@ CONSTANT = "modified_constant"
     assert_ne!(import_result, final_result);
     println!("Auto-reload test completed successfully - module was reloaded!");
 
+    let _ = host_mesh.shutdown(instance).await;
     Ok(())
 }

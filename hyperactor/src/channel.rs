@@ -9,7 +9,11 @@
 //! One-way, multi-process, typed communication channels. These are used
 //! to send messages between mailboxes residing in different processes.
 
-#![allow(dead_code)] // Allow until this is used outside of tests.
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
 
 use core::net::SocketAddr;
 use std::fmt;
@@ -24,7 +28,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor_config::attrs::AttrValue;
 use lazy_static::lazy_static;
-use local_ip_address::local_ipv6;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -32,7 +35,6 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 
 use crate as hyperactor;
-use crate::Named;
 use crate::RemoteMessage;
 use crate::channel::sim::SimAddr;
 use crate::simnet::SimNetError;
@@ -70,7 +72,7 @@ pub enum ChannelError {
 
     /// Data encoding errors.
     #[error(transparent)]
-    Data(#[from] crate::data::Error),
+    Data(#[from] wirevalue::Error),
 
     /// Some other error.
     #[error(transparent)]
@@ -87,12 +89,20 @@ pub enum ChannelError {
 
 /// An error that occurred during send. Returns the message that failed to send.
 #[derive(thiserror::Error, Debug)]
-#[error("{0}")]
-pub struct SendError<M: RemoteMessage>(#[source] pub ChannelError, pub M);
+#[error("{error} for reason {reason:?}")]
+pub struct SendError<M: RemoteMessage> {
+    /// Inner channel error
+    #[source]
+    pub error: ChannelError,
+    /// Message that couldn't be sent
+    pub message: M,
+    /// Reason that message couldn't be sent, if any.
+    pub reason: Option<String>,
+}
 
 impl<M: RemoteMessage> From<SendError<M>> for ChannelError {
     fn from(error: SendError<M>) -> Self {
-        error.0
+        error.error
     }
 }
 
@@ -107,7 +117,7 @@ pub enum TxStatus {
 
 /// The transmit end of an M-typed channel.
 #[async_trait]
-pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
+pub trait Tx<M: RemoteMessage> {
     /// Post a message; returning failed deliveries on the return channel, if provided.
     /// If provided, the sender is dropped when the message has been
     /// enqueued at the channel endpoint.
@@ -119,7 +129,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
     /// message is either delivered, or we eventually discover that
     /// the channel has failed and it will be sent back on `return_channel`.
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `SendError`.
-    #[hyperactor::instrument_infallible]
+    #[tracing::instrument(level = "debug", skip_all)]
     fn try_post(&self, message: M, return_channel: oneshot::Sender<SendError<M>>) {
         self.do_post(message, Some(return_channel));
     }
@@ -130,7 +140,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
         self.do_post(message, None);
     }
 
-    /// Send a message synchronously, returning when the messsage has
+    /// Send a message synchronously, returning when the message has
     /// been delivered to the remote end of the channel.
     async fn send(&self, message: M) -> Result<(), SendError<M>> {
         let (tx, rx) = oneshot::channel();
@@ -154,7 +164,7 @@ pub trait Tx<M: RemoteMessage>: std::fmt::Debug {
 
 /// The receive end of an M-typed channel.
 #[async_trait]
-pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
+pub trait Rx<M: RemoteMessage> {
     /// Receive the next message from the channel. If the channel returns
     /// an error it is considered broken and should be discarded.
     async fn recv(&mut self) -> Result<M, ChannelError>;
@@ -163,7 +173,7 @@ pub trait Rx<M: RemoteMessage>: std::fmt::Debug {
     fn addr(&self) -> ChannelAddr;
 }
 
-#[derive(Debug)]
+#[allow(dead_code)] // Not used outside tests.
 struct MpscTx<M: RemoteMessage> {
     tx: mpsc::UnboundedSender<M>,
     addr: ChannelAddr,
@@ -171,6 +181,7 @@ struct MpscTx<M: RemoteMessage> {
 }
 
 impl<M: RemoteMessage> MpscTx<M> {
+    #[allow(dead_code)] // Not used outside tests.
     pub fn new(tx: mpsc::UnboundedSender<M>, addr: ChannelAddr) -> (Self, watch::Sender<TxStatus>) {
         let (sender, receiver) = watch::channel(TxStatus::Active);
         (
@@ -190,7 +201,11 @@ impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
         if let Err(mpsc::error::SendError(message)) = self.tx.send(message) {
             if let Some(return_channel) = return_channel {
                 return_channel
-                    .send(SendError(ChannelError::Closed, message))
+                    .send(SendError {
+                        error: ChannelError::Closed,
+                        message,
+                        reason: None,
+                    })
                     .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
             }
         }
@@ -205,7 +220,7 @@ impl<M: RemoteMessage> Tx<M> for MpscTx<M> {
     }
 }
 
-#[derive(Debug)]
+#[allow(dead_code)] // Not used outside tests.
 struct MpscRx<M: RemoteMessage> {
     rx: mpsc::UnboundedReceiver<M>,
     addr: ChannelAddr,
@@ -214,6 +229,7 @@ struct MpscRx<M: RemoteMessage> {
 }
 
 impl<M: RemoteMessage> MpscRx<M> {
+    #[allow(dead_code)] // Not used outside tests.
     pub fn new(
         rx: mpsc::UnboundedReceiver<M>,
         addr: ChannelAddr,
@@ -285,7 +301,7 @@ pub enum TlsMode {
     // TODO: consider adding IpV4 support.
 }
 
-/// Address format for MetaTls channels. Supports both hostname/port pairs
+/// Address format for Tls channels. Supports both hostname/port pairs
 /// (required for clients for host identity) and direct socket addresses
 /// (allowed for servers).
 #[derive(
@@ -300,7 +316,7 @@ pub enum TlsMode {
     PartialOrd,
     EnumAsInner
 )]
-pub enum MetaTlsAddr {
+pub enum TlsAddr {
     /// Hostname and port pair. Required for clients to establish host identity.
     Host {
         /// The hostname to connect to.
@@ -312,7 +328,7 @@ pub enum MetaTlsAddr {
     Socket(SocketAddr),
 }
 
-impl MetaTlsAddr {
+impl TlsAddr {
     /// Returns the port number for this address.
     pub fn port(&self) -> Port {
         match self {
@@ -330,7 +346,7 @@ impl MetaTlsAddr {
     }
 }
 
-impl fmt::Display for MetaTlsAddr {
+impl fmt::Display for TlsAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Host { hostname, port } => write!(f, "{}:{}", hostname, port),
@@ -340,13 +356,25 @@ impl fmt::Display for MetaTlsAddr {
 }
 
 /// Types of channel transports.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Named)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    typeuri::Named
+)]
 pub enum ChannelTransport {
     /// Transport over a TCP connection.
     Tcp(TcpMode),
 
     /// Transport over a TCP connection with TLS support within Meta
     MetaTls(TlsMode),
+
+    /// Transport over a TCP connection with configurable TLS support
+    Tls,
 
     /// Local transports uses an in-process registry and mpsc channels.
     Local,
@@ -363,6 +391,7 @@ impl fmt::Display for ChannelTransport {
         match self {
             Self::Tcp(mode) => write!(f, "tcp({:?})", mode),
             Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
+            Self::Tls => write!(f, "tls"),
             Self::Local => write!(f, "local"),
             Self::Sim(transport) => write!(f, "sim({})", transport),
             Self::Unix => write!(f, "unix"),
@@ -395,6 +424,7 @@ impl FromStr for ChannelTransport {
             }
             "local" => Ok(ChannelTransport::Local),
             "unix" => Ok(ChannelTransport::Unix),
+            "tls" => Ok(ChannelTransport::Tls),
             s if s.starts_with("metatls(") && s.ends_with(")") => {
                 let inner = &s["metatls(".len()..s.len() - 1];
                 let mode = inner.parse()?;
@@ -414,6 +444,7 @@ impl ChannelTransport {
             ChannelTransport::Tcp(TcpMode::Hostname),
             ChannelTransport::Local,
             ChannelTransport::Unix,
+            // Tls requires certificate configuration, tested separately in tls::tests
             // TODO add MetaTls (T208303369)
             // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Tcp)),
             // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Local)),
@@ -430,6 +461,7 @@ impl ChannelTransport {
         match self {
             ChannelTransport::Tcp(_) => true,
             ChannelTransport::MetaTls(_) => true,
+            ChannelTransport::Tls => true,
             ChannelTransport::Local => false,
             ChannelTransport::Sim(_) => false,
             ChannelTransport::Unix => false,
@@ -444,6 +476,82 @@ impl AttrValue for ChannelTransport {
 
     fn parse(s: &str) -> Result<Self, anyhow::Error> {
         s.parse()
+    }
+}
+
+/// Specifies how to bind a channel server.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    typeuri::Named
+)]
+pub enum BindSpec {
+    /// Bind to any available address for the given transport.
+    Any(ChannelTransport),
+
+    /// Bind to a specific channel address.
+    Addr(ChannelAddr),
+}
+
+impl BindSpec {
+    /// Return an "any" address for this bind spec.
+    pub fn binding_addr(&self) -> ChannelAddr {
+        match self {
+            BindSpec::Any(transport) => ChannelAddr::any(transport.clone()),
+            BindSpec::Addr(addr) => addr.clone(),
+        }
+    }
+}
+
+impl From<ChannelTransport> for BindSpec {
+    fn from(transport: ChannelTransport) -> Self {
+        BindSpec::Any(transport)
+    }
+}
+
+impl From<ChannelAddr> for BindSpec {
+    fn from(addr: ChannelAddr) -> Self {
+        BindSpec::Addr(addr)
+    }
+}
+
+impl fmt::Display for BindSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Any(transport) => write!(f, "{}", transport),
+            Self::Addr(addr) => write!(f, "{}", addr),
+        }
+    }
+}
+
+impl FromStr for BindSpec {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(transport) = ChannelTransport::from_str(s) {
+            Ok(BindSpec::Any(transport))
+        } else if let Ok(addr) = ChannelAddr::from_zmq_url(s) {
+            Ok(BindSpec::Addr(addr))
+        } else if let Ok(addr) = ChannelAddr::from_str(s) {
+            Ok(BindSpec::Addr(addr))
+        } else {
+            Err(anyhow::anyhow!("invalid bind spec: {}", s))
+        }
+    }
+}
+
+impl AttrValue for BindSpec {
+    fn display(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(s: &str) -> Result<Self, anyhow::Error> {
+        Self::from_str(s)
     }
 }
 
@@ -485,7 +593,7 @@ pub type Port = u16;
     Serialize,
     Deserialize,
     Hash,
-    Named
+    typeuri::Named
 )]
 pub enum ChannelAddr {
     /// A socket address used to establish TCP channels. Supports
@@ -493,9 +601,14 @@ pub enum ChannelAddr {
     Tcp(SocketAddr),
 
     /// An address to establish TCP channels with TLS support within Meta.
+    /// Uses TlsAddr which supports both hostname/port pairs (required for clients)
+    /// and socket addresses (allowed for servers).
+    MetaTls(TlsAddr),
+
+    /// An address to establish TCP channels with configurable TLS support.
     /// Supports both hostname/port pairs (required for clients) and
     /// socket addresses (allowed for servers).
-    MetaTls(MetaTlsAddr),
+    Tls(TlsAddr),
 
     /// Local addresses are registered in-process and given an integral
     /// index.
@@ -507,6 +620,27 @@ pub enum ChannelAddr {
     /// A unix domain socket address. Supports both absolute path names as
     ///  well as "abstract" names per https://manpages.debian.org/unstable/manpages/unix.7.en.html#Abstract_sockets
     Unix(net::unix::SocketAddr),
+
+    /// A pair of addresses, one for the client and one for the server:
+    ///   - The client should dial to the `dial_to` address.
+    ///   - The server should bind to the `bind_to` address.
+    ///
+    /// The user is responsible for ensuring the traffic to the `dial_to` address
+    /// is routed to the `bind_to` address.
+    ///
+    /// This is useful for scenarios where the network is configured in a way,
+    /// that the bound address is not directly accessible from the client.
+    ///
+    /// For example, in AWS, the client could be provided with the public IP
+    /// address, yet the server is bound to a private IP address or simply
+    /// INADDR_ANY. Traffic to the public IP address is mapped to the private
+    /// IP address through network address translation (NAT).
+    Alias {
+        /// The address to which the client should dial to.
+        dial_to: Box<ChannelAddr>,
+        /// The address to which the server should bind to.
+        bind_to: Box<ChannelAddr>,
+    },
 }
 
 impl From<SocketAddr> for ChannelAddr {
@@ -533,6 +667,17 @@ impl From<tokio::net::unix::SocketAddr> for ChannelAddr {
     }
 }
 
+/// Return the first non-link-local address from a list.
+fn find_routable_address(addresses: &[IpAddr]) -> Option<IpAddr> {
+    addresses
+        .iter()
+        .find(|addr| match addr {
+            IpAddr::V6(v6) => !v6.is_unicast_link_local(),
+            IpAddr::V4(v4) => !v4.is_link_local(),
+        })
+        .cloned()
+}
+
 impl ChannelAddr {
     /// The "any" address for the given transport type. This is used to
     /// servers to "any" address.
@@ -549,7 +694,7 @@ impl ChannelAddr {
                                 hostname.to_str().and_then(|hostname_str| {
                                     dns_lookup::lookup_host(hostname_str)
                                         .ok()
-                                        .and_then(|addresses| addresses.first().cloned())
+                                        .and_then(|addresses| find_routable_address(&addresses))
                                 })
                             })
                             .expect("failed to resolve hostname to ip address")
@@ -563,17 +708,26 @@ impl ChannelAddr {
                         .ok()
                         .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                         .unwrap_or("unknown_host".to_string()),
-                    TlsMode::IpV6 => local_ipv6()
-                        .ok()
-                        .and_then(|addr| addr.to_string().parse().ok())
-                        .expect("failed to retrieve ipv6 address"),
+                    TlsMode::IpV6 => {
+                        get_host_ipv6_address().expect("failed to retrieve ipv6 address")
+                    }
                 };
-                Self::MetaTls(MetaTlsAddr::Host {
+                Self::MetaTls(TlsAddr::Host {
                     hostname: host_address,
                     port: 0,
                 })
             }
             ChannelTransport::Local => Self::Local(0),
+            ChannelTransport::Tls => {
+                let host_address = hostname::get()
+                    .ok()
+                    .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
+                    .unwrap_or("localhost".to_string());
+                Self::Tls(TlsAddr::Host {
+                    hostname: host_address,
+                    port: 0,
+                })
+            }
             ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
@@ -591,21 +745,35 @@ impl ChannelAddr {
                 }
             }
             Self::MetaTls(addr) => match addr {
-                MetaTlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
+                TlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
                     Ok(IpAddr::V6(_)) => ChannelTransport::MetaTls(TlsMode::IpV6),
                     Ok(IpAddr::V4(_)) => ChannelTransport::MetaTls(TlsMode::Hostname),
                     Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
                 },
-                MetaTlsAddr::Socket(socket_addr) => match socket_addr.ip() {
+                TlsAddr::Socket(socket_addr) => match socket_addr.ip() {
                     IpAddr::V6(_) => ChannelTransport::MetaTls(TlsMode::IpV6),
                     IpAddr::V4(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
                 },
             },
+            Self::Tls(_) => ChannelTransport::Tls,
             Self::Local(_) => ChannelTransport::Local,
             Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
             Self::Unix(_) => ChannelTransport::Unix,
+            // bind_to's transport is what is actually used in communication.
+            // Therefore we use its transport to represent the Alias.
+            Self::Alias { bind_to, .. } => bind_to.transport(),
         }
     }
+}
+
+#[cfg(fbcode_build)]
+fn get_host_ipv6_address() -> anyhow::Result<String> {
+    crate::meta::host_ip::host_ipv6_address()
+}
+
+#[cfg(not(fbcode_build))]
+fn get_host_ipv6_address() -> anyhow::Result<String> {
+    Ok(local_ip_address::local_ipv6()?.to_string())
 }
 
 impl fmt::Display for ChannelAddr {
@@ -613,9 +781,13 @@ impl fmt::Display for ChannelAddr {
         match self {
             Self::Tcp(addr) => write!(f, "tcp:{}", addr),
             Self::MetaTls(addr) => write!(f, "metatls:{}", addr),
+            Self::Tls(addr) => write!(f, "tls:{}", addr),
             Self::Local(index) => write!(f, "local:{}", index),
             Self::Sim(sim_addr) => write!(f, "sim:{}", sim_addr),
             Self::Unix(addr) => write!(f, "unix:{}", addr),
+            Self::Alias { dial_to, bind_to } => {
+                write!(f, "alias:dial_to={};bind_to={}", dial_to, bind_to)
+            }
         }
     }
 }
@@ -634,11 +806,34 @@ impl FromStr for ChannelAddr {
                 .map(Self::Tcp)
                 .map_err(anyhow::Error::from),
             Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
+            Some(("tls", rest)) => net::tls::parse(rest).map_err(|e| e.into()),
             Some(("sim", rest)) => sim::parse(rest).map_err(|e| e.into()),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
+            Some(("alias", _)) => Err(anyhow::anyhow!(
+                "detect possible alias address, but we currently do not support \
+                parsing alias' string representation since we only want to \
+                support parsing its zmq url format."
+            )),
             Some((r#type, _)) => Err(anyhow::anyhow!("no such channel type: {type}")),
             None => Err(anyhow::anyhow!("no channel type specified")),
         }
+    }
+}
+
+/// Normalize a host string. If the host is an IP address, parse and
+/// re-format it to produce a canonical string representation.
+pub(crate) fn normalize_host(host: &str) -> String {
+    // Strip URI-style brackets (e.g., "[::1]") because IpAddr::from_str
+    // rejects them — it only accepts bare addresses.
+    let host_clean = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if let Ok(ip_addr) = host_clean.parse::<IpAddr>() {
+        ip_addr.to_string()
+    } else {
+        host.to_string()
     }
 }
 
@@ -649,7 +844,38 @@ impl ChannelAddr {
     /// - inproc://endpoint-name (equivalent to local)
     /// - ipc://path (equivalent to unix)
     /// - metatls://hostname:port or metatls://*:port
+    /// - Alias format: dial_to_url@bind_to_url (e.g., tcp://host:port@tcp://host:port)
+    ///   Note: Alias format is currently only supported for TCP addresses
     pub fn from_zmq_url(address: &str) -> Result<Self, anyhow::Error> {
+        // Check for Alias format: dial_to_url@bind_to_url
+        // The @ character separates two valid ZMQ URLs
+        if let Some(at_pos) = address.find('@') {
+            let dial_to_str = &address[..at_pos];
+            let bind_to_str = &address[at_pos + 1..];
+
+            // Validate that both addresses use TCP scheme
+            if !dial_to_str.starts_with("tcp://") {
+                return Err(anyhow::anyhow!(
+                    "alias format is only supported for TCP addresses, got dial_to: {}",
+                    dial_to_str
+                ));
+            }
+            if !bind_to_str.starts_with("tcp://") {
+                return Err(anyhow::anyhow!(
+                    "alias format is only supported for TCP addresses, got bind_to: {}",
+                    bind_to_str
+                ));
+            }
+
+            let dial_to = Self::from_zmq_url(dial_to_str)?;
+            let bind_to = Self::from_zmq_url(bind_to_str)?;
+
+            return Ok(Self::Alias {
+                dial_to: Box::new(dial_to),
+                bind_to: Box::new(bind_to),
+            });
+        }
+
         // Try ZMQ-style URL format first (scheme://...)
         let (scheme, address) = address.split_once("://").ok_or_else(|| {
             anyhow::anyhow!("address must be in url form scheme://endppoint {}", address)
@@ -685,13 +911,29 @@ impl ChannelAddr {
 
                 if host == "*" {
                     // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::MetaTls(MetaTlsAddr::Host {
+                    Ok(Self::MetaTls(TlsAddr::Host {
                         hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
                         port,
                     }))
                 } else {
-                    Ok(Self::MetaTls(MetaTlsAddr::Host {
-                        hostname: host.to_string(),
+                    Ok(Self::MetaTls(TlsAddr::Host {
+                        hostname: normalize_host(host),
+                        port,
+                    }))
+                }
+            }
+            "tls" => {
+                let (host, port) = Self::split_host_port(address)?;
+
+                if host == "*" {
+                    // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
+                    Ok(Self::Tls(TlsAddr::Host {
+                        hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
+                        port,
+                    }))
+                } else {
+                    Ok(Self::Tls(TlsAddr::Host {
+                        hostname: normalize_host(host),
                         port,
                     }))
                 }
@@ -739,17 +981,24 @@ impl ChannelAddr {
 }
 
 /// Universal channel transmitter.
-#[derive(Debug)]
 pub struct ChannelTx<M: RemoteMessage> {
     inner: ChannelTxKind<M>,
 }
 
+impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChannelTx")
+            .field("addr", &self.addr())
+            .finish()
+    }
+}
+
 /// Universal channel transmitter.
-#[derive(Debug)]
 enum ChannelTxKind<M: RemoteMessage> {
     Local(local::LocalTx<M>),
     Tcp(net::NetTx<M>),
     MetaTls(net::NetTx<M>),
+    Tls(net::NetTx<M>),
     Unix(net::NetTx<M>),
     Sim(sim::SimTx<M>),
 }
@@ -761,6 +1010,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Local(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Tcp(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::MetaTls(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Tls(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Sim(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Unix(tx) => tx.do_post(message, return_channel),
         }
@@ -771,6 +1021,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Local(tx) => tx.addr(),
             ChannelTxKind::Tcp(tx) => Tx::<M>::addr(tx),
             ChannelTxKind::MetaTls(tx) => Tx::<M>::addr(tx),
+            ChannelTxKind::Tls(tx) => Tx::<M>::addr(tx),
             ChannelTxKind::Sim(tx) => tx.addr(),
             ChannelTxKind::Unix(tx) => Tx::<M>::addr(tx),
         }
@@ -781,6 +1032,7 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Local(tx) => tx.status(),
             ChannelTxKind::Tcp(tx) => tx.status(),
             ChannelTxKind::MetaTls(tx) => tx.status(),
+            ChannelTxKind::Tls(tx) => tx.status(),
             ChannelTxKind::Sim(tx) => tx.status(),
             ChannelTxKind::Unix(tx) => tx.status(),
         }
@@ -788,29 +1040,37 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
 }
 
 /// Universal channel receiver.
-#[derive(Debug)]
 pub struct ChannelRx<M: RemoteMessage> {
     inner: ChannelRxKind<M>,
 }
 
+impl<M: RemoteMessage> fmt::Debug for ChannelRx<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChannelRx")
+            .field("addr", &self.addr())
+            .finish()
+    }
+}
+
 /// Universal channel receiver.
-#[derive(Debug)]
 enum ChannelRxKind<M: RemoteMessage> {
     Local(local::LocalRx<M>),
     Tcp(net::NetRx<M>),
     MetaTls(net::NetRx<M>),
+    Tls(net::NetRx<M>),
     Unix(net::NetRx<M>),
     Sim(sim::SimRx<M>),
 }
 
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
-    #[hyperactor::instrument]
+    #[tracing::instrument(level = "debug", skip_all)]
     async fn recv(&mut self) -> Result<M, ChannelError> {
         match &mut self.inner {
             ChannelRxKind::Local(rx) => rx.recv().await,
             ChannelRxKind::Tcp(rx) => rx.recv().await,
             ChannelRxKind::MetaTls(rx) => rx.recv().await,
+            ChannelRxKind::Tls(rx) => rx.recv().await,
             ChannelRxKind::Sim(rx) => rx.recv().await,
             ChannelRxKind::Unix(rx) => rx.recv().await,
         }
@@ -821,6 +1081,7 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::Local(rx) => rx.addr(),
             ChannelRxKind::Tcp(rx) => rx.addr(),
             ChannelRxKind::MetaTls(rx) => rx.addr(),
+            ChannelRxKind::Tls(rx) => rx.addr(),
             ChannelRxKind::Sim(rx) => rx.addr(),
             ChannelRxKind::Unix(rx) => rx.addr(),
         }
@@ -838,20 +1099,34 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
         ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
+        ChannelAddr::Tls(tls_addr) => ChannelTxKind::Tls(net::tls::dial(tls_addr)?),
         ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
+        ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
     Ok(ChannelTx { inner })
 }
 
 /// Serve on the provided channel address. The server is turned down
 /// when the returned Rx is dropped.
-#[crate::instrument]
 #[track_caller]
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     let caller = Location::caller();
+    serve_inner(addr).map(|(addr, inner)| {
+        tracing::debug!(
+            name = "serve",
+            %addr,
+            %caller,
+        );
+        (addr, ChannelRx { inner })
+    })
+}
+
+fn serve_inner<M: RemoteMessage>(
+    addr: ChannelAddr,
+) -> Result<(ChannelAddr, ChannelRxKind<M>), ChannelError> {
     match addr {
         ChannelAddr::Tcp(addr) => {
             let (addr, rx) = net::tcp::serve::<M>(addr)?;
@@ -860,6 +1135,10 @@ pub fn serve<M: RemoteMessage>(
         ChannelAddr::MetaTls(meta_addr) => {
             let (addr, rx) = net::meta::serve::<M>(meta_addr)?;
             Ok((addr, ChannelRxKind::MetaTls(rx)))
+        }
+        ChannelAddr::Tls(tls_addr) => {
+            let (addr, rx) = net::tls::serve::<M>(tls_addr)?;
+            Ok((addr, ChannelRxKind::Tls(rx)))
         }
         ChannelAddr::Unix(path) => {
             let (addr, rx) = net::unix::serve::<M>(path)?;
@@ -877,15 +1156,15 @@ pub fn serve<M: RemoteMessage>(
             "invalid local addr: {}",
             a
         ))),
+        ChannelAddr::Alias { dial_to, bind_to } => {
+            let (bound_addr, rx) = serve_inner::<M>(*bind_to)?;
+            let alias_addr = ChannelAddr::Alias {
+                dial_to,
+                bind_to: Box::new(bound_addr),
+            };
+            Ok((alias_addr, rx))
+        }
     }
-    .map(|(addr, inner)| {
-        tracing::debug!(
-            name = "serve",
-            %addr,
-            %caller,
-        );
-        (addr, ChannelRx { inner })
-    })
 }
 
 /// Serve on the local address. The server is turned down
@@ -1013,7 +1292,7 @@ mod tests {
         // Test metatls with hostname
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://example.com:443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "example.com".to_string(),
                 port: 443
             })
@@ -1022,7 +1301,7 @@ mod tests {
         // Test metatls with IP address (should be normalized)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://192.168.1.1:443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "192.168.1.1".to_string(),
                 port: 443
             })
@@ -1031,7 +1310,7 @@ mod tests {
         // Test metatls with wildcard (should use IPv6 unspecified address)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://*:8443").unwrap(),
-            ChannelAddr::MetaTls(MetaTlsAddr::Host {
+            ChannelAddr::MetaTls(TlsAddr::Host {
                 hostname: "::".to_string(),
                 port: 8443
             })
@@ -1054,6 +1333,118 @@ mod tests {
         assert!(ChannelAddr::from_zmq_url("tcp://invalid-port").is_err());
         assert!(ChannelAddr::from_zmq_url("metatls://no-port").is_err());
         assert!(ChannelAddr::from_zmq_url("inproc://not-a-number").is_err());
+
+        // IPv6 normalization: leading zeros are stripped
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443")
+                .unwrap(),
+            ChannelAddr::MetaTls(TlsAddr::Host {
+                hostname: "2a03:83e4:5000:c000:56d7:cf:75ce:144a".to_string(),
+                port: 443,
+            })
+        );
+
+        // Short and long forms of the same IPv6 produce equal ChannelAddr values
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443")
+                .unwrap(),
+            ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:cf:75ce:144a:443")
+                .unwrap(),
+        );
+
+        // Bracketed IPv6 is normalized
+        assert_eq!(
+            ChannelAddr::from_zmq_url("metatls://[::1]:443").unwrap(),
+            ChannelAddr::MetaTls(TlsAddr::Host {
+                hostname: "::1".to_string(),
+                port: 443,
+            })
+        );
+
+        // Same tests for tls://
+        assert_eq!(
+            ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443").unwrap(),
+            ChannelAddr::Tls(TlsAddr::Host {
+                hostname: "2a03:83e4:5000:c000:56d7:cf:75ce:144a".to_string(),
+                port: 443,
+            })
+        );
+        assert_eq!(
+            ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443").unwrap(),
+            ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:cf:75ce:144a:443").unwrap(),
+        );
+        assert_eq!(
+            ChannelAddr::from_zmq_url("tls://[::1]:443").unwrap(),
+            ChannelAddr::Tls(TlsAddr::Host {
+                hostname: "::1".to_string(),
+                port: 443,
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_host() {
+        // Plain IPv4 passes through
+        assert_eq!(normalize_host("192.168.1.1"), "192.168.1.1");
+
+        // Plain hostname passes through
+        assert_eq!(normalize_host("example.com"), "example.com");
+
+        // IPv6 with leading zeros gets normalized
+        assert_eq!(
+            normalize_host("2a03:83e4:5000:c000:56d7:00cf:75ce:144a"),
+            "2a03:83e4:5000:c000:56d7:cf:75ce:144a"
+        );
+
+        // Bracketed IPv6 is stripped and normalized
+        assert_eq!(normalize_host("[::1]"), "::1");
+
+        // Without bracket stripping, IpAddr::from_str rejects bracketed
+        // addresses. This demonstrates that the bracket stripping in
+        // normalize_host is necessary.
+        assert!("[::1]".parse::<IpAddr>().is_err());
+    }
+
+    #[test]
+    fn test_zmq_style_alias_channel_addr() {
+        // Test Alias format: dial_to_url@bind_to_url
+        // The format is: dial_to_url@bind_to_url where both are valid ZMQ URLs
+        // Note: Alias format is only supported for TCP addresses
+
+        // Test Alias with tcp on both sides
+        let alias_addr = ChannelAddr::from_zmq_url("tcp://127.0.0.1:9000@tcp://[::]:8800").unwrap();
+        match alias_addr {
+            ChannelAddr::Alias { dial_to, bind_to } => {
+                assert_eq!(
+                    *dial_to,
+                    ChannelAddr::Tcp("127.0.0.1:9000".parse().unwrap())
+                );
+                assert_eq!(*bind_to, ChannelAddr::Tcp("[::]:8800".parse().unwrap()));
+            }
+            _ => panic!("Expected Alias"),
+        }
+
+        // Test error: alias with non-tcp dial_to (not supported)
+        assert!(
+            ChannelAddr::from_zmq_url("metatls://example.com:443@tcp://127.0.0.1:8080").is_err()
+        );
+
+        // Test error: alias with non-tcp bind_to (not supported)
+        assert!(
+            ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@metatls://example.com:443").is_err()
+        );
+
+        // Test error: invalid dial_to URL in Alias
+        assert!(ChannelAddr::from_zmq_url("invalid://scheme@tcp://127.0.0.1:8080").is_err());
+
+        // Test error: invalid bind_to URL in Alias
+        assert!(ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@invalid://scheme").is_err());
+
+        // Test error: missing port in dial_to
+        assert!(ChannelAddr::from_zmq_url("tcp://host@tcp://127.0.0.1:8080").is_err());
+
+        // Test error: missing port in bind_to
+        assert!(ChannelAddr::from_zmq_url("tcp://127.0.0.1:8080@tcp://example.com").is_err());
     }
 
     #[tokio::test]
@@ -1119,7 +1510,14 @@ mod tests {
                     break result;
                 }
             };
-            assert_matches!(result, Ok(SendError(ChannelError::Closed, 123)));
+            assert_matches!(
+                result,
+                Ok(SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    reason: None
+                })
+            );
         }
     }
 
@@ -1143,6 +1541,42 @@ mod tests {
             .parse()
             .unwrap(),
         ]
+    }
+
+    #[test]
+    fn test_bind_spec_from_str() {
+        // Test parsing ChannelTransport strings -> BindSpec::Any
+        assert_eq!(
+            BindSpec::from_str("tcp").unwrap(),
+            BindSpec::Any(ChannelTransport::Tcp(TcpMode::Hostname))
+        );
+        assert_eq!(
+            BindSpec::from_str("metatls(Hostname)").unwrap(),
+            BindSpec::Any(ChannelTransport::MetaTls(TlsMode::Hostname))
+        );
+
+        // Test parsing ChannelAddr strings -> BindSpec::Addr
+        assert_eq!(
+            BindSpec::from_str("tcp:127.0.0.1:8080").unwrap(),
+            BindSpec::Addr(ChannelAddr::Tcp("127.0.0.1:8080".parse().unwrap()))
+        );
+
+        // Test parsing ZMQ URL format -> BindSpec::Addr
+        assert_eq!(
+            BindSpec::from_str("tcp://127.0.0.1:9000").unwrap(),
+            BindSpec::Addr(ChannelAddr::Tcp("127.0.0.1:9000".parse().unwrap()))
+        );
+        assert_eq!(
+            BindSpec::from_str("tcp://127.0.0.1:9000@tcp://[::1]:7200").unwrap(),
+            BindSpec::Addr(
+                ChannelAddr::from_zmq_url("tcp://127.0.0.1:9000@tcp://[::1]:7200").unwrap()
+            )
+        );
+
+        // Test error cases
+        assert!(BindSpec::from_str("invalid_spec").is_err());
+        assert!(BindSpec::from_str("unknown://scheme").is_err());
+        assert!(BindSpec::from_str("").is_err());
     }
 
     #[tokio::test]
@@ -1178,8 +1612,48 @@ mod tests {
             drop(rx);
             assert_matches!(
                 tx.send(123).await.unwrap_err(),
-                SendError(ChannelError::Closed, 123)
+                SendError {
+                    error: ChannelError::Closed,
+                    message: 123,
+                    ..
+                }
             );
         }
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_link_local_ipv6() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let routable_v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let addrs = vec![link_local_v6, routable_v6];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v6));
+    }
+
+    #[test]
+    fn test_find_routable_address_skips_link_local_ipv4() {
+        let link_local_v4: IpAddr = "169.254.1.1".parse().unwrap();
+        let routable_v4: IpAddr = "192.168.1.1".parse().unwrap();
+        let addrs = vec![link_local_v4, routable_v4];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v4));
+    }
+
+    #[test]
+    fn test_find_routable_address_returns_none_when_all_link_local() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let link_local_v4: IpAddr = "169.254.1.1".parse().unwrap();
+        let addrs = vec![link_local_v6, link_local_v4];
+        assert_eq!(find_routable_address(&addrs), None);
+    }
+
+    #[test]
+    fn test_find_routable_address_mixed() {
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let link_local_v4: IpAddr = "169.254.0.1".parse().unwrap();
+        let routable_v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let routable_v6: IpAddr = "2001:db8::2".parse().unwrap();
+
+        // First routable address in list order should be returned.
+        let addrs = vec![link_local_v6, link_local_v4, routable_v4, routable_v6];
+        assert_eq!(find_routable_address(&addrs), Some(routable_v4));
     }
 }

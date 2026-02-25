@@ -27,8 +27,8 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
+use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::channel;
@@ -41,9 +41,9 @@ use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
-use hyperactor::data::Serialized;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
+use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
 use hyperactor_telemetry::env;
 use hyperactor_telemetry::log_file_path;
@@ -59,6 +59,7 @@ use tokio::sync::RwLock;
 use tokio::sync::watch::Receiver;
 use tokio::task::JoinHandle;
 use tracing::Level;
+use typeuri::Named;
 
 use crate::bootstrap::BOOTSTRAP_LOG_CHANNEL;
 use crate::shortuuid::ShortUuid;
@@ -72,24 +73,24 @@ declare_attrs! {
     /// Maximum number of lines to batch before flushing to client
     /// This means that stdout/err reader will be paused after reading `HYPERACTOR_READ_LOG_BUFFER` lines.
     /// After pause lines will be flushed and reading will resume.
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_READ_LOG_BUFFER".to_string()),
-        py_name: None,
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_READ_LOG_BUFFER".to_string()),
+        Some("read_log_buffer".to_string()),
+    ))
     pub attr READ_LOG_BUFFER: usize = 100;
 
     /// If enabled, local logs are also written to a file and aggregated
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_FORCE_FILE_LOG".to_string()),
-        py_name: None,
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_FORCE_FILE_LOG".to_string()),
+        Some("force_file_log".to_string()),
+    ))
     pub attr FORCE_FILE_LOG: bool = false;
 
     /// Prefixes logs with rank
-    @meta(CONFIG = ConfigAttr {
-        env_name: Some("HYPERACTOR_PREFIX_WITH_RANK".to_string()),
-        py_name: None,
-    })
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_PREFIX_WITH_RANK".to_string()),
+        Some("prefix_with_rank".to_string()),
+    ))
     pub attr PREFIX_WITH_RANK: bool = true;
 }
 
@@ -288,12 +289,12 @@ pub enum LogMessage {
     Log {
         /// The hostname of the process that generated the log
         hostname: String,
-        /// The pid of the process that generated the log
-        pid: u32,
+        /// String representation of the ProcId that generated the log
+        proc_id: String,
         /// The target output stream (stdout or stderr)
         output_target: OutputTarget,
         /// The log payload as bytes
-        payload: Serialized,
+        payload: wirevalue::Any,
     },
 
     /// Flush the log
@@ -363,13 +364,13 @@ pub enum Stream {
 /// Write the log to a local unix channel so some actors can listen to it and stream the log back.
 pub struct LocalLogSender {
     hostname: String,
-    pid: u32,
+    proc_id: String,
     tx: ChannelTx<LogMessage>,
     status: Receiver<TxStatus>,
 }
 
 impl LocalLogSender {
-    fn new(log_channel: ChannelAddr, pid: u32) -> Result<Self, anyhow::Error> {
+    fn new(log_channel: ChannelAddr, proc_id: &ProcId) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
         let status = tx.status().clone();
 
@@ -379,7 +380,7 @@ impl LocalLogSender {
             .unwrap_or("unknown_host".to_string());
         Ok(Self {
             hostname,
-            pid,
+            proc_id: proc_id.to_string(),
             tx,
             status,
         })
@@ -393,9 +394,9 @@ impl LogSender for LocalLogSender {
             // Do not use tx.send, it will block the allocator as the child process state is unknown.
             self.tx.post(LogMessage::Log {
                 hostname: self.hostname.clone(),
-                pid: self.pid,
+                proc_id: self.proc_id.clone(),
                 output_target: target,
-                payload: Serialized::serialize(&payload)?,
+                payload: wirevalue::Any::serialize(&payload)?,
             });
         }
 
@@ -417,6 +418,7 @@ impl LogSender for LocalLogSender {
 pub struct FileMonitorMessage {
     lines: Vec<String>,
 }
+wirevalue::register_type!(FileMonitorMessage);
 
 /// File appender, coordinates write access to a file via a channel.
 pub struct FileAppender {
@@ -852,7 +854,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        pid: u32,
+        proc_id: &ProcId,
         local_rank: usize,
     ) -> Self {
         let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
@@ -868,7 +870,7 @@ impl StreamFwder {
             target,
             max_buffer_size,
             log_channel,
-            pid,
+            proc_id,
             prefix,
         )
     }
@@ -881,7 +883,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        pid: u32,
+        proc_id: &ProcId,
         prefix: Option<String>,
     ) -> Self {
         // Sanity: when there is no file sink, no log forwarding, and
@@ -903,7 +905,7 @@ impl StreamFwder {
         };
 
         let log_sender: Option<Box<dyn LogSender + Send>> = if let Some(addr) = log_channel {
-            match LocalLogSender::new(addr, pid) {
+            match LocalLogSender::new(addr, proc_id) {
                 Ok(s) => Some(Box::new(s) as Box<dyn LogSender + Send>),
                 Err(e) => {
                     tracing::error!("failed to create log sender: {}", e);
@@ -983,7 +985,6 @@ pub enum LogForwardMessage {
 }
 
 /// A log forwarder that receives the log from its parent process and forward it back to the client
-#[derive(Debug)]
 #[hyperactor::export(
     spawn = true,
     handlers = [LogForwardMessage {cast = true}],
@@ -1015,7 +1016,7 @@ impl Actor for LogForwardActor {
 impl hyperactor::RemoteSpawn for LogForwardActor {
     type Params = ActorRef<LogClientActor>;
 
-    async fn new(logging_client_ref: Self::Params) -> Result<Self> {
+    async fn new(logging_client_ref: Self::Params, _environment: Flattrs) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
             Ok(channel) => channel.parse()?,
             Err(err) => {
@@ -1063,7 +1064,7 @@ impl hyperactor::RemoteSpawn for LogForwardActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LogForwardMessage)]
+#[hyperactor::handle(LogForwardMessage)]
 impl LogForwardMessageHandler for LogForwardActor {
     async fn forward(&mut self, ctx: &Context<Self>) -> Result<(), anyhow::Error> {
         match self.rx.recv().await {
@@ -1096,13 +1097,13 @@ impl LogForwardMessageHandler for LogForwardActor {
             }
             Ok(LogMessage::Log {
                 hostname,
-                pid,
+                proc_id,
                 output_target,
                 payload,
             }) => {
                 if self.stream_to_client {
                     self.logging_client_ref
-                        .log(ctx, hostname, pid, output_target, payload)
+                        .log(ctx, hostname, proc_id, output_target, payload)
                         .await?;
                 }
             }
@@ -1143,9 +1144,7 @@ impl LogForwardMessageHandler for LogForwardActor {
 }
 
 /// Deserialize a serialized message and split it into UTF-8 lines
-fn deserialize_message_lines(
-    serialized_message: &hyperactor::data::Serialized,
-) -> Result<Vec<Vec<String>>> {
+fn deserialize_message_lines(serialized_message: &wirevalue::Any) -> Result<Vec<Vec<String>>> {
     // Try to deserialize as Vec<Vec<u8>> first (multiple byte arrays)
     if let Ok(message_bytes) = serialized_message.deserialized::<Vec<Vec<u8>>>() {
         let mut result = Vec::new();
@@ -1224,8 +1223,8 @@ impl LogClientActor {
         }
     }
 
-    fn print_log_line(hostname: &str, pid: u32, output_target: OutputTarget, line: String) {
-        let message = format!("[{} {}] {}", hostname, pid, line);
+    fn print_log_line(hostname: &str, proc_id: &str, output_target: OutputTarget, line: String) {
+        let message = format!("[{} {}] {}", hostname, proc_id, line);
 
         #[cfg(test)]
         crate::logging::test_tap::push(&message);
@@ -1254,15 +1253,15 @@ impl Drop for LogClientActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LogMessage)]
+#[hyperactor::handle(LogMessage)]
 impl LogMessageHandler for LogClientActor {
     async fn log(
         &mut self,
         cx: &Context<Self>,
         hostname: String,
-        pid: u32,
+        proc_id: String,
         output_target: OutputTarget,
-        payload: Serialized,
+        payload: wirevalue::Any,
     ) -> Result<(), anyhow::Error> {
         // Deserialize the message and process line by line with UTF-8
         let message_line_groups = deserialize_message_lines(&payload)?;
@@ -1272,7 +1271,7 @@ impl LogMessageHandler for LogClientActor {
         match self.aggregate_window_sec {
             None => {
                 for line in message_lines {
-                    Self::print_log_line(hostname, pid, output_target, line);
+                    Self::print_log_line(hostname, &proc_id, output_target, line);
                 }
                 self.last_flush_time = RealClock.system_time_now();
             }
@@ -1282,12 +1281,12 @@ impl LogMessageHandler for LogClientActor {
                         if let Err(e) = aggregator.add_line(&line) {
                             tracing::error!("error adding log line: {}", e);
                             // For the sake of completeness, flush the log lines.
-                            Self::print_log_line(hostname, pid, output_target, line);
+                            Self::print_log_line(hostname, &proc_id, output_target, line);
                         }
                     } else {
                         tracing::error!("unknown output target: {:?}", output_target);
                         // For the sake of completeness, flush the log lines.
-                        Self::print_log_line(hostname, pid, output_target, line);
+                        Self::print_log_line(hostname, &proc_id, output_target, line);
                     }
                 }
 
@@ -1369,7 +1368,7 @@ impl LogMessageHandler for LogClientActor {
 }
 
 #[async_trait]
-#[hyperactor::forward(LogClientMessage)]
+#[hyperactor::handle(LogClientMessage)]
 impl LogClientMessageHandler for LogClientActor {
     async fn set_aggregate(
         &mut self,
@@ -1602,10 +1601,12 @@ mod tests {
         unsafe {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
-        let log_client_actor = LogClientActor::new(()).await.unwrap();
+        let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
         let log_client: ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
-        let log_forwarder_actor = LogForwardActor::new(log_client.clone()).await.unwrap();
+        let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
+            .await
+            .unwrap();
         let log_forwarder: ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
@@ -1615,18 +1616,18 @@ mod tests {
         let tx: ChannelTx<LogMessage> = channel::dial(log_channel).unwrap();
         tx.post(LogMessage::Log {
             hostname: "my_host".into(),
-            pid: 1,
+            proc_id: "test_proc".into(),
             output_target: OutputTarget::Stderr,
-            payload: Serialized::serialize(&"will not stream".to_string()).unwrap(),
+            payload: wirevalue::Any::serialize(&"will not stream".to_string()).unwrap(),
         });
 
         // Turn on streaming
         log_forwarder.set_mode(&client, true).await.unwrap();
         tx.post(LogMessage::Log {
             hostname: "my_host".into(),
-            pid: 1,
+            proc_id: "test_proc".into(),
             output_target: OutputTarget::Stderr,
-            payload: Serialized::serialize(&"will stream".to_string()).unwrap(),
+            payload: wirevalue::Any::serialize(&"will stream".to_string()).unwrap(),
         });
 
         // TODO: it is hard to test out anything meaningful here as the client flushes to stdout.
@@ -1636,7 +1637,7 @@ mod tests {
     fn test_deserialize_message_lines_string() {
         // Test deserializing a String message with multiple lines
         let message = "Line 1\nLine 2\nLine 3".to_string();
-        let serialized = Serialized::serialize(&message).unwrap();
+        let serialized = wirevalue::Any::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(result, vec![vec!["Line 1", "Line 2", "Line 3"]]);
@@ -1646,7 +1647,7 @@ mod tests {
             "Hello\nWorld".as_bytes().to_vec(),
             "UTF-8 \u{1F980}\nTest".as_bytes().to_vec(),
         ];
-        let serialized = Serialized::serialize(&message_bytes).unwrap();
+        let serialized = wirevalue::Any::serialize(&message_bytes).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(
@@ -1656,7 +1657,7 @@ mod tests {
 
         // Test deserializing a single line message
         let message = "Single line message".to_string();
-        let serialized = Serialized::serialize(&message).unwrap();
+        let serialized = wirevalue::Any::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1664,7 +1665,7 @@ mod tests {
 
         // Test deserializing an empty lines
         let message = "\n\n".to_string();
-        let serialized = Serialized::serialize(&message).unwrap();
+        let serialized = wirevalue::Any::serialize(&message).unwrap();
 
         let result = deserialize_message_lines(&serialized).unwrap();
 
@@ -1672,7 +1673,7 @@ mod tests {
 
         // Test error handling for invalid UTF-8 bytes
         let invalid_utf8_bytes = vec![vec![0xFF, 0xFE, 0xFD]]; // Invalid UTF-8 sequence in Vec<Vec<u8>>
-        let serialized = Serialized::serialize(&invalid_utf8_bytes).unwrap();
+        let serialized = wirevalue::Any::serialize(&invalid_utf8_bytes).unwrap();
 
         let result = deserialize_message_lines(&serialized);
 
@@ -1828,6 +1829,7 @@ mod tests {
             .as_ref()
             .map(|fm| fm.addr_for(OutputTarget::Stdout));
 
+        let test_proc_id = id!(testproc[0]);
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(file_writer),
@@ -1835,8 +1837,8 @@ mod tests {
             OutputTarget::Stdout,
             3, // max_buffer_size
             Some(log_channel),
-            12345, // pid
-            None,  // no prefix
+            &test_proc_id,
+            None, // no prefix
         );
 
         // Wait a bit for set up to be done
@@ -1941,7 +1943,8 @@ mod tests {
     async fn test_local_log_sender_inactive_status() {
         let (log_channel, _) =
             channel::serve::<LogMessage>(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let mut sender = LocalLogSender::new(log_channel, 12345).unwrap();
+        let test_proc_id = id!(testproc[0]);
+        let mut sender = LocalLogSender::new(log_channel, &test_proc_id).unwrap();
 
         // This test verifies that the sender handles inactive status gracefully
         // In a real scenario, the channel would be closed, but for testing we just
@@ -1990,13 +1993,13 @@ mod tests {
     async fn test_deserialize_message_lines_edge_cases() {
         // Test with empty string
         let empty_message = "".to_string();
-        let serialized = Serialized::serialize(&empty_message).unwrap();
+        let serialized = wirevalue::Any::serialize(&empty_message).unwrap();
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(result, vec![vec![] as Vec<String>]);
 
         // Test with trailing newline
         let trailing_newline = "line1\nline2\n".to_string();
-        let serialized = Serialized::serialize(&trailing_newline).unwrap();
+        let serialized = wirevalue::Any::serialize(&trailing_newline).unwrap();
         let result = deserialize_message_lines(&serialized).unwrap();
         assert_eq!(result, vec![vec!["line1", "line2"]]);
     }
@@ -2386,15 +2389,16 @@ mod tests {
         let (mut writer, reader) = tokio::io::duplex(8192);
 
         // Start StreamFwder
+        let test_proc_id = id!(testproc[0]);
         let monitor = StreamFwder::start_with_writer(
             reader,
             Box::new(tokio::io::sink()), // discard output
             None,                        // no file monitor needed
             OutputTarget::Stdout,
-            1,     // tail buffer of 1 (need at least one sink)
-            None,  // no log channel
-            12345, // pid
-            None,  // no prefix
+            1,    // tail buffer of 1 (need at least one sink)
+            None, // no log channel
+            &test_proc_id,
+            None, // no prefix
         );
 
         // Write the problematic line

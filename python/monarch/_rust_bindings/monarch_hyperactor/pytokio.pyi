@@ -6,7 +6,6 @@
 
 # pyre-strict
 
-import asyncio
 from typing import (
     Any,
     Awaitable,
@@ -14,7 +13,7 @@ from typing import (
     Coroutine,
     Generator,
     Generic,
-    NoReturn,
+    Optional,
     Sequence,
     Tuple,
     TypeVar,
@@ -91,9 +90,23 @@ class Shared(Generic[T]):
     """
     def __await__(self) -> Generator[Any, Any, T]: ...
     def block_on(self) -> T: ...
+    def poll(self) -> Optional[T]:
+        """
+        If the task has completed, return the result. Otherwise, return None.
+        This is useful because it allows us to get the result of the task
+        without blocking the tokio runtime.
+        """
+        ...
     def task(self) -> PythonTask[T]:
         """
         Create a one-use Task that awaits on this if you want to use other PythonTask apis like with_timeout.
+        """
+        ...
+    @classmethod
+    def from_value(cls, value: T) -> "Shared[T]":
+        """
+        Create a Shared that has already completed with the given value. It will return that
+        value the first time poll is called.
         """
         ...
 

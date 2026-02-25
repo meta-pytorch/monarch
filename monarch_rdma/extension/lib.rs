@@ -11,15 +11,13 @@ use std::ops::Deref;
 
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
-use hyperactor::Named;
 use hyperactor::ProcId;
-use hyperactor_mesh::RootActorMesh;
-use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::ActorMesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
+use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_hyperactor::v1::proc_mesh::PyProcMesh as PyProcMeshV1;
 use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
@@ -34,6 +32,7 @@ use pyo3::types::PyTuple;
 use pyo3::types::PyType;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 /// Segment scanner callback that uses PyTorch's memory snapshot API.
 ///
@@ -47,7 +46,9 @@ unsafe extern "C" fn pytorch_segment_scanner(
     max_segments: usize,
 ) -> usize {
     // Acquire the GIL to call Python code
-    let result = Python::with_gil(|py| -> PyResult<usize> {
+    // Note: We use Python::attach here instead of monarch_with_gil_blocking because
+    // the raw pointer segments_out is not Sync and monarch_with_gil_blocking requires Send.
+    let result = Python::attach(|py| -> PyResult<usize> {
         // Check if torch is already imported - don't import it ourselves
         let sys = py.import("sys")?;
         let modules = sys.getattr("modules")?;
@@ -284,8 +285,8 @@ impl PyRdmaBuffer {
         self.buffer.size
     }
 
-    fn __reduce__(&self) -> PyResult<(PyObject, PyObject)> {
-        Python::with_gil(|py| {
+    fn __reduce__(&self) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        monarch_with_gil_blocking(|py| {
             let ctor = py.get_type::<PyRdmaBuffer>().into_py_any(py)?;
             let json = serde_json::to_string(self).map_err(|e| {
                 PyErr::new::<PyValueError, _>(format!("Serialization failed: {}", e))
@@ -327,7 +328,7 @@ impl PyRdmaBuffer {
 #[pyclass(name = "_RdmaManager", module = "monarch._rust_bindings.rdma")]
 pub struct PyRdmaManager {
     #[allow(dead_code)] // field never read
-    inner: SharedCell<RootActorMesh<'static, RdmaManagerActor>>,
+    inner: ActorMesh<RdmaManagerActor>,
     device: String,
 }
 
@@ -352,43 +353,20 @@ impl PyRdmaManager {
     ) -> PyResult<PyPythonTask> {
         tracing::debug!("spawning RDMA manager on target proc_mesh nodes");
 
-        if let Ok(v0) = proc_mesh.downcast::<PyProcMesh>() {
-            let tracked_proc_mesh = v0.borrow().try_inner()?;
-            PyPythonTask::new(async move {
-                // Spawns the `RdmaManagerActor` on the target proc_mesh.
-                // This allows the `RdmaController` to run on any node while real RDMA operations occur on appropriate hardware.
-                let actor_mesh = tracked_proc_mesh
-                    // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
-                    // TODO - make IbverbsConfig configurable
-                    .spawn::<RdmaManagerActor>(client.deref(), "rdma_manager", &None)
-                    .await
-                    .map_err(|err| PyException::new_err(err.to_string()))?;
+        let proc_mesh = proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
+        PyPythonTask::new(async move {
+            let actor_mesh: ActorMesh<RdmaManagerActor> = proc_mesh
+                // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
+                // TODO - make IbverbsConfig configurable
+                .spawn_service(client.deref(), "rdma_manager", &None)
+                .await
+                .map_err(|err| PyException::new_err(err.to_string()))?;
 
-                // Use placeholder device name since actual device is determined on remote node
-                Ok(Some(PyRdmaManager {
-                    inner: actor_mesh,
-                    device: "remote_rdma_device".to_string(),
-                }))
-            })
-        } else {
-            let proc_mesh = proc_mesh.downcast::<PyProcMeshV1>()?.borrow().mesh_ref()?;
-            PyPythonTask::new(async move {
-                let actor_mesh = proc_mesh
-                    // Pass None to use default config - RdmaManagerActor will use default IbverbsConfig
-                    // TODO - make IbverbsConfig configurable
-                    .spawn_service::<RdmaManagerActor>(client.deref(), "rdma_manager", &None)
-                    .await
-                    .map_err(|err| PyException::new_err(err.to_string()))?;
-
-                let actor_mesh = RootActorMesh::from(actor_mesh);
-                let actor_mesh = SharedCell::from(actor_mesh);
-
-                Ok(Some(PyRdmaManager {
-                    inner: actor_mesh,
-                    device: "remote_rdma_device".to_string(),
-                }))
-            })
-        }
+            Ok(Some(PyRdmaManager {
+                inner: actor_mesh,
+                device: "remote_rdma_device".to_string(),
+            }))
+        })
     }
 }
 

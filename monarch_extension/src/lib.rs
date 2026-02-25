@@ -15,7 +15,6 @@ pub mod code_sync;
 pub mod convert;
 #[cfg(feature = "tensor_engine")]
 mod debugger;
-mod logging;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
 mod simulation_tools;
@@ -45,16 +44,15 @@ fn get_or_add_new_module<'py>(
         if let Some(submodule) = submodule {
             current_module = submodule.extract()?;
         } else {
-            let new_module = PyModule::new(current_module.py(), part)?;
-            current_module.add_submodule(&new_module)?;
+            let full_name = format!("monarch._rust_bindings.{}", parts.join("."));
+            let new_module = PyModule::new(current_module.py(), &full_name)?;
+            // Use setattr with short name instead of add_submodule which uses full name
+            current_module.setattr(part, &new_module)?;
             current_module
                 .py()
                 .import("sys")?
                 .getattr("modules")?
-                .set_item(
-                    format!("monarch._rust_bindings.{}", parts.join(".")),
-                    new_module.clone(),
-                )?;
+                .set_item(&full_name, new_module.clone())?;
             current_module = new_module;
         }
     }
@@ -143,14 +141,34 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.actor",
     )?)?;
 
+    monarch_hyperactor::pickle::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pickle",
+    )?)?;
+
     monarch_hyperactor::pytokio::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.pytokio",
     )?)?;
 
+    monarch_hyperactor::pywaker::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pywaker",
+    )?)?;
+
+    monarch_hyperactor::pympsc::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.pympsc",
+    )?)?;
+
     monarch_hyperactor::mailbox::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.mailbox",
+    )?)?;
+
+    monarch_hyperactor::endpoint::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.endpoint",
     )?)?;
 
     monarch_hyperactor::context::register_python_bindings(&get_or_add_new_module(
@@ -180,17 +198,9 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_hyperactor.proc_mesh",
     )?)?;
 
-    monarch_hyperactor::v1::actor_mesh::register_python_bindings(&get_or_add_new_module(
+    monarch_hyperactor::host_mesh::register_python_bindings(&get_or_add_new_module(
         module,
-        "monarch_hyperactor.v1.actor_mesh",
-    )?)?;
-    monarch_hyperactor::v1::proc_mesh::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.v1.proc_mesh",
-    )?)?;
-    monarch_hyperactor::v1::host_mesh::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_hyperactor.v1.host_mesh",
+        "monarch_hyperactor.host_mesh",
     )?)?;
 
     monarch_hyperactor::runtime::register_python_bindings(&get_or_add_new_module(
@@ -200,6 +210,10 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     monarch_hyperactor::telemetry::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.telemetry",
+    )?)?;
+    monarch_hyperactor::testing::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.testing",
     )?)?;
     code_sync::register_python_bindings(&get_or_add_new_module(
         module,
@@ -216,20 +230,39 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.blocking",
     )?)?;
 
-    crate::logging::register_python_bindings(&get_or_add_new_module(
+    monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
         module,
-        "monarch_extension.logging",
+        "monarch_hyperactor.logging",
     )?)?;
 
-    monarch_hyperactor::v1::logging::register_python_bindings(&get_or_add_new_module(
+    monarch_hyperactor::namespace::register_python_bindings(&get_or_add_new_module(
         module,
-        "monarch_hyperactor.v1.logging",
+        "monarch_hyperactor.namespace",
+    )?)?;
+
+    monarch_hyperactor::proc_launcher_probe::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_hyperactor.proc_launcher_probe",
     )?)?;
 
     crate::trace::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.trace",
     )?)?;
+
+    #[cfg(feature = "distributed_sql_telemetry")]
+    {
+        monarch_distributed_telemetry::register_python_bindings(&get_or_add_new_module(
+            module,
+            "monarch_distributed_telemetry",
+        )?)?;
+        monarch_distributed_telemetry::database_scanner::register_python_bindings(
+            &get_or_add_new_module(module, "monarch_distributed_telemetry.database_scanner")?,
+        )?;
+        monarch_distributed_telemetry::query_engine::register_python_bindings(
+            &get_or_add_new_module(module, "monarch_distributed_telemetry.query_engine")?,
+        )?;
+    }
 
     #[cfg(fbcode_build)]
     {

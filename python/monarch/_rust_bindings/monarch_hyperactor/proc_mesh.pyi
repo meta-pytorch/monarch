@@ -6,55 +6,44 @@
 
 # pyre-strict
 
-from typing import Any, AsyncIterator, final, Literal, overload, Type, TYPE_CHECKING
+from typing import Any, final, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import Actor
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PythonMessage
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
-
 from monarch._rust_bindings.monarch_hyperactor.alloc import Alloc
 from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.pickle import PendingMessage
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-
 from monarch._rust_bindings.monarch_hyperactor.shape import Region
 
 @final
 class ProcMesh:
     @classmethod
-    def allocate_nonblocking(self, alloc: Alloc) -> PythonTask["ProcMesh"]:
+    def allocate_nonblocking(
+        self, instance: Instance, alloc: Alloc, name: str
+    ) -> PythonTask["ProcMesh"]:
         """
         Allocate a process mesh according to the provided alloc.
         Returns when the mesh is fully allocated.
 
         Arguments:
+        - `instance`: The actor instance used to allocate the mesh.
         - `alloc`: The alloc to allocate according to.
-        """
-        ...
-
-    def spawn_nonblocking(
-        self,
-        name: str,
-        actor: Any,
-    ) -> PythonTask[PythonActorMesh]:
-        """
-        Spawn a new actor on this mesh.
-
-        Arguments:
-        - `name`: Name of the actor.
-        - `actor`: The type of the actor that will be spawned.
+        - `name`: Name of the mesh.
         """
         ...
 
     @staticmethod
     def spawn_async(
-        proc_mesh: Shared["ProcMesh"], name: str, actor: Type["Actor"]
+        proc_mesh: Shared["ProcMesh"],
+        instance: Instance,
+        name: str,
+        actor: Type["Actor"],
+        init_message: PendingMessage,
+        emulated: bool,
+        supervision_display_name: str | None = None,
     ) -> PythonActorMesh: ...
-    async def monitor(self) -> ProcMeshMonitor:
-        """
-        Returns a supervision monitor for this mesh.
-        """
-        ...
-
     @property
     def region(self) -> Region:
         """
@@ -62,42 +51,15 @@ class ProcMesh:
         """
         ...
 
-    def stop_nonblocking(self) -> PythonTask[None]:
+    def stop_nonblocking(self, instance: Instance, reason: str) -> PythonTask[None]:
         """
         Stop the proc mesh.
         """
         ...
 
     def __repr__(self) -> str: ...
-
-@final
-class ProcMeshMonitor:
-    def __aiter__(self) -> AsyncIterator["ProcEvent"]:
+    def sliced(self, region: Region) -> "ProcMesh":
         """
-        Returns an async iterator for this monitor.
+        Returns a new mesh that is a slice of this mesh with the given region.
         """
-        ...
-
-    async def __anext__(self) -> "ProcEvent":
-        """
-        Returns the next proc event in the proc mesh.
-        """
-        ...
-
-@final
-class ProcEvent:
-    @final
-    class Stopped:
-        """
-        A Stopped event.
-        """
-
-        ...
-
-    @final
-    class Crashed:
-        """
-        A Crashed event.
-        """
-
         ...

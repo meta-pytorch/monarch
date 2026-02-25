@@ -55,6 +55,7 @@ use crate::metrics;
 /// method by doing `stream.next()`. Adding this trait would prevent this
 /// from happening in this file. The callsite would have to `StreamExt::next()`
 /// to disambiguate.
+#[allow(dead_code)]
 trait UnimplementedStreamExt {
     fn next(&mut self) {
         unimplemented!()
@@ -178,12 +179,14 @@ impl<M: RemoteMessage> QueuedMessage<M> {
     /// `Frame::Message<M>` and return it to the original
     /// sender. Falls back to logging if the frame is not a
     /// message or deserialization fails.
-    pub(crate) fn try_return(self) {
+    pub(crate) fn try_return(self, reason: Option<String>) {
         match serde_multipart::deserialize_bincode::<Frame<M>>(self.message) {
             Ok(Frame::Message(_, msg)) => {
-                let _ = self
-                    .return_channel
-                    .send(SendError(ChannelError::Closed, msg));
+                let _ = self.return_channel.send(SendError {
+                    error: ChannelError::Closed,
+                    message: msg,
+                    reason,
+                });
             }
             Ok(_) => {
                 tracing::debug!(
@@ -530,7 +533,10 @@ impl<'a, M: RemoteMessage> fmt::Display for State<'a, M> {
 #[derive(EnumAsInner)]
 enum Conn<S: Stream> {
     /// Disconnected.
-    Disconnected(Box<dyn Backoff + Send>),
+    Disconnected {
+        backoff: Box<dyn Backoff + Send>,
+        first_failure_at: Instant,
+    },
     /// Connected and ready to go.
     Connected {
         reader: FrameReader<ReadHalf<S>>,
@@ -540,19 +546,25 @@ enum Conn<S: Stream> {
 
 impl<S: Stream> Conn<S> {
     fn reconnect_with_default() -> Self {
-        Self::Disconnected(Box::new(
-            ExponentialBackoffBuilder::new()
-                .with_initial_interval(Duration::from_millis(1))
-                .with_multiplier(2.0)
-                .with_randomization_factor(0.1)
-                .with_max_interval(Duration::from_millis(1000))
-                .with_max_elapsed_time(None) // Allow infinite retries
-                .build(),
-        ))
+        Self::Disconnected {
+            backoff: Box::new(
+                ExponentialBackoffBuilder::new()
+                    .with_initial_interval(Duration::from_millis(1))
+                    .with_multiplier(2.0)
+                    .with_randomization_factor(0.1)
+                    .with_max_interval(Duration::from_millis(1000))
+                    .with_max_elapsed_time(None) // Allow infinite retries
+                    .build(),
+            ),
+            first_failure_at: RealClock.now(),
+        }
     }
 
-    fn reconnect(backoff: impl Backoff + Send + 'static) -> Self {
-        Self::Disconnected(Box::new(backoff))
+    fn reconnect(backoff: impl Backoff + Send + 'static, first_failure_at: Instant) -> Self {
+        Self::Disconnected {
+            backoff: Box::new(backoff),
+            first_failure_at,
+        }
     }
 }
 
@@ -584,19 +596,30 @@ async fn run<M: RemoteMessage>(
     let dest = link.dest();
     let mut state = State::init(&log_id, &dest, session_id);
     let mut conn = Conn::reconnect_with_default();
-
+    let write_bytes_span = tracing::debug_span!("write bytes");
     let (state, conn) = loop {
         let span = state_span(&state, &conn, session_id, &link);
 
-        (state, conn) = step(state, conn, session_id, &log_id, &link, &mut receiver)
-            .instrument(span)
-            .await;
+        (state, conn) = step(
+            state,
+            conn,
+            session_id,
+            &log_id,
+            &link,
+            &mut receiver,
+            write_bytes_span.clone(),
+        )
+        .instrument(span)
+        .await;
 
         if state.is_closing() {
             break (state, conn);
         }
 
-        if let Conn::Disconnected(ref mut backoff) = conn {
+        if let Conn::Disconnected {
+            ref mut backoff, ..
+        } = conn
+        {
             RealClock.sleep(backoff.next_backoff().unwrap()).await;
         }
     }; // loop
@@ -617,8 +640,7 @@ async fn run<M: RemoteMessage>(
                     mut outbox,
                     mut unacked,
                 },
-            // TODO(T233029051): Return reason through return_channel too.
-            reason: _,
+            reason,
         } => {
             // Close the channel to prevent any further messages from being sent.
             receiver.close();
@@ -628,9 +650,13 @@ async fn run<M: RemoteMessage>(
                 .deque
                 .drain(..)
                 .chain(outbox.deque.drain(..))
-                .for_each(|queued| queued.try_return());
+                .for_each(|queued| queued.try_return(Some(reason.clone())));
             while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-                let _ = return_channel.send(SendError(ChannelError::Closed, msg));
+                let _ = return_channel.send(SendError {
+                    error: ChannelError::Closed,
+                    message: msg,
+                    reason: Some(reason.clone()),
+                });
             }
         }
         _ => (),
@@ -661,7 +687,7 @@ async fn run<M: RemoteMessage>(
                 let _ = w.shutdown().await;
             }
         }
-        Conn::Disconnected(_) => (),
+        Conn::Disconnected { .. } => (),
     };
 
     tracing::info!(
@@ -678,7 +704,21 @@ where
     L: Link<Stream = S>,
     M: RemoteMessage,
 {
+    // No span at INFO
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return Span::none();
+    }
+
     let deliveries = state.deliveries();
+    // Less detailed span at DEBUG
+    if !tracing::enabled!(tracing::Level::TRACE) {
+        return hyperactor_telemetry::context_span!(
+            "net i/o loop",
+            dest = %link.dest(),
+            session_id = session_id,
+            next_seq = deliveries.outbox.next_seq,
+        );
+    }
 
     use valuable::NamedField;
     use valuable::Structable;
@@ -790,7 +830,8 @@ where
 
     hyperactor_telemetry::context_span!(
         "net i/o loop",
-        session = format!("{}.{}", link.dest(), session_id),
+        dest = %link.dest(),
+        session_id = session_id,
         connected = conn.is_connected(),
         next_seq = deliveries.outbox.next_seq,
         largest_acked = largest_acked.as_value(),
@@ -806,6 +847,7 @@ async fn step<'a, L, S, M>(
     log_id: &'a str,
     link: &L,
     receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
+    write_bytes_span: tracing::Span,
 ) -> (State<'a, M>, Conn<S>)
 where
     S: Stream,
@@ -877,17 +919,24 @@ where
                 ),
                 Err((writer, e)) => {
                     debug_assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+                    let error_msg = "oversized frame was rejected. closing channel";
+                    // TODO: It would be good to include the type of the message
+                    // in here somehow, and if it was a PythonMessage, its endpoint.
+                    let reason = format!(
+                        "rejecting oversize frame: len={} > max={}. \
+                                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
+                        len, max
+                    );
                     tracing::error!(
                         dest = %link.dest(),
                         session_id = session_id,
-                        "rejecting oversize frame: len={} > max={}. \
-                                ack will not arrive before timeout; increase CODEC_MAX_FRAME_LENGTH to allow.",
-                        len,
-                        max
+                        reason
                     );
                     // Reject and return.
-                    outbox.pop_front().expect("not empty").try_return();
-                    let error_msg = "oversized frame was rejected. closing channel";
+                    outbox
+                        .pop_front()
+                        .expect("not empty")
+                        .try_return(Some(reason.clone()));
                     tracing::error!(
                         dest = %link.dest(),
                         session_id = session_id,
@@ -898,7 +947,7 @@ where
                     (
                         State::Closing {
                             deliveries: Deliveries { outbox, unacked },
-                            reason: format!("{log_id}: {error_msg}"),
+                            reason,
                         },
                         Conn::Connected {
                             reader,
@@ -921,7 +970,7 @@ where
             tokio::select! {
                 biased;
 
-                ack_result = reader.next().instrument(hyperactor_telemetry::context_span!("read ack")) => {
+                ack_result = reader.next() => {
                     match ack_result {
                         Ok(Some(buffer)) => {
                             match deserialize_response(buffer) {
@@ -1013,7 +1062,7 @@ where
 
                 // We have to be careful to manage outgoing write states, so that we never write
                 // partial frames in the presence cancellation.
-                send_result = write_state.send().instrument(hyperactor_telemetry::context_span!("write bytes")) => {
+                send_result = write_state.send().instrument(write_bytes_span) => {
                     match send_result {
                         Ok(()) => {
                             let mut message = outbox.pop_front().expect("outbox should not be empty");
@@ -1089,7 +1138,10 @@ where
                 mut outbox,
                 unacked,
             }),
-            Conn::Disconnected(mut backoff),
+            Conn::Disconnected {
+                mut backoff,
+                first_failure_at,
+            },
         ) => {
             // If delivering this message is taking too long,
             // consider the link broken.
@@ -1187,17 +1239,36 @@ where
                                     write_state: WriteState::Idle(writer),
                                 }
                             } else {
-                                Conn::reconnect(backoff)
+                                Conn::reconnect(backoff, first_failure_at)
                             },
                         )
                     }
                     Err(err) => {
-                        tracing::debug!(
-                            dest = %link.dest(),
-                            error = %err,
-                            session_id = session_id,
-                            "failed to connect"
-                        );
+                        let elapsed = first_failure_at.elapsed();
+                        let timeout =
+                            hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT);
+
+                        // Error if elapsed > 20s or > 2/3 of timeout
+                        if elapsed > Duration::from_secs(20) || elapsed > timeout * 2 / 3 {
+                            tracing::error!(
+                                dest = %link.dest(),
+                                error = %err,
+                                session_id = session_id,
+                                elapsed_secs = elapsed.as_secs_f64(),
+                                "failed to reconnect after {:.1}s; check {} metric to verify server is alive",
+                                elapsed.as_secs_f64(),
+                                metrics::SERVER_HEARTBEAT_METRIC_NAME
+                            );
+                        } else {
+                            tracing::debug!(
+                                dest = %link.dest(),
+                                error = %err,
+                                session_id = session_id,
+                                elapsed_secs = elapsed.as_secs_f64(),
+                                "failed to reconnect after {:.1}s", elapsed.as_secs_f64()
+                            );
+                        }
+
                         // Track connection error for this channel pair
                         metrics::CHANNEL_ERRORS.add(
                             1,
@@ -1209,7 +1280,7 @@ where
                         );
                         (
                             State::Running(Deliveries { outbox, unacked }),
-                            Conn::reconnect(backoff),
+                            Conn::reconnect(backoff, first_failure_at),
                         )
                     }
                 }

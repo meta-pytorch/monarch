@@ -15,6 +15,7 @@ from typing import (
     final,
     Generic,
     Iterable,
+    Type,
     TYPE_CHECKING,
     TypeVar,
 )
@@ -25,15 +26,18 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
-
+from monarch._rust_bindings.monarch_hyperactor.buffers import Buffer, FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import (
+    PendingMessage,
+    pickle as monarch_pickle,
+)
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.allocator import LocalAllocator
 
 if TYPE_CHECKING:
-    from monarch._rust_bindings.monarch_hyperactor.actor import PortProtocol
+    from monarch._rust_bindings.monarch_hyperactor.actor import Actor, PortProtocol
 
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
-
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     Mailbox,
     PortReceiver,
@@ -41,6 +45,13 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh
 from monarch._src.actor.actor_mesh import context, Instance
+
+
+def _to_frozen_buffer(data: bytes) -> FrozenBuffer:
+    """Helper to convert bytes to FrozenBuffer."""
+    buf = Buffer()
+    buf.write(data)
+    return buf.freeze()
 
 
 S = TypeVar("S")
@@ -59,7 +70,7 @@ class Reducer(Generic[U]):
         l: U = cast(U, pickle.loads(left.message))
         r: U = cast(U, pickle.loads(right.message))
         result: U = self._reduce_f(l, r)
-        return PythonMessage(left.kind, pickle.dumps(result))
+        return PythonMessage(left.kind, _to_frozen_buffer(pickle.dumps(result)))
 
 
 @final
@@ -80,7 +91,7 @@ class Accumulator(Generic[S, U]):
         s: S = cast(S, pickle.loads(state.message))
         u: U = cast(U, pickle.loads(update.message))
         result: S = self._accumulate_f(s, u)
-        return PythonMessage(state.kind, pickle.dumps(result))
+        return PythonMessage(state.kind, _to_frozen_buffer(pickle.dumps(result)))
 
     @property
     def initial_state(self) -> PythonMessage:
@@ -88,7 +99,7 @@ class Accumulator(Generic[S, U]):
             PythonMessageKind.CallMethod(
                 MethodSpecifier.ReturnsResponse(" @Accumulator.initial_state"), None
             ),
-            pickle.dumps(self._initial_state),
+            _to_frozen_buffer(pickle.dumps(self._initial_state)),
         )
 
     @property
@@ -96,11 +107,16 @@ class Accumulator(Generic[S, U]):
         return self._reducer
 
 
-async def allocate() -> ProcMesh:
-    spec = AllocSpec(AllocConstraints(), replica=1)
-    allocator = LocalAllocator()
-    alloc = await allocator.allocate_nonblocking(spec)
-    return await ProcMesh.allocate_nonblocking(alloc)
+def allocate() -> Shared[ProcMesh]:
+    async def task() -> ProcMesh:
+        spec = AllocSpec(AllocConstraints(), replica=1)
+        allocator = LocalAllocator()
+        alloc = await allocator.allocate_nonblocking(spec)
+        return await ProcMesh.allocate_nonblocking(
+            context().actor_instance._as_rust(), alloc, "test"
+        )
+
+    return PythonTask.from_coroutine(task()).spawn()
 
 
 def _python_task_test(
@@ -133,7 +149,7 @@ async def test_accumulator() -> None:
                 PythonMessageKind.CallMethod(
                     MethodSpecifier.ReturnsResponse("test_accumulator"), None
                 ),
-                pickle.dumps(value),
+                _to_frozen_buffer(pickle.dumps(value)),
             ),
         )
 
@@ -163,15 +179,39 @@ class MyActor:
         local_state: Iterable[Any],
         response_port: "PortProtocol[Any]",
     ) -> None:
-        response_port.send(pickle.loads(message))
-        for i in range(100):
-            response_port.send(f"msg{i}")
+        match method:
+            case MethodSpecifier.Init():
+                # Handle init message - response_port may be None
+                if response_port is not None:
+                    response_port.send(None)
+                return None
+            case _:
+                response_port.send(pickle.loads(message))
+                for i in range(100):
+                    response_port.send(f"msg{i}")
 
 
 @_python_task_test
 async def test_reducer() -> None:
-    proc_mesh = await allocate()
-    actor_mesh = await proc_mesh.spawn_nonblocking("test", MyActor)
+    proc_mesh_task = allocate()
+
+    # Create an explicit init message
+    init_state = monarch_pickle(None)
+    init_message = PendingMessage(
+        PythonMessageKind.CallMethod(MethodSpecifier.Init(), None),
+        init_state,
+    )
+
+    # Use spawn_async with the explicit init message
+    actor_mesh = ProcMesh.spawn_async(
+        proc_mesh_task,
+        context().actor_instance._as_rust(),
+        "test",
+        cast(Type["Actor"], MyActor),
+        init_message,
+        False,  # emulated
+    )
+
     ins = context().actor_instance
 
     def my_accumulate(state: str, update: str) -> str:
@@ -185,20 +225,22 @@ async def test_reducer() -> None:
     handle, receiver = ins._mailbox.open_accum_port(accumulator)
     port_ref = handle.bind()
 
-    actor_mesh.cast(
-        PythonMessage(
+    state = monarch_pickle("start")
+    actor_mesh.cast_unresolved(
+        PendingMessage(
             PythonMessageKind.CallMethod(
                 MethodSpecifier.ReturnsResponse("echo"), port_ref
             ),
-            pickle.dumps("start"),
+            state,
         ),
         "all",
         ins._as_rust(),
     )
 
-    messge = await receiver.recv_task().with_timeout(seconds=5)
-    value = pickle.loads(messge.message)
+    m = await receiver.recv_task().with_timeout(seconds=5)
+    value = pickle.loads(m.message)
     assert "[reduced](start+msg0)" in value
 
     #  Note: occasionally test would hang without this stop
-    await proc_mesh.stop_nonblocking()
+    proc_mesh = await proc_mesh_task
+    await proc_mesh.stop_nonblocking(ins._as_rust(), "test cleanup")

@@ -6,6 +6,7 @@
 
 # pyre-unsafe
 import itertools
+import re
 import traceback
 import typing
 import warnings
@@ -29,6 +30,7 @@ from typing import (
 
 import torch
 import torch._ops
+from monarch.common._C import get_built_pytorch_version
 from monarch.common.function import ResolvableFunctionFromPath
 from torch._subclasses.fake_tensor import FakeTensor
 from torch.utils._pytree import tree_map
@@ -823,3 +825,40 @@ def reduce_(
     mesh: Optional["DeviceMesh"] = None,
 ) -> T:
     return reduce(tensors, dims, reduction, scatter, mesh, _inplace=True)
+
+
+def check_torch_version() -> None:
+    """
+    Check if the runtime PyTorch version matches the build-time PyTorch version.
+
+    This check is necessary because if the runtime PyTorch version is different from the build-time PyTorch version,
+    it may cause unexpected behavior or errors, especially when using the monarch library to perform tensor operations.
+
+    The check is performed by comparing the major, minor, and patch versions of the runtime PyTorch version
+    with the build-time PyTorch version. If they do not match, a RuntimeError is raised.
+    """
+    # torch version as a string may contain optional suffixes like "+cu128", and
+    # we can only compare the major/minor/patch version. Parse into a tuple of
+    # integers.
+    runtime_torch_version = torch.__version__.split(".")
+    runtime_torch_major = int(runtime_torch_version[0])
+    runtime_torch_minor = int(runtime_torch_version[1])
+    # Exclude any suffix past the patch version.
+    runtime_torch_patch = runtime_torch_version[2]
+    if match := re.search("[0-9]+", runtime_torch_patch):
+        runtime_torch_patch = int(match.group(0))
+    else:
+        raise RuntimeError(
+            f"Could not parse patch version from torch version {torch.__version__}"
+        )
+    runtime_torch_version = (
+        runtime_torch_major,
+        runtime_torch_minor,
+        runtime_torch_patch,
+    )
+    if runtime_torch_version != get_built_pytorch_version():
+        raise RuntimeError(
+            f"PyTorch version mismatch: runtime {runtime_torch_version} != build-time {get_built_pytorch_version()}. "
+            "Make sure to download a version of monarch that matches your PyTorch version. "
+            "This matters because you were using a feature that requires a matched libtorch.so symbol."
+        )

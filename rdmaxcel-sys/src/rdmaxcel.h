@@ -11,6 +11,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <infiniband/efadv.h>
 #include <infiniband/mlx5dv.h>
 #include <infiniband/verbs.h>
 #include "driver_api.h"
@@ -33,7 +34,8 @@ typedef enum {
 // RDMA queue pair type selection
 typedef enum {
   RDMA_QP_TYPE_STANDARD = 1, // Standard ibverbs queue pair
-  RDMA_QP_TYPE_MLX5DV = 2 // mlx5dv extended queue pair
+  RDMA_QP_TYPE_MLX5DV = 2, // mlx5dv extended queue pair
+  RDMA_QP_TYPE_EFA = 3 // EFA SRD queue pair via efadv
 } rdma_qp_type_t;
 
 // C-compatible structure for CUDA segment information
@@ -143,7 +145,10 @@ typedef enum {
   RDMAXCEL_BUFFER_TOO_SMALL = -14, // Output buffer too small
   RDMAXCEL_QUERY_DEVICE_FAILED = -15, // Failed to query device attributes
   RDMAXCEL_CQ_POLL_FAILED = -16, // CQ polling failed
-  RDMAXCEL_COMPLETION_FAILED = -17 // Completion status not successful
+  RDMAXCEL_COMPLETION_FAILED = -17, // Completion status not successful
+  RDMAXCEL_QP_MODIFY_FAILED = -18, // ibv_modify_qp failed during connect
+  RDMAXCEL_AH_CREATE_FAILED = -19, // ibv_create_ah failed
+  RDMAXCEL_UNSUPPORTED_OP = -20 // Unsupported EFA operation type
 } rdmaxcel_error_code_t;
 
 // Error/Debugging functions
@@ -199,8 +204,15 @@ typedef struct completion_cache completion_cache_t;
 // RDMA Queue Pair wrapper with atomic counters and completion caches
 typedef struct rdmaxcel_qp {
   struct ibv_qp* ibv_qp; // Underlying ibverbs QP
+  struct ibv_qp_ex* qpex; // Extended QP for EFA (NULL for non-EFA)
   struct ibv_cq* send_cq; // Send completion queue
   struct ibv_cq* recv_cq; // Receive completion queue
+  int is_efa; // 1 if this is an EFA QP
+
+  // EFA peer routing info (set after connect for EFA QPs)
+  struct ibv_ah* efa_ah; // Address handle (NULL for non-EFA)
+  uint32_t efa_remote_qpn; // Remote QP number (EFA only)
+  uint32_t efa_qkey; // Queue key (EFA only, typically 0x4242)
 
   // Atomic counters
   _Atomic(uint64_t) send_wqe_idx;
@@ -311,6 +323,84 @@ int completion_cache_find(
 // Poll with cache support
 // Returns: 1 = found, 0 = not found, -1 = error
 int poll_cq_with_cache(poll_context_t* ctx, struct ibv_wc* out_wc);
+
+// EFA post operation with ibv_post_recv fallback
+// Only called for EFA QPs; RC is handled directly in Rust.
+// op_type: 0 = write, 1 = read, 2 = recv, 3 = write_with_imm
+int rdmaxcel_qp_post_op(
+    rdmaxcel_qp_t* qp,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id,
+    int signaled,
+    int op_type);
+
+// EFA device detection
+int rdmaxcel_is_efa_dev(struct ibv_context* ctx);
+
+// Create an EFA SRD queue pair via efadv_create_qp_ex
+struct ibv_qp* create_efa_qp(
+    struct ibv_context* context,
+    struct ibv_pd* pd,
+    struct ibv_cq* send_cq,
+    struct ibv_cq* recv_cq,
+    int max_send_wr,
+    int max_recv_wr,
+    int max_send_sge,
+    int max_recv_sge);
+
+// EFA extended-verbs operation posting
+int rdmaxcel_efa_post_write(
+    rdmaxcel_qp_t* qp,
+    struct ibv_ah* ah,
+    uint32_t remote_qpn,
+    uint32_t qkey,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id);
+
+int rdmaxcel_efa_post_read(
+    rdmaxcel_qp_t* qp,
+    struct ibv_ah* ah,
+    uint32_t remote_qpn,
+    uint32_t qkey,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id);
+
+// EFA-specific connect: INIT->RTR->RTS + address handle creation
+int rdmaxcel_efa_connect(
+    rdmaxcel_qp_t* qp,
+    uint8_t port_num,
+    uint16_t pkey_index,
+    uint32_t qkey,
+    uint32_t psn,
+    uint8_t gid_index,
+    const uint8_t* remote_gid,
+    uint32_t remote_qpn);
+
+// Unified EFA post operation: validates AH, dispatches to write or read
+int rdmaxcel_efa_post_op(
+    rdmaxcel_qp_t* qp,
+    struct ibv_ah* ah,
+    uint32_t remote_qpn,
+    uint32_t qkey,
+    void* local_addr,
+    uint32_t lkey,
+    size_t length,
+    void* remote_addr,
+    uint32_t rkey,
+    uint64_t wr_id,
+    int op_type);
 
 #ifdef __cplusplus
 }

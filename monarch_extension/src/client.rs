@@ -9,12 +9,12 @@
 use std::sync::Arc;
 
 use hyperactor::ActorRef;
-use hyperactor::data::Serialized;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
+use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
 use monarch_messages::client::ClientMessage;
 use monarch_messages::client::Exception;
@@ -47,11 +47,11 @@ pub enum PyRanks {
 #[pyclass(frozen, module = "monarch._rust_bindings.monarch_extension.client")]
 pub struct WorkerResponse {
     seq: Seq,
-    result: Option<Result<Serialized, Exception>>,
+    result: Option<Result<wirevalue::Any, Exception>>,
 }
 
 impl WorkerResponse {
-    pub fn new(seq: Seq, result: Option<Result<Serialized, Exception>>) -> Self {
+    pub fn new(seq: Seq, result: Option<Result<wirevalue::Any, Exception>>) -> Self {
         Self { seq, result }
     }
 }
@@ -65,7 +65,7 @@ impl WorkerResponse {
         self.seq.into()
     }
 
-    fn exception(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn exception(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self.result.as_ref() {
             Some(Ok(_)) => PyNone::get(py).into_py_any(py),
             Some(Err(exc)) => Ok(PyException::exception_to_py(py, exc)?),
@@ -92,7 +92,7 @@ pub struct PyException {
 }
 
 impl PyException {
-    pub(crate) fn exception_to_py(py: Python<'_>, exc: &Exception) -> PyResult<PyObject> {
+    pub(crate) fn exception_to_py(py: Python<'_>, exc: &Exception) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException { inner: exc.clone() });
         match exc {
             Exception::Error(_, _, _) => {
@@ -140,7 +140,7 @@ impl PyError {
         caused_by_seq: Seq,
         actor_id: &PyActorId,
         backtrace: String,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException {
             inner: Exception::Error(
                 seq,
@@ -283,7 +283,7 @@ impl PyFailure {
         py: Python<'_>,
         actor_id: &PyActorId,
         backtrace: String,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let initializer = PyClassInitializer::from(PyException {
             inner: Exception::Failure(DeviceFailure {
                 actor_id: actor_id.into(),
@@ -390,7 +390,7 @@ impl ClientActor {
         };
 
         let message = convert(message)?;
-        let message = Serialized::serialize(&message).map_err(|err| {
+        let message = wirevalue::Any::serialize(&message).map_err(|err| {
             PyRuntimeError::new_err(format!("Failed to serialize message: {err}"))
         })?;
         let message = ControllerMessage::Send { ranks, message };
@@ -440,13 +440,13 @@ impl ClientActor {
         &mut self,
         py: Python<'py>,
         timeout_msec: Option<u64>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let instance = self.instance.clone();
         let result = signal_safe_block_on(py, async move {
             instance.lock().await.next_message(timeout_msec).await
         })?;
 
-        Python::with_gil(|py| match result {
+        monarch_with_gil_blocking(|py| match result {
             Ok(Some(ClientMessage::Result { seq, result })) => {
                 WorkerResponse { seq, result }.into_py_any(py)
             }

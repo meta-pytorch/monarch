@@ -18,14 +18,14 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::instrument;
 use hyperactor::instrument_infallible;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Handler, Debug, Named, Serialize, Deserialize)]
 enum ShoppingList {
@@ -85,7 +85,7 @@ struct TestVariantFormsActor {}
 impl Actor for TestVariantFormsActor {}
 
 #[async_trait]
-#[forward(TestVariantForms)]
+#[handle(TestVariantForms)]
 impl TestVariantFormsHandler for TestVariantFormsActor {
     async fn one_way_struct(&mut self, _cx: &Context<Self>, _a: u64, _b: u64) -> Result<()> {
         Ok(())
@@ -141,7 +141,7 @@ struct GenericArgActor {}
 impl Actor for GenericArgActor {}
 
 #[async_trait]
-#[forward(GenericArgMessage<usize>)]
+#[handle(GenericArgMessage<usize>)]
 impl GenericArgMessageHandler<usize> for GenericArgActor {
     async fn variant(&mut self, _cx: &Context<Self>, _val: usize) -> Result<()> {
         Ok(())

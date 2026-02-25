@@ -8,6 +8,9 @@
 
 from typing import final, Optional
 
+from monarch._rust_bindings.monarch_hyperactor.context import Instance
+from monarch._rust_bindings.monarch_hyperactor.pytokio import Shared
+
 @final
 class SupervisionError(RuntimeError):
     """
@@ -20,8 +23,10 @@ class SupervisionError(RuntimeError):
 @final
 class MeshFailure:
     """
-    Raise this if you cannot handle the supervision event and you want
-    to propagate it to the parent actor.
+    Contains details about a failure on a mesh. This can be from an ActorMesh,
+    ProcMesh, or HostMesh.
+    The __str__ of this failure will provide the origin resource (actor, proc, host)
+    of the failure along with the reason.
     """
     @property
     def mesh(self) -> object: ...

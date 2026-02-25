@@ -1,6 +1,6 @@
 #  §4 Doing real work (hosts → procs → actors)
 
-We can now line up the rest of `bootstrap_cannonical_simple` and see that the remaining calls are just "use the host we just created."
+We can now line up the rest of `bootstrap_canonical_simple` and see that the remaining calls are just "use the host we just created."
 
 Source we're explaining:
 

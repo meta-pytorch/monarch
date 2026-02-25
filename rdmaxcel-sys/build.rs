@@ -17,7 +17,7 @@ fn main() {}
 fn main() {
     // Get rdma-core config from cpp_static_libs (includes are used, links emitted by monarch_extension)
     let cpp_static_libs_config = build_utils::CppStaticLibsConfig::from_env();
-    let rdma_include = &cpp_static_libs_config.rdma_include;
+    let rdma_include = &cpp_static_libs_config.rdma_include_dir;
 
     // Link against dl for dynamic loading
     println!("cargo:rustc-link-lib=dl");
@@ -98,6 +98,10 @@ fn main() {
         .allowlist_function("rdmaxcel_register_segment_scanner")
         .allowlist_function("poll_cq_with_cache")
         .allowlist_function("completion_cache_.*")
+        // EFA functions (ibverbs-based)
+        .allowlist_function("rdmaxcel_efa_.*")
+        .allowlist_function("rdmaxcel_is_efa_dev")
+        .allowlist_function("efadv_.*")
         .allowlist_type("ibv_.*")
         .allowlist_type("mlx5dv_.*")
         .allowlist_type("mlx5_wqe_.*")
@@ -113,8 +117,11 @@ fn main() {
         .allowlist_type("poll_context_t")
         .allowlist_type("poll_context")
         .allowlist_type("rdmaxcel_segment_scanner_fn")
+        // EFA types
+        .allowlist_type("efadv_.*")
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")
+        .allowlist_var("EFADV_.*")
         // Block specific types that are manually defined in lib.rs
         .blocklist_type("ibv_wc")
         .blocklist_type("mlx5_wqe_ctrl_seg")
@@ -200,7 +207,7 @@ fn main() {
                 build
                     .file(&c_source_path)
                     .include(format!("{}/src", manifest_dir))
-                    .include(&rdma_include)
+                    .include(rdma_include)
                     .flag("-fPIC");
 
                 // Add CUDA include paths - reuse the paths we already found for bindgen
@@ -220,7 +227,7 @@ fn main() {
                     .file(&cpp_source_path)
                     .file(&driver_api_cpp_path)
                     .include(format!("{}/src", manifest_dir))
-                    .include(&rdma_include)
+                    .include(rdma_include)
                     .flag("-fPIC")
                     .cpp(true)
                     .flag("-std=c++14");

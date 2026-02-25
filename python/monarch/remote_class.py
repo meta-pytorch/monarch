@@ -108,7 +108,7 @@ class WorkerRemoteClass:
     @classmethod
     def remote_method(cls, ident: int, method_name, *args, **kwargs) -> None:
         instance = WorkerRemoteClass._objects[ident]
-        assert (
-            cls == instance.__class__
-        ), "Mismatched class type {cls} {instance.__class__}"
+        assert cls == instance.__class__, (
+            "Mismatched class type {cls} {instance.__class__}"
+        )
         getattr(instance, method_name)(*args, **kwargs)

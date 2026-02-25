@@ -9,11 +9,9 @@
 import itertools
 import operator
 from abc import ABC, abstractmethod
-
 from typing import Any, Dict, Generator, Sequence, Tuple, Union
 
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
-
 from typing_extensions import Self
 
 NDSlice = Slice
@@ -186,7 +184,7 @@ class MeshTrait(ABC):
         )
         if dense_strides != ndslice.strides:
             raise ValueError(
-                "cannot flatten sparse mesh: " f"{ndslice.strides=} != {dense_strides=}"
+                f"cannot flatten sparse mesh: {ndslice.strides=} != {dense_strides=}"
             )
 
         return self._new_with_shape(

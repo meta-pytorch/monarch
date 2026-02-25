@@ -37,19 +37,19 @@ pub fn test_setup() -> Result<()> {
     unsafe {
         std::env::set_var("NCCL_DEBUG_FILE", nccl_debug_file);
     }
-    // NOTE(agallagher): Calling `prepare_freethreaded_python` appears to
+    // NOTE(agallagher): Calling `Python::initialize()` appears to
     // clear `PYTHONPATH` in the env, which we need for test subprocesses
     // to work.  So, manually preserve it.
     let py_path = std::env::var("PYTHONPATH");
-    pyo3::prepare_freethreaded_python();
+    Python::initialize();
     if let Ok(py_path) = py_path {
-        // SAFETY: Re-setting env var cleard by `prepare_freethreaded_python`.
+        // SAFETY: Re-setting env var cleared by `Python::initialize()`.
         unsafe { std::env::set_var("PYTHONPATH", py_path) }
     }
 
     // We need to load torch to initialize some internal structures used by
     // the FFI funcs we use to convert ivalues to/from py objects.
-    Python::with_gil(|py| py.run(c_str!("import torch"), None, None))?;
+    Python::attach(|py| py.run(c_str!("import torch"), None, None))?;
 
     Ok(())
 }

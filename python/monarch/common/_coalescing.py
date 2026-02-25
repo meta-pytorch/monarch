@@ -25,7 +25,6 @@ from typing import (
 
 import torch
 from monarch.common import messages
-
 from monarch.common.fake import fake_call
 from monarch.common.function_caching import (
     hashable_tensor_flatten,

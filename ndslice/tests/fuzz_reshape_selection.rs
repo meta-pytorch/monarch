@@ -224,9 +224,9 @@ struct Cli {
 }
 
 fn generate_random_shape(max_dimensions: usize, max_dimension_size: usize) -> Shape {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
-    let num_dimensions = rng.gen_range(1..=max_dimensions);
+    let num_dimensions = rng.random_range(1..=max_dimensions);
 
     Shape::new(
         (0..num_dimensions)
@@ -235,7 +235,7 @@ fn generate_random_shape(max_dimensions: usize, max_dimension_size: usize) -> Sh
             .collect::<Vec<_>>(),
         Slice::new_row_major(
             (0..num_dimensions)
-                .map(|_| rng.gen_range(1..=max_dimension_size))
+                .map(|_| rng.random_range(1..=max_dimension_size))
                 .collect::<Vec<_>>(),
         ),
     )
@@ -243,7 +243,7 @@ fn generate_random_shape(max_dimensions: usize, max_dimension_size: usize) -> Sh
 }
 
 fn generate_random_selection(shape: &Shape) -> Selection {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     generate_selection_for_dimensions(shape.slice().sizes(), 0, &mut rng)
 }
@@ -254,20 +254,24 @@ fn generate_selection_for_dimensions<R: Rng>(
     rng: &mut R,
 ) -> Selection {
     if dim_index >= sizes.len() {
-        return if rng.gen_bool(0.8) { true_() } else { false_() };
+        return if rng.random_bool(0.8) {
+            true_()
+        } else {
+            false_()
+        };
     }
 
     let current_size = sizes[dim_index];
 
-    match rng.gen_range(0..=8) {
+    match rng.random_range(0..=8) {
         0..=4 => {
-            let start = rng.gen_range(0..current_size);
-            let end = if rng.gen_bool(0.5) {
-                Some(rng.gen_range(start + 1..=current_size))
+            let start = rng.random_range(0..current_size);
+            let end = if rng.random_bool(0.5) {
+                Some(rng.random_range(start + 1..=current_size))
             } else {
                 None
             };
-            let step = rng.gen_range(1..=current_size);
+            let step = rng.random_range(1..=current_size);
             range(
                 Range(start, end, step),
                 generate_selection_for_dimensions(sizes, dim_index + 1, rng),

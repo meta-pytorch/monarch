@@ -27,20 +27,18 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::Named;
 use hyperactor::PortHandle;
 use hyperactor::actor::ActorHandle;
-use hyperactor::data::Serialized;
-use hyperactor::forward;
+use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
-use monarch_hyperactor::buffers::FrozenBuffer;
 use monarch_hyperactor::local_state_broker::BrokerId;
 use monarch_hyperactor::local_state_broker::LocalState;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerMessage;
+use monarch_hyperactor::pickle::pickle;
 use monarch_messages::controller::ControllerMessageClient;
 use monarch_messages::controller::Seq;
 use monarch_messages::controller::WorkerError;
@@ -67,6 +65,7 @@ use torch_sys2::deep_clone;
 use torch_sys2::factory_empty;
 use torch_sys2::factory_zeros;
 use tracing_subscriber::fmt::Subscriber;
+use typeuri::Named;
 
 use crate::ControllerActor;
 use crate::DeviceMesh;
@@ -94,21 +93,16 @@ fn pickle_python_result(
     result: Bound<'_, PyAny>,
     worker_rank: usize,
 ) -> Result<PythonMessage, anyhow::Error> {
-    let pickle = py
-        .import("monarch._src.actor.actor_mesh")
-        .unwrap()
-        .getattr("_pickle")
-        .unwrap();
-    let data: FrozenBuffer = pickle
-        .call1((result,))
-        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?
-        .extract()
-        .unwrap();
+    let mut state = pickle(py, result.unbind(), false, false)
+        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?;
+    let inner = state
+        .take_inner()
+        .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))?;
     Ok(PythonMessage::new_from_buf(
         PythonMessageKind::Result {
             rank: Some(worker_rank),
         },
-        data.inner,
+        inner.take_buffer(),
     ))
 }
 
@@ -139,7 +133,6 @@ enum RecordingState {
 /// Messages handled by the stream. Generally these are stream-local versions of
 /// [`crate::WorkerMessage`].
 #[derive(Handler, HandleClient, Debug, Named)]
-#[named(register = false)]
 pub enum StreamMessage {
     CallFunction(
         CallFunctionParams,
@@ -422,7 +415,7 @@ pub struct StreamActor {
     /// Mapping of refs in the controller environment to TensorIndex in this
     /// stream's local environment.
     // TODO(agallagher): Use `ValueError` as the error type.
-    env: HashMap<Ref, Result<PyObject, Arc<SeqError>>>,
+    env: HashMap<Ref, Result<Py<PyAny>, Arc<SeqError>>>,
     /// How to create the stream.
     creation_mode: StreamCreationMode,
     /// CUDA stream that this actor will enqueue operations on. None if "device"
@@ -437,7 +430,7 @@ pub struct StreamActor {
     comm: Option<ActorHandle<NcclCommActor>>,
     /// Actor ref of the controller that created this stream.
     controller_actor: ActorRef<ControllerActor>,
-    remote_process_groups: HashMap<Ref, PyObject>,
+    remote_process_groups: HashMap<Ref, Py<PyAny>>,
     recordings: HashMap<Ref, Recording>,
     active_recording: Option<RecordingState>,
     respond_with_python_message: bool,
@@ -550,8 +543,8 @@ impl Actor for StreamActor {
                     // can happen at shutdown when the a stream actors env map
                     // for rvalues is dropped (e.g. P1673311499).
                     // https://github.com/PyO3/pyo3/discussions/3499
-                    Python::with_gil(|py| {
-                        py.allow_threads(|| {
+                    Python::attach(|py| {
+                        py.detach(|| {
                             let result = Handle::current().block_on(future);
                             if join_tx.send(result).is_err() {
                                 panic!("could not send join result")
@@ -573,21 +566,21 @@ impl Actor for StreamActor {
 /// The arguments we accept as inputs to Python function calls.
 #[derive(Debug)]
 enum PyArg {
-    PyObject(PyObject),
+    Object(Py<PyAny>),
 }
 
-/// Serialize into a `PyObject`.
+/// Serialize into a `Py<PyAny>`.
 impl<'py> TryIntoPyObjectUnsafe<'py, PyAny> for &PyArg {
     unsafe fn try_to_object_unsafe(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         match self {
-            PyArg::PyObject(obj) => Ok(obj.clone_ref(py).into_bound(py)),
+            PyArg::Object(obj) => Ok(obj.clone_ref(py).into_bound(py)),
         }
     }
 }
 
 impl StreamActor {
-    fn tensor_to_pyobject(tensor_cell: TensorCell) -> PyObject {
-        Python::with_gil(|py| {
+    fn tensor_to_pyobject(tensor_cell: TensorCell) -> Py<PyAny> {
+        Python::attach(|py| {
             // SAFETY: Cloning a tensor was unsafe because we were tracking their references like
             // Rust objects (single mutable reference or many immutable references). We are
             // removing this functionality in upcoming patches, so we use the unsafe version here
@@ -600,10 +593,10 @@ impl StreamActor {
         })
     }
 
-    /// Extract a TensorCell from a PyObject.
-    /// SAFETY: Uses new to create the TensorCell. Caller must ensure the PyObject
+    /// Extract a TensorCell from a Py<PyAny>.
+    /// SAFETY: Uses new to create the TensorCell. Caller must ensure the Py<PyAny>
     /// contains a valid tensor.
-    fn pyobject_to_tensor(py: Python<'_>, pyobj: &PyObject) -> PyResult<TensorCell> {
+    fn pyobject_to_tensor(py: Python<'_>, pyobj: &Py<PyAny>) -> PyResult<TensorCell> {
         use torch_sys2::Tensor;
         let tensor = pyobj.bind(py).extract::<Tensor>()?;
         // Create a new TensorCell from the extracted tensor
@@ -623,7 +616,7 @@ impl StreamActor {
             .as_ref()
     }
 
-    fn ref_to_pyobject(&self, ref_: &Ref) -> Result<PyObject, CallFunctionError> {
+    fn ref_to_pyobject(&self, ref_: &Ref) -> Result<Py<PyAny>, CallFunctionError> {
         let pyobject = self
             .env
             .get(ref_)
@@ -669,7 +662,7 @@ impl StreamActor {
         f: F,
     ) -> Result<()>
     where
-        F: AsyncFnOnce(&mut Self) -> Result<Vec<PyObject>, CallFunctionError>,
+        F: AsyncFnOnce(&mut Self) -> Result<Vec<Py<PyAny>>, CallFunctionError>,
     {
         let actual_results = f(self).await;
         // Check if the expected number of returns is correct, otherwise convert
@@ -680,7 +673,7 @@ impl StreamActor {
                     .into_iter()
                     .zip(result_refs.iter())
                     .filter_map(|(result, ref_)| ref_.map(|ref_| (ref_, result)))
-                    .collect::<Vec<(Ref, PyObject)>>())
+                    .collect::<Vec<(Ref, Py<PyAny>)>>())
             } else {
                 Err(CallFunctionError::UnexpectedNumberOfReturns(
                     result_refs.len(),
@@ -760,24 +753,24 @@ impl StreamActor {
             .map_err(SerializablePyErr::from_fn(py))?;
 
         let resolve = |val: Bound<'py, PyAny>| {
-            val.extract::<PyTree<PyObject>>()
+            val.extract::<PyTree<Py<PyAny>>>()
                 .map_err(SerializablePyErr::from_fn(py))?
                 .try_into_map(|obj| {
                     Ok(if let Ok(ref_) = Ref::from_py_object(obj.bind(py)) {
                         if let Some(mesh) = device_meshes.get(&ref_) {
-                            PyArg::PyObject(
+                            PyArg::Object(
                                 Py::new(py, mesh.clone())
                                     .map_err(SerializablePyErr::from_fn(py))?
                                     .into(),
                             )
                         } else if let Some(pg) = remote_process_groups.get(&ref_) {
-                            PyArg::PyObject(pg.clone_ref(py))
+                            PyArg::Object(pg.clone_ref(py))
                         } else {
                             let pyobj = self.ref_to_pyobject(&ref_)?;
-                            PyArg::PyObject(pyobj)
+                            PyArg::Object(pyobj)
                         }
                     } else {
-                        PyArg::PyObject(obj)
+                        PyArg::Object(obj)
                     })
                 })
         };
@@ -785,7 +778,7 @@ impl StreamActor {
         // Resolve args and kwargs
         let py_args: Vec<PyTree<PyArg>> = args_tuple
             .iter()
-            .map(|item| resolve(item))
+            .map(&resolve)
             .collect::<Result<_, CallFunctionError>>()?;
 
         let py_kwargs: HashMap<String, PyTree<PyArg>> = kwargs_dict
@@ -806,7 +799,7 @@ impl StreamActor {
             tracing::subscriber::with_default(scoped_subscriber, || {
                 // TODO(agallagher): The args/kwargs conversion traits generate
                 // the appropriate types here, but they get casted to `PyAny`.
-                // It'd be nice to make `TryToPyObjectUnsafe` take a template
+                // It'd be nice to make `TryToPy<PyAny>Unsafe` take a template
                 // arg for the converted py object to avoid this downcast.
                 // SAFETY: Tensor operations were unsafe because we were tracking their references
                 // like Rust objects (single mutable reference or many immutable references). We are
@@ -840,8 +833,8 @@ impl StreamActor {
             Ref,
             (DeviceMesh, Vec<String>, Arc<ActorHandle<NcclCommActor>>),
         >,
-    ) -> Result<PyTree<PyObject>, CallFunctionError> {
-        Python::with_gil(|py| {
+    ) -> Result<PyTree<Py<PyAny>>, CallFunctionError> {
+        Python::attach(|py| {
             let result = self.call_python_fn(
                 py,
                 cx,
@@ -851,7 +844,7 @@ impl StreamActor {
                 device_meshes,
                 remote_process_groups,
             )?;
-            Ok(PyTree::<PyObject>::extract_bound(&result)
+            Ok(PyTree::<Py<PyAny>>::extract_bound(&result)
                 .map_err(SerializablePyErr::from_fn(py))?)
         })
     }
@@ -869,7 +862,7 @@ impl StreamActor {
             .ok_or_else(|| anyhow!("tensor not found in stream: {ref_:#?}"))?;
 
         match pyobject {
-            Ok(val) => Python::with_gil(|py| {
+            Ok(val) => Python::attach(|py| {
                 Self::pyobject_to_tensor(py, val)
                     .map_err(|pyerr| anyhow::Error::from(SerializablePyErr::from(py, &pyerr)))
             }),
@@ -922,7 +915,7 @@ impl StreamActor {
         let rank = self.rank;
         self.try_define(cx, seq, vec![], &vec![], async |self_| {
             let python_message =
-                Python::with_gil(|py| -> Result<PythonMessage, CallFunctionError> {
+                Python::attach(|py| -> Result<PythonMessage, CallFunctionError> {
                     let python_result = tokio::task::block_in_place(|| {
                         self_.call_python_fn(
                             py,
@@ -936,7 +929,7 @@ impl StreamActor {
                     })?;
                     pickle_python_result(py, python_result, rank).map_err(CallFunctionError::Error)
                 })?;
-            let ser = Serialized::serialize(&python_message).unwrap();
+            let ser = wirevalue::Any::serialize(&python_message).unwrap();
             self_
                 .controller_actor
                 .fetch_result(cx, seq, Ok(ser))
@@ -950,16 +943,15 @@ impl StreamActor {
             .env
             .get(&src)
             .ok_or_else(|| CallFunctionError::RefNotFound(src))?;
-        self.env
-            .insert(dest, Python::with_gil(|_py| rvalue.clone()));
+        self.env.insert(dest, Python::attach(|_py| rvalue.clone()));
         Ok(())
     }
     async fn call_actor(
         &mut self,
         cx: &Context<'_, Self>,
         params: ActorCallParams,
-    ) -> Result<PyObject, CallFunctionError> {
-        let local_state: Result<Vec<PyObject>> = Python::with_gil(|_py| {
+    ) -> Result<Py<PyAny>, CallFunctionError> {
+        let local_state: Result<Vec<Py<PyAny>>> = Python::attach(|_py| {
             params
                 .local_state
                 .into_iter()
@@ -978,9 +970,9 @@ impl StreamActor {
         let x: u64 = params.seq.into();
         let message = LocalStateBrokerMessage::Set(x as usize, state);
 
-        let broker = BrokerId::new(params.broker_id).resolve(cx).unwrap();
+        let broker = BrokerId::new(params.broker_id).resolve(cx).await;
         broker
-            .send(message)
+            .send(cx, message)
             .map_err(|e| CallFunctionError::Error(e.into()))?;
         let result = recv
             .recv()
@@ -992,7 +984,7 @@ impl StreamActor {
 }
 
 #[async_trait]
-#[forward(StreamMessage)]
+#[handle(StreamMessage)]
 impl StreamMessageHandler for StreamActor {
     async fn call_function(
         &mut self,
@@ -1039,7 +1031,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_create(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         tensor: Ref,
         first_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
@@ -1063,12 +1055,12 @@ impl StreamMessageHandler for StreamActor {
             .ok_or_else(|| anyhow!("invalid reference for borrow_create: {:#?}", tensor))?;
 
         let result = match pyobj_result {
-            Ok(pyobj) => Python::with_gil(|py| Ok(Self::pyobject_to_tensor(py, pyobj).unwrap())),
+            Ok(pyobj) => Python::attach(|py| Ok(Self::pyobject_to_tensor(py, pyobj).unwrap())),
             Err(e) => Err(e.clone()),
         };
 
         let event = self.cuda_stream().map(|stream| stream.record_event(None));
-        first_use_sender.send((event, result)).map_err(|err| {
+        first_use_sender.send(cx, (event, result)).map_err(|err| {
             anyhow!(
                 "failed sending first use event for borrow {:?}: {:?}",
                 borrow,
@@ -1126,7 +1118,7 @@ impl StreamMessageHandler for StreamActor {
 
     async fn borrow_last_use(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         borrow: u64,
         result: Ref,
         last_use_sender: PortHandle<(Option<Event>, TensorCellResult)>,
@@ -1145,13 +1137,13 @@ impl StreamMessageHandler for StreamActor {
             "Invalid reference for borrow_last_use: {result:#?}"
         ))?;
         let tensor = match pyobj_or_err {
-            Ok(pyobj) => Ok(Python::with_gil(|py| {
+            Ok(pyobj) => Ok(Python::attach(|py| {
                 Self::pyobject_to_tensor(py, &pyobj).unwrap()
             })),
             Err(e) => Err(e),
         };
 
-        last_use_sender.send((event, tensor)).map_err(|err| {
+        last_use_sender.send(cx, (event, tensor)).map_err(|err| {
             anyhow!(
                 "failed sending last use event for borrow {:?}: {:?}",
                 borrow,
@@ -1380,13 +1372,13 @@ impl StreamMessageHandler for StreamActor {
 
         // Value is local, so we do not have to actually send it.
         if from_rank == to_rank {
-            let input_cell: &std::result::Result<PyObject, Arc<SeqError>> =
-                self.env
-                    .get(&tensor)
-                    .ok_or_else(|| anyhow!("tensor not found in stream: {tensor:#?}"))?;
-            let output_cell: Result<PyObject, Arc<SeqError>> = match input_cell {
+            let input_cell: &std::result::Result<Py<PyAny>, Arc<SeqError>> = self
+                .env
+                .get(&tensor)
+                .ok_or_else(|| anyhow!("tensor not found in stream: {tensor:#?}"))?;
+            let output_cell: Result<Py<PyAny>, Arc<SeqError>> = match input_cell {
                 Ok(pyobj) => {
-                    Python::with_gil(|py| -> Result<PyObject, Arc<SeqError>> {
+                    Python::attach(|py| -> Result<Py<PyAny>, Arc<SeqError>> {
                         let input_tensor = Self::pyobject_to_tensor(py, pyobj).unwrap();
                         // We create a defensive copy here to prevent mutations on
                         // the input tensor from affecting output tensor.
@@ -1464,48 +1456,46 @@ impl StreamMessageHandler for StreamActor {
                 .await;
         }
 
-        let result = (|| -> Result<PyTree<PyObject>, CallFunctionError> {
-            if let Some(function) = function {
-                // If a function was provided, use that to resolve the value.
-                tokio::task::block_in_place(|| {
-                    self.call_python_fn_pytree(
-                        cx,
-                        function,
-                        args_kwargs,
-                        &mutates,
-                        device_meshes,
-                        HashMap::new(),
-                    )
-                })
-            } else {
-                // If there's no function provided, there should be exactly one arg
-                // and no kwargs.
-                Python::with_gil(|py| {
-                    let (args, kwargs) = args_kwargs
-                        .to_python(py)
-                        .map_err(|e| CallFunctionError::Error(e.into()))?;
-                    match (args.len(), kwargs.len()) {
-                        (1, 0) => {
-                            let arg = args.get_item(0).map_err(SerializablePyErr::from_fn(py))?;
-                            arg.extract::<PyTree<PyObject>>()
-                                .map_err(SerializablePyErr::from_fn(py))?
-                                .try_into_map(|obj| {
-                                    let bound_obj = obj.bind(py);
-                                    if let Ok(ref_) = Ref::from_py_object(bound_obj) {
-                                        self.ref_to_pyobject(&ref_)
-                                    } else {
-                                        Ok(obj)
-                                    }
-                                })
-                        }
-                        _ => Err(CallFunctionError::TooManyArgsForValue(
-                            format!("args with {} elements", args.len()),
-                            format!("kwargs with {} elements", kwargs.len()),
-                        )),
+        let result = if let Some(function) = function {
+            // If a function was provided, use that to resolve the value.
+            tokio::task::block_in_place(|| {
+                self.call_python_fn_pytree(
+                    cx,
+                    function,
+                    args_kwargs,
+                    &mutates,
+                    device_meshes,
+                    HashMap::new(),
+                )
+            })
+        } else {
+            // If there's no function provided, there should be exactly one arg
+            // and no kwargs.
+            Python::attach(|py| {
+                let (args, kwargs) = args_kwargs
+                    .to_python(py)
+                    .map_err(|e| CallFunctionError::Error(e.into()))?;
+                match (args.len(), kwargs.len()) {
+                    (1, 0) => {
+                        let arg = args.get_item(0).map_err(SerializablePyErr::from_fn(py))?;
+                        arg.extract::<PyTree<Py<PyAny>>>()
+                            .map_err(SerializablePyErr::from_fn(py))?
+                            .try_into_map(|obj| {
+                                let bound_obj = obj.bind(py);
+                                if let Ok(ref_) = Ref::from_py_object(bound_obj) {
+                                    self.ref_to_pyobject(&ref_)
+                                } else {
+                                    Ok(obj)
+                                }
+                            })
                     }
-                })
-            }
-        })();
+                    _ => Err(CallFunctionError::TooManyArgsForValue(
+                        format!("args with {} elements", args.len()),
+                        format!("kwargs with {} elements", kwargs.len()),
+                    )),
+                }
+            })
+        };
 
         let value = match result {
             Ok(pyobject) => Ok(pyobject),
@@ -1548,8 +1538,8 @@ impl StreamMessageHandler for StreamActor {
         self.try_define(cx, seq, vec![], &mutates, async |self| {
             let value = self.call_actor(cx, params).await?;
             let result =
-                Python::with_gil(|py| pickle_python_result(py, value.into_bound(py), self.rank))?;
-            let result = Serialized::serialize(&result).unwrap();
+                Python::attach(|py| pickle_python_result(py, value.into_bound(py), self.rank))?;
+            let result = wirevalue::Any::serialize(&result).unwrap();
             self.controller_actor
                 .fetch_result(cx, seq, Ok(result))
                 .await?;
@@ -1567,8 +1557,8 @@ impl StreamMessageHandler for StreamActor {
         let mutates = params.call.mutates.clone();
         self.try_define(cx, seq, params.results, &mutates, async |self| {
             let result = self.call_actor(cx, params.call).await?;
-            let result = Python::with_gil(|py| {
-                PyTree::<PyObject>::extract_bound(&result.into_bound(py))
+            let result = Python::attach(|py| {
+                PyTree::<Py<PyAny>>::extract_bound(&result.into_bound(py))
                     .map_err(SerializablePyErr::from_fn(py))
             })?;
             Ok(result.into_leaves())
@@ -1839,9 +1829,8 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
         value: WireValue,
     ) -> Result<()> {
-        let pyobj = Python::with_gil(|py| -> PyResult<PyObject> {
-            Ok(value.into_pyobject(py)?.unbind().into())
-        })?;
+        let pyobj =
+            Python::attach(|py| -> PyResult<Py<PyAny>> { Ok(value.into_pyobject(py)?.unbind()) })?;
         self.env.insert(reference, Ok(pyobj));
         Ok(())
     }
@@ -1877,10 +1866,10 @@ impl StreamMessageHandler for StreamActor {
         use pyo3::types::PyString;
         /// For testing only, doesn't support Tensor or TensorList.
         fn pyobject_to_wire(
-            value: Result<PyObject, Arc<SeqError>>,
+            value: Result<Py<PyAny>, Arc<SeqError>>,
         ) -> Result<WireValue, Arc<SeqError>> {
             let pyobj = value?;
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let bound = pyobj.bind(py);
                 // Check bool before int since Python's bool is a subclass of int
                 if bound.is_instance_of::<PyBool>() {
@@ -1911,7 +1900,7 @@ impl StreamMessageHandler for StreamActor {
             })
         }
         Ok(self.env.get(&reference).map(|pyobj| {
-            pyobject_to_wire(Python::with_gil(|_py| pyobj.clone())).map_err(|err| err.to_string())
+            pyobject_to_wire(Python::attach(|_py| pyobj.clone())).map_err(|err| err.to_string())
         }))
     }
 
@@ -1921,7 +1910,7 @@ impl StreamMessageHandler for StreamActor {
         reference: Ref,
     ) -> Result<Option<TensorCellResult>> {
         match self.env.get(&reference) {
-            Some(Ok(pyobj)) => Python::with_gil(|py| match Self::pyobject_to_tensor(py, pyobj) {
+            Some(Ok(pyobj)) => Python::attach(|py| match Self::pyobject_to_tensor(py, pyobj) {
                 Ok(tensor) => Ok(Some(Ok(tensor.try_cpu().unwrap()))),
                 Err(e) => bail!("expected tensor, got extraction error: {:?}", e),
             }),
@@ -1941,6 +1930,7 @@ mod tests {
     use monarch_types::PickledPyObject;
     use pyo3::IntoPyObjectExt;
     use timed_test::async_timed_test;
+    use tokio::sync::watch;
     use torch_sys_cuda::nccl::UniqueId;
     use torch_sys2::factory_float_tensor;
     use torch_sys2::testing::allclose;
@@ -2034,13 +2024,12 @@ mod tests {
                 .unwrap()
                 .unwrap();
 
-            let result = allclose(
+            // rustfmt-ignore
+            allclose(
                 &factory_float_tensor(data, "cpu".parse().unwrap()),
                 &actual.borrow(),
             )
-            .unwrap();
-            // rustfmt-ignore
-            result
+            .unwrap()
         }
 
         #[allow(dead_code)]
@@ -2057,21 +2046,19 @@ mod tests {
         }
     }
 
-    async fn assert_actor_failed_with_msg(proc: &Proc, actor_id: &ActorId, expected_msg: String) {
-        loop {
-            let status = proc
-                .ledger_snapshot()
-                .roots
-                .get(actor_id)
-                .unwrap()
-                .status
-                .clone();
-            if let ActorStatus::Failed(msg) = status {
-                assert!(msg.to_string().contains(&expected_msg));
-                break;
-            } else {
-                tokio::task::yield_now().await;
-            }
+    async fn assert_actor_failed_with_msg(
+        status_rx: &mut watch::Receiver<ActorStatus>,
+        expected_msg: String,
+    ) {
+        status_rx
+            .wait_for(|s| matches!(s, ActorStatus::Failed(_)))
+            .await
+            .unwrap();
+        let status = status_rx.borrow().clone();
+        if let ActorStatus::Failed(msg) = status {
+            assert!(msg.to_string().contains(&expected_msg));
+        } else {
+            panic!("expected ActorStatus::Failed, got {:?}", status);
         }
     }
 
@@ -2095,7 +2082,7 @@ mod tests {
         seq: Seq,
         reference: Ref,
     ) {
-        let ref_to_send = Python::with_gil(|py| {
+        let ref_to_send = Python::attach(|py| {
             PickledPyObject::pickle(&reference.into_bound_py_any(py).unwrap()).unwrap()
         });
 
@@ -2178,8 +2165,7 @@ mod tests {
             .define_recording(&test_setup.client, 1.into())
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "different recording already active".into(),
         )
         .await;
@@ -2202,8 +2188,7 @@ mod tests {
             .define_recording(&test_setup.client, 0.into())
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "already defined".into(),
         )
         .await;
@@ -2222,8 +2207,7 @@ mod tests {
             .finalize_recording(&test_setup.client, 1.into())
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "cannot finalize recording that isn't active".into(),
         )
         .await;
@@ -2238,8 +2222,7 @@ mod tests {
             .recording_formal(&test_setup.client, 0.into(), 0)
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_formal called outside of recording".into(),
         )
         .await;
@@ -2254,8 +2237,7 @@ mod tests {
             .recording_result(&test_setup.client, 0.into(), 0)
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_result called outside of recording".into(),
         )
         .await;
@@ -2274,8 +2256,7 @@ mod tests {
             .call_recording(&test_setup.client, 0.into(), 0.into(), vec![], vec![])
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "cannot call recording while another recording is active".into(),
         )
         .await;
@@ -2289,12 +2270,8 @@ mod tests {
             .stream_actor
             .call_recording(&test_setup.client, 0.into(), 0.into(), vec![], vec![])
             .await?;
-        assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
-            "not found".into(),
-        )
-        .await;
+        assert_actor_failed_with_msg(&mut test_setup.stream_actor.status(), "not found".into())
+            .await;
         Ok(())
     }
 
@@ -2323,8 +2300,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_formal called with too few arguments".into(),
         )
         .await;
@@ -2356,8 +2332,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "recording_result called with too few results".into(),
         )
         .await;
@@ -2457,8 +2432,7 @@ mod tests {
             .await
             .expect_err("request_status should have failed");
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "request_status not allowed in recording".into(),
         )
         .await;
@@ -2490,8 +2464,7 @@ mod tests {
             .init_comm(&test_setup.client, dummy_comm)
             .await?;
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "init_comm not allowed in recording".into(),
         )
         .await;
@@ -2526,8 +2499,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "duplicate borrow create in recording".into(),
         )
         .await;
@@ -2556,8 +2528,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "borrow drop for borrow not defined in recording".into(),
         )
         .await;
@@ -2594,8 +2565,7 @@ mod tests {
             .await?;
 
         assert_actor_failed_with_msg(
-            &test_setup.proc,
-            test_setup.stream_actor.actor_id(),
+            &mut test_setup.stream_actor.status(),
             "all borrows created within recording must be dropped within recording".into(),
         )
         .await;

@@ -7,6 +7,7 @@
 # pyre-unsafe
 
 import asyncio
+import io
 import logging
 import os
 import re
@@ -68,15 +69,43 @@ class Logger(Actor):
         self._stdout_handler.flush()
         self._stderr_handler.flush()
 
+    @endpoint
+    async def log_structured(self) -> dict:
+        """
+        Log with empty message like torch.compile's trace_structured does.
+
+        torch uses: logger.debug("") with structured data in record attributes.
+        The actor filter must not modify empty messages.
+        """
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        logger = logging.getLogger("test.structured")
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+
+        try:
+            # Log with empty message like torch does
+            logger.debug("")
+        finally:
+            logger.removeHandler(handler)
+
+        captured = output.getvalue().strip()
+        return {"captured": captured, "is_empty": captured == ""}
+
 
 @pytest.mark.timeout(60)
 async def test_actor_logging_smoke() -> None:
     # Create temporary files to capture output.
-    with tempfile.NamedTemporaryFile(
-        mode="w+", delete=False, suffix="_stdout.log"
-    ) as stdout_file, tempfile.NamedTemporaryFile(
-        mode="w+", delete=False, suffix="_stderr.log"
-    ) as stderr_file:
+    with (
+        tempfile.NamedTemporaryFile(
+            mode="w+", delete=False, suffix="_stdout.log"
+        ) as stdout_file,
+        tempfile.NamedTemporaryFile(
+            mode="w+", delete=False, suffix="_stderr.log"
+        ) as stderr_file,
+    ):
         stdout_path = stdout_file.name
         stderr_path = stderr_file.name
 
@@ -106,18 +135,18 @@ async def test_actor_logging_smoke() -> None:
             stderr_content = f.read()
 
         # Assertions on the captured output.
-        assert re.search(
-            r"hello 1", stdout_content
-        ), f"Expected 'hello 1' in stdout: {stdout_content}"
-        assert re.search(
-            r"hello 2", stdout_content
-        ), f"Expected 'hello 2' in stdout: {stdout_content}"
-        assert re.search(
-            r"hello 3", stderr_content
-        ), f"Expected 'hello 3' in stderr: {stderr_content}"
-        assert re.search(
-            r"\[actor=.*Logger.*\]", stdout_content
-        ), f"Expected actor prefix in stdout: {stdout_content}"
+        assert re.search(r"hello 1", stdout_content), (
+            f"Expected 'hello 1' in stdout: {stdout_content}"
+        )
+        assert re.search(r"hello 2", stdout_content), (
+            f"Expected 'hello 2' in stdout: {stdout_content}"
+        )
+        assert re.search(r"hello 3", stderr_content), (
+            f"Expected 'hello 3' in stderr: {stderr_content}"
+        )
+        assert re.search(r"\[actor=.*Logger.*\]", stdout_content), (
+            f"Expected actor prefix in stdout: {stdout_content}"
+        )
 
         await pm.stop()
 
@@ -131,3 +160,21 @@ async def test_actor_logging_smoke() -> None:
             os.unlink(stderr_path)
         except OSError:
             pass
+
+
+@pytest.mark.timeout(60)
+async def test_structured_logging():
+    """
+    Tests that empty-message logging works correctly in actors.
+
+    torch.compile uses empty messages for structured trace logging.
+    The actor filter must not modify empty messages, or torch's
+    formatter fails with "expected empty string for trace".
+    """
+    pm = this_host().spawn_procs()
+    actor = pm.spawn("logger", Logger)
+    result = await actor.log_structured.call_one()
+
+    assert result["is_empty"], (
+        f"Actor prefix corrupted empty message: got {result['captured']!r}"
+    )

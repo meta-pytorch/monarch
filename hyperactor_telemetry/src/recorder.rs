@@ -362,8 +362,15 @@ impl Recording {
     }
 
     /// Return a span, which will record events to this recording when entered.
+    ///
+    /// Uses `parent: None` so that this span is always a root span. Without this,
+    /// contextual parentage would cause a spawned actor's recording span to become
+    /// a child of the spawning actor's recording span (via `Instance::start()`'s
+    /// `.instrument(Span::current())`), causing events to leak into the parent
+    /// actor's flight recorder.
     pub fn span(&self) -> Span {
         span!(
+            parent: None,
             Level::INFO,
             SPAN_FIELD_RECORDING,
             recording = self.recording_key(),
@@ -707,6 +714,64 @@ mod tests {
             json!({
                 "message": "Event from inner span"
             })
+        );
+    }
+
+    // Ensures that nested tracing recordings remain isolated: events
+    // emitted while span A is active are captured only by recording
+    // A, and events emitted inside nested span B are captured only by
+    // recording B. This verifies that the recorder correctly
+    // attributes events to the currently entered span without
+    // cross-contamination.
+    #[test]
+    fn test_recording_spans_are_isolated_across_nested_recordings() {
+        let recorder = Recorder::new();
+        let recording_a = recorder.record(10);
+        let recording_b = recorder.record(10);
+
+        tracing::subscriber::with_default(Registry::default().with(recorder.layer()), || {
+            let span_a = recording_a.span();
+            let _guard_a = span_a.enter();
+
+            info!("event_from_a");
+
+            {
+                let span_b = recording_b.span();
+                let _guard_b = span_b.enter();
+
+                info!("event_from_b");
+            }
+        });
+
+        let events_a: Vec<String> = recording_a
+            .tail()
+            .iter()
+            .map(|e| e.json_value().to_string())
+            .collect();
+        let events_b: Vec<String> = recording_b
+            .tail()
+            .iter()
+            .map(|e| e.json_value().to_string())
+            .collect();
+
+        let a_joined = events_a.join(" ");
+        let b_joined = events_b.join(" ");
+
+        assert!(
+            a_joined.contains("event_from_a"),
+            "recording A should contain event_from_a"
+        );
+        assert!(
+            !a_joined.contains("event_from_b"),
+            "recording A should NOT contain event_from_b"
+        );
+        assert!(
+            b_joined.contains("event_from_b"),
+            "recording B should contain event_from_b"
+        );
+        assert!(
+            !b_joined.contains("event_from_a"),
+            "recording B should NOT contain event_from_a"
         );
     }
 

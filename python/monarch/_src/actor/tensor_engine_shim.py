@@ -29,9 +29,10 @@ time it is used.
 """
 
 if TYPE_CHECKING:
-    from monarch._src.actor.actor_mesh import ActorEndpoint, Port, Selection
+    from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
+    from monarch._rust_bindings.monarch_hyperactor.mailbox import OncePortRef, PortRef
 
-from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
+from monarch._rust_bindings.monarch_hyperactor.pickle import PicklingState
 
 P = ParamSpec("P")
 F = TypeVar("F", bound=Callable[..., Any])
@@ -68,20 +69,18 @@ def shim(
 
 
 @shim(module="monarch.mesh_controller")
-def actor_send(
-    endpoint: "ActorEndpoint[..., ...]",
-    args_kwargs_tuple: bytes,
+def create_actor_message_kind(
+    method_name: "MethodSpecifier",
+    proc_mesh: "Optional[Any]",
     refs: "Sequence[Any]",
-    port: "Optional[Port[Any]]",
-    selection: "Selection",
-) -> None: ...
+    port: "Optional[PortRef | OncePortRef]",
+) -> "Any": ...
 
 
 @shim(module="monarch.mesh_controller")
 def actor_rref(
     endpoint: Any,
-    args_kwargs_tuple: FrozenBuffer,
-    refs: Sequence[Any],
+    pickling_state: Optional[PicklingState],
 ) -> Any: ...
 
 

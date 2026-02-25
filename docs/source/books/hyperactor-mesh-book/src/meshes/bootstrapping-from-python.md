@@ -1,4 +1,4 @@
-# §5 Boostrapping from Python
+# §5 Bootstrapping from Python
 
 So far we described the Rust side: there is a host, the host has a `HostMeshAgent`, and we send `CreateOrUpdate<ProcSpec>` etc. That's the control plane.
 
@@ -7,8 +7,8 @@ Most users won't do that by hand — they'll write Python like this:
 ```python
 import asyncio
 
-from monarch._src.actor.v1.host_mesh import this_host
-from monarch._src.actor.v1.proc_mesh import ProcMesh  # Optional, for typing
+from monarch._src.actor.host_mesh import this_host
+from monarch._src.actor.proc_mesh import ProcMesh  # Optional, for typing
 from monarch._src.actor.actor import Actor
 from monarch._src.actor.endpoint import endpoint
 
@@ -29,7 +29,7 @@ def train_with_mesh():
 When you write code like:
 
 ```python
-from monarch._src.actor.v1.host_mesh import this_host
+from monarch._src.actor.host_mesh import this_host
 
 host = this_host()
 ```
@@ -38,7 +38,7 @@ there's a bootstrap under it. Here's what actually happens.
 
 ### 1. `this_host()` reads the host mesh off the current proc.
 
-From monarch/\_src/actor/v1/host_mesh.py:
+From monarch/\_src/actor/host_mesh.py:
 ```python
 def this_host() -> "HostMesh":
     """
@@ -46,9 +46,7 @@ def this_host() -> "HostMesh":
 
     This is just shorthand for looking it up via the context
     """
-    hm = this_proc().host_mesh
-    assert isinstance(hm, HostMesh), f"expected v1 HostMesh, got v0 {hm}"
-    return hm
+    return this_proc().host_mesh
 ```
 So: `this_host()` doesn't build a host. That means we have to look at `this_proc()`.
 
@@ -61,9 +59,7 @@ def this_proc() -> "ProcMesh":
     The current singleton process that this specific actor is
     running on
     """
-    pm = context().actor_instance.proc
-    assert isinstance(pm, ProcMesh), f"expected v1 ProcMesh, got {pm}"
-    return pm
+    return context().actor_instance.proc
 ```
 So now we're down to the real root: `context()`. Everything hangs off of that.
 
@@ -85,7 +81,6 @@ def context() -> Context:
 
         from monarch._src.actor.host_mesh import create_local_host_mesh
         from monarch._src.actor.proc_mesh import _get_controller_controller
-        from monarch._src.actor.v1 import enabled as v1_enabled
 
         c.actor_instance.proc_mesh = _root_proc_mesh.get() # (2) give it a proc mesh
         _this_host_for_fake_in_process_host.get() # (3) make sure a host exists

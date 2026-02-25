@@ -66,7 +66,7 @@ class _Formatter(logging.Formatter):
         shortlevel = _glog_level_to_abbr.get(record.levelname, record.levelname[0])
 
         prefix = (
-            f"{shortlevel}{asctime}.{int(record.msecs*1000):06d} "
+            f"{shortlevel}{asctime}.{int(record.msecs * 1000):06d} "
             f"{record.filename}:"
             f"{record.lineno}]{self.suffix}"
         )

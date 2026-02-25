@@ -97,3 +97,9 @@ declare_static_counter!(PROC_MESH_ACTOR_FAILURES, "proc_mesh.actor_failures");
 // MESSAGE LATENCY
 // Tracks end-to-end message latency in microseconds (sampled at 1% by default)
 declare_static_histogram!(MESSAGE_LATENCY_MICROS, "message.e2e_latency.us");
+
+// SERVER HEARTBEAT
+/// Metric name for server heartbeat, used in both metric emission and client error messages.
+pub const SERVER_HEARTBEAT_METRIC_NAME: &str = "channel.server.heartbeat";
+// Tracks server heartbeat to indicate the server is alive
+declare_static_counter!(SERVER_HEARTBEAT, "channel.server.heartbeat");

@@ -60,7 +60,7 @@ pub struct ShortUuid(u64);
 impl ShortUuid {
     /// Generate a new UUID.
     pub fn generate() -> ShortUuid {
-        ShortUuid(rand::thread_rng().next_u64())
+        ShortUuid(rand::rng().next_u64())
     }
 
     pub(crate) fn format(&self, f: &mut std::fmt::Formatter<'_>, raw: bool) -> std::fmt::Result {

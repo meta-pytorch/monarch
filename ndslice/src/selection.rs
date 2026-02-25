@@ -679,8 +679,8 @@ impl Selection {
                 let select = Box::clone(select);
                 let r = {
                     let upper = slice.sizes()[dim];
-                    let mut rng = rand::thread_rng();
-                    rng.gen_range(0..upper)
+                    let mut rng = rand::rng();
+                    rng.random_range(0..upper)
                 };
                 Box::new((r..r + 1).flat_map(move |i| {
                     let mut env = env.clone();
@@ -766,8 +766,8 @@ impl Selection {
                     return Box::new(std::iter::empty());
                 }
 
-                let mut rng = rand::thread_rng();
-                let chosen = matching[rng.gen_range(0..matching.len())];
+                let mut rng = rand::rng();
+                let chosen = matching[rng.random_range(0..matching.len())];
 
                 let mut coord = env;
                 coord[dim] = chosen;

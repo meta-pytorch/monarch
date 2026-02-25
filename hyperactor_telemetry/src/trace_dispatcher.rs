@@ -10,6 +10,7 @@
 //! on a background thread, eliminating redundant capture and moving work off the application
 //! thread.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -18,9 +19,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use indexmap::IndexMap;
+use smallvec::SmallVec;
 use tracing::Id;
 use tracing::Subscriber;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Layer;
@@ -28,28 +30,45 @@ use tracing_subscriber::registry::LookupSpan;
 
 const QUEUE_CAPACITY: usize = 100_000;
 
+/// Type alias for trace event fields
+/// We expect that most trace events have fewer than 4 fields.
+pub(crate) type TraceFields = SmallVec<[(&'static str, FieldValue); 4]>;
+
+#[inline]
+pub(crate) fn get_field<'a>(fields: &'a TraceFields, key: &str) -> Option<&'a FieldValue> {
+    fields.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
+}
+
 /// Unified representation of a trace event captured from the tracing layer.
 /// This is captured once on the application thread, then sent to the background
 /// worker for fan-out to multiple exporters.
 #[derive(Debug, Clone)]
-pub(crate) enum TraceEvent {
+pub enum TraceEvent {
     /// A new span was created (on_new_span)
     NewSpan {
         id: u64,
         name: &'static str,
         target: &'static str,
         level: tracing::Level,
-        fields: IndexMap<String, FieldValue>,
+        fields: TraceFields,
         timestamp: SystemTime,
         parent_id: Option<u64>,
-        thread_name: String,
+        thread_name: &'static str,
         file: Option<&'static str>,
         line: Option<u32>,
     },
     /// A span was entered (on_enter)
-    SpanEnter { id: u64, timestamp: SystemTime },
+    SpanEnter {
+        id: u64,
+        timestamp: SystemTime,
+        thread_name: &'static str,
+    },
     /// A span was exited (on_exit)
-    SpanExit { id: u64, timestamp: SystemTime },
+    SpanExit {
+        id: u64,
+        timestamp: SystemTime,
+        thread_name: &'static str,
+    },
     /// A span was closed (dropped)
     SpanClose { id: u64, timestamp: SystemTime },
     /// A tracing event occurred (e.g., tracing::info!())
@@ -57,11 +76,11 @@ pub(crate) enum TraceEvent {
         name: &'static str,
         target: &'static str,
         level: tracing::Level,
-        fields: IndexMap<String, FieldValue>,
+        fields: TraceFields,
         timestamp: SystemTime,
         parent_span: Option<u64>,
-        thread_id: String,
-        thread_name: String,
+        thread_id: &'static str,
+        thread_name: &'static str,
         module_path: Option<&'static str>,
         file: Option<&'static str>,
         line: Option<u32>,
@@ -70,7 +89,7 @@ pub(crate) enum TraceEvent {
 
 /// Simplified field value representation for trace events
 #[derive(Debug, Clone)]
-pub(crate) enum FieldValue {
+pub enum FieldValue {
     Bool(bool),
     I64(i64),
     U64(u64),
@@ -82,7 +101,7 @@ pub(crate) enum FieldValue {
 /// Trait for sinks that receive trace events from the dispatcher.
 /// Implementations run on the background worker thread and can perform
 /// expensive I/O operations without blocking the application.
-pub(crate) trait TraceEventSink: Send + 'static {
+pub trait TraceEventSink: Send + 'static {
     /// Consume a single event. Called on background thread.
     fn consume(&mut self, event: &TraceEvent) -> Result<(), anyhow::Error>;
 
@@ -119,6 +138,59 @@ pub(crate) trait TraceEventSink: Send + 'static {
     }
 }
 
+thread_local! {
+    /// Cached thread info (thread_name, thread_id) for minimal overhead.
+    /// Strings are leaked once per thread to get &'static str - threads are long-lived so this is fine.
+    /// Uses Cell since (&'static str, &'static str) is Copy.
+    static CACHED_THREAD_INFO: Cell<Option<(&'static str, &'static str)>> = const { Cell::new(None) };
+}
+
+#[inline(always)]
+fn get_thread_info() -> (&'static str, &'static str) {
+    CACHED_THREAD_INFO.with(|cache| {
+        if let Some(info) = cache.get() {
+            return info;
+        }
+
+        let thread_name: &'static str = Box::leak(
+            std::thread::current()
+                .name()
+                .unwrap_or("")
+                .to_string()
+                .into_boxed_str(),
+        );
+
+        #[cfg(target_os = "linux")]
+        let thread_id: &'static str = {
+            // SAFETY: syscall(SYS_gettid) is always safe to call - it's a read-only
+            // syscall that returns the current thread's kernel thread ID (TID).
+            // The cast to u64 is safe because gettid() returns a positive pid_t.
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) as u64 };
+            Box::leak(tid.to_string().into_boxed_str())
+        };
+        #[cfg(not(target_os = "linux"))]
+        let thread_id: &'static str = {
+            let tid = std::thread::current().id();
+            // SAFETY: ThreadId is a newtype wrapper around a u64 counter.
+            // This transmute relies on the internal representation of ThreadId,
+            // which is stable in practice but not guaranteed by Rust's API.
+            // On non-Linux platforms this is a best-effort approximation.
+            // See: https://doc.rust-lang.org/std/thread/struct.ThreadId.html
+            let tid_num = unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) };
+            Box::leak(tid_num.to_string().into_boxed_str())
+        };
+
+        cache.set(Some((thread_name, thread_id)));
+        (thread_name, thread_id)
+    })
+}
+
+/// Control messages for the dispatcher (e.g., adding sinks dynamically)
+pub enum DispatcherControl {
+    /// Add a new sink to receive events
+    AddSink(Box<dyn TraceEventSink>),
+}
+
 /// The trace event dispatcher that captures events once and dispatches to multiple sinks
 /// on a background thread.
 pub struct TraceEventDispatcher {
@@ -126,7 +198,7 @@ pub struct TraceEventDispatcher {
     /// Separate channel so we are always notified of when the main queue is full and events are being dropped.
     dropped_sender: Option<mpsc::Sender<TraceEvent>>,
     _worker_handle: WorkerHandle,
-    max_level: Option<tracing::level_filters::LevelFilter>,
+    max_level: Option<LevelFilter>,
     dropped_events: Arc<AtomicU64>,
 }
 
@@ -141,22 +213,31 @@ impl TraceEventDispatcher {
     /// A separate unbounded priority channel guarantees delivery of critical events
     /// like drop notifications (safe because drop events are rate-limited).
     ///
+    /// Takes the global control receiver for dynamic sink registration. Sinks registered
+    /// via `register_sink()` before or after this call will be added to the dispatcher.
+    ///
     /// # Arguments
     /// * `sinks` - List of sinks to dispatch events to.
-    /// * `max_level` - Maximum level filter hint (None for no filtering)
-    pub(crate) fn new(
-        sinks: Vec<Box<dyn TraceEventSink>>,
-        max_level: Option<tracing::level_filters::LevelFilter>,
-    ) -> Self {
+    pub(crate) fn new(sinks: Vec<Box<dyn TraceEventSink>>) -> Self {
+        let max_level = Self::derive_max_level(&sinks);
+
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (dropped_sender, dropped_receiver) = mpsc::channel();
+        // Take the global control receiver - sinks registered via register_sink() will be received here
+        let control_receiver = crate::take_sink_control_receiver();
         let dropped_events = Arc::new(AtomicU64::new(0));
         let dropped_events_worker = Arc::clone(&dropped_events);
 
         let worker_handle = std::thread::Builder::new()
             .name("telemetry-worker".into())
             .spawn(move || {
-                worker_loop(receiver, dropped_receiver, sinks, dropped_events_worker);
+                worker_loop(
+                    receiver,
+                    dropped_receiver,
+                    control_receiver,
+                    sinks,
+                    dropped_events_worker,
+                );
             })
             .expect("failed to spawn telemetry worker thread");
 
@@ -169,6 +250,40 @@ impl TraceEventDispatcher {
             max_level,
             dropped_events,
         }
+    }
+
+    fn derive_max_level(sinks: &[Box<dyn TraceEventSink>]) -> Option<LevelFilter> {
+        let mut max_level: Option<LevelFilter> = None;
+
+        for sink in sinks {
+            let sink_max = match sink.target_filter() {
+                None => LevelFilter::TRACE,
+                Some(targets) => {
+                    let levels = [
+                        (tracing::Level::TRACE, LevelFilter::TRACE),
+                        (tracing::Level::DEBUG, LevelFilter::DEBUG),
+                        (tracing::Level::INFO, LevelFilter::INFO),
+                        (tracing::Level::WARN, LevelFilter::WARN),
+                        (tracing::Level::ERROR, LevelFilter::ERROR),
+                    ];
+                    let mut result = LevelFilter::OFF;
+                    for (level, filter) in levels {
+                        if targets.would_enable("", &level) {
+                            result = filter;
+                            break;
+                        }
+                    }
+                    result
+                }
+            };
+
+            max_level = Some(match max_level {
+                None => sink_max,
+                Some(current) => std::cmp::max(current, sink_max),
+            });
+        }
+
+        max_level
     }
 
     fn send_event(&self, event: TraceEvent) {
@@ -189,27 +304,17 @@ impl TraceEventDispatcher {
 
     fn send_drop_event(&self, total_dropped: u64) {
         if let Some(dropped_sender) = &self.dropped_sender {
-            #[cfg(target_os = "linux")]
-            let thread_id_num = {
-                // SAFETY: syscall(SYS_gettid) is always safe to call
-                unsafe { libc::syscall(libc::SYS_gettid) as u64 }
-            };
-            #[cfg(not(target_os = "linux"))]
-            let thread_id_num = {
-                let tid = std::thread::current().id();
-                // SAFETY: ThreadId transmute for non-Linux platforms
-                unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) }
-            };
+            let (thread_name, thread_id) = get_thread_info();
 
-            let mut fields = IndexMap::new();
-            fields.insert(
-                "message".to_string(),
+            let mut fields = TraceFields::new();
+            fields.push((
+                "message",
                 FieldValue::Str(format!(
                     "Telemetry events and log lines dropped due to full queue (capacity: {}). Worker may be falling behind.",
                     QUEUE_CAPACITY
                 )),
-            );
-            fields.insert("dropped_count".to_string(), FieldValue::U64(total_dropped));
+            ));
+            fields.push(("dropped_count", FieldValue::U64(total_dropped)));
 
             // We want to just directly construct and send a `TraceEvent::Event` here so we don't need to
             // reason very hard about whether or not we are creating a DoS loop
@@ -220,11 +325,8 @@ impl TraceEventDispatcher {
                 fields,
                 timestamp: SystemTime::now(),
                 parent_span: None,
-                thread_id: thread_id_num.to_string(),
-                thread_name: std::thread::current()
-                    .name()
-                    .unwrap_or_default()
-                    .to_string(),
+                thread_id,
+                thread_name,
                 module_path: Some(module_path!()),
                 file: Some(file!()),
                 line: Some(line!()),
@@ -258,7 +360,7 @@ where
 {
     fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let metadata = attrs.metadata();
-        let mut fields = IndexMap::new();
+        let mut fields = TraceFields::new();
 
         let mut visitor = FieldVisitor(&mut fields);
         attrs.record(&mut visitor);
@@ -269,10 +371,7 @@ where
             ctx.current_span().id().map(|id| id.into_u64())
         };
 
-        let thread_name = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string();
+        let (thread_name, _) = get_thread_info();
 
         let event = TraceEvent::NewSpan {
             id: id.into_u64(),
@@ -291,18 +390,22 @@ where
     }
 
     fn on_enter(&self, id: &Id, _ctx: Context<'_, S>) {
+        let (thread_name, _) = get_thread_info();
         let event = TraceEvent::SpanEnter {
             id: id.into_u64(),
             timestamp: SystemTime::now(),
+            thread_name,
         };
 
         self.send_event(event);
     }
 
     fn on_exit(&self, id: &Id, _ctx: Context<'_, S>) {
+        let (thread_name, _) = get_thread_info();
         let event = TraceEvent::SpanExit {
             id: id.into_u64(),
             timestamp: SystemTime::now(),
+            thread_name,
         };
 
         self.send_event(event);
@@ -310,35 +413,13 @@ where
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
         let metadata = event.metadata();
-        let mut fields = IndexMap::new();
+        let mut fields = TraceFields::new();
         let mut visitor = FieldVisitor(&mut fields);
         event.record(&mut visitor);
 
         let parent_span = ctx.event_span(event).map(|span| span.id().into_u64());
 
-        #[cfg(target_os = "linux")]
-        let thread_id_num = {
-            // SAFETY: syscall(SYS_gettid) is always safe to call - it's a read-only
-            // syscall that returns the current thread's kernel thread ID (TID).
-            // The cast to u64 is safe because gettid() returns a positive pid_t.
-            unsafe { libc::syscall(libc::SYS_gettid) as u64 }
-        };
-        #[cfg(not(target_os = "linux"))]
-        let thread_id_num = {
-            let tid = std::thread::current().id();
-            // SAFETY: ThreadId is a newtype wrapper around a u64 counter.
-            // This transmute relies on the internal representation of ThreadId,
-            // which is stable in practice but not guaranteed by Rust's API.
-            // On non-Linux platforms this is a best-effort approximation.
-            // See: https://doc.rust-lang.org/std/thread/struct.ThreadId.html
-            unsafe { std::mem::transmute::<std::thread::ThreadId, u64>(tid) }
-        };
-        let thread_id_str = thread_id_num.to_string();
-
-        let thread_name = std::thread::current()
-            .name()
-            .unwrap_or_default()
-            .to_string();
+        let (thread_name, thread_id) = get_thread_info();
 
         let trace_event = TraceEvent::Event {
             name: metadata.name(),
@@ -347,7 +428,7 @@ where
             fields,
             timestamp: SystemTime::now(),
             parent_span,
-            thread_id: thread_id_str,
+            thread_id,
             thread_name,
             module_path: metadata.module_path(),
             file: metadata.file(),
@@ -366,44 +447,38 @@ where
         self.send_event(event);
     }
 
-    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+    fn max_level_hint(&self) -> Option<LevelFilter> {
         self.max_level
     }
 }
 
-struct FieldVisitor<'a>(&'a mut IndexMap<String, FieldValue>);
+struct FieldVisitor<'a>(&'a mut TraceFields);
 
 impl<'a> tracing::field::Visit for FieldVisitor<'a> {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::Bool(value));
+        self.0.push((field.name(), FieldValue::Bool(value)));
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::I64(value));
+        self.0.push((field.name(), FieldValue::I64(value)));
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::U64(value));
+        self.0.push((field.name(), FieldValue::U64(value)));
     }
 
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
-        self.0
-            .insert(field.name().to_string(), FieldValue::F64(value));
+        self.0.push((field.name(), FieldValue::F64(value)));
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         self.0
-            .insert(field.name().to_string(), FieldValue::Str(value.to_string()));
+            .push((field.name(), FieldValue::Str(value.to_string())));
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(
-            field.name().to_string(),
-            FieldValue::Debug(format!("{:?}", value)),
-        );
+        self.0
+            .push((field.name(), FieldValue::Debug(format!("{:?}", value))));
     }
 }
 
@@ -413,6 +488,7 @@ impl<'a> tracing::field::Visit for FieldVisitor<'a> {
 fn worker_loop(
     receiver: mpsc::Receiver<TraceEvent>,
     dropped_receiver: mpsc::Receiver<TraceEvent>,
+    control_receiver: Option<mpsc::Receiver<DispatcherControl>>,
     mut sinks: Vec<Box<dyn TraceEventSink>>,
     dropped_events: Arc<AtomicU64>,
 ) {
@@ -454,6 +530,17 @@ fn worker_loop(
         while let Ok(event) = dropped_receiver.try_recv() {
             dispatch_to_sinks(&mut sinks, event);
             events_since_flush += 1;
+        }
+
+        // Process any pending control messages (e.g., adding new sinks)
+        if let Some(ref ctrl_rx) = control_receiver {
+            while let Ok(control) = ctrl_rx.try_recv() {
+                match control {
+                    DispatcherControl::AddSink(sink) => {
+                        sinks.push(sink);
+                    }
+                }
+            }
         }
 
         match receiver.recv_timeout(FLUSH_INTERVAL) {

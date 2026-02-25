@@ -60,7 +60,7 @@ enum LogMessage {
     hostname: String,
     pid: u32,
     output_target: OutputTarget, // Stdout|Stderr
-    payload: Serialized,         // Vec<Vec<u8>> (lines)
+    payload: wirevalue::Any,     // Vec<Vec<u8>> (lines)
   },
   Flush {
     sync_version: Option<u64>,   // None: heartbeat; Some(v): barrier marker
@@ -71,7 +71,7 @@ enum LogMessage {
 
 ```rust
 enum LogForwardMessage {
-  Forward,                        // pull-next from rx (drives the loop)
+  Forward {},                     // pull-next from rx (drives the loop)
   SetMode { stream_to_client: bool },
   ForceSyncFlush { version: u64 }, // injects in-band Flush(Some(version))
 }
@@ -112,7 +112,7 @@ impl Actor for LogForwardActor {
 
   async fn init(&mut self, this: &Instance<Self>) -> Result<()> {
     // Kick the pull loop and seed a heartbeat to avoid starvation.
-    this.self_message_with_delay(LogForwardMessage::Forward, Duration::from_secs(0))?;
+    this.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
     self.flush_tx.lock().await
       .send(LogMessage::Flush { sync_version: None }).await?;
     Ok(())
@@ -161,7 +161,7 @@ impl LogForwardMessageHandler for LogForwardActor {
     }
 
     // Tail-call to keep pulling.
-    ctx.self_message_with_delay(LogForwardMessage::Forward, Duration::from_secs(0))?;
+    ctx.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
     Ok(())
   }
 

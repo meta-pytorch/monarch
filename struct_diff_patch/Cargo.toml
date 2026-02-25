@@ -4,16 +4,13 @@
 name = "struct_diff_patch"
 version = "0.0.0"
 authors = ["Facebook <opensource+crates-struct_diff_patch@fb.com>"]
-edition = "2021"
+edition = "2024"
 description = "diff/patch for Rust structs"
 repository = "https://github.com/meta-pytorch/monarch/"
 license = "BSD-3-Clause"
 
-[lib]
-edition = "2024"
-
 [dependencies]
 paste = "1.0.14"
 struct_diff_patch_macros = { version = "0.0.0", path = "../struct_diff_patch_macros" }
-thiserror = "2.0.12"
+thiserror = "2.0.18"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }

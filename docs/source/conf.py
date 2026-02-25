@@ -46,7 +46,7 @@ sphinx_gallery_conf = {
     ],  # path to your example scripts
     "gallery_dirs": "./generated/examples",  # path to where to save gallery generated output
     "filename_pattern": r".*\.py$",  # Include all Python files
-    "ignore_pattern": r"__init__\.py",  # Exclude __init__.py files
+    "ignore_pattern": r"(__init__|ddp/train)\.py",  # Exclude __init__.py and supplementary files
     "plot_gallery": "False",
     "only_warn_on_example_error": "True",
 }
@@ -164,6 +164,8 @@ html_static_path = ["_static"]
 # Configure MyST-Parser to find markdown files in the books directory
 myst_update_mathjax = False
 myst_heading_anchors = 3
+# Configure code blocks with just mermaid to be rendered as diagrams.
+myst_fence_as_directive = ["mermaid"]
 
 # The suffix(es) of source filenames.
 source_suffix = {

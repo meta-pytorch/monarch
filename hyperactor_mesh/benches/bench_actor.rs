@@ -14,13 +14,14 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::Named;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
+use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
+use typeuri::Named;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct BenchMessage {
@@ -46,7 +47,7 @@ impl Actor for BenchActor {}
 #[async_trait]
 impl RemoteSpawn for BenchActor {
     type Params = Duration;
-    async fn new(params: Duration) -> Result<Self, anyhow::Error> {
+    async fn new(params: Duration, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         Ok(Self {
             processing_time: params,
         })

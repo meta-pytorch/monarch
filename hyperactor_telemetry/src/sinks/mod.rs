@@ -11,4 +11,5 @@
 //! writing events to a specific backend (SQLite, Scuba, glog, etc).
 
 pub mod glog;
+pub mod perfetto;
 pub mod sqlite;

@@ -16,6 +16,7 @@ use super::*;
 use crate::Data;
 
 /// Create a new local channel, returning its two ends.
+#[allow(dead_code)] // Not used outside tests.
 pub fn new<M: RemoteMessage>() -> (impl Tx<M>, impl Rx<M>) {
     let (tx, rx) = mpsc::unbounded_channel::<M>();
     let (mpsc_tx, status_sender) = MpscTx::new(tx, ChannelAddr::Local(0));
@@ -62,7 +63,6 @@ impl Default for Ports {
 
 static PORTS: LazyLock<Mutex<Ports>> = LazyLock::new(|| Mutex::new(Ports::default()));
 
-#[derive(Debug)]
 pub struct LocalTx<M: RemoteMessage> {
     tx: mpsc::UnboundedSender<Data>,
     port: u64,
@@ -78,7 +78,11 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
             Err(err) => {
                 if let Some(return_channel) = return_channel {
                     return_channel
-                        .send(SendError(err.into(), message))
+                        .send(SendError {
+                            error: err.into(),
+                            message,
+                            reason: None,
+                        })
                         .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
                 }
                 return;
@@ -87,7 +91,11 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
         if self.tx.send(data).is_err() {
             if let Some(return_channel) = return_channel {
                 return_channel
-                    .send(SendError(ChannelError::Closed, message))
+                    .send(SendError {
+                        error: ChannelError::Closed,
+                        message,
+                        reason: None,
+                    })
                     .unwrap_or_else(|m| tracing::warn!("failed to deliver SendError: {}", m));
             }
         }
@@ -102,7 +110,6 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
     }
 }
 
-#[derive(Debug)]
 pub struct LocalRx<M: RemoteMessage> {
     data_rx: mpsc::UnboundedReceiver<Data>,
     status_tx: watch::Sender<TxStatus>,
@@ -188,7 +195,14 @@ mod tests {
 
         let (return_tx, return_rx) = oneshot::channel();
         tx.try_post(123, return_tx);
-        assert_matches!(return_rx.await, Ok(SendError(ChannelError::Closed, 123)));
+        assert_matches!(
+            return_rx.await,
+            Ok(SendError {
+                error: ChannelError::Closed,
+                message: 123,
+                ..
+            })
+        );
     }
 
     #[tokio::test]

@@ -7,8 +7,9 @@
 4. [Endpoints and Messaging](#endpoints-and-messaging)
 5. [Actor Context](#actor-context)
 6. [ActorMesh](#actormesh)
-7. [Advanced Patterns](#advanced-patterns)
-8. [Best Practices](#best-practices)
+7. [Error Handling in Meshes](#error-handling-in-meshes)
+8. [Advanced Patterns](#advanced-patterns)
+9. [Best Practices](#best-practices)
 
 ---
 
@@ -77,13 +78,12 @@ graph LR
 stateDiagram-v2
     [*] --> Creating: spawn()
     Creating --> Constructing: allocate resources
-    Constructing --> Initializing: new()
-    Initializing --> Running: init()
+    Constructing --> Running: __init__()
     Running --> Running: handle messages
     Running --> Terminating: stop/error
     Terminating --> [*]: cleanup
 
-    Initializing --> Failed: init error
+    Constructing --> Failed: __init__ error
     Running --> Failed: unhandled error
     Failed --> [*]: propagate to parent
 ```
@@ -122,36 +122,15 @@ class DataProcessor(Actor):
         self.buffer_size = buffer_size
         self.buffer = []
         self.processed_count = 0
-
-        # NO MESSAGING YET - actor not fully registered
 ```
 
 **Important Notes:**
 - `__init__` is called during actor construction
-- Actor cannot send/receive messages yet
-- No access to runtime services
-- Should only initialize state
+- Arguments passed to `spawn()` are forwarded to `__init__`
+- Initialize all actor state here
+- After `__init__` completes, the actor is ready to receive messages
 
-### 3. Initialization Phase
-
-**The `init` Hook (Optional):**
-
-In Rust-based actors or custom Python actors, you can override the `init` method:
-
-```python
-class WorkerActor(Actor):
-    def __init__(self, config):
-        self.config = config
-        self.resources = None
-
-    async def init(self, this):
-        # Now we have access to runtime
-        # Can spawn child actors, send messages, etc.
-        self.resources = await self.acquire_resources()
-        self.worker_id = this.actor_id
-```
-
-### 4. Running Phase
+### 3. Running Phase
 
 Once initialized, the actor enters its main lifecycle where it processes messages.
 
@@ -176,7 +155,7 @@ sequenceDiagram
 - Invokes corresponding endpoint handler
 - Returns result or sends to port
 
-### 5. Termination Phase
+### 4. Termination Phase
 
 **Normal Termination:**
 - All child actors terminated
@@ -187,7 +166,8 @@ sequenceDiagram
 **Error Termination:**
 - Unhandled exception in handler
 - Propagated to supervisor
-- Supervision tree handles recovery
+- Supervision tree handles recovery (see [Error Handling in Meshes](#error-handling-in-meshes))
+- All child actors terminated
 
 ---
 
@@ -684,6 +664,85 @@ data = clients.fetch.call().get()
 
 ---
 
+## Error Handling in Meshes
+
+When you spawn procs and actors, you need to know when they encounter errors, and
+have a chance to recover from them. This process is called "supervision", because
+the owner of the resource (meshes of hosts, procs, actors) supervises them
+to make sure they are making progress.
+
+### Principles of ownership
+We start with a set of principles we want to be true about ownership of resources,
+such that we can make the guarantees for a good user experience:
+
+1. Creating new meshes always results in an owned mesh. For example, if the holder of a ProcMesh reference spawns an actor, that operation returns an owned ActorMesh.
+2. All meshes are owned by at most one actor. We do not support transfer or suspension of ownership. An actor can own multiple resources.
+3. A mesh cannot outlive its owner – that is, when the owner stops or dies, so does the mesh.
+4. If a mesh stops or dies, it will no longer handle any messages except for a final "cleanup" message. A stopped mesh will accept no new message, but drain all of its existing pending messages before cleanup. The owned mesh will run cleanup before its owner runs cleanup.
+
+From these principles, we can also derive that ownership follows a strict hierarchy.
+We can always draw a single path from any mesh to some "root" owner. This makes
+the supervision hierarchy a tree. There are no orphan (managed) objects in the system: all failures must propagate.
+
+The following is a further axiomitization, separating actor supervision from mesh lifecycle management:
+
+#### Actors
+Actors form a strict hierarchy of ownership. Typically the root of the hierarchy is the main script's client actor. We say that an actor is owned by its parent. A root actor is not owned.
+When an actor fails, the failure propagates to its parent. The parent can handle the failure. When a failure is not handled, the parent actor fails. (Which causes its failure to be propagated in turn.) When the root actor fails, it invokes the user fault handler, which by default will exit the process.
+
+#### Meshes:
+All (host, proc, actor) meshes are owned by an actor. In turn, the lifecycle of the mesh is tied to that actor. If the actor stops (whether through failure or grace), then its own meshes are also stopped.
+Mesh lifecycle events (for example, the failure of an actor in an actor mesh) generate failures that are also propagated to its owner actor; the rules from above apply.
+
+
+### Supervision
+From these follow the rules of supervision. We say that the owner of a mesh _supervises_ the mesh. This means that it is responsible for responding to _failures_ in that mesh. In principle, it does not matter how failures are instigated; the supervisor is always responsible for determining how to handle it.
+Another important principle at play here is _encapsulation_: only the owner of a mesh knows how to handle mesh failure. No other component should need to know.
+Thus, when a mesh fails in some way (for example, an actor failed), the owning actor receives a failure notification. In response to such failures, the actor must recover from the failure. If it fails to do so (either because it did not handle the event, or because it failed to recover the mesh properly), the _actor itself must fail_, cascading the failure up the ownership hierarchy. This causes all meshes owned by the actor to also fail. It is then up to the owner of the mesh to which that actor belongs to recover again.
+This is similar to exception handling mechanisms: one can choose to handle exceptions at the appropriate level in the hierarchy (call stack), and failure to handle an exception propagates the failure (and thus terminates the remainder of functions in the call stack).
+
+### Supervision Python API
+Actors can handle failures by providing an implementation of the `__supervise__` method:
+```py
+class ManagerActor(Actor):
+  def __init__(self, worker_procs: ProcMesh):
+    # "workers" is now owned by this actor. If this actor fails, then
+    # the "workers" mesh will also fail.
+    self.workers = worker_procs.spawn("workers", WorkerActor)
+
+  def __supervise__(self, failure: MeshFailure) -> bool:
+    # This is invoked whenever an owned mesh fails.
+    # The failure object can be stringified, and will contain the error message,
+    # the actor name, and (sometimes) the rank that failed, if it can be determined.
+    # The full API can be found on the MeshFailure typing stub:
+    # monarch/python/monarch/_rust_bindings/monarch_hyperactor/supervision.pyi
+
+    logging.error(f"failure encountered: {failure}")
+
+    # To handle the event, return a truthy object. To consider it unhandled,
+    # return a falsey object (such as None or False).
+    return None
+```
+
+`__supervise__` is special: Because it handles "exceptions", we have to be able
+to invoke it at any (safe) point. This is because otherwise we might run into a
+deadlock: for example, an actor might be waiting for a result from a failed actor.
+Thus, we define safe points (e.g., waiting for channel receives) at which we may
+safely invoke the supervision handler. This means that __supervise__ handlers have
+to be written carefully: it can potentially change the state of the actor in the middle of handling a message.
+
+If `__supervise__` returns a truthy value, the failure will be considered handled
+and not delivered further up the chain. If it returns a falsey value (including None, if there is no return),
+the failure will be delivered to that Actor’s owner recursively until it reaches
+the original client. If it reaches the original client with no handling, it will crash.
+If `__supervise__` raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor’s owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method `__exit__` for context managers.
+
+We make no guarantees about how many times `__supervise__` will be called.
+If you own a mesh of N actors, each of which generates a supervision error, it may be called anywhere between 1 and N times inclusive.
+
+
+---
+
 ## Advanced Patterns
 
 ### 1. Explicit Response Ports
@@ -955,18 +1014,16 @@ async def test_calculator():
 ```mermaid
 graph LR
     A[Spawn] --> B[__init__]
-    B --> C[init hook]
-    C --> D[Running]
-    D --> E[Handle Messages]
-    E --> D
-    D --> F[Terminate]
+    B --> C[Running]
+    C --> D[Handle Messages]
+    D --> C
+    C --> E[Terminate]
 
     style A fill:#855b9d
     style B fill:#007c88
     style C fill:#007c88
-    style D fill:#007c88
-    style E fill:#13a3a4
-    style F fill:#0072c7
+    style D fill:#13a3a4
+    style E fill:#0072c7
 ```
 
 <!-- ### Next Steps

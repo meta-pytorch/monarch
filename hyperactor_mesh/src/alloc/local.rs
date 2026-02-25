@@ -32,7 +32,7 @@ use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
-use crate::proc_mesh::mesh_agent::ProcMeshAgent;
+use crate::mesh_agent::ProcMeshAgent;
 use crate::shortuuid::ShortUuid;
 
 enum Action {
@@ -235,7 +235,11 @@ impl Alloc for LocalAlloc {
 
                     if let Err(err) = proc_to_stop
                         .proc
-                        .destroy_and_wait::<()>(Duration::from_millis(10), None)
+                        .destroy_and_wait::<()>(
+                            Duration::from_millis(10),
+                            None,
+                            &reason.to_string(),
+                        )
                         .await
                     {
                         tracing::error!("error while stopping proc {}: {}", rank, err);

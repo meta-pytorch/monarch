@@ -40,27 +40,24 @@ def _bad_rank():
 
 def _debugee_actor_internal(rank):
     if rank % 4 == 0:
-        breakpoint()  # noqa
         rank += 1
         return rank
     elif rank % 4 == 1:
-        breakpoint()  # noqa
         rank += 2
         return rank
     elif rank % 4 == 2:
-        breakpoint()  # noqa
         rank += 3
         _bad_rank()
     elif rank % 4 == 3:
-        breakpoint()  # noqa
         rank += 4
         return rank
 
 
 class DebugeeActor(Actor):
     @endpoint
-    async def to_debug(self):
+    def to_debug(self):
         rank = current_rank().rank
+        breakpoint()  # noqa
         return _debugee_actor_internal(rank)
 
 

@@ -97,7 +97,7 @@ impl PySlice {
     }
 
     /// Returns the value at the given index or raises an `IndexError` if the index is out of bounds.
-    fn __getitem__(&self, py: Python<'_>, range: Range<'_>) -> PyResult<PyObject> {
+    fn __getitem__(&self, py: Python<'_>, range: Range<'_>) -> PyResult<Py<PyAny>> {
         match range {
             Range::Single(index) => self
                 .inner
@@ -165,7 +165,7 @@ impl PySlice {
 
     /// Returns a list of slices that cover the given list of ranks.
     #[staticmethod]
-    fn from_list(py: Python<'_>, ranks: Vec<usize>) -> PyResult<PyObject> {
+    fn from_list(py: Python<'_>, ranks: Vec<usize>) -> PyResult<Py<PyAny>> {
         if ranks.is_empty() {
             return PyList::empty(py).into_py_any(py);
         }

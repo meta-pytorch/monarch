@@ -8,7 +8,7 @@
 from unittest import main, TestCase
 
 import torch
-from monarch.gradient._gradient_generator import GradientGenerator
+from monarch.gradient import GradientGenerator
 from monarch.gradient_generator import gradient_execution_order
 
 

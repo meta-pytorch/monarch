@@ -15,7 +15,6 @@ Distributed Tensors in Monarch
 
 import monarch
 import torch
-
 import torch.nn as nn
 from monarch.actor import this_host
 

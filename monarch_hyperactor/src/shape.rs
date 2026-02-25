@@ -74,7 +74,7 @@ impl PyExtent {
         Ok((slf.getattr("from_bytes")?, (py_bytes,)))
     }
 
-    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         Ok(self
             .labels()
             .into_bound_py_any(py)?
@@ -92,7 +92,7 @@ impl PyExtent {
         self.inner.len()
     }
 
-    fn keys<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    fn keys<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         Ok(self.inner.labels().into_bound_py_any(py)?.into())
     }
 
@@ -401,7 +401,7 @@ impl PyPoint {
     fn __len__(&self) -> usize {
         self.extent.len()
     }
-    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         Ok(self
             .extent
             .labels()
@@ -457,7 +457,7 @@ impl PyPoint {
         }
     }
 
-    fn keys<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    fn keys<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         Ok(self.extent.labels().into_bound_py_any(py)?.into())
     }
 }

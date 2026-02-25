@@ -6,24 +6,25 @@ Every actor type must implement this trait to participate in the system. It defi
 
 ```rust
 #[async_trait]
-pub trait Actor: Sized + Send + Debug + 'static {
-    type Params: Send + 'static;
-
-    async fn new(params: Self::Params) -> Result<Self, anyhow::Error>;
-
+pub trait Actor: Sized + Send + 'static {
     async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error> {
         Ok(())
     }
 
-    async fn spawn(
-        cx: &impl context::Actor,
-        params: Self::Params,
-    ) -> anyhow::Result<ActorHandle<Self>> {
-        cx.instance().spawn(params).await
+    async fn cleanup(
+        &mut self,
+        _this: &Instance<Self>,
+        _err: Option<&ActorError>,
+    ) -> Result<(), anyhow::Error> {
+        Ok(())
     }
 
-    async fn spawn_detached(params: Self::Params) -> Result<ActorHandle<Self>, anyhow::Error> {
-        Proc::local().spawn("anon", params).await
+    fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
+        cx.instance().spawn(self)
+    }
+
+    fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
+        Proc::local().spawn("anon", self)
     }
 
     fn spawn_server_task<F>(future: F) -> JoinHandle<F::Output>
@@ -44,40 +45,25 @@ pub trait Actor: Sized + Send + Debug + 'static {
 
     async fn handle_undeliverable_message(
         &mut self,
-        this: &Instance<Self>,
-        Undeliverable(envelope): Undeliverable<MessageEnvelope>,
+        cx: &Instance<Self>,
+        envelope: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        assert_eq!(envelope.sender(), this.self_id());
+        handle_undeliverable_message(cx, envelope)
+    }
 
-        anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+    fn display_name(&self) -> Option<String> {
+        None
     }
 }
 ```
 
-## Construction: `Params` and `new`
-
-Each actor must define a `Params` type:
-
-```rust
-type Params: Send + 'static;
-```
-
-This associated type defines the data required to instantiate the actor.
-
-The actor is constructed by the runtime using:
-```rust
-async fn new(params: Self::Params) -> Result<Self, anyhow::Error>;
-```
-
-This method returns the actor's internal state. At this point, the actor has not yet been connected to the runtime; it has no mailbox and cannot yet send or receive messages. `new` is typically used to construct the actor's fields from its input parameters.
-
 ## Initialization: `init`
 
 ```rust
-async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error>
+async fn init(&mut self, _this: &Instance<Self>) -> Result<(), anyhow::Error>
 ```
 
-The `init` method is called after the actor has been constructed with `new` and registered with the runtime. It is passed a reference to the actor's `Instance`, allowing access to runtime services such as:
+The `init` method is called after the actor has been constructed and registered with the runtime. It is passed a reference to the actor's `Instance`, allowing access to runtime services such as:
 - The actor’s ID and status
 - The mailbox and port system
 - Capabilities for spawning or sending messages
@@ -88,29 +74,44 @@ If `init` returns an error, the actor is considered failed and will not proceed 
 
 Use `init` to perform startup logic that depends on the actor being fully integrated into the system.
 
-## Spawning: `spawn`
-
-The `spawn` method provides a default implementation for creating a new actor from an existing one:
+## Cleanup: `cleanup`
 
 ```rust
-async fn spawn(
-    cx: &impl context::Actor,
-    params: Self::Params,
-) -> anyhow::Result<ActorHandle<Self>> {
-    cx.instance().spawn(params).await
+async fn cleanup(
+    &mut self,
+    _this: &Instance<Self>,
+    _err: Option<&ActorError>,
+) -> Result<(), anyhow::Error>
+```
+
+The `cleanup` method is called before the actor shuts down. It provides a hook for async cleanup operations. The method receives:
+- A reference to the actor's `Instance`
+- An optional `ActorError` indicating whether the actor is failing
+
+If `err` is not `None`, it contains the error that caused the actor to fail. Any errors returned by `cleanup` will be logged and ignored. If `err` is `None`, errors returned by `cleanup` will be propagated as an `ActorError`.
+
+The default implementation does nothing. This method is not called if there is a panic in the actor or if the process is killed.
+
+## Spawning: `spawn`
+
+The `spawn` method provides a default implementation for spawning an actor:
+
+```rust
+fn spawn(self, cx: &impl context::Actor) -> anyhow::Result<ActorHandle<Self>> {
+    cx.instance().spawn(self)
 }
 ```
 
-In practice, `context::Actor` is implemented for types such as `Instance<A>` and `Context<A>`, which represent running actors. As a result, `Actor::spawn(...)` always constructs a child actor: the new actor receives a child ID and is linked to its parent through the runtime.
+This method takes ownership of `self` (the actor instance) and spawns it as a child. In practice, `context::Actor` is implemented for types such as `Instance<A>` and `Context<A>`, which represent running actors. As a result, `Actor::spawn(...)` always constructs a child actor: the new actor receives a child ID and is linked to its parent through the runtime.
 
 ## Detached Spawning: `spawn_detached`
 
 ```rust
-async fn spawn_detached(params: Self::Params) -> Result<ActorHandle<Self>, anyhow::Error> {
-    Proc::local().spawn("anon", params).await
+fn spawn_detached(self) -> Result<ActorHandle<Self>, anyhow::Error> {
+    Proc::local().spawn("anon", self)
 }
 ```
-This method creates a root actor on a fresh, isolated proc.
+This method takes ownership of `self` and creates a root actor on a fresh, isolated proc.
 - The proc is local-only and cannot forward messages externally.
 - The actor receives a unique root `ActorId` with no parent.
 - No supervision or linkage is established.
@@ -149,21 +150,29 @@ By default, it returns `Ok(false)`, which indicates that the event was not handl
 
 Actors may override this to implement custom supervision logic.
 
+## Display Name: `display_name`
+
+```rust
+fn display_name(&self) -> Option<String> {
+    None
+}
+```
+
+This method allows an actor to provide a custom display name for use in supervision error messages and logging. By default, it returns `None`, causing the runtime to use the `ActorId` for display purposes.
+
 ## Undeliverables: `handle_undeliverable_message`
 
 ```rust
 async fn handle_undeliverable_message(
     &mut self,
-    this: &Instance<Self>,
-    Undeliverable(envelope): Undeliverable<MessageEnvelope>,
+    cx: &Instance<Self>,
+    envelope: Undeliverable<MessageEnvelope>,
 ) -> Result<(), anyhow::Error> {
-    assert_eq!(envelope.sender(), this.self_id());
-
-    anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
+    handle_undeliverable_message(cx, envelope)
 }
 ```
-This method is called when a message sent by this actor fails to be delivered.
-- It asserts that the message was indeed sent by this actor.
-- Then it returns an error: `Err(UndeliverableMessageError::DeliveryFailure(...))`
+This method is called when a message sent by this actor fails to be delivered. The default implementation calls the free function `handle_undeliverable_message`, which:
+- Asserts that the message was indeed sent by this actor.
+- Returns an error: `Err(UndeliverableMessageError::DeliveryFailure(...))`
 
 This signals that the actor considers this delivery failure to be a fatal error. You may override this method to suppress the failure or to implement custom fallback behavior.
