@@ -68,6 +68,7 @@ pub mod clock;
 pub mod config;
 pub mod context;
 pub mod host;
+pub mod id;
 mod init;
 pub mod introspect;
 pub mod mailbox;
@@ -127,6 +128,8 @@ pub use hyperactor_macros::export;
 #[doc(inline)]
 pub use hyperactor_macros::handle;
 #[doc(inline)]
+pub use hyperactor_macros::uid;
+#[doc(inline)]
 pub use hyperactor_macros::instrument;
 #[doc(inline)]
 pub use hyperactor_macros::instrument_infallible;
@@ -138,6 +141,8 @@ pub use hyperactor_telemetry::declare_static_histogram;
 pub use hyperactor_telemetry::declare_static_timer;
 pub use hyperactor_telemetry::key_value;
 pub use hyperactor_telemetry::kv_pairs;
+pub use id::Label;
+pub use id::Uid;
 #[doc(inline)]
 pub use init::initialize;
 #[doc(inline)]
