@@ -104,7 +104,7 @@ class LocalAllocatorBase(AllocatorBase):
 class RemoteAllocatorBase(AllocatorBase):
     def __new__(
         cls,
-        world_id: str,
+        alloc_name: str,
         initializer: "monarch._src.actor.allocator.RemoteAllocInitializer",  # pyre-ignore[11]
         heartbeat_interval: timedelta = timedelta(seconds=5),
     ) -> Self:
@@ -113,7 +113,7 @@ class RemoteAllocatorBase(AllocatorBase):
         remote hosts that are running hyperactor's RemoteProcessAllocator.
 
         Arguments:
-        - `world_id`: The world id to use for the remote allocator.
+        - `alloc_name`: The alloc name to use for the remote allocator.
         - `initializer`: Returns the server addresses to send allocation requests to.
         - `heartbeat_interval`: Heartbeat interval used to maintain health status of remote hosts.
         """
