@@ -568,17 +568,21 @@ class Simulator:
             )
         stream = msg.from_stream.ref
 
+        base_task = {
+            "command_id": self.command_id,
+            "start_time": self.now,
+            "runtime": self.runtime.get_runtime(msg),
+            "traceback": self.current_traceback,
+        }
+
         if msg.from_ranks == msg.to_ranks:
             for worker in self.iter_workers([msg.from_ranks]):
                 worker.add_task(
                     Task(
+                        **base_task,
                         inputs=list(inputs.keys()),
                         outputs=list(outputs.keys()),
-                        command_id=self.command_id,
-                        start_time=self.now,
-                        runtime=self.runtime.get_runtime(msg),
                         meta=["SendTensor"],
-                        traceback=self.current_traceback,
                     ),
                     self.now,
                     stream=stream,
@@ -589,14 +593,11 @@ class Simulator:
                 collectives_pair.append([])
                 worker.add_task(
                     Task(
+                        **base_task,
                         inputs=list(inputs.keys()),
                         outputs=[],
-                        command_id=self.command_id,
-                        start_time=self.now,
-                        runtime=self.runtime.get_runtime(msg),
                         meta=["SendTensor"],
                         collectives=collectives_pair[-1],
-                        traceback=self.current_traceback,
                     ),
                     self.now,
                     stream=stream,
@@ -607,14 +608,11 @@ class Simulator:
             ):
                 worker.add_task(
                     Task(
+                        **base_task,
                         inputs=[],
                         outputs=list(outputs.keys()),
-                        command_id=self.command_id,
-                        start_time=self.now,
-                        runtime=self.runtime.get_runtime(msg),
                         meta=["RecvTensor"],
                         collectives=collectives,
-                        traceback=self.current_traceback,
                     ),
                     self.now,
                     stream=stream,
@@ -638,15 +636,9 @@ class Simulator:
         # TODO: controller doesn't implement reduce and scatter yet so it is
         # not possible to get such a request.
         if msg.reduction == "stack":
-            if msg.scatter:
-                meta_str = "all_to_all"
-            else:
-                meta_str = "all_gather"
+            meta_str = "all_to_all" if msg.scatter else "all_gather"
         else:
-            if msg.scatter:
-                meta_str = "all_reduce"
-            else:
-                meta_str = "reduce_scatter"
+            meta_str = "all_reduce" if msg.scatter else "reduce_scatter"
 
         meta = [meta_str]
         stream = msg.stream.ref
@@ -877,28 +869,20 @@ class SimulatorController(MockController):
         if isinstance(ranks, NDSlice):
             ranks = [ranks]
 
+        cmd_args = (
+            now,
+            "send",
+            self.simulator.command_id if self.simulator else 0,
+            self.simulator.current_traceback if self.simulator else (),
+            ranks,
+            msg,
+            None,
+            self.ir,
+        )
         if self.command_history:
-            command = self.command_history.record(
-                now,
-                "send",
-                self.simulator.command_id if self.simulator else 0,
-                self.simulator.current_traceback if self.simulator else (),
-                ranks,
-                msg,
-                None,
-                self.ir,
-            )
+            command = self.command_history.record(*cmd_args)
         else:
-            command = CommandHistory.convert_command(
-                now,
-                "send",
-                self.simulator.command_id if self.simulator else 0,
-                self.simulator.current_traceback if self.simulator else (),
-                ranks,
-                msg,
-                None,
-                self.ir,
-            )
+            command = CommandHistory.convert_command(*cmd_args)
 
         if self.simulator:
             self.simulator.send(now, cast(List[NDSlice], command.ranks), command.msg)
