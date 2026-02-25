@@ -14,8 +14,9 @@ from unittest import mock
 from monarch.tools.cli import config_from_cli_args, get_parser, main
 from monarch.tools.config import Config, Workspace
 from monarch.tools.mesh_spec import MeshSpec, ServerSpec
-from tests.tools.utils import capture_stdout
 from torchx.specs import AppState
+
+from .utils import capture_stdout
 
 _CURRENT_WORKING_DIR: str = os.getcwd()
 
