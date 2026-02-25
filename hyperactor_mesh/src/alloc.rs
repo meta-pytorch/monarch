@@ -484,16 +484,8 @@ pub(crate) fn with_unspecified_port_or_any(addr: &ChannelAddr) -> ChannelAddr {
             new_socket.set_port(0);
             ChannelAddr::Tcp(new_socket)
         }
-        ChannelAddr::MetaTls(TlsAddr::Socket(socket)) => {
-            let mut new_socket = socket.clone();
-            new_socket.set_port(0);
-            ChannelAddr::MetaTls(TlsAddr::Socket(new_socket))
-        }
-        ChannelAddr::MetaTls(TlsAddr::Host { hostname, port: _ }) => {
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: hostname.clone(),
-                port: 0,
-            })
+        ChannelAddr::MetaTls(TlsAddr { hostname, .. }) => {
+            ChannelAddr::MetaTls(TlsAddr::new(hostname.clone(), 0))
         }
         _ => addr.transport().any(),
     }
