@@ -71,7 +71,7 @@ class ProcessJob(JobTrait):
                 for i in range(count):
                     host_key = f"{mesh_name}_{i}"
                     addr = f"ipc://{self._tmpdir}/{host_key}"
-                    env = {**os.environ}
+                    env = {**os.environ, "HYPERACTOR_PROCESS_NAME": host_key}
                     if self._env is not None:
                         env.update(self._env)
                     if _IN_PAR:
