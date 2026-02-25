@@ -30,8 +30,7 @@ jobs:
     with:
       timeout: 60
       runner: linux.c7i.2xlarge
-      gpu-arch-type: rocm
-      gpu-arch-version: ${{ matrix.name }}
+      docker-image: pytorch/almalinux-builder:${{ matrix.name }}
       submodules: recursive
       upload-artifact: monarch-rocm${{ matrix.name }}-${{ github.sha }}
       script: |
