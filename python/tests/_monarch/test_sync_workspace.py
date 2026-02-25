@@ -84,7 +84,7 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
             env={"WORKSPACE_DIR": str(remote_workspace_root)}
         ) as host:
             allocator = RemoteAllocator(
-                world_id="test_sync_workspace",
+                alloc_name="test_sync_workspace",
                 initializer=StaticRemoteAllocInitializer(host),
             )
 
