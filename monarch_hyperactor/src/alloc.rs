@@ -402,7 +402,7 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
             .map(|channel_addr| {
                 let addr = ChannelAddr::from_str(channel_addr)?;
                 let (id, hostname) = match addr {
-                    ChannelAddr::Tcp(socket) | ChannelAddr::MetaTls(TlsAddr::Socket(socket)) => {
+                    ChannelAddr::Tcp(socket) => {
                         if socket.is_ipv6() {
                             // ipv6 addresses need to be wrapped in square-brackets [ipv6_addr]
                             // since the return value here gets concatenated with 'port' to make up a sockaddr
@@ -413,7 +413,7 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
                             (ipv4_addr.clone(), ipv4_addr.clone())
                         }
                     }
-                    ChannelAddr::MetaTls(TlsAddr::Host { hostname, .. }) => {
+                    ChannelAddr::MetaTls(TlsAddr { hostname, .. }) => {
                         (hostname.clone(), hostname.clone())
                     }
                     ChannelAddr::Unix(_) => (addr.to_string(), addr.to_string()),

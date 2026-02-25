@@ -177,11 +177,10 @@ impl PyChannelAddr {
     /// `0` for transports for which unix ports do not apply (e.g. `unix`, `local`)
     pub fn get_port(&self) -> PyResult<u16> {
         match &self.inner {
-            ChannelAddr::Tcp(socket_addr)
-            | ChannelAddr::MetaTls(TlsAddr::Socket(socket_addr))
-            | ChannelAddr::Tls(TlsAddr::Socket(socket_addr)) => Ok(socket_addr.port()),
-            ChannelAddr::MetaTls(TlsAddr::Host { port, .. })
-            | ChannelAddr::Tls(TlsAddr::Host { port, .. }) => Ok(*port),
+            ChannelAddr::Tcp(socket_addr) => Ok(socket_addr.port()),
+            ChannelAddr::MetaTls(TlsAddr { port, .. }) | ChannelAddr::Tls(TlsAddr { port, .. }) => {
+                Ok(*port)
+            }
             ChannelAddr::Unix(_) | ChannelAddr::Local(_) => Ok(0),
             _ => Err(PyRuntimeError::new_err(format!(
                 "unsupported transport: `{:?}` for channel address: `{}`",

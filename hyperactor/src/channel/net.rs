@@ -577,7 +577,6 @@ pub(crate) mod meta {
 
     use super::*;
     use crate::RemoteMessage;
-    use crate::channel::normalize_host;
     use crate::config::Pem;
     use crate::config::PemBundle;
 
@@ -589,23 +588,14 @@ pub(crate) mod meta {
 
     #[allow(clippy::result_large_err)] // TODO: Consider reducing the size of `ChannelError`.
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
-        // Try to parse as a socket address first
-        if let Ok(socket_addr) = addr_string.parse::<SocketAddr>() {
-            return Ok(ChannelAddr::MetaTls(TlsAddr::Socket(socket_addr)));
-        }
-
-        // Otherwise, parse as hostname:port
-        // use right split to allow for ipv6 addresses where ":" is expected.
+        // Use right split to allow for ipv6 addresses where ":" is expected.
         let parts = addr_string.rsplit_once(":");
         match parts {
             Some((hostname, port_str)) => {
                 let Ok(port) = port_str.parse() else {
                     return Err(ChannelError::InvalidAddress(addr_string.to_string()));
                 };
-                Ok(ChannelAddr::MetaTls(TlsAddr::Host {
-                    hostname: normalize_host(hostname),
-                    port,
-                }))
+                Ok(ChannelAddr::MetaTls(TlsAddr::new(hostname, port)))
             }
             _ => Err(ChannelError::InvalidAddress(addr_string.to_string())),
         }
@@ -711,7 +701,6 @@ pub(crate) mod tls {
     use super::*;
     use crate::RemoteMessage;
     use crate::channel::TlsAddr;
-    use crate::channel::normalize_host;
     use crate::config::Pem;
     use crate::config::PemBundle;
     use crate::config::TLS_CA;
@@ -728,23 +717,14 @@ pub(crate) mod tls {
     /// Parse an address string into a TlsAddr.
     #[allow(clippy::result_large_err)]
     pub(crate) fn parse(addr_string: &str) -> Result<ChannelAddr, ChannelError> {
-        // Try to parse as a socket address first
-        if let Ok(socket_addr) = addr_string.parse::<SocketAddr>() {
-            return Ok(ChannelAddr::Tls(TlsAddr::Socket(socket_addr)));
-        }
-
-        // Otherwise, parse as hostname:port
-        // use right split to allow for ipv6 addresses where ":" is expected.
+        // Use right split to allow for ipv6 addresses where ":" is expected.
         let parts = addr_string.rsplit_once(":");
         match parts {
             Some((hostname, port_str)) => {
                 let Ok(port) = port_str.parse() else {
                     return Err(ChannelError::InvalidAddress(addr_string.to_string()));
                 };
-                Ok(ChannelAddr::Tls(TlsAddr::Host {
-                    hostname: normalize_host(hostname),
-                    port,
-                }))
+                Ok(ChannelAddr::Tls(TlsAddr::new(hostname, port)))
             }
             _ => Err(ChannelError::InvalidAddress(addr_string.to_string())),
         }
@@ -883,10 +863,7 @@ pub(crate) mod tls {
         type Stream = TlsStream<TcpStream>;
 
         fn dest(&self) -> ChannelAddr {
-            let addr = TlsAddr::Host {
-                hostname: self.hostname.clone(),
-                port: self.port,
-            };
+            let addr = TlsAddr::new(self.hostname.clone(), self.port);
             match self.addr_type {
                 TlsAddrType::Tls => ChannelAddr::Tls(addr),
                 TlsAddrType::MetaTls => ChannelAddr::MetaTls(addr),
@@ -935,15 +912,10 @@ pub(crate) mod tls {
         connector: TlsConnector,
         addr_type: TlsAddrType,
     ) -> Result<NetTx<M>, ClientError> {
-        match addr {
-            TlsAddr::Host { hostname, port } => Ok(super::dial(TlsLink::new(
-                hostname, port, connector, addr_type,
-            ))),
-            TlsAddr::Socket(_) => Err(ClientError::InvalidAddress(
-                "TLS clients require hostname/port for host identity, not socket addresses"
-                    .to_string(),
-            )),
-        }
+        let TlsAddr { hostname, port } = addr;
+        Ok(super::dial(TlsLink::new(
+            hostname, port, connector, addr_type,
+        )))
     }
 
     /// Shared serve helper for TLS transports.
@@ -951,75 +923,45 @@ pub(crate) mod tls {
         addr: TlsAddr,
         addr_type: TlsAddrType,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        match addr {
-            TlsAddr::Host { hostname, port } => {
-                // Resolve all addresses for the hostname
-                let make_channel_addr = |h: &str, p: Port| match addr_type {
-                    TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::Host {
-                        hostname: h.to_string(),
-                        port: p,
-                    }),
-                    TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::Host {
-                        hostname: h.to_string(),
-                        port: p,
-                    }),
-                };
+        let TlsAddr { hostname, port } = addr;
 
-                let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
-                    .to_socket_addrs()
-                    .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
-                    .collect();
+        // Resolve all addresses for the hostname
+        let make_channel_addr = |h: &str, p: Port| match addr_type {
+            TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::new(h, p)),
+            TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::new(h, p)),
+        };
 
-                if addrs.is_empty() {
-                    return Err(ServerError::Resolve(
-                        make_channel_addr(&hostname, port),
-                        io::Error::other("no available socket addr"),
-                    ));
-                }
+        let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
+            .to_socket_addrs()
+            .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
+            .collect();
 
-                let channel_addr = make_channel_addr(&hostname, port);
-
-                // Bind to all resolved addresses
-                let std_listener = std::net::TcpListener::bind(&addrs[..])
-                    .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
-                std_listener
-                    .set_nonblocking(true)
-                    .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-                let listener = TcpListener::from_std(std_listener)
-                    .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-
-                let local_addr = listener
-                    .local_addr()
-                    .map_err(|err| ServerError::Resolve(channel_addr, err))?;
-                super::serve(
-                    listener,
-                    make_channel_addr(&hostname, local_addr.port()),
-                    true,
-                )
-            }
-            TlsAddr::Socket(socket_addr) => {
-                let make_socket_addr = |sa: SocketAddr| match addr_type {
-                    TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::Socket(sa)),
-                    TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::Socket(sa)),
-                };
-
-                let channel_addr = make_socket_addr(socket_addr);
-
-                // Bind directly to the socket address
-                let std_listener = std::net::TcpListener::bind(socket_addr)
-                    .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
-                std_listener
-                    .set_nonblocking(true)
-                    .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-                let listener = TcpListener::from_std(std_listener)
-                    .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-
-                let local_addr = listener
-                    .local_addr()
-                    .map_err(|err| ServerError::Resolve(channel_addr, err))?;
-                super::serve(listener, make_socket_addr(local_addr), true)
-            }
+        if addrs.is_empty() {
+            return Err(ServerError::Resolve(
+                make_channel_addr(&hostname, port),
+                io::Error::other("no available socket addr"),
+            ));
         }
+
+        let channel_addr = make_channel_addr(&hostname, port);
+
+        // Bind to all resolved addresses
+        let std_listener = std::net::TcpListener::bind(&addrs[..])
+            .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
+        let listener = TcpListener::from_std(std_listener)
+            .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
+
+        let local_addr = listener
+            .local_addr()
+            .map_err(|err| ServerError::Resolve(channel_addr, err))?;
+        super::serve(
+            listener,
+            make_channel_addr(&hostname, local_addr.port()),
+            true,
+        )
     }
 
     pub fn dial<M: RemoteMessage>(addr: TlsAddr) -> Result<NetTx<M>, ClientError> {
@@ -1143,10 +1085,7 @@ u19txmtkiMEH+aNmekk=
                 config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
 
             // Create a TLS server bound to localhost with dynamic port
-            let addr = TlsAddr::Host {
-                hostname: "localhost".to_string(),
-                port: 0,
-            };
+            let addr = TlsAddr::new("localhost", 0);
 
             let (local_addr, mut rx) = serve::<u64>(addr).expect("failed to serve");
 
@@ -1178,10 +1117,7 @@ u19txmtkiMEH+aNmekk=
             let _guard_ca =
                 config.override_key(TLS_CA, Pem::Value(TEST_CA_CERT.as_bytes().to_vec()));
 
-            let addr = TlsAddr::Host {
-                hostname: "localhost".to_string(),
-                port: 0,
-            };
+            let addr = TlsAddr::new("localhost", 0);
 
             let (local_addr, mut rx) = serve::<String>(addr).expect("failed to serve");
             let tx = dial::<String>(match &local_addr {
@@ -1207,7 +1143,7 @@ u19txmtkiMEH+aNmekk=
             let addr = parse("localhost:8080").expect("failed to parse");
             assert!(matches!(
                 addr,
-                ChannelAddr::Tls(TlsAddr::Host { hostname, port })
+                ChannelAddr::Tls(TlsAddr { hostname, port })
                     if hostname == "localhost" && port == 8080
             ));
         }
@@ -1215,7 +1151,11 @@ u19txmtkiMEH+aNmekk=
         #[test]
         fn test_tls_parse_socket_addr() {
             let addr = parse("127.0.0.1:8080").expect("failed to parse");
-            assert!(matches!(addr, ChannelAddr::Tls(TlsAddr::Socket(_))));
+            assert!(matches!(
+                addr,
+                ChannelAddr::Tls(TlsAddr { hostname, port })
+                    if hostname == "127.0.0.1" && port == 8080
+            ));
         }
 
         #[test]
@@ -2709,34 +2649,22 @@ mod tests {
         let channel: ChannelAddr = "metatls!localhost:1234".parse().unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "localhost".to_string(),
-                port: 1234
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("localhost", 1234))
         );
-        // ipv4:port - can be parsed as hostname or socket address
+        // ipv4:port - parsed as hostname with ip normalization
         let channel: ChannelAddr = "metatls!1.2.3.4:1234".parse().unwrap();
-        assert_eq!(
-            channel,
-            ChannelAddr::MetaTls(TlsAddr::Socket("1.2.3.4:1234".parse().unwrap()))
-        );
+        assert_eq!(channel, ChannelAddr::MetaTls(TlsAddr::new("1.2.3.4", 1234)));
         // ipv6:port
         let channel: ChannelAddr = "metatls!2401:db00:33c:6902:face:0:2a2:0:1234"
             .parse()
             .unwrap();
         assert_eq!(
             channel,
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "2401:db00:33c:6902:face:0:2a2:0".to_string(),
-                port: 1234
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("2401:db00:33c:6902:face:0:2a2:0", 1234))
         );
 
         let channel: ChannelAddr = "metatls![::]:1234".parse().unwrap();
-        assert_eq!(
-            channel,
-            ChannelAddr::MetaTls(TlsAddr::Socket("[::]:1234".parse().unwrap()))
-        );
+        assert_eq!(channel, ChannelAddr::MetaTls(TlsAddr::new("::", 1234)));
     }
 
     #[async_timed_test(timeout_secs = 300)]

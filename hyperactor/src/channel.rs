@@ -9,12 +9,6 @@
 //! One-way, multi-process, typed communication channels. These are used
 //! to send messages between mailboxes residing in different processes.
 
-// EnumAsInner generates code that triggers a false positive
-// unused_assignments lint on struct variant fields. #[allow] on the
-// enum itself doesn't propagate into derive-macro-generated code, so
-// the suppression must be at module scope.
-#![allow(unused_assignments)]
-
 use core::net::SocketAddr;
 use std::fmt;
 use std::net::IpAddr;
@@ -25,7 +19,6 @@ use std::panic::Location;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use enum_as_inner::EnumAsInner;
 use hyperactor_config::attrs::AttrValue;
 use lazy_static::lazy_static;
 use serde::Deserialize;
@@ -301,9 +294,7 @@ pub enum TlsMode {
     // TODO: consider adding IpV4 support.
 }
 
-/// Address format for Tls channels. Supports both hostname/port pairs
-/// (required for clients for host identity) and direct socket addresses
-/// (allowed for servers).
+/// Address format for TLS channels.
 #[derive(
     Clone,
     Debug,
@@ -313,45 +304,38 @@ pub enum TlsMode {
     Serialize,
     Deserialize,
     Ord,
-    PartialOrd,
-    EnumAsInner
+    PartialOrd
 )]
-pub enum TlsAddr {
-    /// Hostname and port pair. Required for clients to establish host identity.
-    Host {
-        /// The hostname to connect to.
-        hostname: Hostname,
-        /// The port to connect to.
-        port: Port,
-    },
-    /// Direct socket address. Allowed for servers.
-    Socket(SocketAddr),
+pub struct TlsAddr {
+    /// The hostname to connect to.
+    pub hostname: Hostname,
+    /// The port to connect to.
+    pub port: Port,
 }
 
 impl TlsAddr {
-    /// Returns the port number for this address.
-    pub fn port(&self) -> Port {
-        match self {
-            Self::Host { port, .. } => *port,
-            Self::Socket(addr) => addr.port(),
+    /// Creates a new TLS address with a normalized hostname.
+    pub fn new(hostname: impl Into<Hostname>, port: Port) -> Self {
+        Self {
+            hostname: normalize_host(&hostname.into()),
+            port,
         }
     }
 
-    /// Returns the hostname if this is a Host variant, None otherwise.
-    pub fn hostname(&self) -> Option<&str> {
-        match self {
-            Self::Host { hostname, .. } => Some(hostname),
-            Self::Socket(_) => None,
-        }
+    /// Returns the port number for this address.
+    pub fn port(&self) -> Port {
+        self.port
+    }
+
+    /// Returns the hostname for this address.
+    pub fn hostname(&self) -> &str {
+        &self.hostname
     }
 }
 
 impl fmt::Display for TlsAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Host { hostname, port } => write!(f, "{}:{}", hostname, port),
-            Self::Socket(addr) => write!(f, "{}", addr),
-        }
+        write!(f, "{}:{}", self.hostname, self.port)
     }
 }
 
@@ -601,13 +585,11 @@ pub enum ChannelAddr {
     Tcp(SocketAddr),
 
     /// An address to establish TCP channels with TLS support within Meta.
-    /// Uses TlsAddr which supports both hostname/port pairs (required for clients)
-    /// and socket addresses (allowed for servers).
+    /// Uses TlsAddr with hostname and port.
     MetaTls(TlsAddr),
 
     /// An address to establish TCP channels with configurable TLS support.
-    /// Supports both hostname/port pairs (required for clients) and
-    /// socket addresses (allowed for servers).
+    /// Uses TlsAddr with hostname and port.
     Tls(TlsAddr),
 
     /// Local addresses are registered in-process and given an integral
@@ -712,10 +694,7 @@ impl ChannelAddr {
                         get_host_ipv6_address().expect("failed to retrieve ipv6 address")
                     }
                 };
-                Self::MetaTls(TlsAddr::Host {
-                    hostname: host_address,
-                    port: 0,
-                })
+                Self::MetaTls(TlsAddr::new(host_address, 0))
             }
             ChannelTransport::Local => Self::Local(0),
             ChannelTransport::Tls => {
@@ -723,10 +702,7 @@ impl ChannelAddr {
                     .ok()
                     .and_then(|hostname| hostname.to_str().map(|s| s.to_string()))
                     .unwrap_or("localhost".to_string());
-                Self::Tls(TlsAddr::Host {
-                    hostname: host_address,
-                    port: 0,
-                })
+                Self::Tls(TlsAddr::new(host_address, 0))
             }
             ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
@@ -744,16 +720,10 @@ impl ChannelAddr {
                     ChannelTransport::Tcp(TcpMode::Hostname)
                 }
             }
-            Self::MetaTls(addr) => match addr {
-                TlsAddr::Host { hostname, .. } => match hostname.parse::<IpAddr>() {
-                    Ok(IpAddr::V6(_)) => ChannelTransport::MetaTls(TlsMode::IpV6),
-                    Ok(IpAddr::V4(_)) => ChannelTransport::MetaTls(TlsMode::Hostname),
-                    Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
-                },
-                TlsAddr::Socket(socket_addr) => match socket_addr.ip() {
-                    IpAddr::V6(_) => ChannelTransport::MetaTls(TlsMode::IpV6),
-                    IpAddr::V4(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
-                },
+            Self::MetaTls(addr) => match addr.hostname.parse::<IpAddr>() {
+                Ok(IpAddr::V6(_)) => ChannelTransport::MetaTls(TlsMode::IpV6),
+                Ok(IpAddr::V4(_)) => ChannelTransport::MetaTls(TlsMode::Hostname),
+                Err(_) => ChannelTransport::MetaTls(TlsMode::Hostname),
             },
             Self::Tls(_) => ChannelTransport::Tls,
             Self::Local(_) => ChannelTransport::Local,
@@ -911,15 +881,12 @@ impl ChannelAddr {
 
                 if host == "*" {
                     // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::MetaTls(TlsAddr::Host {
-                        hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
+                    Ok(Self::MetaTls(TlsAddr::new(
+                        std::net::Ipv6Addr::UNSPECIFIED.to_string(),
                         port,
-                    }))
+                    )))
                 } else {
-                    Ok(Self::MetaTls(TlsAddr::Host {
-                        hostname: normalize_host(host),
-                        port,
-                    }))
+                    Ok(Self::MetaTls(TlsAddr::new(host, port)))
                 }
             }
             "tls" => {
@@ -927,15 +894,12 @@ impl ChannelAddr {
 
                 if host == "*" {
                     // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::Tls(TlsAddr::Host {
-                        hostname: std::net::Ipv6Addr::UNSPECIFIED.to_string(),
+                    Ok(Self::Tls(TlsAddr::new(
+                        std::net::Ipv6Addr::UNSPECIFIED.to_string(),
                         port,
-                    }))
+                    )))
                 } else {
-                    Ok(Self::Tls(TlsAddr::Host {
-                        hostname: normalize_host(host),
-                        port,
-                    }))
+                    Ok(Self::Tls(TlsAddr::new(host, port)))
                 }
             }
             scheme => Err(anyhow::anyhow!("unsupported ZMQ scheme: {}", scheme)),
@@ -1292,28 +1256,19 @@ mod tests {
         // Test metatls with hostname
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://example.com:443").unwrap(),
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "example.com".to_string(),
-                port: 443
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("example.com", 443))
         );
 
         // Test metatls with IP address (should be normalized)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://192.168.1.1:443").unwrap(),
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "192.168.1.1".to_string(),
-                port: 443
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("192.168.1.1", 443))
         );
 
         // Test metatls with wildcard (should use IPv6 unspecified address)
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://*:8443").unwrap(),
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "::".to_string(),
-                port: 8443
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("::", 8443))
         );
 
         // Test TCP hostname resolution (should resolve hostname to IP)
@@ -1338,10 +1293,7 @@ mod tests {
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443")
                 .unwrap(),
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "2a03:83e4:5000:c000:56d7:cf:75ce:144a".to_string(),
-                port: 443,
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("2a03:83e4:5000:c000:56d7:cf:75ce:144a", 443))
         );
 
         // Short and long forms of the same IPv6 produce equal ChannelAddr values
@@ -1355,19 +1307,13 @@ mod tests {
         // Bracketed IPv6 is normalized
         assert_eq!(
             ChannelAddr::from_zmq_url("metatls://[::1]:443").unwrap(),
-            ChannelAddr::MetaTls(TlsAddr::Host {
-                hostname: "::1".to_string(),
-                port: 443,
-            })
+            ChannelAddr::MetaTls(TlsAddr::new("::1", 443))
         );
 
         // Same tests for tls://
         assert_eq!(
             ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443").unwrap(),
-            ChannelAddr::Tls(TlsAddr::Host {
-                hostname: "2a03:83e4:5000:c000:56d7:cf:75ce:144a".to_string(),
-                port: 443,
-            })
+            ChannelAddr::Tls(TlsAddr::new("2a03:83e4:5000:c000:56d7:cf:75ce:144a", 443))
         );
         assert_eq!(
             ChannelAddr::from_zmq_url("tls://2a03:83e4:5000:c000:56d7:00cf:75ce:144a:443").unwrap(),
@@ -1375,10 +1321,7 @@ mod tests {
         );
         assert_eq!(
             ChannelAddr::from_zmq_url("tls://[::1]:443").unwrap(),
-            ChannelAddr::Tls(TlsAddr::Host {
-                hostname: "::1".to_string(),
-                port: 443,
-            })
+            ChannelAddr::Tls(TlsAddr::new("::1", 443))
         );
     }
 
