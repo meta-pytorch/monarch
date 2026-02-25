@@ -12,6 +12,10 @@
 #include <iostream>
 #include <stdexcept>
 
+// Two-level stringify macro to ensure macro arguments are expanded before stringification
+#define STRINGIFY_HELPER(x) #x
+#define STRINGIFY(x) STRINGIFY_HELPER(x)
+
 // Symbol name macros - platform-specific function names for dlsym lookup
 #ifdef USE_ROCM
 #define SYM_MEM_GET_HANDLE_FOR_ADDRESS_RANGE hipMemGetHandleForAddressRange
@@ -132,10 +136,10 @@ DriverAPI create_driver_api() {
   DriverAPI r{};
 
 #define LOOKUP_CUDA_ENTRY(name, sym)                                      \
-  r.name##_ = reinterpret_cast<decltype(&sym)>(dlsym(handle, #sym));      \
+  r.name##_ = reinterpret_cast<decltype(&sym)>(dlsym(handle, STRINGIFY(sym))); \
   if (!r.name##_) {                                                       \
     throw std::runtime_error(                                             \
-        std::string("[RdmaXcel] Can't find ") + #sym + ": " + dlerror()); \
+        std::string("[RdmaXcel] Can't find ") + STRINGIFY(sym) + ": " + dlerror()); \
   }
 
   RDMAXCEL_CUDA_DRIVER_API(LOOKUP_CUDA_ENTRY)
