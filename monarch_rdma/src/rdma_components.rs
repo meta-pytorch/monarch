@@ -12,7 +12,7 @@
 //!
 //! ## Core Components
 //!
-//! * `RdmaDomain` - Manages RDMA resources including context, protection domain, and memory region
+//! * `IbvDomain` - Manages RDMA resources including context, protection domain, and memory region
 //! * `RdmaQueuePair` - Handles communication between endpoints via queue pairs and completion queues
 //!
 //! ## RDMA Overview
@@ -32,7 +32,7 @@
 //!
 //! ## Connection Lifecycle
 //!
-//! 1. Create an `RdmaDomain` with `new()`
+//! 1. Create an `IbvDomain` with `new()`
 //! 2. Create an `RdmaQueuePair` from the domain
 //! 3. Exchange connection info with remote peer (application must handle this)
 //! 4. Connect to remote endpoint with `connect()`
@@ -43,7 +43,6 @@
 /// Maximum size for a single RDMA operation in bytes (1 GiB)
 const MAX_RDMA_MSG_SIZE: usize = 1024 * 1024 * 1024;
 
-use std::ffi::CStr;
 use std::fs;
 use std::io::Error;
 use std::result::Result;
@@ -58,7 +57,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::IbvDevice;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::backend::ibverbs::primitives::Gid;
@@ -295,146 +293,6 @@ impl RdmaBuffer {
     }
 }
 
-/// Represents a domain for RDMA operations, encapsulating the necessary resources
-/// for establishing and managing RDMA connections.
-///
-/// An `RdmaDomain` manages the context, protection domain (PD), and memory region (MR)
-/// required for RDMA operations. It provides the foundation for creating queue pairs
-/// and establishing connections between RDMA devices.
-///
-/// # Fields
-///
-/// * `context`: A pointer to the RDMA device context, representing the connection to the RDMA device.
-/// * `pd`: A pointer to the protection domain, which provides isolation between different connections.
-#[derive(Clone)]
-pub struct RdmaDomain {
-    pub context: *mut rdmaxcel_sys::ibv_context,
-    pub pd: *mut rdmaxcel_sys::ibv_pd,
-}
-
-impl std::fmt::Debug for RdmaDomain {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RdmaDomain")
-            .field("context", &format!("{:p}", self.context))
-            .field("pd", &format!("{:p}", self.pd))
-            .finish()
-    }
-}
-
-// SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through rdmaxcel_sys calls.
-// RdmaDomain is `Send` because the raw pointers to ibverbs structs can be
-// accessed from any thread, and it is safe to drop `RdmaDomain` (and run the
-// ibverbs destructors) from any thread.
-unsafe impl Send for RdmaDomain {}
-
-// SAFETY:
-// This function contains code marked unsafe as it interacts with the Rdma device through rdmaxcel_sys calls.
-// RdmaDomain is `Sync` because the underlying ibverbs APIs are thread-safe.
-unsafe impl Sync for RdmaDomain {}
-
-impl Drop for RdmaDomain {
-    fn drop(&mut self) {
-        unsafe {
-            rdmaxcel_sys::ibv_dealloc_pd(self.pd);
-        }
-    }
-}
-
-impl RdmaDomain {
-    /// Creates a new RdmaDomain.
-    ///
-    /// This function initializes the RDMA device context, creates a protection domain,
-    /// and registers a memory region with appropriate access permissions.
-    ///
-    /// SAFETY:
-    /// Our memory region (MR) registration uses implicit ODP for RDMA access, which maps large virtual
-    /// address ranges without explicit pinning. This is convenient, but it broadens the memory footprint
-    /// exposed to the NIC and introduces a security liability.
-    ///
-    /// We currently assume a trusted, single-environment and are not enforcing finer-grained memory isolation
-    /// at this layer. We plan to investigate mitigations - such as memory windows or tighter registration
-    /// boundaries in future follow-ups.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Configuration settings for the RDMA operations
-    ///
-    /// # Errors
-    ///
-    /// This function may return errors if:
-    /// * No RDMA devices are found
-    /// * The specified device cannot be found
-    /// * Device context creation fails
-    /// * Protection domain allocation fails
-    /// * Memory region registration fails
-    pub fn new(device: IbvDevice) -> Result<Self, anyhow::Error> {
-        tracing::debug!("creating RdmaDomain for device {}", device.name());
-        // SAFETY:
-        // This code uses unsafe rdmaxcel_sys calls to interact with the RDMA device, but is safe because:
-        // - All pointers are properly initialized and checked for null before use
-        // - Memory registration follows the ibverbs API contract with proper access flags
-        // - Resources are properly cleaned up in error cases to prevent leaks
-        // - The operations follow the documented RDMA protocol for device initialization
-        unsafe {
-            // Get the device based on the provided IbvDevice
-            let device_name = device.name();
-            let mut num_devices = 0i32;
-            let devices = rdmaxcel_sys::ibv_get_device_list(&mut num_devices as *mut _);
-
-            if devices.is_null() || num_devices == 0 {
-                return Err(anyhow::anyhow!("no RDMA devices found"));
-            }
-
-            // Find the device with the matching name
-            let mut device_ptr = std::ptr::null_mut();
-            for i in 0..num_devices {
-                let dev = *devices.offset(i as isize);
-                let dev_name =
-                    CStr::from_ptr(rdmaxcel_sys::ibv_get_device_name(dev)).to_string_lossy();
-
-                if dev_name == *device_name {
-                    device_ptr = dev;
-                    break;
-                }
-            }
-
-            // If we didn't find the device, return an error
-            if device_ptr.is_null() {
-                rdmaxcel_sys::ibv_free_device_list(devices);
-                return Err(anyhow::anyhow!("device '{}' not found", device_name));
-            }
-            tracing::info!("using RDMA device: {}", device_name);
-
-            // Open device
-            let context = rdmaxcel_sys::ibv_open_device(device_ptr);
-            if context.is_null() {
-                rdmaxcel_sys::ibv_free_device_list(devices);
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!("failed to create context: {}", os_error));
-            }
-
-            // Create protection domain
-            let pd = rdmaxcel_sys::ibv_alloc_pd(context);
-            if pd.is_null() {
-                rdmaxcel_sys::ibv_close_device(context);
-                rdmaxcel_sys::ibv_free_device_list(devices);
-                let os_error = Error::last_os_error();
-                return Err(anyhow::anyhow!(
-                    "failed to create protection domain (PD): {}",
-                    os_error
-                ));
-            }
-
-            // Avoids memory leaks
-            rdmaxcel_sys::ibv_free_device_list(devices);
-
-            let domain = RdmaDomain { context, pd };
-
-            Ok(domain)
-        }
-    }
-}
 /// Enum to specify which completion queue to poll
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PollTarget {
@@ -461,7 +319,7 @@ pub enum PollTarget {
 ///
 /// # Connection Lifecycle
 ///
-/// 1. Create with `new()` from an `RdmaDomain`
+/// 1. Create with `new()` from an `IbvDomain`
 /// 2. Get connection info with `get_qp_info()`
 /// 3. Exchange connection info with remote peer (application must handle this)
 /// 4. Connect to remote endpoint with `connect()`
@@ -526,15 +384,15 @@ impl RdmaQueuePair {
         self.is_efa
     }
 
-    /// Creates a new RdmaQueuePair from a given RdmaDomain.
+    /// Creates a new RdmaQueuePair from a given IbvDomain.
     ///
     /// This function initializes a new Queue Pair (QP) and associated Completion Queue (CQ)
-    /// using the resources from the provided RdmaDomain. The QP is created in the RESET state
+    /// using the resources from the provided IbvDomain. The QP is created in the RESET state
     /// and must be transitioned to other states via the `connect()` method before use.
     ///
     /// # Arguments
     ///
-    /// * `domain` - Reference to an RdmaDomain that provides the context, protection domain,
+    /// * `domain` - Reference to an IbvDomain that provides the context, protection domain,
     ///   and memory region for this queue pair
     ///
     /// # Returns
@@ -1642,6 +1500,7 @@ pub fn register_segment_scanner(scanner: SegmentScannerFn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::ibverbs::domain::IbvDomain;
 
     #[test]
     fn test_create_connection() {
@@ -1655,7 +1514,7 @@ mod tests {
             use_gpu_direct: false,
             ..Default::default()
         };
-        let domain = RdmaDomain::new(config.device.clone());
+        let domain = IbvDomain::new(config.device.clone());
         assert!(domain.is_ok());
 
         let domain = domain.unwrap();
@@ -1680,8 +1539,8 @@ mod tests {
             ..Default::default()
         };
 
-        let server_domain = RdmaDomain::new(server_config.device.clone()).unwrap();
-        let client_domain = RdmaDomain::new(client_config.device.clone()).unwrap();
+        let server_domain = IbvDomain::new(server_config.device.clone()).unwrap();
+        let client_domain = IbvDomain::new(client_config.device.clone()).unwrap();
 
         let mut server_qp = RdmaQueuePair::new(
             server_domain.context,
