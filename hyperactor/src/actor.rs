@@ -2052,6 +2052,8 @@ mod tests {
                 system_children: Vec::new(),
                 stopped_children: Vec::new(),
                 stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
             });
         let props = handle.cell().published_properties().unwrap();
         assert!(matches!(props.kind, PublishedPropertiesKind::Proc { .. }));
@@ -2086,6 +2088,8 @@ mod tests {
                     system_children: Vec::new(),
                     stopped_children: Vec::new(),
                     stopped_retention_cap: 0,
+                    is_poisoned: false,
+                    failed_actor_count: 0,
                 },
                 children: Vec::new(),
                 parent: None,

@@ -72,9 +72,55 @@ use crate::OncePortRef;
 use crate::clock::Clock;
 use crate::reference::Reference;
 
-/// Node-type-specific metadata for a single entity in the mesh
-/// topology (root, host, proc, actor, or error sentinel).
+/// Structured failure information extracted from an
+/// [`ActorSupervisionEvent`](crate::supervision::ActorSupervisionEvent)
+/// at introspection time. Provides root-cause provenance without
+/// carrying the recursive event type across the wire.
 ///
+/// # Invariants
+///
+/// The failure introspection pipeline (from `serve()` in `proc.rs`
+/// through this struct to the TUI) maintains six invariants. Each
+/// is documented at its enforcement site with an `INV-N` comment.
+///
+/// - **FI-1 (event-before-status):** All `InstanceCell` state that
+///   [`live_actor_payload`] reads must be written BEFORE
+///   `change_status()` transitions to terminal. Enforced in
+///   `proc.rs` `serve()`.
+/// - **FI-2 (write-once):** `InstanceCellState::supervision_event`
+///   is written at most once per actor lifetime. Enforced in
+///   `proc.rs` `serve()` terminal paths.
+/// - **FI-3 (failure_info ↔ actor_status):**
+///   `failure_info.is_some()` iff
+///   `actor_status.starts_with("failed:")`. Enforced in
+///   [`live_actor_payload`].
+/// - **FI-4 (is_propagated ↔ root_cause_actor):**
+///   `is_propagated == true` iff `root_cause_actor !=
+///   this_actor_id`. Enforced in [`live_actor_payload`].
+/// - **FI-5 (is_poisoned ↔ failed_actor_count):**
+///   `is_poisoned == true` iff `failed_actor_count > 0`. Enforced
+///   in `mesh_agent.rs` `publish_introspect_properties()`.
+/// - **FI-6 (clean stop = no artifacts):** When an actor stops
+///   cleanly, `supervision_event` is `None`, `failure_info` is
+///   `None`, and the actor does not contribute to
+///   `failed_actor_count`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct FailureInfo {
+    /// The error message (from `ActorStatus::Failed` display).
+    pub error_message: String,
+    /// The actor that originally caused the failure (root cause).
+    /// Same as this actor if the failure originated here.
+    pub root_cause_actor: String,
+    /// Display name of the root cause actor, if set.
+    pub root_cause_name: Option<String>,
+    /// When the failure occurred (formatted timestamp).
+    pub occurred_at: String,
+    /// `true` if this actor is propagating a child's failure,
+    /// `false` if the failure originated in this actor.
+    pub is_propagated: bool,
+}
+wirevalue::register_type!(FailureInfo);
+
 /// Kept "wire-friendly" (no `serde_json::Value`) so it can be encoded
 /// via wirevalue's bincode path, while the HTTP layer can still
 /// expose structured JSON via `Serialize`.
@@ -125,6 +171,12 @@ pub enum NodeProperties {
         /// When `stopped_children.len() >= stopped_retention_cap`,
         /// the list is at capacity and older entries were evicted.
         stopped_retention_cap: usize,
+        /// Whether this proc is refusing new spawns because at least
+        /// one actor has an unhandled supervision event.
+        /// FI-5: `is_poisoned` iff `failed_actor_count > 0`.
+        is_poisoned: bool,
+        /// Number of actors with unhandled supervision events.
+        failed_actor_count: usize,
     },
 
     /// Runtime metadata for a single actor instance.
@@ -150,6 +202,11 @@ pub enum NodeProperties {
         /// Whether this actor is infrastructure-owned (e.g.
         /// ProcMeshAgent, HostMeshAgent) rather than user-created.
         is_system: bool,
+        /// Structured failure information, present only for failed
+        /// actors. `None` for running or cleanly stopped actors.
+        /// FI-3: `failure_info.is_some()` iff
+        /// `actor_status.starts_with("failed:")`.
+        failure_info: Option<FailureInfo>,
     },
 
     /// Error sentinel returned when a child reference cannot be
@@ -307,6 +364,11 @@ pub enum PublishedPropertiesKind {
         stopped_children: Vec<String>,
         /// Maximum number of terminated snapshots retained.
         stopped_retention_cap: usize,
+        /// Whether this proc is refusing new spawns due to actor
+        /// failures.
+        is_poisoned: bool,
+        /// Number of actors with unhandled supervision events.
+        failed_actor_count: usize,
     },
 }
 
@@ -353,6 +415,25 @@ pub fn live_actor_payload(cell: &InstanceCell) -> NodePayload {
 
     let supervisor = cell.parent().map(|p| p.actor_id().to_string());
 
+    // FI-3: failure_info is computed from the same status value as
+    // actor_status, ensuring they agree on whether the actor failed.
+    let failure_info = if status.is_failed() {
+        cell.supervision_event().map(|event| {
+            let root = event.actually_failing_actor();
+            // FI-4: is_propagated iff root_cause_actor != this actor.
+            let is_propagated = root.actor_id != *actor_id;
+            FailureInfo {
+                error_message: event.actor_status.to_string(),
+                root_cause_actor: root.actor_id.to_string(),
+                root_cause_name: root.display_name.clone(),
+                occurred_at: format_timestamp(event.occurred_at),
+                is_propagated,
+            }
+        })
+    } else {
+        None
+    };
+
     NodePayload {
         identity: actor_id.to_string(),
         properties: NodeProperties::Actor {
@@ -370,6 +451,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> NodePayload {
                         PublishedPropertiesKind::Host { .. } | PublishedPropertiesKind::Proc { .. }
                     )
                 }),
+            failure_info,
         },
         children,
         parent: supervisor,
@@ -469,6 +551,8 @@ pub async fn serve_introspect(
                                     system_children,
                                     stopped_children,
                                     stopped_retention_cap,
+                                    is_poisoned,
+                                    failed_actor_count,
                                     ..
                                 } => NodeProperties::Proc {
                                     proc_name,
@@ -477,6 +561,8 @@ pub async fn serve_introspect(
                                     system_children,
                                     stopped_children,
                                     stopped_retention_cap,
+                                    is_poisoned,
+                                    failed_actor_count,
                                 },
                             };
                             NodePayload {
