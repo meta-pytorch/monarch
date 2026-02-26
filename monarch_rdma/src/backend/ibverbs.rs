@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+pub mod device_selection;
 pub(crate) mod domain;
 pub mod manager_actor;
 pub mod primitives;
