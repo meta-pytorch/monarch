@@ -514,9 +514,7 @@ impl Bootstrap {
                     eprintln!("(bootstrap) PDEATHSIG disabled via config");
                 }
 
-                let (local_addr, name) = ok!(proc_id
-                    .as_direct()
-                    .ok_or_else(|| anyhow::anyhow!("invalid proc id type: {}", proc_id)));
+                let (local_addr, name) = (proc_id.addr().clone(), proc_id.name());
                 // TODO provide a direct way to construct these
                 let serve_addr = format!("unix:{}", socket_dir_path.join(name).display());
                 let serve_addr = serve_addr.parse().unwrap();
@@ -2358,18 +2356,17 @@ fn runtime_dir() -> io::Result<TempDir> {
 mod tests {
     use std::path::PathBuf;
 
-    use hyperactor::ActorId;
     use hyperactor::ActorRef;
     use hyperactor::ProcId;
     use hyperactor::RemoteSpawn;
-    use hyperactor::WorldId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
-    use hyperactor::id;
+    use hyperactor::testing::ids::test_proc_id;
+    use hyperactor::testing::ids::test_proc_id_with_addr;
     use hyperactor_config::Flattrs;
     use ndslice::Extent;
     use ndslice::ViewExt;
@@ -2385,18 +2382,12 @@ mod tests {
     use crate::testactor;
     use crate::testing;
 
-    // Helper: Avoid repeating
-    // `ChannelAddr::any(ChannelTransport::Unix)`.
-    fn any_addr_for_test() -> ChannelAddr {
-        ChannelAddr::any(ChannelTransport::Unix)
-    }
-
     #[test]
     fn test_bootstrap_mode_env_string_none_config_proc() {
         let values = [
             Bootstrap::default(),
             Bootstrap::Proc {
-                proc_id: id!(foo[0]),
+                proc_id: test_proc_id("foo_0"),
                 backend_addr: ChannelAddr::any(ChannelTransport::Tcp(TcpMode::Hostname)),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 socket_dir_path: PathBuf::from("notexist"),
@@ -2466,7 +2457,7 @@ mod tests {
         // Proc case
         {
             let original = Bootstrap::Proc {
-                proc_id: id!(foo[42]),
+                proc_id: test_proc_id("foo_42"),
                 backend_addr: ChannelAddr::any(ChannelTransport::Unix),
                 callback_addr: ChannelAddr::any(ChannelTransport::Unix),
                 config: Some(attrs.clone()),
@@ -2541,9 +2532,12 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(id!(client[0]), BoxedMailboxSender::new(router.clone()));
+        let proc = Proc::new(
+            test_proc_id("client_0"),
+            BoxedMailboxSender::new(router.clone()),
+        );
         proc.clone().serve(proc_rx);
-        router.bind(id!(client[0]).into(), proc_addr.clone());
+        router.bind(test_proc_id("client_0").into(), proc_addr.clone());
         let (client, _handle) = proc.instance("client").unwrap();
 
         let (tap_tx, mut tap_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -2603,14 +2597,11 @@ mod tests {
         use std::time::Duration;
 
         use async_trait::async_trait;
-        use hyperactor::ActorId;
-        use hyperactor::ActorRef;
         use hyperactor::ProcId;
-        use hyperactor::WorldId;
         use hyperactor::host::ProcHandle;
+        use hyperactor::testing::ids::test_proc_id;
 
         use super::super::*;
-        use super::any_addr_for_test;
         use crate::proc_launcher::LaunchOptions;
         use crate::proc_launcher::LaunchResult;
         use crate::proc_launcher::ProcLauncher;
@@ -2655,7 +2646,7 @@ mod tests {
         // ensuring tests only exercise status transitions and not
         // actual process lifecycle.
         fn handle_for_test() -> BootstrapProcHandle {
-            let proc_id = ProcId::Ranked(WorldId("test".into()), 0);
+            let proc_id = test_proc_id("0");
             let launcher: Arc<dyn ProcLauncher> = Arc::new(TestProcLauncher);
             BootstrapProcHandle::new(proc_id, Arc::downgrade(&launcher))
         }
@@ -2741,14 +2732,14 @@ mod tests {
         #[tokio::test]
         async fn transitions_from_ready_are_legal() {
             let h = handle_for_test();
-            let addr = any_addr_for_test();
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
             // Mark Running.
             let t0 = RealClock.system_time_now();
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = ActorId(proc_id.clone(), "agent".into(), 0);
+            let actor_id = proc_id.actor_id("agent", 0);
             let agent_ref: ActorRef<ProcMeshAgent> = ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
             assert!(h.mark_ready(addr, agent_ref));
@@ -2759,14 +2750,14 @@ mod tests {
         #[tokio::test]
         async fn ready_to_killed_is_legal() {
             let h = handle_for_test();
-            let addr = any_addr_for_test();
+            let addr = ChannelAddr::any(ChannelTransport::Unix);
             // Starting -> Running
             let t0 = RealClock.system_time_now();
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
-            let actor_id = ActorId(proc_id.clone(), "agent".into(), 0);
+            let actor_id = proc_id.actor_id("agent", 0);
             let agent: ActorRef<ProcMeshAgent> = ActorRef::attest(actor_id);
             // Running -> Ready
             assert!(h.mark_ready(addr, agent));
@@ -2835,7 +2826,7 @@ mod tests {
 
     #[tokio::test]
     async fn watch_notifies_on_status_changes() {
-        let proc_id = ProcId::Ranked(WorldId("test".into()), 1);
+        let proc_id = test_proc_id("1");
         let handle = test_handle(proc_id);
         let mut rx = handle.watch();
 
@@ -2861,10 +2852,8 @@ mod tests {
 
     #[tokio::test]
     async fn ready_errs_if_process_exits_before_running() {
-        let proc_id = ProcId::Direct(
-            ChannelAddr::any(ChannelTransport::Unix),
-            "early-exit".into(),
-        );
+        let proc_id =
+            test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "early-exit");
         let handle = test_handle(proc_id);
 
         // Simulate the exit monitor doing its job directly here.
@@ -2888,24 +2877,24 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        let unknown = ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "nope".into());
+        let unknown = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "nope");
         assert!(manager.status(&unknown).await.is_none());
     }
 
     #[tokio::test]
     async fn handle_ready_allows_waiters() {
-        let proc_id = ProcId::Ranked(WorldId("test".into()), 42);
+        let proc_id = test_proc_id("42");
         let handle = test_handle(proc_id.clone());
 
         let started_at = RealClock.system_time_now();
         assert!(handle.mark_running(started_at));
 
-        let actor_id = ActorId(proc_id.clone(), "agent".into(), 0);
+        let actor_id = proc_id.actor_id("agent", 0);
         let agent_ref: ActorRef<ProcMeshAgent> = ActorRef::attest(actor_id);
 
         // Pick any addr to carry in Ready (what the child would have
         // called back with).
-        let ready_addr = any_addr_for_test();
+        let ready_addr = ChannelAddr::any(ChannelTransport::Unix);
 
         // Stamp Ready and assert ready().await unblocks.
         assert!(handle.mark_ready(ready_addr.clone(), agent_ref));
@@ -2944,7 +2933,7 @@ mod tests {
         let started_at = RealClock.system_time_now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent =
-            ActorRef::attest(ProcId::Direct(addr.clone(), "proc".into()).actor_id("agent", 0));
+            ActorRef::attest(test_proc_id_with_addr(addr.clone(), "proc").actor_id("agent", 0));
 
         let st = ProcStatus::Ready {
             started_at,
@@ -2979,7 +2968,7 @@ mod tests {
                 started_at: RealClock.system_time_now(),
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: ActorRef::attest(
-                    ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "x".into())
+                    test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
                         .actor_id("agent", 0),
                 ),
             },
@@ -2999,7 +2988,8 @@ mod tests {
 
     #[tokio::test]
     async fn proc_handle_ready_ok_through_trait() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "ph-ready-ok".into());
+        let proc_id =
+            test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "ph-ready-ok");
         let handle = test_handle(proc_id.clone());
 
         // Starting -> Running
@@ -3007,9 +2997,8 @@ mod tests {
         assert!(handle.mark_running(t0));
 
         // Synthesize Ready data
-        let addr = any_addr_for_test();
-        let agent: ActorRef<ProcMeshAgent> =
-            ActorRef::attest(ActorId(proc_id.clone(), "agent".into(), 0));
+        let addr = ChannelAddr::any(ChannelTransport::Unix);
+        let agent: ActorRef<ProcMeshAgent> = ActorRef::attest(proc_id.actor_id("agent", 0));
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
@@ -3019,7 +3008,7 @@ mod tests {
 
     #[tokio::test]
     async fn proc_handle_wait_returns_terminal_status() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "ph-wait".into());
+        let proc_id = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "ph-wait");
         let handle = test_handle(proc_id);
 
         // Drive directly to a terminal state before calling wait()
@@ -3038,7 +3027,7 @@ mod tests {
 
     #[tokio::test]
     async fn ready_wrapper_maps_terminal_to_trait_error() {
-        let proc_id = ProcId::Direct(any_addr_for_test(), "wrap".into());
+        let proc_id = test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "wrap");
         let handle = test_handle(proc_id);
 
         assert!(handle.mark_stopped(7, Vec::new()));
@@ -3078,7 +3067,7 @@ mod tests {
 
         // We return an arbitrary (but unbound!) unix direct proc id here;
         // it is okay, as we're not testing connectivity.
-        let proc_id = ProcId::Direct(ChannelTransport::Unix.any(), "test".to_string());
+        let proc_id = test_proc_id_with_addr(ChannelTransport::Unix.any(), "proc");
         (proc_id, backend_addr)
     }
 
@@ -3444,7 +3433,7 @@ mod tests {
         let (temp_instance, _) = temp_proc.instance("temp").unwrap();
 
         let handle = host(
-            any_addr_for_test(),
+            ChannelAddr::any(ChannelTransport::Unix),
             Some(BootstrapCommand::test()),
             None,
             false,

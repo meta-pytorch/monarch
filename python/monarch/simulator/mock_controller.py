@@ -74,7 +74,7 @@ class History:
             traceback_index,
             None,
             worker_frames,
-            ActorId.from_string("unknown[0].unknown[0]"),
+            ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
         )
         worklist = deque((invocation,))
         while worklist:
