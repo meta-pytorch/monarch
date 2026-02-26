@@ -40,15 +40,19 @@
 //! - **Depth cap**: recursion is bounded by `MAX_TREE_DEPTH`.
 //!   This limits traversal to Root→Host→Proc→Actor→ChildActor, keeps
 //!   stack depth small, and avoids runaway fetches on deep graphs.
-//! - **Zero ad-hoc tree traversal**: all tree walks use the fold
-//!   abstractions (`fold_tree`, `fold_tree_mut`, or
-//!   `fold_tree_mut_with_depth`), not bespoke recursion.
-//! - **Selection semantics**: cursor restoration matches
-//!   `(reference, depth)` first to disambiguate duplicate references,
-//!   then falls back to reference-only matching.
-//! - **Concurrency model**: HTTP fetches are issued serially through
-//!   the event loop; join semantics handle retries/reordering but not
-//!   parallel fetch races.
+//! - **Tree-structure traversal via folds**: walks over the `TreeNode`
+//!   structure use fold abstractions (`fold_tree`, `fold_tree_mut`, or
+//!   `fold_tree_mut_with_depth`), not bespoke recursion. The flattened
+//!   row list (`VisibleRows`) is iterated directly for rendering and
+//!   event handling.
+//! - **Selection semantics**: cursor restoration prefers
+//!   `(reference, depth)` to disambiguate duplicate references, and
+//!   falls back to reference-only matching if depth changes (e.g.,
+//!   parent expanded/collapsed between refreshes).
+//! - **Concurrency model**: HTTP fetches are scheduled serially
+//!   through the event loop; in-flight requests are not explicitly
+//!   cancelled or serialized, so slow responses may overlap. Join
+//!   semantics handle retries and reordering.
 //!
 //! Laziness + recursion benefits:
 //! - **Lazy expansion**: proc/actor children are placeholders until
@@ -1347,17 +1351,6 @@ where
     f(node, child_results)
 }
 
-/// Find a node by reference using algebraic fold.
-fn find_node_by_ref<'a>(node: &'a TreeNode, reference: &str) -> Option<&'a TreeNode> {
-    fold_tree(node, &|n, child_results| {
-        if n.reference == reference {
-            Some(n)
-        } else {
-            child_results.into_iter().find_map(|x| x)
-        }
-    })
-}
-
 /// Immutable tree fold with depth tracking.
 ///
 /// Like fold_tree, but passes the current depth to the fold function.
@@ -1859,6 +1852,32 @@ fn format_local_time(timestamp: &str) -> String {
                 .to_string()
         })
         .unwrap_or_else(|_| timestamp.get(11..19).unwrap_or(timestamp).to_string())
+}
+
+/// Format an ISO-8601 timestamp as a human-readable relative time
+/// from now (e.g. "just now", "5s ago", "3m 12s ago", "1h 7m ago").
+fn format_relative_time(timestamp: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(timestamp) {
+        Ok(parsed) => {
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(parsed);
+            let total_secs = duration.num_seconds();
+            if total_secs < 2 {
+                "just now".to_string()
+            } else if total_secs < 60 {
+                format!("{}s ago", total_secs)
+            } else if total_secs < 3600 {
+                let mins = total_secs / 60;
+                let secs = total_secs % 60;
+                format!("{}m {}s ago", mins, secs)
+            } else {
+                let hours = total_secs / 3600;
+                let mins = (total_secs % 3600) / 60;
+                format!("{}h {}m ago", hours, mins)
+            }
+        }
+        Err(_) => timestamp.to_string(),
+    }
 }
 
 /// Format uptime duration from ISO-8601 start timestamp.
@@ -2370,6 +2389,7 @@ fn render_root_detail(
         detail_line("Started by: ", started_by),
         detail_line("Uptime: ", &uptime_str),
         detail_line("Started at: ", format_local_time(started_at)),
+        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2403,6 +2423,7 @@ fn render_host_detail(
     let mut lines = vec![
         detail_line("Address: ", addr),
         detail_line("Procs: ", num_procs.to_string()),
+        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2441,6 +2462,7 @@ fn render_proc_detail(
     let mut lines = vec![
         detail_line("Name: ", proc_name),
         detail_line("Actors: ", num_actors.to_string()),
+        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
         Line::default(),
     ];
     for (i, actor) in payload.children.iter().enumerate() {
@@ -2484,7 +2506,7 @@ fn render_actor_detail(
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(5)])
+        .constraints([Constraint::Length(11), Constraint::Min(5)])
         .split(area);
 
     // Actor info
@@ -2505,6 +2527,7 @@ fn render_actor_detail(
                 }),
             ),
         ]),
+        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
         detail_line("Type: ", actor_type),
         detail_line("Messages: ", messages_processed.to_string()),
         detail_line(
@@ -2606,19 +2629,16 @@ mod tests {
     //    - join_error_states_newer_wins: Errors merge by timestamp
     //    - join_error_equal_stamps_is_commutative: Error commutativity
     //    - join_error_always_retries_on_fetch: Errors don't cache
-    //    - cache_join_commutativity_ready_vs_error: Ready vs Error with
-    // Equal stamp
+    //    - cache_join_commutativity_ready_vs_error: Ready vs Error with equal stamp
     //
     // ## 2. Staleness & Refresh Semantics
-    //    - join_refresh_staleness_triggers_refetch: Old generation
-    // Refetches
-    //    - collapsed_nodes_stay_collapsed_after_refresh: Expansion state
-    // Preserved
+    //    - join_refresh_staleness_triggers_refetch: old generation refetches
+    //    - collapsed_nodes_stay_collapsed_after_refresh: expansion state preserved
     //
     // ## 3. Cursor Invariants (pos < len always holds)
     //    - cursor_new_creates_valid_cursor: Initial state valid
     //    - cursor_new_empty_creates_zero_cursor: Empty case
-    //    - cursor_maintains_invariant_after_operations: All ops preserve
+    //    - cursor_maintains_invariant_after_operations: all ops preserve pos < len
     //    - cursor_move_up/down_*: Boundary conditions
     //    - cursor_home/end_*: Jump operations
     //    - cursor_set_pos_*: Direct positioning
@@ -2627,39 +2647,43 @@ mod tests {
     //    - cursor_empty_all_movements_return_false: Edge case with n=0
     //
     // ## 4. Tree Fold Invariants
-    //    - fold_equivalence_flatten_tree: flatten_tree produces correct
-    // Depths
-    //    - fold_vs_traversal_law_node_count: Row count equals node count
-    // When expanded
-    //    - fold_tree_mut_early_exit_stops_traversal: ControlFlow::Break
-    // Short-circuits
-    //    - flatten_collapsed_node_hides_children: Collapsed nodes don't
-    // Contribute
-    //    - flatten_expanded_node_shows_children: Expanded nodes visible
-    //    - collect_refs_visits_all_nodes: Fold traverses entire structure
-    //    - find_node_by_reference_works: Immutable fold search
-    //    - find_node_mut_works: Mutable fold search
-    //    - find_node_at_depth_distinguishes_instances: Depth-aware search
+    //    - fold_equivalence_flatten_tree: flatten_tree produces correct depths
+    //    - fold_vs_traversal_law_node_count: row count equals node count when expanded
+    //    - fold_tree_mut_early_exit_stops_traversal: ControlFlow::Break short-circuits
+    //    - flatten_collapsed_node_hides_children: collapsed nodes don't contribute
+    //    - flatten_expanded_node_shows_children: expanded nodes visible
+    //    - collect_refs_visits_all_nodes: fold traverses entire structure
+    //    - find_node_by_reference_works: immutable fold search
+    //    - find_node_mut_works: mutable fold search
+    //    - find_node_at_depth_distinguishes_instances: depth-aware search
     //
     // ## 5. Collapse Idempotence
     //    - collapse_idempotence: collapse_all twice yields same state
     //
     // ## 6. Placeholder Refinement (fetched state transitions)
-    //    - placeholder_refinement_transitions_fetched_state:
-    // Fetched=false → true on expand
+    //    - placeholder_refinement_transitions_fetched_state: fetched=false → true on expand
     //
     // ## 7. Cycle Safety & Duplicate Handling
-    //    - cycle_guard_prevents_infinite_recursion: Self-reference handled
-    //    - dual_appearances_flatten_correctly: Same reference at multiple
-    // Depths
-    //    - expansion_tracking_uses_depth_pairs: (reference, depth) pairs
-    // Track state
-    //    - selection_restore_prefers_depth_match: Depth-aware matching
+    //    - cycle_guard_prevents_infinite_recursion: self-reference handled
+    //    - dual_appearances_flatten_correctly: same reference at multiple depths
+    //    - expansion_tracking_uses_depth_pairs: (reference, depth) pairs track state
+    //    - selection_restore_prefers_depth_match: depth-aware matching
     //
     // ## 8. Stamp Ordering (temporal semantics)
     //    - stamp_orders_by_timestamp_first: Primary ordering
     //    - stamp_orders_by_seq_when_timestamp_equal: Tie-breaker
     //    - stamp_equality_works: Equivalence relation
+
+    // Helper to find a node by reference using algebraic fold.
+    fn find_node_by_ref<'a>(node: &'a TreeNode, reference: &str) -> Option<&'a TreeNode> {
+        fold_tree(node, &|n, child_results| {
+            if n.reference == reference {
+                Some(n)
+            } else {
+                child_results.into_iter().find_map(|x| x)
+            }
+        })
+    }
 
     // Helper to create test payloads
     fn mock_payload(identity: &str) -> NodePayload {
@@ -2677,6 +2701,7 @@ mod tests {
             },
             children: vec![],
             parent: None,
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
         }
     }
 
