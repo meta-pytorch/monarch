@@ -93,15 +93,29 @@
 //! swallowed. This is critical because the admin agent is
 //! co-located with the mesh coordinator — an unhandled panic would
 //! tear down the entire mesh.
+//!
+//! ## TLS transport invariant
+//!
+//! The admin HTTP server auto-detects TLS certificates at startup via
+//! [`try_tls_acceptor`](hyperactor::channel::try_tls_acceptor): OSS
+//! config attrs → Meta well-known paths → plain HTTP fallback. When
+//! certs are found, the server serves HTTPS; otherwise HTTP.
+//!
+//! **`admin_host` includes the scheme**: the URL returned by
+//! `GetAdminAddr` is always `https://host:port` or
+//! `http://host:port`, never a bare `host:port`. All callers (Rust
+//! examples, Python examples, TUI, tests) receive and use this full
+//! URL directly.
 
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Json;
 use axum::Router;
-use axum::extract::Path;
+use axum::extract::Path as AxumPath;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -118,6 +132,7 @@ use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
+use hyperactor::channel::try_tls_acceptor;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::introspect::IntrospectMessage;
@@ -129,6 +144,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use typeuri::Named;
 
 use crate::host_mesh::mesh_agent::HostId;
@@ -430,6 +446,46 @@ struct BridgeState {
     _bridge_handle: ActorHandle<()>,
 }
 
+/// A TCP listener that performs a TLS handshake on each accepted
+/// connection before handing it to axum.
+///
+/// Implements [`axum::serve::Listener`] so it can be passed directly
+/// to [`axum::serve`].  Per the trait contract, `accept` handles
+/// errors internally (logging + retrying) and never returns `Err`.
+struct TlsListener {
+    tcp: TcpListener,
+    acceptor: TlsAcceptor,
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let (stream, addr) = match self.tcp.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::warn!("TCP accept error: {}", e);
+                    continue;
+                }
+            };
+
+            match self.acceptor.accept(stream).await {
+                Ok(tls_stream) => return (tls_stream, addr),
+                Err(e) => {
+                    tracing::warn!("TLS handshake failed from {}: {}", addr, e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.tcp.local_addr()
+    }
+}
+
 #[async_trait]
 impl Actor for MeshAdminAgent {
     /// Initializes the mesh admin agent and its HTTP server.
@@ -438,13 +494,18 @@ impl Actor for MeshAdminAgent {
     ///    call `bind()` — unlike `gspawn` — so the actor must do it
     ///    itself before becoming reachable).
     /// 2. Binds a TCP listener (ephemeral or fixed port).
-    /// 3. Creates a dedicated `Instance<()>` client mailbox on
+    /// 3. Probes for TLS certificates (explicit env vars, then Meta
+    ///    default paths, then falls back to plain HTTP).
+    /// 4. Creates a dedicated `Instance<()>` client mailbox on
     ///    system_proc for the HTTP bridge's reply ports, keeping
     ///    bridge traffic off the actor's own mailbox.
-    /// 4. Spawns the axum server in a background task.
+    /// 5. Spawns the axum server in a background task (HTTPS or HTTP
+    ///    depending on step 3).
     ///
     /// The hostname-based listen address is stored in `admin_host` so
-    /// it can be returned via `GetAdminAddr`.
+    /// it can be returned via `GetAdminAddr`. The scheme (`https://`
+    /// or `http://`) is included so clients know which protocol to
+    /// use.
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Bind well-known ports before the HTTP server is spawned, so
         // messages (including Undeliverable bounces) can be delivered
@@ -466,7 +527,17 @@ impl Actor for MeshAdminAgent {
             .into_string()
             .unwrap_or_else(|_| "localhost".to_string());
         self.admin_addr = Some(bound_addr);
-        self.admin_host = Some(format!("{}:{}", host, bound_addr.port()));
+
+        // Probe for TLS certificates (OSS config, then Meta paths,
+        // then plain HTTP fallback). See `try_tls_acceptor` docs.
+        let tls_acceptor = try_tls_acceptor();
+        let scheme = if tls_acceptor.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+
+        self.admin_host = Some(format!("{}://{}:{}", scheme, host, bound_addr.port()));
 
         // Create a dedicated client mailbox on system_proc for the
         // HTTP bridge's reply ports. This avoids sharing the admin
@@ -478,14 +549,27 @@ impl Actor for MeshAdminAgent {
             _bridge_handle: bridge_handle,
         });
         let router = create_mesh_admin_router(bridge_state);
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router).await {
-                tracing::error!("mesh admin server error: {}", e);
-            }
-        });
+
+        if let Some(acceptor) = tls_acceptor {
+            let tls_listener = TlsListener {
+                tcp: listener,
+                acceptor,
+            };
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(tls_listener, router).await {
+                    tracing::error!("mesh admin server (TLS) error: {}", e);
+                }
+            });
+        } else {
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, router).await {
+                    tracing::error!("mesh admin server error: {}", e);
+                }
+            });
+        }
 
         tracing::info!(
-            "mesh admin server listening on http://{}",
+            "mesh admin server listening on {}",
             self.admin_host.as_deref().unwrap_or("unknown")
         );
         Ok(())
@@ -1065,7 +1149,11 @@ async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let base = format!("http://{}", host);
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+    let base = format!("{}://{}", scheme, host);
     let body = SKILL_MD_TEMPLATE.replace("{base}", &base);
     (
         [(
@@ -1090,7 +1178,7 @@ async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::
 ///   `internal_error`).
 async fn resolve_reference_bridge(
     State(state): State<Arc<BridgeState>>,
-    Path(reference): Path<String>,
+    AxumPath(reference): AxumPath<String>,
 ) -> Result<Json<NodePayload>, ApiError> {
     // Axum's wildcard may include a leading slash; strip it.
     let reference = reference.trim_start_matches('/');

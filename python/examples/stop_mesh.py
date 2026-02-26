@@ -45,10 +45,18 @@ class Worker(Actor):
 async def async_main(num_procs: int) -> None:
     host = this_host()
 
-    admin_addr = await host._spawn_admin()
-    print(f"\nMesh admin server listening on http://{admin_addr}")
+    admin_url = await host._spawn_admin()
+    cacert = (
+        "--cacert /var/facebook/rootcanal/ca.pem "
+        if admin_url.startswith("https")
+        else ""
+    )
+    print(f"\nMesh admin server listening on {admin_url}")
+    print(f"  - Root node:     curl {cacert}{admin_url}/v1/root")
+    print(f"  - Mesh tree:     curl {cacert}{admin_url}/v1/tree")
+    print(f"  - API docs:      curl {cacert}{admin_url}/SKILL.md")
     print(
-        f"  TUI: buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_addr}"
+        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
     print(flush=True)
 

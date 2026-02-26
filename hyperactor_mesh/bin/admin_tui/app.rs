@@ -117,15 +117,17 @@ impl App {
     /// Construct a new TUI app instance targeting the given admin
     /// server address.
     ///
-    /// `addr` is the host:port pair (e.g. `127.0.0.1:8080`); the HTTP
-    /// base URL is derived from it.
-    pub(crate) fn new(addr: &str, theme_name: ThemeName, lang_name: LangName) -> Self {
+    /// `base_url` should include the scheme (e.g. `http://host:port`
+    /// or `https://host:port`).
+    pub(crate) fn new(
+        base_url: String,
+        client: reqwest::Client,
+        theme_name: ThemeName,
+        lang_name: LangName,
+    ) -> Self {
         Self {
-            base_url: format!("http://{}", addr),
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            base_url,
+            client,
             should_quit: false,
             tree: None,
             cursor: Cursor::new(0),

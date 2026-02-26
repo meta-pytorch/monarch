@@ -16,6 +16,7 @@ Verifies that when an actor fails, the introspection API exposes:
 
 import asyncio
 import json
+import ssl
 import urllib.request
 
 import monarch.actor
@@ -42,7 +43,13 @@ class FailWorker(Actor):
 
 
 def _fetch_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=5) as resp:
+    # Skip hostname verification — in CI the server's x509 identity cert
+    # may not match the machine hostname.
+    ctx = ssl.create_default_context()
+    if url.startswith("https"):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
         return json.loads(resp.read())
 
 
@@ -59,8 +66,7 @@ async def test_failed_actor_has_failure_info() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        admin_addr = await host._spawn_admin()
-        base = f"http://{admin_addr}"
+        base = await host._spawn_admin()
 
         procs = host.spawn_procs(per_host={"replica": 2})
         workers = procs.spawn("worker", FailWorker)
@@ -131,8 +137,7 @@ async def test_healthy_procs_not_poisoned() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        admin_addr = await host._spawn_admin()
-        base = f"http://{admin_addr}"
+        base = await host._spawn_admin()
 
         procs = host.spawn_procs(per_host={"replica": 3})
         workers = procs.spawn("worker", FailWorker)

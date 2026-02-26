@@ -15,7 +15,12 @@ use super::*;
 // Empty tree all operations are noops.
 #[test]
 fn empty_tree_all_operations_are_noops() {
-    let app = App::new("localhost:8080", ThemeName::Nord, LangName::En);
+    let app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
     let rows = app.visible_rows();
     assert_eq!(rows.len(), 0);
     assert_eq!(app.cursor.pos(), 0);

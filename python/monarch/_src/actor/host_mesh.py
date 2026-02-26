@@ -154,7 +154,7 @@ class HostMesh(MeshTrait):
                 When ``None``, an ephemeral port is chosen.
 
         Returns:
-            Future[str]: The admin HTTP address (e.g. ``"myhost.facebook.com:8080"``).
+            Future[str]: The admin HTTP URL (e.g. ``"http://myhost.facebook.com:8080"``).
         """
 
         async def task() -> str:

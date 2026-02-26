@@ -58,7 +58,7 @@ class HostMesh:
     ) -> PythonTask[str]:
         """
         Spawn a MeshAdminAgent on the head host's system proc and
-        return its HTTP address.
+        return its HTTP URL (including scheme).
 
         The admin agent aggregates topology across all hosts and
         serves an HTTP API. When ``admin_port`` is provided, the
