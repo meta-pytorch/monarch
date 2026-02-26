@@ -157,7 +157,8 @@ def test_actors_table(cleanup_callbacks) -> None:
     # Spawn some worker actors - this should trigger notify_actor_created
     host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     worker_procs = host.spawn_procs(per_host={"workers": 2})
-    _ = worker_procs.spawn("test_worker", WorkerActor)
+    workers = worker_procs.spawn("test_worker", WorkerActor)
+    workers.initialized.get()
 
     # Query the actors table to verify actors were recorded
     result = engine.query("SELECT * FROM actors")
