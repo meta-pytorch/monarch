@@ -569,6 +569,31 @@ class ClientActor(Actor):
             "data_c_sum": torch.sum(self.data_c).item(),
         }
 
+    @endpoint
+    async def check_buffer_retains_tensor(self) -> None:
+        """Bug: RDMABuffer does not store a reference to its backing tensor.
+        After the tensor is deleted, the buffer holds a dangling address."""
+        import gc
+        import weakref
+
+        tensor = torch.full((100,), 42.0, dtype=torch.float32)
+        weak_storage = weakref.ref(tensor.untyped_storage())
+        byte_view = tensor.view(torch.uint8).flatten()
+        buffer = RDMABuffer(byte_view)
+
+        # Delete all Python references to the tensor and its view
+        del byte_view
+        del tensor
+        gc.collect()
+
+        # If RDMABuffer retained a reference, the storage would still be alive
+        assert weak_storage() is not None, (
+            "Backing storage was garbage collected while RDMABuffer "
+            "still holds its raw memory address"
+        )
+        # prevent buffer from being optimized away
+        _ = buffer.size()
+
 
 @needs_rdma
 async def test_rdma_action_concurrent_execution():
@@ -769,3 +794,15 @@ async def test_rdma_action_slicing():
     assert (
         operation_results["data_a_sum"] == sum_a_initial * 2.5
     )  # multi-filled from 100 to 250
+
+
+@needs_rdma
+async def test_rdma_buffer_retains_tensor_reference():
+    """RDMABuffer must retain a reference to its backing tensor so it cannot
+    be garbage collected while the buffer holds its raw memory address.
+    Verified deterministically with weakref.
+    """
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+    client = client_proc.spawn("client", ClientActor)
+
+    await client.check_buffer_retains_tensor.call_one()
