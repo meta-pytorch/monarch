@@ -158,6 +158,9 @@ USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation
 uv run python -c "from monarch import actor; print('Monarch installed successfully')"
+
+# Rebuild (e.g., after changing Rust code)
+USE_TENSOR_ENGINE=0 uv pip install -e .
 ```
 
 ##### On Ubuntu distributions
@@ -194,6 +197,9 @@ USE_TENSOR_ENGINE=0 uv sync
 
 # Verify installation
 uv run python -c "from monarch import actor; print('Monarch installed successfully')"
+
+# Rebuild (e.g., after changing Rust code)
+USE_TENSOR_ENGINE=0 uv pip install -e .
 ```
 
 ##### On non-CUDA machines
