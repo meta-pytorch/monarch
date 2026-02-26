@@ -308,6 +308,8 @@ impl Actor for HostMeshAgent {
                             num_actors: actors.len(),
                             is_system: true,
                             system_children: system_actors,
+                            stopped_children: Vec::new(),
+                            stopped_retention_cap: 0,
                         },
                         children: actors,
                         parent: Some(HostId(self_id.clone()).to_string()),
