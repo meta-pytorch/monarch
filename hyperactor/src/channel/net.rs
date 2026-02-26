@@ -942,9 +942,7 @@ pub(crate) mod tls {
             None => {
                 let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
                     .to_socket_addrs()
-                    .map_err(|err| {
-                        ServerError::Resolve(make_channel_addr(&hostname, port), err)
-                    })?
+                    .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
                     .collect();
 
                 if addrs.is_empty() {

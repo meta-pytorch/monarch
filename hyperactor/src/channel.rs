@@ -891,9 +891,7 @@ impl ChannelAddr {
                 })?;
                 Ok((Self::Local(port), None))
             }
-            "ipc" => {
-                Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None))
-            }
+            "ipc" => Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None)),
             "metatls" | "tls" => {
                 let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
                 let hostname = if host == "*" {
