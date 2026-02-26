@@ -10,6 +10,8 @@
 
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -293,8 +295,15 @@ impl LoggingMeshClient {
         PyPythonTask::new(async move {
             // 1. Spawn the client-side coordinator actor (lives in
             // the caller's process).
+            static LOG_CLIENT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let id = LOG_CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let name = if id == 0 {
+                "log_client".to_string()
+            } else {
+                format!("log_client_{}", id)
+            };
             let client_actor: ActorHandle<LogClientActor> =
-                instance.spawn(LogClientActor::default())?;
+                instance.proc().spawn(&name, LogClientActor::default())?;
             let client_actor_ref = client_actor.bind();
 
             // Read config to decide if we stand up per-proc
