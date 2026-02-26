@@ -104,6 +104,7 @@ use std::time::Duration;
 
 use algebra::JoinSemilattice;
 use clap::Parser;
+use clap::ValueEnum;
 use crossterm::ExecutableCommand;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
@@ -144,6 +145,44 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use serde_json::Value;
 
+/// Selectable color theme.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum ThemeName {
+    /// Nord — an arctic, north-bluish color palette.
+    #[default]
+    Nord,
+    /// doom-nord-light — desaturated Nord accents for light backgrounds.
+    DoomNordLight,
+}
+
+impl std::fmt::Display for ThemeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ThemeName::Nord => write!(f, "nord"),
+            ThemeName::DoomNordLight => write!(f, "doom-nord-light"),
+        }
+    }
+}
+
+/// Selectable display language.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum LangName {
+    /// English (default).
+    #[default]
+    En,
+    /// 简体中文 (Simplified Chinese).
+    Zh,
+}
+
+impl std::fmt::Display for LangName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LangName::En => write!(f, "en"),
+            LangName::Zh => write!(f, "zh"),
+        }
+    }
+}
+
 /// Command-line arguments for the admin TUI.
 #[derive(Debug, Parser)]
 #[command(name = "admin-tui", about = "TUI client for hyperactor admin API")]
@@ -155,6 +194,14 @@ struct Args {
     /// Refresh interval in milliseconds
     #[arg(long, default_value_t = 1000)]
     refresh_ms: u64,
+
+    /// Color theme
+    #[arg(long, default_value_t = ThemeName::Nord, value_enum)]
+    theme: ThemeName,
+
+    /// Display language
+    #[arg(long, default_value_t = LangName::En, value_enum)]
+    lang: LangName,
 }
 
 /// Monotonic ordering key for fetch results.
@@ -406,6 +453,19 @@ struct Labels {
     children: &'static str,
     status: &'static str,
     processing_time: &'static str,
+
+    // Pane titles
+    pane_topology: &'static str,
+    pane_details: &'static str,
+    pane_error: &'static str,
+    pane_root_details: &'static str,
+    pane_host_details: &'static str,
+    pane_proc_details: &'static str,
+    pane_actor_details: &'static str,
+    pane_flight_recorder: &'static str,
+
+    // Footer
+    footer_help_text: &'static str,
 }
 
 impl Labels {
@@ -440,6 +500,58 @@ impl Labels {
             children: "Children: ",
             status: "Status: ",
             processing_time: "Processing time: ",
+            pane_topology: "Topology",
+            pane_details: "Details",
+            pane_error: "Error",
+            pane_root_details: "Root Details",
+            pane_host_details: "Host Details",
+            pane_proc_details: "Proc Details",
+            pane_actor_details: "Actor Details",
+            pane_flight_recorder: "Flight Recorder",
+            footer_help_text: "q: quit | j/k: navigate | g/G: top/bottom | Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors",
+        }
+    }
+
+    /// 简体中文 (Simplified Chinese) label set.
+    fn zh() -> Self {
+        Self {
+            app_name: "网格管理",
+            separator: " • ",
+            selection_caret: "▸ ",
+            refresh_icon: "⟳ ",
+            no_selection: "未选择",
+            uptime: "运行: ",
+            system: "系统:",
+            sys_on: "开",
+            sys_off: "关",
+            stopped: "已停止:",
+            stopped_on: "开",
+            stopped_off: "关",
+            hosts: "主机: ",
+            started_by: "启动者: ",
+            uptime_detail: "运行时间: ",
+            started_at: "启动时间: ",
+            data_as_of: "数据时间: ",
+            address: "地址: ",
+            procs: "进程: ",
+            name: "名称: ",
+            actors: "执行器: ",
+            actor_type: "类型: ",
+            messages: "消息: ",
+            created: "创建时间: ",
+            last_handler: "最后处理: ",
+            children: "子节点: ",
+            status: "状态: ",
+            processing_time: "处理时间: ",
+            pane_topology: "拓扑",
+            pane_details: "详情",
+            pane_error: "错误",
+            pane_root_details: "根节点详情",
+            pane_host_details: "主机详情",
+            pane_proc_details: "进程详情",
+            pane_actor_details: "执行器详情",
+            pane_flight_recorder: "飞行记录器",
+            footer_help_text: "q: 退出 | j/k: 导航 | g/G: 顶部/底部 | Tab: 展开/折叠 | c: 全部折叠 | s: 系统进程 | h: 已停止",
         }
     }
 }
@@ -492,29 +604,30 @@ impl NodeType {
 
 /// Color scheme for the TUI.
 ///
-/// Defines all colors and styles used throughout the interface. This
-/// abstraction allows for consistent theming and makes it easy to add
-/// alternative schemes (light mode, high contrast, etc.) in the
-/// future.
+/// Defines all colors and styles used throughout the interface.
+/// Selectable via `--theme` (see [`ThemeName`]).
 ///
-/// ## Color Semantics
+/// ## Semantic Roles
 ///
-/// Colors carry consistent meaning across the interface:
-/// - 🟢 **Green**: Topology/scale (host/proc/actor counts, success)
-/// - 🟡 **Yellow**: Timing/temporal (refresh intervals, warnings)
-/// - 🟣 **Magenta**: Selection/focus (current node, highlighted items)
-/// - 🔵 **Blue**: System state/config (toggles, system procs, actors)
-/// - ⚪ **Gray**: Secondary info (URLs, labels, borders)
-/// - 🔴 **Red**: Errors (error states, failures)
-/// - 🔷 **Cyan**: Important headers (app name, help headings)
+/// Each field maps to a semantic role, not a specific color. Themes
+/// assign concrete colors to these roles while preserving the
+/// following intent:
+///
+/// - **Topology**: host, proc, actor node types in the tree
+/// - **Selection/focus**: currently highlighted node
+/// - **System state**: config toggles, system/infrastructure actors
+/// - **Timing/temporal**: refresh intervals, durations
+/// - **Secondary**: URLs, labels, borders, muted text
+/// - **Error/warning/success**: status indicators
+/// - **Headers**: app name, info headings
 ///
 /// ## Semantic Categories
 ///
 /// - **UI chrome**: App name, borders, footer
-/// - **Node types**: Colors for root/host/proc/actor in tree
-/// - **States**: Error, warning, success for status display
+/// - **Node types**: Distinct style per tree node kind
+/// - **States**: Error, warning, success, stopped
 /// - **Header stats**: Timing, topology counts, selection, config
-/// - **Help overlay**: Markdown rendering styles
+/// - **Detail pane**: Labels, status indicators
 struct ColorScheme {
     // UI chrome
     app_name: Style,
@@ -522,14 +635,8 @@ struct ColorScheme {
     _border_focused: Style,
     _footer_help: Style,
 
-    // Node types (tree rendering):
-    //   Cyan     = root
-    //   Green    = host
-    //   Yellow   = proc
-    //   LightBlue = user actor
-    //   #2C7088 (dark-cyan/teal, doom-nord-light) = system actor (ProcMeshAgent, CommActor, etc.)
-    //   DarkGray = stopped/failed (overrides node type)
-    //   Red      = error (unused, reserved)
+    // Node types (tree rendering) — one style per node kind.
+    // Specific colors vary by theme; see default() and nord().
     node_root: Style,
     node_host: Style,
     node_proc: Style,
@@ -548,43 +655,130 @@ struct ColorScheme {
     stat_url: Style,       // connection info (secondary)
     stat_label: Style,     // stat labels/prefixes
     _stat_value: Style,    // stat numeric values
+
+    // Detail pane and misc rendering
+    detail_label: Style,         // label text in detail key-value lines
+    detail_stopped: Style,       // stopped/failed nodes in tree + detail
+    detail_status_ok: Style,     // actor status "Running"
+    detail_status_warn: Style,   // actor status non-Running (idle, etc.)
+    footer_help: Style,          // footer help bar text
+    header_class_bracket: Style, // classification brackets in header
 }
 
 impl ColorScheme {
-    /// Default color scheme.
+    /// Nord color scheme (https://www.nordtheme.com/).
     ///
-    /// This is the current color scheme used throughout the TUI.
-    fn default() -> Self {
+    /// An arctic, north-bluish palette with muted, harmonious colors.
+    fn nord() -> Self {
+        // Polar Night (dark backgrounds)
+        let polar3 = Color::Rgb(76, 86, 106); // #4C566A
+        // Snow Storm (light text)
+        let snow0 = Color::Rgb(216, 222, 233); // #D8DEE9
+        let snow2 = Color::Rgb(236, 239, 244); // #ECEFF4
+        // Frost (blues/cyans)
+        let frost_teal = Color::Rgb(143, 188, 187); // #8FBCBB
+        let frost_cyan = Color::Rgb(136, 192, 208); // #88C0D0
+        let frost_blue = Color::Rgb(129, 161, 193); // #81A1C1
+        let frost_dark = Color::Rgb(94, 129, 172); // #5E81AC
+        // Aurora (accents)
+        let aurora_red = Color::Rgb(191, 97, 106); // #BF616A
+        let aurora_orange = Color::Rgb(208, 135, 112); // #D08770
+        let aurora_yellow = Color::Rgb(235, 203, 139); // #EBCB8B
+        let aurora_green = Color::Rgb(163, 190, 140); // #A3BE8C
+        let aurora_purple = Color::Rgb(180, 142, 173); // #B48EAD
+
         Self {
             // UI chrome
-            app_name: Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-            border: Style::default().fg(Color::Gray),
-            _border_focused: Style::default().fg(Color::Cyan),
-            _footer_help: Style::default().fg(Color::DarkGray),
+            app_name: Style::default().fg(frost_cyan).add_modifier(Modifier::BOLD),
+            border: Style::default().fg(polar3),
+            _border_focused: Style::default().fg(frost_cyan),
+            _footer_help: Style::default().fg(polar3),
 
             // Node types
-            node_root: Style::default().fg(Color::Cyan),
-            node_host: Style::default().fg(Color::Green),
-            node_proc: Style::default().fg(Color::Yellow),
-            node_actor: Style::default().fg(Color::LightBlue),
-            _node_error: Style::default().fg(Color::Red),
-            node_system_actor: Style::default().fg(Color::Rgb(44, 112, 136)),
+            node_root: Style::default().fg(frost_teal),
+            node_host: Style::default().fg(aurora_green),
+            node_proc: Style::default().fg(aurora_yellow),
+            node_actor: Style::default().fg(frost_blue),
+            _node_error: Style::default().fg(aurora_red),
+            node_system_actor: Style::default().fg(frost_dark),
 
             // Semantic states
-            error: Style::default().fg(Color::Red),
-            info: Style::default().fg(Color::Cyan),
+            error: Style::default().fg(aurora_red),
+            info: Style::default().fg(frost_cyan),
 
             // Header stats
-            stat_timing: Style::default().fg(Color::Yellow),
-            stat_selection: Style::default().fg(Color::Magenta),
-            stat_system: Style::default().fg(Color::Blue),
-            stat_url: Style::default().fg(Color::DarkGray),
-            stat_label: Style::default().fg(Color::Gray),
-            _stat_value: Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            stat_timing: Style::default().fg(aurora_yellow),
+            stat_selection: Style::default().fg(aurora_purple),
+            stat_system: Style::default().fg(frost_dark),
+            stat_url: Style::default().fg(polar3),
+            stat_label: Style::default().fg(snow0),
+            _stat_value: Style::default().fg(snow2).add_modifier(Modifier::BOLD),
+
+            // Detail pane and misc
+            detail_label: Style::default().fg(snow0),
+            detail_stopped: Style::default().fg(polar3),
+            detail_status_ok: Style::default().fg(aurora_green),
+            detail_status_warn: Style::default().fg(aurora_orange),
+            footer_help: Style::default().fg(polar3),
+            header_class_bracket: Style::default().fg(polar3),
+        }
+    }
+
+    /// doom-nord-light color scheme.
+    ///
+    /// Desaturated Nord accents adapted for light backgrounds.
+    /// Source: doom-nord-light-theme.el
+    fn doom_nord_light() -> Self {
+        // Base scale (light to dark)
+        let base7 = Color::Rgb(96, 114, 140); // #60728C
+        // Foreground
+        let fg = Color::Rgb(59, 66, 82); // #3B4252
+        let fg_alt = Color::Rgb(46, 52, 64); // #2E3440
+        // Accents
+        let red = Color::Rgb(153, 50, 75); // #99324B
+        let orange = Color::Rgb(172, 68, 38); // #AC4426
+        let green = Color::Rgb(79, 137, 76); // #4F894C
+        let yellow = Color::Rgb(154, 117, 0); // #9A7500
+        let blue = Color::Rgb(59, 110, 168); // #3B6EA8
+        let dark_blue = Color::Rgb(82, 114, 175); // #5272AF
+        let teal = Color::Rgb(41, 131, 141); // #29838D
+        let cyan = Color::Rgb(57, 142, 172); // #398EAC
+        let violet = Color::Rgb(132, 40, 121); // #842879
+
+        Self {
+            // UI chrome
+            app_name: Style::default().fg(teal).add_modifier(Modifier::BOLD),
+            border: Style::default().fg(base7),
+            _border_focused: Style::default().fg(cyan),
+            _footer_help: Style::default().fg(base7),
+
+            // Node types
+            node_root: Style::default().fg(teal),
+            node_host: Style::default().fg(green),
+            node_proc: Style::default().fg(yellow),
+            node_actor: Style::default().fg(blue),
+            _node_error: Style::default().fg(red),
+            node_system_actor: Style::default().fg(orange),
+
+            // Semantic states
+            error: Style::default().fg(red),
+            info: Style::default().fg(cyan),
+
+            // Header stats
+            stat_timing: Style::default().fg(yellow),
+            stat_selection: Style::default().fg(violet),
+            stat_system: Style::default().fg(dark_blue),
+            stat_url: Style::default().fg(base7),
+            stat_label: Style::default().fg(fg),
+            _stat_value: Style::default().fg(fg_alt).add_modifier(Modifier::BOLD),
+
+            // Detail pane and misc
+            detail_label: Style::default().fg(fg),
+            detail_stopped: Style::default().fg(base7),
+            detail_status_ok: Style::default().fg(green),
+            detail_status_warn: Style::default().fg(orange),
+            footer_help: Style::default().fg(base7),
+            header_class_bracket: Style::default().fg(base7),
         }
     }
 
@@ -608,12 +802,17 @@ struct Theme {
 }
 
 impl Theme {
-    /// English, dark-background default.
-    fn default() -> Self {
-        Self {
-            scheme: ColorScheme::default(),
-            labels: Labels::en(),
-        }
+    /// Build a theme for the given theme and language.
+    fn new(theme_name: ThemeName, lang_name: LangName) -> Self {
+        let scheme = match theme_name {
+            ThemeName::Nord => ColorScheme::nord(),
+            ThemeName::DoomNordLight => ColorScheme::doom_nord_light(),
+        };
+        let labels = match lang_name {
+            LangName::En => Labels::en(),
+            LangName::Zh => Labels::zh(),
+        };
+        Self { scheme, labels }
     }
 }
 
@@ -816,6 +1015,10 @@ struct App {
 
     /// Visual presentation (colors + labels).
     theme: Theme,
+    /// Active theme name (for display in header).
+    theme_name: ThemeName,
+    /// Active language (for display in header).
+    lang_name: LangName,
 }
 
 /// Result of handling a key event.
@@ -836,7 +1039,7 @@ impl App {
     ///
     /// `addr` is the host:port pair (e.g. `127.0.0.1:8080`); the HTTP
     /// base URL is derived from it.
-    fn new(addr: &str) -> Self {
+    fn new(addr: &str, theme_name: ThemeName, lang_name: LangName) -> Self {
         Self {
             base_url: format!("http://{}", addr),
             client: reqwest::Client::builder()
@@ -857,7 +1060,9 @@ impl App {
             fetch_cache: HashMap::new(),
             refresh_gen: 0,
             seq_counter: 0,
-            theme: Theme::default(),
+            theme: Theme::new(theme_name, lang_name),
+            theme_name,
+            lang_name,
         }
     }
 
@@ -1325,35 +1530,28 @@ impl App {
                 }
             }
             KeyCode::Tab => {
-                // Expand selected node; lazily fetch children.
+                // Toggle expand/collapse on the selected node.
                 if let Some(row) = rows.get(&self.cursor)
                     && row.node.has_children
-                    && !row.node.expanded
                 {
-                    let reference = row.node.reference.clone();
-                    let depth = row.depth;
-                    return KeyResult::ExpandNode(reference, depth);
-                }
-                KeyResult::None
-            }
-            KeyCode::BackTab => {
-                // Collapse selected node.
-                let to_collapse = rows.get(&self.cursor).and_then(|row| {
-                    if row.node.has_children && row.node.expanded {
-                        Some((row.node.reference.clone(), row.depth))
+                    if row.node.expanded {
+                        // Collapse.
+                        let reference = row.node.reference.clone();
+                        let depth = row.depth;
+                        if let Some(root) = &mut self.tree
+                            && let Some(node) = find_at_depth_from_root_mut(root, &reference, depth)
+                        {
+                            node.expanded = false;
+                            let rows = self.visible_rows();
+                            self.cursor.update_len(rows.len());
+                            return KeyResult::DetailChanged;
+                        }
                     } else {
-                        None
+                        // Expand; lazily fetch children.
+                        let reference = row.node.reference.clone();
+                        let depth = row.depth;
+                        return KeyResult::ExpandNode(reference, depth);
                     }
-                });
-
-                if let Some((reference, depth)) = to_collapse
-                    && let Some(root) = &mut self.tree
-                    && let Some(node) = find_at_depth_from_root_mut(root, &reference, depth)
-                {
-                    node.expanded = false;
-                    let rows = self.visible_rows();
-                    self.cursor.update_len(rows.len());
-                    return KeyResult::DetailChanged;
                 }
                 KeyResult::None
             }
@@ -2292,7 +2490,7 @@ async fn main() -> io::Result<()> {
     // Show an indicatif spinner on stderr while fetching initial data.
     // This runs before the alternate screen so it's visible as a normal
     // Terminal line.
-    let mut app = App::new(&args.addr);
+    let mut app = App::new(&args.addr, args.theme, args.lang);
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -2404,7 +2602,7 @@ fn ui(frame: &mut ratatui::Frame<'_>, app: &App) {
 
     render_header(frame, chunks[0], app);
     render_body(frame, chunks[1], app);
-    render_footer(frame, chunks[2]);
+    render_footer(frame, chunks[2], &app.theme.scheme, &app.theme.labels);
 }
 
 /// Render the top status/header bar.
@@ -2494,6 +2692,26 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         Span::styled(stopped_state, app.theme.scheme.stat_system),
     ]);
 
+    // Show active theme and lang (skip defaults to reduce noise)
+    if !matches!(app.theme_name, ThemeName::Nord) {
+        line1_spans.extend(vec![
+            Span::styled(l.separator, app.theme.scheme.stat_label),
+            Span::styled(
+                format!("theme:{}", app.theme_name),
+                app.theme.scheme.stat_system,
+            ),
+        ]);
+    }
+    if !matches!(app.lang_name, LangName::En) {
+        line1_spans.extend(vec![
+            Span::styled(l.separator, app.theme.scheme.stat_label),
+            Span::styled(
+                format!("lang:{}", app.lang_name),
+                app.theme.scheme.stat_system,
+            ),
+        ]);
+    }
+
     if !app.refresh_interval_label.is_empty() {
         line1_spans.extend(vec![
             Span::styled(l.separator, app.theme.scheme.stat_label),
@@ -2519,16 +2737,16 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         // Classification tag only for actors (system/stopped/live)
         if matches!(node.node_type, NodeType::Actor) {
             let (class_label, class_style) = if node.stopped {
-                ("stopped", Style::default().fg(Color::DarkGray))
+                ("stopped", app.theme.scheme.detail_stopped)
             } else if node.is_system {
                 ("system", app.theme.scheme.node_system_actor)
             } else {
                 ("live", type_style)
             };
             line2_spans.extend(vec![
-                Span::styled(" [", Style::default().fg(Color::Gray)),
+                Span::styled(" [", app.theme.scheme.header_class_bracket),
                 Span::styled(class_label, class_style),
-                Span::styled("]", Style::default().fg(Color::Gray)),
+                Span::styled("]", app.theme.scheme.header_class_bracket),
             ]);
         }
     } else {
@@ -2597,7 +2815,7 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             let style = if vis_idx == app.cursor.pos() {
                 app.theme.scheme.stat_selection.add_modifier(Modifier::BOLD)
             } else if node.stopped {
-                Style::default().fg(Color::DarkGray)
+                app.theme.scheme.detail_stopped
             } else if node.is_system {
                 app.theme.scheme.node_system_actor
             } else {
@@ -2618,7 +2836,7 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         .collect();
 
     let block = Block::default()
-        .title("Topology")
+        .title(app.theme.labels.pane_topology)
         .borders(Borders::ALL)
         .border_style(app.theme.scheme.border);
 
@@ -2654,7 +2872,7 @@ fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
                 app.theme.scheme.info
             };
             let block = Block::default()
-                .title("Details")
+                .title(app.theme.labels.pane_details)
                 .borders(Borders::ALL)
                 .border_style(app.theme.scheme.border);
             let p = Paragraph::new(Span::styled(msg, msg_style)).block(block);
@@ -2732,7 +2950,7 @@ fn render_node_detail(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(scheme.border)
-                        .title("Error"),
+                        .title(labels.pane_error),
                 )
                 .style(scheme.error)
                 .wrap(Wrap { trim: true });
@@ -2742,9 +2960,9 @@ fn render_node_detail(
 }
 
 /// Build a key-value detail line with a gray label and raw value.
-fn detail_line<'a>(label: &'a str, value: impl Into<String>) -> Line<'a> {
+fn detail_line<'a>(label: &'a str, value: impl Into<String>, scheme: &ColorScheme) -> Line<'a> {
     Line::from(vec![
-        Span::styled(label, Style::default().fg(Color::Gray)),
+        Span::styled(label, scheme.detail_label),
         Span::raw(value.into()),
     ])
 }
@@ -2765,18 +2983,18 @@ fn render_root_detail(
     l: &Labels,
 ) {
     let block = Block::default()
-        .title("Root Details")
+        .title(l.pane_root_details)
         .borders(Borders::ALL)
         .border_style(scheme.border);
 
     let uptime_str = format_uptime(started_at);
 
     let mut lines = vec![
-        detail_line(l.hosts, num_hosts.to_string()),
-        detail_line(l.started_by, started_by),
-        detail_line(l.uptime_detail, &uptime_str),
-        detail_line(l.started_at, format_local_time(started_at)),
-        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
+        detail_line(l.hosts, num_hosts.to_string(), scheme),
+        detail_line(l.started_by, started_by, scheme),
+        detail_line(l.uptime_detail, &uptime_str, scheme),
+        detail_line(l.started_at, format_local_time(started_at), scheme),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of), scheme),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2804,14 +3022,14 @@ fn render_host_detail(
     l: &Labels,
 ) {
     let block = Block::default()
-        .title("Host Details")
+        .title(l.pane_host_details)
         .borders(Borders::ALL)
         .border_style(scheme.border);
 
     let mut lines = vec![
-        detail_line(l.address, addr),
-        detail_line(l.procs, num_procs.to_string()),
-        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
+        detail_line(l.address, addr, scheme),
+        detail_line(l.procs, num_procs.to_string(), scheme),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of), scheme),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2844,21 +3062,21 @@ fn render_proc_detail(
     l: &Labels,
 ) {
     let block = Block::default()
-        .title("Proc Details")
+        .title(l.pane_proc_details)
         .borders(Borders::ALL)
         .border_style(scheme.border);
 
     let mut lines = vec![
-        detail_line(l.name, proc_name),
-        detail_line(l.actors, num_actors.to_string()),
-        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
+        detail_line(l.name, proc_name, scheme),
+        detail_line(l.actors, num_actors.to_string(), scheme),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of), scheme),
         Line::default(),
     ];
     for (i, actor) in payload.children.iter().enumerate() {
         if i >= 50 {
             lines.push(Line::from(Span::styled(
                 format!("  ... and {} more", payload.children.len() - 50),
-                Style::default().fg(Color::DarkGray),
+                scheme.detail_stopped,
             )));
             break;
         }
@@ -2901,40 +3119,41 @@ fn render_actor_detail(
 
     // Actor info
     let info_block = Block::default()
-        .title("Actor Details")
+        .title(l.pane_actor_details)
         .borders(Borders::ALL)
         .border_style(scheme.border);
 
     let info = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled(l.status, Style::default().fg(Color::Gray)),
+            Span::styled(l.status, scheme.detail_label),
             Span::styled(
                 actor_status,
-                Style::default().fg(if actor_status == "Running" {
-                    Color::Green
+                if actor_status == "Running" {
+                    scheme.detail_status_ok
                 } else {
-                    Color::Yellow
-                }),
+                    scheme.detail_status_warn
+                },
             ),
         ]),
-        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
-        detail_line(l.actor_type, actor_type),
-        detail_line(l.messages, messages_processed.to_string()),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of), scheme),
+        detail_line(l.actor_type, actor_type, scheme),
+        detail_line(l.messages, messages_processed.to_string(), scheme),
         detail_line(
             l.processing_time,
             humantime::format_duration(std::time::Duration::from_micros(total_processing_time_us))
                 .to_string(),
+            scheme,
         ),
-        detail_line(l.created, created_at),
-        detail_line(l.last_handler, last_message_handler.unwrap_or("-")),
-        detail_line(l.children, payload.children.len().to_string()),
+        detail_line(l.created, created_at, scheme),
+        detail_line(l.last_handler, last_message_handler.unwrap_or("-"), scheme),
+        detail_line(l.children, payload.children.len().to_string(), scheme),
     ])
     .block(info_block);
     frame.render_widget(info, chunks[0]);
 
     // Flight recorder
     let recorder_block = Block::default()
-        .title("Flight Recorder")
+        .title(l.pane_flight_recorder)
         .borders(Borders::ALL)
         .border_style(scheme.border);
 
@@ -2986,10 +3205,14 @@ fn render_actor_detail(
 /// (quit/navigation/expand-collapse/filter) separated from the main
 /// UI with a top border so it reads like a persistent status/help
 /// footer.
-fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect) {
-    let help = "q: quit | j/k: navigate | g/G: top/bottom | Tab/Shift-Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors";
-    let footer = Paragraph::new(help)
-        .style(Style::default().fg(Color::DarkGray))
+fn render_footer(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    scheme: &ColorScheme,
+    labels: &Labels,
+) {
+    let footer = Paragraph::new(labels.footer_help_text)
+        .style(scheme.footer_help)
         .block(Block::default().borders(Borders::TOP));
     frame.render_widget(footer, area);
 }
@@ -5091,7 +5314,7 @@ mod tests {
     fn empty_tree_all_operations_are_noops() {
         // Verify that visible_rows(), selection restore, and detail fetch
         // Are all no-ops when tree=None.
-        let app = App::new("localhost:8080");
+        let app = App::new("localhost:8080", ThemeName::Nord, LangName::En);
 
         // Visible_rows should be empty
         let rows = app.visible_rows();
