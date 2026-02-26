@@ -187,6 +187,7 @@ impl IntoResponse for ApiError {
         let status = match self.code.as_str() {
             "not_found" => StatusCode::NOT_FOUND,
             "bad_request" => StatusCode::BAD_REQUEST,
+            "gateway_timeout" => StatusCode::GATEWAY_TIMEOUT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let envelope = ApiErrorEnvelope { error: self };
@@ -865,6 +866,24 @@ impl MeshAdminAgent {
         // directly.
         let mut payload = if self.self_actor_id.as_ref() == Some(actor_id) {
             cx.introspect_payload()
+        } else if self.is_standalone_proc_actor(actor_id) {
+            // Standalone procs (e.g. mesh_root_client_proc) have no
+            // ProcMeshAgent at agent[0], so skip the QueryChild
+            // terminated-snapshot check and query the actor directly.
+            let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+            let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+            introspect_port.send(
+                cx,
+                IntrospectMessage::Query {
+                    view: hyperactor::introspect::IntrospectView::Actor,
+                    reply: reply_handle.bind(),
+                },
+            )?;
+            RealClock
+                .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                .await
+                .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
+                .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?
         } else {
             // Check terminated snapshots first — fast, no ambiguity.
             // If found, the actor is definitively dead.
