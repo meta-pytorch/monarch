@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -1166,6 +1167,16 @@ impl<A: Actor> Instance<A> {
         self.inner.cell.set_published_properties(kind);
     }
 
+    /// Mark this actor as system/infrastructure. System actors are
+    /// hidden by default in the TUI (toggled via `s`).
+    pub fn set_system(&self) {
+        self.inner
+            .cell
+            .inner
+            .is_system
+            .store(true, Ordering::Relaxed);
+    }
+
     /// Register a callback for resolving non-addressable children.
     ///
     /// The callback runs on the actor's introspect task (not the
@@ -1931,6 +1942,11 @@ struct InstanceCellState {
     query_child_handler:
         RwLock<Option<Box<dyn (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync>>>,
 
+    /// Whether this actor is infrastructure/system (hidden by default
+    /// in the TUI `s` toggle). Set by spawning code via
+    /// `Instance::set_system()`.
+    is_system: AtomicBool,
+
     /// A type-erased reference to Ports<A>, which allows us to recover
     /// an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
@@ -1983,6 +1999,7 @@ impl InstanceCell {
                 recording: hyperactor_telemetry::recorder().record(64),
                 published_properties: RwLock::new(None),
                 query_child_handler: RwLock::new(None),
+                is_system: AtomicBool::new(false),
                 ports,
             }),
         };
@@ -2206,6 +2223,11 @@ impl InstanceCell {
     pub fn query_child(&self, child_ref: &crate::reference::Reference) -> Option<NodePayload> {
         let guard = self.inner.query_child_handler.read().unwrap();
         guard.as_ref().map(|handler| handler(child_ref))
+    }
+
+    /// Whether this actor is infrastructure/system.
+    pub fn is_system(&self) -> bool {
+        self.inner.is_system.load(Ordering::Relaxed)
     }
 
     /// This is temporary so that we can share binding code between handle and instance.
