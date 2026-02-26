@@ -316,6 +316,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             Some(bootstrap_cmd),
             None,
             false,
+            None,
         )
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;

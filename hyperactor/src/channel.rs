@@ -15,6 +15,8 @@ use std::net::IpAddr;
 use std::net::Ipv6Addr;
 #[cfg(target_os = "linux")]
 use std::os::linux::net::SocketAddrExt;
+use std::os::unix::io::FromRawFd;
+use std::os::unix::io::RawFd;
 use std::panic::Location;
 use std::str::FromStr;
 
@@ -817,6 +819,25 @@ impl ChannelAddr {
     /// - Alias format: dial_to_url@bind_to_url (e.g., tcp://host:port@tcp://host:port)
     ///   Note: Alias format is currently only supported for TCP addresses
     pub fn from_zmq_url(address: &str) -> Result<Self, anyhow::Error> {
+        let (addr, _listener) = Self::from_zmq_url_with_listener(address)?;
+        Ok(addr)
+    }
+
+    /// Parse ZMQ-style URL format, with support for pre-opened file descriptors.
+    ///
+    /// When the port portion of a URL is `fdNNN` (e.g. `tcp://myhost:fd5`),
+    /// the file descriptor is adopted as a pre-bound `TcpListener`. The
+    /// returned `ChannelAddr` will contain the real port that the fd is bound
+    /// to, and the `Option<TcpListener>` will be `Some`.
+    ///
+    /// # Safety
+    /// When using the `fd` syntax, the caller must ensure the file descriptor
+    /// is a valid, bound TCP socket that is not used elsewhere. The socket
+    /// does not need to be in a listening state — `listen()` will be called
+    /// automatically.
+    pub fn from_zmq_url_with_listener(
+        address: &str,
+    ) -> Result<(Self, Option<std::net::TcpListener>), anyhow::Error> {
         // Check for Alias format: dial_to_url@bind_to_url
         // The @ character separates two valid ZMQ URLs
         if let Some(at_pos) = address.find('@') {
@@ -840,10 +861,13 @@ impl ChannelAddr {
             let dial_to = Self::from_zmq_url(dial_to_str)?;
             let bind_to = Self::from_zmq_url(bind_to_str)?;
 
-            return Ok(Self::Alias {
-                dial_to: Box::new(dial_to),
-                bind_to: Box::new(bind_to),
-            });
+            return Ok((
+                Self::Alias {
+                    dial_to: Box::new(dial_to),
+                    bind_to: Box::new(bind_to),
+                },
+                None,
+            ));
         }
 
         // Try ZMQ-style URL format first (scheme://...)
@@ -853,68 +877,67 @@ impl ChannelAddr {
 
         match scheme {
             "tcp" => {
-                let (host, port) = Self::split_host_port(address)?;
-
-                if host == "*" {
-                    // Wildcard binding - use IPv6 unspecified address
-                    Ok(Self::Tcp(SocketAddr::new("::".parse().unwrap(), port)))
+                let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
+                let socket_addr = if host == "*" {
+                    SocketAddr::new("::".parse().unwrap(), port)
                 } else {
-                    // Resolve hostname to IP address for proper SocketAddr creation
-                    let socket_addr = Self::resolve_hostname_to_socket_addr(host, port)?;
-                    Ok(Self::Tcp(socket_addr))
-                }
+                    Self::resolve_hostname_to_socket_addr(host, port)?
+                };
+                Ok((Self::Tcp(socket_addr), listener))
             }
             "inproc" => {
-                // inproc://port -> local:port
-                // Port must be a valid u64 number
                 let port = address.parse::<u64>().map_err(|_| {
                     anyhow::anyhow!("inproc endpoint must be a valid port number: {}", address)
                 })?;
-                Ok(Self::Local(port))
+                Ok((Self::Local(port), None))
             }
             "ipc" => {
-                // ipc://path -> unix:path
-                Ok(Self::Unix(net::unix::SocketAddr::from_str(address)?))
+                Ok((Self::Unix(net::unix::SocketAddr::from_str(address)?), None))
             }
-            "metatls" => {
-                let (host, port) = Self::split_host_port(address)?;
-
-                if host == "*" {
-                    // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::MetaTls(TlsAddr::new(
-                        std::net::Ipv6Addr::UNSPECIFIED.to_string(),
-                        port,
-                    )))
+            "metatls" | "tls" => {
+                let (host, port, listener) = Self::parse_host_port_or_fd(address)?;
+                let hostname = if host == "*" {
+                    std::net::Ipv6Addr::UNSPECIFIED.to_string()
                 } else {
-                    Ok(Self::MetaTls(TlsAddr::new(host, port)))
-                }
-            }
-            "tls" => {
-                let (host, port) = Self::split_host_port(address)?;
-
-                if host == "*" {
-                    // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::Tls(TlsAddr::new(
-                        std::net::Ipv6Addr::UNSPECIFIED.to_string(),
-                        port,
-                    )))
-                } else {
-                    Ok(Self::Tls(TlsAddr::new(host, port)))
-                }
+                    host.to_string()
+                };
+                let addr = match scheme {
+                    "metatls" => Self::MetaTls(TlsAddr::new(hostname, port)),
+                    _ => Self::Tls(TlsAddr::new(hostname, port)),
+                };
+                Ok((addr, listener))
             }
             scheme => Err(anyhow::anyhow!("unsupported ZMQ scheme: {}", scheme)),
         }
     }
 
-    /// Split host:port string, supporting IPv6 addresses
-    fn split_host_port(address: &str) -> Result<(&str, u16), anyhow::Error> {
-        if let Some((host, port_str)) = address.rsplit_once(':') {
+    /// Parse host:port where the port may be either a numeric port or `fdNNN`
+    /// referencing a pre-opened file descriptor. Returns (host, resolved_port, optional_listener).
+    fn parse_host_port_or_fd(
+        address: &str,
+    ) -> Result<(&str, u16, Option<std::net::TcpListener>), anyhow::Error> {
+        let (host, port_str) = address
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid address format: {}", address))?;
+
+        if let Some(fd_str) = port_str.strip_prefix("fd") {
+            let fd_num: RawFd = fd_str
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid file descriptor number: {}", port_str))?;
+            // Ensure the socket is in listening state. This is a no-op if
+            // listen() was already called, and required if only bind() was done.
+            // Safety: fd_num is valid and we are about to take ownership of it.
+            let borrowed = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(fd_num) };
+            nix::sys::socket::listen(&borrowed, nix::sys::socket::Backlog::new(128)?)?;
+            // Safety: caller guarantees the fd is a valid bound TCP socket.
+            let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd_num) };
+            let local_addr = std_listener.local_addr()?;
+            Ok((host, local_addr.port(), Some(std_listener)))
+        } else {
             let port: u16 = port_str
                 .parse()
                 .map_err(|_| anyhow::anyhow!("invalid port: {}", port_str))?;
-            Ok((host, port))
-        } else {
-            Err(anyhow::anyhow!("invalid address format: {}", address))
+            Ok((host, port, None))
         }
     }
 
@@ -1077,8 +1100,19 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
 pub fn serve<M: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
+    serve_with_listener(addr, None)
+}
+
+/// Serve on the provided channel address, optionally using a pre-opened TCP listener.
+/// When `listener` is `Some`, the provided listener is used instead of binding a new socket.
+/// The server is turned down when the returned Rx is dropped.
+#[track_caller]
+pub fn serve_with_listener<M: RemoteMessage>(
+    addr: ChannelAddr,
+    listener: Option<std::net::TcpListener>,
+) -> Result<(ChannelAddr, ChannelRx<M>), ChannelError> {
     let caller = Location::caller();
-    serve_inner(addr).map(|(addr, inner)| {
+    serve_inner(addr, listener).map(|(addr, inner)| {
         tracing::debug!(
             name = "serve",
             %addr,
@@ -1090,29 +1124,42 @@ pub fn serve<M: RemoteMessage>(
 
 fn serve_inner<M: RemoteMessage>(
     addr: ChannelAddr,
+    listener: Option<std::net::TcpListener>,
 ) -> Result<(ChannelAddr, ChannelRxKind<M>), ChannelError> {
     match addr {
         ChannelAddr::Tcp(addr) => {
-            let (addr, rx) = net::tcp::serve::<M>(addr)?;
+            let (addr, rx) = net::tcp::serve::<M>(addr, listener)?;
             Ok((addr, ChannelRxKind::Tcp(rx)))
         }
         ChannelAddr::MetaTls(meta_addr) => {
-            let (addr, rx) = net::meta::serve::<M>(meta_addr)?;
+            let (addr, rx) = net::meta::serve::<M>(meta_addr, listener)?;
             Ok((addr, ChannelRxKind::MetaTls(rx)))
         }
         ChannelAddr::Tls(tls_addr) => {
-            let (addr, rx) = net::tls::serve::<M>(tls_addr)?;
+            let (addr, rx) = net::tls::serve::<M>(tls_addr, listener)?;
             Ok((addr, ChannelRxKind::Tls(rx)))
         }
         ChannelAddr::Unix(path) => {
+            assert!(
+                listener.is_none(),
+                "pre-opened listener not supported for Unix transport"
+            );
             let (addr, rx) = net::unix::serve::<M>(path)?;
             Ok((addr, ChannelRxKind::Unix(rx)))
         }
         ChannelAddr::Local(0) => {
+            assert!(
+                listener.is_none(),
+                "pre-opened listener not supported for Local transport"
+            );
             let (port, rx) = local::serve::<M>();
             Ok((ChannelAddr::Local(port), ChannelRxKind::Local(rx)))
         }
         ChannelAddr::Sim(sim_addr) => {
+            assert!(
+                listener.is_none(),
+                "pre-opened listener not supported for Sim transport"
+            );
             let (addr, rx) = sim::serve::<M>(sim_addr)?;
             Ok((addr, ChannelRxKind::Sim(rx)))
         }
@@ -1121,7 +1168,7 @@ fn serve_inner<M: RemoteMessage>(
             a
         ))),
         ChannelAddr::Alias { dial_to, bind_to } => {
-            let (bound_addr, rx) = serve_inner::<M>(*bind_to)?;
+            let (bound_addr, rx) = serve_inner::<M>(*bind_to, listener)?;
             let alias_addr = ChannelAddr::Alias {
                 dial_to,
                 bind_to: Box::new(bound_addr),
