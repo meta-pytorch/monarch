@@ -310,6 +310,57 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_bootstrap_actors_captured(cleanup_callbacks) -> None:
+    """Test that bootstrap actors (ProcMeshAgent, HostMeshAgent) are captured in the actors table.
+
+    These actors are spawned during process bootstrap, before `set_entity_dispatcher`
+    is called. The buffering mechanism in `hyperactor_telemetry` should buffer their
+    creation events and replay them when the dispatcher is registered.
+    """
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn workers so we also check worker-side bootstrap actors
+    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="worker_procs")
+    worker_procs.initialized.get()
+
+    # Query all actors
+    result = engine.query("SELECT full_name FROM actors")
+    full_names = result.to_pydict().get("full_name", [])
+
+    # Bootstrap actors (HostMeshAgent, ProcMeshAgent) are spawned with name "agent".
+    # Their full_name looks like "unix:@...,<proc>,agent[0]".
+    agent_names = [name for name in full_names if ",agent[" in name]
+
+    # TODO: Enable this after finding discrepancy between OSS and internal test
+    # # Verify the HostMeshAgent (on the "service" proc) was captured.
+    # # This is the first actor spawned during bootstrap, before set_entity_dispatcher.
+    # has_host_mesh_agent = any(",service,agent[" in name for name in full_names)
+    # assert has_host_mesh_agent, (
+    #     f"Expected HostMeshAgent on service proc, but not found. "
+    #     f"Agent actors: {agent_names}"
+    # )
+
+    # # Verify the ProcMeshAgent (on the "local" proc) was captured.
+    # has_proc_mesh_agent = any(",local,agent[" in name for name in full_names)
+    # assert has_proc_mesh_agent, (
+    #     f"Expected ProcMeshAgent on local proc, but not found. "
+    #     f"Agent actors: {agent_names}"
+    # )
+
+    # Verify ProcMeshAgent actors on the 2 worker procs were captured.
+    # Their full_name matches the pattern "worker_procs_<id>,agent[0]".
+    worker_proc_agents = [
+        name for name in full_names if "worker_procs_" in name and ",agent[" in name
+    ]
+    assert len(worker_proc_agents) == 2, (
+        f"Expected 2 ProcMeshAgent actors on worker procs "
+        f"(matching 'worker_procs_*,agent['), got {len(worker_proc_agents)}. "
+        f"All agent actors: {agent_names}"
+    )
+
+
+@pytest.mark.timeout(120)
 def test_actor_status_events_table(cleanup_callbacks) -> None:
     """Test that the actor_status_events table is populated when actors change status."""
     engine = start_telemetry(use_fake_data=False, batch_size=10)

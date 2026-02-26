@@ -287,10 +287,23 @@ lazy_static! {
         let (sender, receiver) = mpsc::channel();
         (sender, Mutex::new(Some(receiver)))
     };
-    /// Global unified entity event dispatcher.
-    /// Receives all entity lifecycle events (actors, meshes, etc.) directly (not via tracing).
-    /// Only one dispatcher is supported; setting a new dispatcher replaces the previous one.
-    static ref ENTITY_EVENT_DISPATCHER: Mutex<Option<Box<dyn EntityEventDispatcher>>> = Mutex::new(None);
+    /// Global unified entity event dispatcher with pre-registration buffering.
+    /// Events emitted before a dispatcher is registered are buffered and replayed
+    /// when `set_entity_dispatcher` is called. This ensures bootstrap actors
+    /// (e.g., HostMeshAgent and ProcMeshAgent) are captured even though they are spawned before the
+    /// telemetry system is initialized.
+    static ref ENTITY_EVENT_STATE: Mutex<EntityEventState> = Mutex::new(
+        EntityEventState::Buffering(Vec::new())
+    );
+}
+
+/// State machine for the entity event dispatcher.
+/// Starts in `Buffering`, collecting events until a dispatcher is registered.
+/// Transitions to `Dispatching` on `set_entity_dispatcher`, replaying buffered
+/// events and dropping the buffer so it cannot accumulate further.
+enum EntityEventState {
+    Buffering(Vec<EntityEvent>),
+    Dispatching(Box<dyn EntityEventDispatcher>),
 }
 
 /// Event data for actor creation.
@@ -310,15 +323,10 @@ pub struct ActorEvent {
 }
 
 /// Notify the registered dispatcher that an actor was created.
-/// This is called from hyperactor when an actor is spawned.
+/// If no dispatcher is registered yet, the event is buffered and will be
+/// replayed when `set_entity_dispatcher` is called.
 pub fn notify_actor_created(event: ActorEvent) {
-    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
-        if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(EntityEvent::Actor(event)) {
-                tracing::error!("Failed to dispatch actor event: {:?}", e);
-            }
-        }
-    }
+    dispatch_or_buffer(EntityEvent::Actor(event));
 }
 
 /// Event data for actor mesh creation.
@@ -344,15 +352,10 @@ pub struct ActorMeshEvent {
 }
 
 /// Notify the registered dispatcher that an actor mesh was created.
-/// This is called from hyperactor_mesh when an actor mesh is spawned.
+/// If no dispatcher is registered yet, the event is buffered and will be
+/// replayed when `set_entity_dispatcher` is called.
 pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
-    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
-        if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(EntityEvent::ActorMesh(event)) {
-                tracing::error!("Failed to dispatch actor mesh event: {}", e);
-            }
-        }
-    }
+    dispatch_or_buffer(EntityEvent::ActorMesh(event));
 }
 
 /// Event data for actor status changes.
@@ -372,15 +375,10 @@ pub struct ActorStatusEvent {
 }
 
 /// Notify the registered dispatcher that an actor changed status.
-/// This is called from hyperactor when an actor transitions between states.
+/// If no dispatcher is registered yet, the event is buffered and will be
+/// replayed when `set_entity_dispatcher` is called.
 pub fn notify_actor_status_changed(event: ActorStatusEvent) {
-    if let Ok(dispatcher) = ENTITY_EVENT_DISPATCHER.lock() {
-        if let Some(ref d) = *dispatcher {
-            if let Err(e) = d.dispatch(EntityEvent::ActorStatus(event)) {
-                tracing::error!("Failed to dispatch actor status event: {:?}", e);
-            }
-        }
-    }
+    dispatch_or_buffer(EntityEvent::ActorStatus(event));
 }
 
 /// Unified event enum for all entity lifecycle events.
@@ -436,16 +434,54 @@ pub trait EntityEventDispatcher: Send + Sync {
     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error>;
 }
 
+/// Dispatch an entity event to the registered dispatcher, or buffer it if none is set.
+fn dispatch_or_buffer(event: EntityEvent) {
+    if let Ok(mut state) = ENTITY_EVENT_STATE.lock() {
+        match &mut *state {
+            EntityEventState::Dispatching(d) => {
+                if let Err(e) = d.dispatch(event) {
+                    tracing::error!("failed to dispatch entity event: {:?}", e);
+                }
+            }
+            EntityEventState::Buffering(buf) => {
+                // TODO: Disable buffer cap once dispatcher is enabled by default.
+                const MAX_BUFFERED_EVENTS: usize = 1000;
+                if buf.len() < MAX_BUFFERED_EVENTS {
+                    buf.push(event);
+                    if buf.len() == MAX_BUFFERED_EVENTS {
+                        tracing::warn!(
+                            "entity event buffer full ({MAX_BUFFERED_EVENTS}); \
+                             dropping further events until a dispatcher is registered"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Set the dispatcher to receive all entity events.
 ///
-/// This can be called at any time. The dispatcher will receive all subsequent entity
-/// events (actors, meshes, etc.) through a single callback.
+/// Any events that were emitted before this call are replayed to the new dispatcher
+/// in order. All subsequent events are dispatched directly.
 ///
 /// Note: Only one dispatcher is supported. Setting a new dispatcher replaces any
 /// previously set dispatcher.
 pub fn set_entity_dispatcher(dispatcher: Box<dyn EntityEventDispatcher>) {
-    if let Ok(mut slot) = ENTITY_EVENT_DISPATCHER.lock() {
-        *slot = Some(dispatcher);
+    if let Ok(mut state) = ENTITY_EVENT_STATE.lock() {
+        // Take buffered events if transitioning from Buffering; empty vec otherwise.
+        let buffered =
+            match std::mem::replace(&mut *state, EntityEventState::Dispatching(dispatcher)) {
+                EntityEventState::Buffering(buf) => buf,
+                EntityEventState::Dispatching(_) => Vec::new(),
+            };
+        for event in buffered {
+            if let EntityEventState::Dispatching(d) = &*state {
+                if let Err(e) = d.dispatch(event) {
+                    tracing::error!("failed to dispatch buffered entity event: {:?}", e);
+                }
+            }
+        }
     }
 }
 
