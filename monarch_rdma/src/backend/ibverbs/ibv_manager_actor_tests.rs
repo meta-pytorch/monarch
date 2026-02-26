@@ -15,12 +15,13 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::ibverbs::PollTarget;
-    use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
-    use crate::backend::ibverbs::primitives::get_all_devices;
+    use super::super::PollTarget;
+    use super::super::manager_actor::IbvManagerMessageClient;
+    use super::super::primitives::IbvQpType;
+    use super::super::primitives::get_all_devices;
+    use super::super::test_utils::IbvTestEnv;
+    use super::super::test_utils::*;
     use crate::rdma_components::validate_execution_context;
-    use crate::test_utils::test_utils::RdmaManagerTestEnv;
-    use crate::test_utils::test_utils::*;
 
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
@@ -31,7 +32,7 @@ mod tests {
             println!("Skipping test: RDMA devices not available");
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -69,7 +70,7 @@ mod tests {
             println!("Skipping test: RDMA devices not available");
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -108,7 +109,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -138,7 +139,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -166,7 +167,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -204,7 +205,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -234,7 +235,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_2 = env
             .ibv_actor_2
             .request_queue_pair(
@@ -264,7 +265,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         env.rdma_handle_2
             .write_from_local(&env.client_1, env.local_memory_1.clone(), 2)
             .await?;
@@ -285,7 +286,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         env.rdma_handle_2
             .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
@@ -325,7 +326,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -364,7 +365,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -402,7 +403,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
             .ibv_actor_1
             .request_queue_pair(
@@ -458,7 +459,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .ibv_actor_1
@@ -493,7 +494,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
             .ibv_actor_1
@@ -527,7 +528,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:0").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cpu:0").await?;
 
         env.rdma_handle_2
             .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
@@ -552,7 +553,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cuda:1").await?;
 
         env.rdma_handle_2
             .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
@@ -577,7 +578,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         env.rdma_handle_2
             .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
@@ -602,7 +603,7 @@ mod tests {
             );
             return Ok(());
         }
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         env.rdma_handle_2
             .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
@@ -621,7 +622,7 @@ mod tests {
             return Ok(());
         }
 
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         let rdma_handle_2 = env.rdma_handle_2.clone();
         let rdma_handle_4 = env.rdma_handle_2.clone();
@@ -665,13 +666,8 @@ mod tests {
             return Ok(());
         }
 
-        let env = RdmaManagerTestEnv::setup_with_qp_type(
-            BSIZE,
-            "cpu:0",
-            "cpu:0",
-            crate::backend::ibverbs::primitives::IbvQpType::Standard,
-        )
-        .await?;
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cpu:0", "cpu:0", IbvQpType::Standard).await?;
 
         env.rdma_handle_2
             .write_from_local(&env.client_1, env.local_memory_1.clone(), 2)
@@ -692,13 +688,8 @@ mod tests {
             return Ok(());
         }
 
-        let env = RdmaManagerTestEnv::setup_with_qp_type(
-            BSIZE,
-            "cpu:0",
-            "cpu:0",
-            crate::backend::ibverbs::primitives::IbvQpType::Standard,
-        )
-        .await?;
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cpu:0", "cpu:0", IbvQpType::Standard).await?;
 
         env.rdma_handle_2
             .read_into_local(&env.client_1, env.local_memory_1.clone(), 2)
@@ -723,13 +714,8 @@ mod tests {
             return Ok(());
         }
 
-        let env = RdmaManagerTestEnv::setup_with_qp_type(
-            BSIZE,
-            "cuda:0",
-            "cuda:1",
-            crate::backend::ibverbs::primitives::IbvQpType::Standard,
-        )
-        .await?;
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cuda:0", "cuda:1", IbvQpType::Standard).await?;
 
         env.rdma_handle_2
             .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
@@ -754,13 +740,8 @@ mod tests {
             return Ok(());
         }
 
-        let env = RdmaManagerTestEnv::setup_with_qp_type(
-            BSIZE,
-            "cuda:0",
-            "cuda:1",
-            crate::backend::ibverbs::primitives::IbvQpType::Standard,
-        )
-        .await?;
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cuda:0", "cuda:1", IbvQpType::Standard).await?;
 
         env.rdma_handle_2
             .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
@@ -790,7 +771,7 @@ mod tests {
         }
 
         println!("Setting up 2GB CUDA tensors for RDMA read test...");
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         println!("Performing RDMA read operation on 2GB tensor...");
         env.rdma_handle_2
@@ -829,7 +810,7 @@ mod tests {
         }
 
         println!("Setting up 2GB CUDA tensors for RDMA write test...");
-        let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         println!("Performing RDMA write operation on 2GB tensor...");
         env.rdma_handle_2

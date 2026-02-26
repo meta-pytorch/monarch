@@ -117,6 +117,4 @@ pub fn print_device_info(context: *mut rdmaxcel_sys::ibv_context) {
     }
 }
 
-#[cfg(test)]
-mod rdma_manager_actor_tests;
 mod test_utils;

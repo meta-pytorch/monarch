@@ -25,6 +25,11 @@ use manager_actor::IbvManagerActor;
 pub use queue_pair::IbvQueuePair;
 pub use queue_pair::PollTarget;
 
+#[cfg(test)]
+mod ibv_manager_actor_tests;
+#[cfg(test)]
+mod test_utils;
+
 use crate::RdmaLocalMemory;
 use crate::RdmaOpType;
 
