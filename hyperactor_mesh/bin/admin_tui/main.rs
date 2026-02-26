@@ -111,6 +111,7 @@ use std::io::IsTerminal;
 use std::str::FromStr;
 use std::time::Duration;
 
+pub(crate) use actions::*;
 use clap::Parser;
 use clap::ValueEnum;
 use crossterm::ExecutableCommand;
@@ -669,18 +670,6 @@ struct App {
     theme_name: ThemeName,
     /// Active language (for display in header).
     lang_name: LangName,
-}
-
-/// Result of handling a key event.
-enum KeyResult {
-    /// Nothing changed.
-    None,
-    /// Selection or expand/collapse changed; update detail from cache.
-    DetailChanged,
-    /// A filter/view setting changed; full tree refresh needed.
-    NeedsRefresh,
-    /// Lazily expand the node at the given (reference, depth).
-    ExpandNode(String, usize),
 }
 
 impl App {
