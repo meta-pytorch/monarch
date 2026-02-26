@@ -276,6 +276,63 @@ def test_meshes_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
+    """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
+    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="proc_mesh_test")
+    workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Query meshes with class "Proc"
+    result = engine.query(
+        "SELECT given_name, full_name, class, shape_json, parent_mesh_id, parent_view_json "
+        "FROM meshes WHERE class = 'Proc'"
+    )
+    result_dict = result.to_pydict()
+
+    # Verify our named proc mesh appears with the correct given_name
+    given_names = result_dict.get("given_name", [])
+    assert ["proc_mesh_test"] == given_names, (
+        f"Expected given_name to be 'proc_mesh_test', got: {given_names}"
+    )
+
+    # Verify full_name differs from given_name (includes UUID suffix)
+    full_names = result_dict.get("full_name", [])
+    for gn, fn in zip(given_names, full_names):
+        if gn == "proc_mesh_test":
+            assert fn != gn, (
+                f"Expected full_name to differ from given_name, but both are '{gn}'"
+            )
+            assert fn.startswith("proc_mesh_test"), (
+                f"Expected full_name to start with 'proc_mesh_test', got: {fn}"
+            )
+
+    # Verify shape_json is populated for the proc mesh
+    shape_jsons = result_dict.get("shape_json", [])
+    for gn, shape in zip(given_names, shape_jsons):
+        if gn == "proc_mesh_test":
+            assert shape is not None and shape != "", (
+                f"Expected shape_json to be populated for '{gn}', got '{shape}'"
+            )
+            parsed_shape = json.loads(shape)
+            assert "inner" in parsed_shape, (
+                f"Expected shape_json to contain 'inner' key (ndslice Extent), got: {parsed_shape}"
+            )
+            labels = parsed_shape["inner"]["labels"]
+            sizes = parsed_shape["inner"]["sizes"]
+            assert "workers" in labels, (
+                f"Expected shape_json labels to contain 'workers', got: {labels}"
+            )
+            workers_idx = labels.index("workers")
+            assert sizes[workers_idx] == 2, (
+                f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
+            )
+
+
+@pytest.mark.timeout(120)
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
     engine = start_telemetry(use_fake_data=False, batch_size=10)

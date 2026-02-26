@@ -9,8 +9,10 @@
 use std::any::type_name;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::Hash;
+use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -252,6 +254,37 @@ impl ProcMesh {
             None, // comm actor is not alive yet
         )
         .unwrap();
+
+        // Notify telemetry that the ProcMeshAgent mesh was created.
+        {
+            let name_str = name.to_string();
+            let mut mesh_hasher = DefaultHasher::new();
+            name_str.hash(&mut mesh_hasher);
+            let mesh_id_hash = mesh_hasher.finish();
+
+            let (parent_mesh_id, parent_view_json) = match host_mesh {
+                Some(hm) => {
+                    let mut parent_hasher = DefaultHasher::new();
+                    hm.name().to_string().hash(&mut parent_hasher);
+                    (
+                        Some(parent_hasher.finish()),
+                        serde_json::to_string(hm.region()).ok(),
+                    )
+                }
+                None => (None, None),
+            };
+
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: mesh_id_hash,
+                timestamp: RealClock.system_time_now(),
+                class: "Proc".to_string(),
+                given_name: name.name().to_string(),
+                full_name: name_str,
+                shape_json: serde_json::to_string(&current_ref.region.extent()).unwrap_or_default(),
+                parent_mesh_id,
+                parent_view_json,
+            });
+        }
 
         let mut proc_mesh = Self {
             name,
@@ -1132,9 +1165,6 @@ impl ProcMeshRef {
         }
         // Notify telemetry that an actor mesh was created.
         {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::Hasher;
-
             let name_str = mesh.name().to_string();
 
             // Hash the actor mesh name -- must match the mesh_id hash in
