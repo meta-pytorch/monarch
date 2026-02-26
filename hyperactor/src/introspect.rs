@@ -90,7 +90,6 @@ pub enum NodeProperties {
         num_actors: usize,
         /// Whether this proc is infrastructure-owned rather than
         /// user-created.
-        #[serde(default)]
         is_system: bool,
     },
 
@@ -114,6 +113,9 @@ pub enum NodeProperties {
         /// Serialized flight-recorder events for the actor, if
         /// enabled/available.
         flight_recorder: Option<String>,
+        /// Whether this actor is infrastructure-owned (e.g.
+        /// ProcMeshAgent, HostMeshAgent) rather than user-created.
+        is_system: bool,
     },
 
     /// Error sentinel returned when a child reference cannot be
@@ -212,6 +214,54 @@ pub struct RecordedEvent {
     pub fields: serde_json::Value,
 }
 
+/// Domain-specific properties an actor may publish for introspection.
+///
+/// Infrastructure actors (HostMeshAgent, ProcMeshAgent) push these to
+/// make their managed-entity metadata available to the introspection
+/// runtime without going through the actor's message handler. The
+/// runtime handler reads the last-published value and merges it into
+/// the [`NodePayload`] response for Entity-view queries.
+///
+/// Values may be arbitrarily stale for stuck actors — they reflect
+/// whatever the actor last published before it stopped making
+/// progress. The `published_at` timestamp makes staleness visible to
+/// tooling.
+#[derive(Debug, Clone)]
+pub struct PublishedProperties {
+    /// When these properties were last published.
+    pub published_at: SystemTime,
+    /// Domain-specific metadata.
+    pub kind: PublishedPropertiesKind,
+}
+
+/// The domain-specific metadata variants that an actor may publish.
+///
+/// Only `Host` and `Proc` variants are available — actors cannot
+/// publish `Root` or `Error` payloads.
+#[derive(Debug, Clone)]
+pub enum PublishedPropertiesKind {
+    /// A host in the mesh.
+    Host {
+        /// Host address (e.g. `127.0.0.1:12345`).
+        addr: String,
+        /// Number of procs currently reported on this host.
+        num_procs: usize,
+        /// Custom children list (system procs + user procs).
+        children: Vec<String>,
+    },
+    /// A proc running on a host.
+    Proc {
+        /// Human-readable proc identifier.
+        proc_name: String,
+        /// Number of actors currently hosted by this proc.
+        num_actors: usize,
+        /// Whether this proc is infrastructure-owned.
+        is_system: bool,
+        /// Custom children list (all actors in the proc).
+        children: Vec<String>,
+    },
+}
+
 /// Structural projection of an [`InstanceCell`] into a
 /// [`NodePayload`] with [`NodeProperties::Actor`].
 ///
@@ -268,6 +318,7 @@ pub fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
             last_message_handler: last_handler.map(|info| info.to_string()),
             total_processing_time_us: cell.total_processing_time_us(),
             flight_recorder,
+            is_system: false,
         },
         children,
         parent: supervisor,
