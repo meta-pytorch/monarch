@@ -923,16 +923,16 @@ mod tests {
     use crate::checkpoint::Checkpointable;
     use crate::config;
     use crate::context::Mailbox as _;
-    use crate::id;
     use crate::mailbox::BoxableMailboxSender as _;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
     use crate::mailbox::monitored_return_handle;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
-    use crate::test_utils::pingpong::PingPongActor;
-    use crate::test_utils::pingpong::PingPongMessage;
-    use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
+    use crate::testing::ids::test_proc_id;
+    use crate::testing::pingpong::PingPongActor;
+    use crate::testing::pingpong::PingPongMessage;
+    use crate::testing::proc_supervison::ProcSupervisionCoordinator; // for macros
 
     #[derive(Debug)]
     struct EchoActor(PortRef<u64>);
@@ -1624,7 +1624,7 @@ mod tests {
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::new(
-            id!(remote[0]),
+            test_proc_id("remote_0"),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );
         let (remote_client, _) = remote_proc.instance("remote").unwrap();
@@ -1791,7 +1791,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = Reference::Actor(id!(nonexistent[0].child));
+        let child_ref = Reference::Actor(test_proc_id("nonexistent").actor_id("child", 0));
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
         handle
             .send(

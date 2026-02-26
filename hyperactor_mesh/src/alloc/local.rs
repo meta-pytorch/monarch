@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::ProcId;
-use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::MailboxServer;
@@ -28,6 +27,7 @@ use tokio::time::sleep;
 
 use super::ProcStopReason;
 use crate::alloc::Alloc;
+use crate::alloc::AllocName;
 use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
@@ -56,7 +56,7 @@ impl Allocator for LocalAllocator {
         let alloc = LocalAlloc::new(spec);
         tracing::info!(
             name = "LocalAllocStatus",
-            alloc_name = %alloc.world_id(),
+            alloc_name = %alloc.alloc_name(),
             status = "Allocated",
         );
         Ok(alloc)
@@ -74,7 +74,7 @@ struct LocalProc {
 pub struct LocalAlloc {
     spec: AllocSpec,
     name: ShortUuid,
-    world_id: WorldId, // to provide storage
+    alloc_name: AllocName,
     procs: HashMap<usize, LocalProc>,
     queue: VecDeque<ProcState>,
     todo_tx: mpsc::UnboundedSender<Action>,
@@ -93,7 +93,7 @@ impl LocalAlloc {
         Self {
             spec,
             name: name.clone(),
-            world_id: WorldId(name.to_string()),
+            alloc_name: AllocName(name.to_string()),
             procs: HashMap::new(),
             queue: VecDeque::new(),
             todo_tx,
@@ -168,10 +168,11 @@ impl Alloc for LocalAlloc {
                         }
                     };
 
-                    let proc_id = match &self.spec.proc_name {
-                        Some(name) => ProcId::Direct(addr.clone(), name.clone()),
-                        None => ProcId::Ranked(self.world_id.clone(), rank),
+                    let proc_name = match &self.spec.proc_name {
+                        Some(name) => name.clone(),
+                        None => format!("{}_{}", self.alloc_name.name(), rank),
                     };
+                    let proc_id = ProcId(addr.clone(), proc_name);
 
                     let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match ProcMeshAgent::bootstrap(proc_id.clone()).await {
@@ -183,7 +184,7 @@ impl Alloc for LocalAlloc {
                             // so we give up.
                             self.failed = true;
                             break Some(ProcState::Failed {
-                                world_id: self.world_id.clone(),
+                                alloc_name: self.alloc_name.clone(),
                                 description: message,
                             });
                         }
@@ -264,14 +265,14 @@ impl Alloc for LocalAlloc {
         &self.spec.extent
     }
 
-    fn world_id(&self) -> &WorldId {
-        &self.world_id
+    fn alloc_name(&self) -> &AllocName {
+        &self.alloc_name
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
         tracing::info!(
             name = "LocalAllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Stopping",
         );
         for rank in 0..self.size() {
@@ -282,7 +283,7 @@ impl Alloc for LocalAlloc {
         self.todo_tx.send(Action::Stopped).unwrap();
         tracing::info!(
             name = "LocalAllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Stop::Sent",
             "Stop was sent to local procs; check their log to determine if it exited."
         );
@@ -298,11 +299,11 @@ impl Drop for LocalAlloc {
     fn drop(&mut self) {
         tracing::info!(
             name = "LocalAllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Dropped",
-            "dropping LocalAlloc of name: {}, world id: {}",
+            "dropping LocalAlloc of name: {}, alloc_name: {}",
             self.name,
-            self.world_id
+            self.alloc_name
         );
     }
 }
