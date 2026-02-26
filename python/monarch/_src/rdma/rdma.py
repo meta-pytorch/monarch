@@ -264,7 +264,6 @@ class RDMABuffer:
             self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
                 addr=addr,
                 size=size,
-                proc_id=ctx.actor_instance.proc_id,
                 client=ctx.actor_instance,
             )
         # TODO - specific exception
@@ -311,7 +310,6 @@ class RDMABuffer:
                 f"Destination tensor size ({dst_size}) must be >= RDMA buffer size ({self.size()})"
             )
 
-        local_proc_id = context().actor_instance.proc_id
         client = context().actor_instance
 
         async def read_into_nonblocking() -> Optional[int]:
@@ -320,7 +318,6 @@ class RDMABuffer:
             res = await self._buffer.read_into(
                 addr=dst_addr,
                 size=dst_size,
-                local_proc_id=local_proc_id,
                 client=client,
                 timeout=timeout,
             )
@@ -362,7 +359,6 @@ class RDMABuffer:
             raise ValueError(
                 f"Source tensor size ({src_size}) must be <= RDMA buffer size ({self.size()})"
             )
-        local_proc_id = context().actor_instance.proc_id
         client = context().actor_instance
 
         async def write_from_nonblocking() -> None:
@@ -371,7 +367,6 @@ class RDMABuffer:
             res = await self._buffer.write_from(
                 addr=src_addr,
                 size=src_size,
-                local_proc_id=local_proc_id,
                 client=client,
                 timeout=timeout,
             )
@@ -383,14 +378,12 @@ class RDMABuffer:
         """
         Release the handle on the memory that the src holds to this memory.
         """
-        local_proc_id = context().actor_instance.proc_id
         client = context().actor_instance
 
         async def drop_nonblocking() -> None:
             await _ensure_init_rdma_manager()
 
             await self._buffer.drop(
-                local_proc_id=local_proc_id,
                 client=client,
             )
 

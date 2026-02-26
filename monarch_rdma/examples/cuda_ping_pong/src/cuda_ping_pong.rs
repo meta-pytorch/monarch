@@ -54,6 +54,7 @@
 // Import the cuda-sys and rdmaxcel-sys crates
 // FFI bindings to CUDA RDMA kernels - merged inline
 use std::os::raw::c_int;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use clap::Arg;
@@ -78,9 +79,12 @@ use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::global_root_client;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
+use monarch_rdma::RawLocalMemory;
+use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use monarch_rdma::cu_check;
 use ndslice::Extent;
 use ndslice::ViewExt;
@@ -425,7 +429,12 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         if self.rdma_buffer_handle.is_none() {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
-            let buffer_handle = self.rdma_manager.request_buffer(cx, addr, size).await?;
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let handle = self
+                .rdma_manager
+                .downcast_handle(cx)
+                .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+            let buffer_handle = handle.request_buffer(cx, local_memory).await?;
             self.rdma_buffer_handle = Some(buffer_handle);
         }
 
@@ -489,13 +498,17 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             ));
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
         }
-        let qp = self
-            .rdma_manager
+
+        // Resolve IbvManagerActor refs and IbvBuffers from backends
+        let (local_ibv_manager, local_ibv) = local_buffer.resolve_ibv(cx).await?;
+        let (remote_ibv_manager, remote_ibv) = remote_buffer.resolve_ibv(cx).await?;
+
+        let qp = local_ibv_manager
             .request_queue_pair(
                 cx,
-                remote_buffer.owner.clone(),
-                local_buffer.device_name.clone(),
-                remote_buffer.device_name.clone(),
+                remote_ibv_manager.clone(),
+                local_ibv.device_name.clone(),
+                remote_ibv.device_name.clone(),
             )
             .await?;
 
@@ -506,12 +519,12 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             let dv_recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;
             let mut params = rdma_params_t {
                 cu_ptr: self.cu_ptr,
-                laddr: local_buffer.addr,
-                lsize: local_buffer.size,
-                lkey: local_buffer.lkey,
-                raddr: remote_buffer.addr,
-                rsize: remote_buffer.size,
-                rkey: remote_buffer.rkey,
+                laddr: local_ibv.addr,
+                lsize: local_ibv.size,
+                lkey: local_ibv.lkey,
+                raddr: remote_ibv.addr,
+                rsize: remote_ibv.size,
+                rkey: remote_ibv.rkey,
                 qp_num: (*ibv_qp).qp_num,
                 rq_buf: (*dv_qp).rq.buf as *mut u8,
                 rq_cnt: (*dv_qp).rq.wqe_cnt,

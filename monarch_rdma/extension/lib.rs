@@ -8,16 +8,16 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 use std::ops::Deref;
+use std::sync::Arc;
 
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
-use hyperactor::ProcId;
 use hyperactor_mesh::ActorMesh;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
+use monarch_rdma::RawLocalMemory;
+use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
@@ -30,8 +30,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pyo3::types::PyTuple;
 use pyo3::types::PyType;
-use serde::Deserialize;
-use serde::Serialize;
 use typeuri::Named;
 
 /// Segment scanner callback that uses PyTorch's memory snapshot API.
@@ -118,41 +116,27 @@ unsafe extern "C" fn pytorch_segment_scanner(
     }
 }
 
-fn setup_rdma_context(
-    rdma_buffer: &PyRdmaBuffer,
-    local_proc_id: String,
-) -> (ActorRef<RdmaManagerActor>, RdmaRemoteBuffer) {
-    let proc_id: ProcId = local_proc_id.parse().unwrap();
-    // TODO: find some better way to look this up, or else formally define "service names"
-    let local_owner_id = ActorId(proc_id, "rdma_manager".to_string(), 0);
-    let local_owner_ref: ActorRef<RdmaManagerActor> = ActorRef::attest(local_owner_id);
-    let buffer = rdma_buffer.buffer.clone();
-    (local_owner_ref, buffer)
-}
-
 #[pyclass(name = "_RdmaBuffer", module = "monarch._rust_bindings.rdma")]
-#[derive(Clone, Serialize, Deserialize, Named)]
+#[derive(Clone, Named)]
 struct PyRdmaBuffer {
     buffer: RdmaRemoteBuffer,
-    owner_ref: ActorRef<RdmaManagerActor>,
 }
 
 async fn create_rdma_buffer(
     addr: usize,
     size: usize,
-    proc_id: ProcId,
     client: PyInstance,
 ) -> PyResult<PyRdmaBuffer> {
-    // Get the owning RdmaManagerActor's ActorRef
-    // TODO: find some better way to look this up, or else formally define "service names"
-    let owner_id = ActorId(proc_id, "rdma_manager".to_string(), 0);
-    let owner_ref: ActorRef<RdmaManagerActor> = ActorRef::attest(owner_id);
+    let owner_handle = RdmaManagerActor::local_handle(client.deref());
 
-    // Create the RdmaRemoteBuffer
-    let buffer = owner_ref
-        .request_buffer_deprecated(client.deref(), addr, size)
-        .await?;
-    Ok(PyRdmaBuffer { buffer, owner_ref })
+    // TODO(slurye): Make this a local memory handle that actually keeps the memory alive.
+    let local: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+    let buffer = owner_handle
+        .request_buffer(client.deref(), local)
+        .await
+        .map_err(|e| PyException::new_err(format!("failed to request buffer: {}", e)))?;
+
+    Ok(PyRdmaBuffer { buffer })
 }
 
 #[pymethods]
@@ -163,18 +147,12 @@ impl PyRdmaBuffer {
         _py: Python<'py>,
         addr: usize,
         size: usize,
-        proc_id: String,
         client: PyInstance,
     ) -> PyResult<PyPythonTask> {
         if !rdma_supported() {
             return Err(PyException::new_err("RDMA is not supported on this system"));
         }
-        PyPythonTask::new(create_rdma_buffer(
-            addr,
-            size,
-            proc_id.parse().unwrap(),
-            client,
-        ))
+        PyPythonTask::new(create_rdma_buffer(addr, size, client))
     }
 
     #[classmethod]
@@ -183,16 +161,12 @@ impl PyRdmaBuffer {
         py: Python<'py>,
         addr: usize,
         size: usize,
-        proc_id: String,
         client: PyInstance,
     ) -> PyResult<PyRdmaBuffer> {
         if !rdma_supported() {
             return Err(PyException::new_err("RDMA is not supported on this system"));
         }
-        signal_safe_block_on(
-            py,
-            create_rdma_buffer(addr, size, proc_id.parse().unwrap(), client),
-        )?
+        signal_safe_block_on(py, create_rdma_buffer(addr, size, client))?
     }
 
     #[classmethod]
@@ -214,31 +188,28 @@ impl PyRdmaBuffer {
     /// # Arguments
     /// * `addr` - The address of the local buffer to read from
     /// * `size` - The size of the data to transfer
-    /// * `local_proc_id` - The process ID where the local buffer resides
     /// * `client` - The actor who does the reading.
-    /// * `timeout` - Maximum time in milliseconds to wait for the operation
-    #[pyo3(signature = (addr, size, local_proc_id, client, timeout))]
+    /// * `timeout` - Maximum time in seconds to wait for the operation
+    #[pyo3(signature = (addr, size, client, timeout))]
     fn read_into<'py>(
         &self,
         _py: Python<'py>,
         addr: usize,
         size: usize,
-        local_proc_id: String,
         client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
-        let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
+        let buffer = self.buffer.clone();
+
         PyPythonTask::new(async move {
-            let local_buffer = local_owner_ref
-                .request_buffer_deprecated(client.deref(), addr, size)
-                .await?;
-            local_buffer
-                .write_from(client.deref(), buffer, timeout)
+            let local_memory: Arc<dyn monarch_rdma::RdmaLocalMemory> =
+                Arc::new(RawLocalMemory::new(addr, size));
+
+            buffer
+                .read_into_local(client.deref(), local_memory, timeout)
                 .await
                 .map_err(|e| PyException::new_err(format!("failed to read into buffer: {}", e)))?;
-            local_owner_ref
-                .release_buffer_deprecated(client.deref(), local_buffer)
-                .await?;
+
             Ok(())
         })
     }
@@ -252,31 +223,28 @@ impl PyRdmaBuffer {
     /// # Arguments
     /// * `addr` - The address of the local buffer to write to
     /// * `size` - The size of the data to transfer
-    /// * `local_proc_id` - The process ID where the local buffer resides
     /// * `client` - The actor who does the writing
-    /// * `timeout` - Maximum time in milliseconds to wait for the operation
-    #[pyo3(signature = (addr, size, local_proc_id, client, timeout))]
+    /// * `timeout` - Maximum time in seconds to wait for the operation
+    #[pyo3(signature = (addr, size, client, timeout))]
     fn write_from<'py>(
         &self,
         _py: Python<'py>,
         addr: usize,
         size: usize,
-        local_proc_id: String,
         client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
-        let (local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
+        let buffer = self.buffer.clone();
+
         PyPythonTask::new(async move {
-            let local_buffer = local_owner_ref
-                .request_buffer_deprecated(client.deref(), addr, size)
-                .await?;
-            local_buffer
-                .read_into(client.deref(), buffer, timeout)
+            let local_memory: Arc<dyn monarch_rdma::RdmaLocalMemory> =
+                Arc::new(RawLocalMemory::new(addr, size));
+
+            buffer
+                .write_from_local(client.deref(), local_memory, timeout)
                 .await
                 .map_err(|e| PyException::new_err(format!("failed to write from buffer: {}", e)))?;
-            local_owner_ref
-                .release_buffer_deprecated(client.deref(), local_buffer)
-                .await?;
+
             Ok(())
         })
     }
@@ -288,7 +256,7 @@ impl PyRdmaBuffer {
     fn __reduce__(&self) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         monarch_with_gil_blocking(|py| {
             let ctor = py.get_type::<PyRdmaBuffer>().into_py_any(py)?;
-            let json = serde_json::to_string(self).map_err(|e| {
+            let json = serde_json::to_string(&self.buffer).map_err(|e| {
                 PyErr::new::<PyValueError, _>(format!("Serialization failed: {}", e))
             })?;
 
@@ -299,18 +267,13 @@ impl PyRdmaBuffer {
 
     #[new]
     fn new_from_json(json: &str) -> PyResult<Self> {
-        let deserialized: PyRdmaBuffer = serde_json::from_str(json)
+        let buffer: RdmaRemoteBuffer = serde_json::from_str(json)
             .map_err(|e| PyErr::new::<PyValueError, _>(format!("Deserialization failed: {}", e)))?;
-        Ok(deserialized)
+        Ok(PyRdmaBuffer { buffer })
     }
 
-    fn drop<'py>(
-        &self,
-        _py: Python<'py>,
-        local_proc_id: String,
-        client: PyInstance,
-    ) -> PyResult<PyPythonTask> {
-        let (_local_owner_ref, buffer) = setup_rdma_context(self, local_proc_id);
+    fn drop<'py>(&self, _py: Python<'py>, client: PyInstance) -> PyResult<PyPythonTask> {
+        let buffer = self.buffer.clone();
         PyPythonTask::new(async move {
             buffer
                 .drop_buffer(client.deref())
@@ -321,7 +284,7 @@ impl PyRdmaBuffer {
     }
 
     fn owner_actor_id(&self) -> String {
-        self.owner_ref.actor_id().to_string()
+        self.buffer.owner.actor_id().to_string()
     }
 }
 
