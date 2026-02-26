@@ -505,7 +505,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // We spin this up manually here, but in Python-land we assume this will
     // be spun up with the PyProcMesh.
     let ps_rdma_manager: ActorMesh<RdmaManagerActor> = ps_proc_mesh
-        .spawn(instance, "ps_rdma_manager", &Some(ps_ibv_config))
+        .spawn_service(instance, "rdma_manager", &Some(ps_ibv_config))
         .await
         .unwrap();
 
@@ -521,7 +521,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     );
     // Similarly, create an RdmaManagerActor corresponding to each worker.
     let worker_rdma_manager_mesh: ActorMesh<RdmaManagerActor> = worker_proc_mesh
-        .spawn(instance, "ps_rdma_manager", &Some(worker_ibv_config))
+        .spawn_service(instance, "rdma_manager", &Some(worker_ibv_config))
         .await
         .unwrap();
 
