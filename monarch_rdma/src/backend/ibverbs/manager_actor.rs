@@ -312,7 +312,7 @@ impl IbvManagerActor {
         }
 
         // Build the CUDA to RDMA device mapping using device selection algorithm
-        let pci_to_device = crate::device_selection::create_cuda_to_rdma_mapping();
+        let pci_to_device = super::device_selection::create_cuda_to_ibv_mapping();
         tracing::debug!(
             "Built CUDA to RDMA device mapping with {} entries",
             pci_to_device.len()
@@ -971,7 +971,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             .map(|(_, device)| device.clone())
             .unwrap_or_else(|| {
                 // Fallback to default device from config
-                crate::device_selection::resolve_rdma_device(&self.config.device)
+                super::device_selection::resolve_ibv_device(&self.config.device)
                     .unwrap_or_else(|| self.config.device.clone())
             });
 
