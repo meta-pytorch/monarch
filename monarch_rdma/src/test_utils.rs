@@ -74,6 +74,8 @@ fn check_cuda_available() -> bool {
 
 #[cfg(test)]
 pub mod test_utils {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use std::time::Instant;
 
@@ -82,27 +84,24 @@ pub mod test_utils {
     use hyperactor::Context;
     use hyperactor::HandleClient;
     use hyperactor::Handler;
+    use hyperactor::Instance;
+    use hyperactor::Proc;
     use hyperactor::RefClient;
     use hyperactor::RemoteSpawn;
-    use hyperactor::channel::ChannelTransport;
+    use hyperactor::channel::ChannelAddr;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use hyperactor_config::Flattrs;
-    use hyperactor_mesh::ActorMesh;
-    use hyperactor_mesh::ProcMesh;
-    use hyperactor_mesh::alloc::AllocSpec;
-    use hyperactor_mesh::alloc::Allocator;
-    use hyperactor_mesh::alloc::LocalAllocator;
-    use hyperactor_mesh::global_root_client;
-    use ndslice::View;
-    use ndslice::extent;
 
+    use crate::GetIbvActorRefClient;
     use crate::IbvConfig;
+    use crate::RdmaManagerMessageClient;
     use crate::RdmaRemoteBuffer;
+    use crate::backend::ibverbs::IbvBuffer;
+    use crate::backend::ibverbs::manager_actor::IbvManagerActor;
     use crate::backend::ibverbs::queue_pair::IbvQueuePair;
     use crate::backend::ibverbs::queue_pair::PollTarget;
     use crate::rdma_manager_actor::RdmaManagerActor;
-    use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::validate_execution_context;
 
     #[derive(Debug)]
@@ -366,8 +365,8 @@ pub mod test_utils {
     /// Posts a work request to the send queue of the given RDMA queue pair.
     pub async fn send_wqe_gpu(
         qp: &mut IbvQueuePair,
-        lhandle: &RdmaRemoteBuffer,
-        rhandle: &RdmaRemoteBuffer,
+        lhandle: &IbvBuffer,
+        rhandle: &IbvBuffer,
         op_type: u32,
     ) -> Result<(), anyhow::Error> {
         unsafe {
@@ -398,8 +397,8 @@ pub mod test_utils {
     /// Posts a work request to the receive queue of the given RDMA queue pair.
     pub async fn recv_wqe_gpu(
         qp: &mut IbvQueuePair,
-        lhandle: &RdmaRemoteBuffer,
-        _rhandle: &RdmaRemoteBuffer,
+        lhandle: &IbvBuffer,
+        _rhandle: &IbvBuffer,
         op_type: u32,
     ) -> Result<(), anyhow::Error> {
         // Populate params using lhandle and rhandle
@@ -515,13 +514,16 @@ pub mod test_utils {
     pub struct RdmaManagerTestEnv {
         buffer_1: Buffer,
         buffer_2: Buffer,
-        // Note: Both point to the same global instance
-        pub client_1: &'static hyperactor::Instance<hyperactor_mesh::GlobalClientActor>,
-        pub client_2: &'static hyperactor::Instance<hyperactor_mesh::GlobalClientActor>,
+        pub client_1: Instance<()>,
+        pub client_2: Instance<()>,
         pub actor_1: ActorRef<RdmaManagerActor>,
         pub actor_2: ActorRef<RdmaManagerActor>,
+        pub ibv_actor_1: ActorRef<IbvManagerActor>,
+        pub ibv_actor_2: ActorRef<IbvManagerActor>,
         pub rdma_handle_1: RdmaRemoteBuffer,
         pub rdma_handle_2: RdmaRemoteBuffer,
+        pub ibv_buffer_1: IbvBuffer,
+        pub ibv_buffer_2: IbvBuffer,
         cuda_actor_1: Option<ActorRef<CudaActor>>,
         cuda_actor_2: Option<ActorRef<CudaActor>>,
         device_ptr_1: Option<usize>,
@@ -578,52 +580,39 @@ pub mod test_utils {
             let parsed_accel1 = parse_accel(accel1, &mut config1).await;
             let parsed_accel2 = parse_accel(accel2, &mut config2).await;
 
-            let alloc_1 = LocalAllocator
-                .allocate(AllocSpec {
-                    extent: extent! { proc = 1 },
-                    constraints: Default::default(),
-                    proc_name: None,
-                    transport: ChannelTransport::Local,
-                    proc_allocation_mode: Default::default(),
-                })
-                .await
-                .unwrap();
+            // Unique proc names so both can have an actor named "rdma_manager".
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-            let instance = global_root_client();
+            let proc_1 = Proc::direct(
+                ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
+                format!("rdma_test_{id}_a"),
+            )?;
+            let proc_2 = Proc::direct(
+                ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
+                format!("rdma_test_{id}_b"),
+            )?;
 
-            let proc_mesh_1 = Box::leak(Box::new(
-                ProcMesh::allocate(instance, Box::new(alloc_1), "mesh1")
-                    .await
-                    .unwrap(),
-            ));
-            let actor_mesh_1: ActorMesh<RdmaManagerActor> = proc_mesh_1
-                .spawn(instance, "rdma_manager", &Some(config1))
-                .await
-                .unwrap();
+            let (instance_1, _client_handle_1) = proc_1.instance("client")?;
+            let (instance_2, _client_handle_2) = proc_2.instance("client")?;
 
-            let alloc_2 = LocalAllocator
-                .allocate(AllocSpec {
-                    extent: extent! { proc = 1 },
-                    constraints: Default::default(),
-                    proc_name: None,
-                    transport: ChannelTransport::Local,
-                    proc_allocation_mode: Default::default(),
-                })
-                .await
-                .unwrap();
+            let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
+            let rdma_actor_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;
+            let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
-            let proc_mesh_2 = Box::leak(Box::new(
-                ProcMesh::allocate(instance, Box::new(alloc_2), "mesh2")
-                    .await
-                    .unwrap(),
-            ));
-            let actor_mesh_2: ActorMesh<RdmaManagerActor> = proc_mesh_2
-                .spawn(instance, "rdma_manager", &Some(config2))
-                .await
-                .unwrap();
+            let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
+            let rdma_actor_handle_2 = proc_2.spawn("rdma_manager", rdma_actor_2)?;
+            let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
 
-            let actor_1 = actor_mesh_1.get(0).unwrap();
-            let actor_2 = actor_mesh_2.get(0).unwrap();
+            // Resolve IbvManagerActor refs
+            let ibv_actor_1 = actor_1
+                .get_ibv_actor_ref(&instance_1)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no ibverbs backend on actor_1"))?;
+            let ibv_actor_2 = actor_2
+                .get_ibv_actor_ref(&instance_2)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no ibverbs backend on actor_2"))?;
 
             let mut buf_vec = Vec::new();
             let mut cuda_actor_1 = None;
@@ -633,6 +622,8 @@ pub mod test_utils {
 
             let rdma_handle_1;
             let rdma_handle_2;
+            let ibv_buffer_1;
+            let ibv_buffer_2;
 
             // Process first accelerator
             if parsed_accel1.0 == "cpu" {
@@ -643,23 +634,24 @@ pub mod test_utils {
                     cpu_ref: Some(buffer),
                 });
                 rdma_handle_1 = actor_1
-                    .request_buffer(instance, buf_vec[0].ptr as usize, buffer_size)
+                    .request_buffer(&instance_1, buf_vec[0].ptr as usize, buffer_size)
                     .await?;
+                ibv_buffer_1 = IbvBuffer::from(&rdma_handle_1);
             } else {
-                // CUDA case - spawn CudaActor in the same process mesh
-                let cuda_actor_mesh_1: ActorMesh<CudaActor> = proc_mesh_1
-                    .spawn(instance, "cuda_init", &(parsed_accel1.1 as i32))
-                    .await?;
-                let cuda_actor_ref_1 = cuda_actor_mesh_1.get(0).unwrap();
+                // CUDA case - spawn CudaActor on the same proc
+                let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
+                let cuda_handle = proc_1.spawn("cuda_init", cuda_actor)?;
+                let cuda_actor_ref_1: ActorRef<CudaActor> = cuda_handle.bind();
 
                 let (rdma_buf, dev_ptr) = cuda_actor_ref_1
-                    .create_buffer(instance, buffer_size, actor_1.clone())
+                    .create_buffer(&instance_1, buffer_size, actor_1.clone())
                     .await?;
                 rdma_handle_1 = rdma_buf;
+                ibv_buffer_1 = IbvBuffer::from(&rdma_handle_1);
                 device_ptr_1 = Some(dev_ptr);
 
                 buf_vec.push(Buffer {
-                    ptr: rdma_handle_1.addr as u64,
+                    ptr: ibv_buffer_1.addr as u64,
                     len: buffer_size,
                     cpu_ref: None,
                 });
@@ -675,23 +667,24 @@ pub mod test_utils {
                     cpu_ref: Some(buffer),
                 });
                 rdma_handle_2 = actor_2
-                    .request_buffer(instance, buf_vec[1].ptr as usize, buffer_size)
+                    .request_buffer(&instance_2, buf_vec[1].ptr as usize, buffer_size)
                     .await?;
+                ibv_buffer_2 = IbvBuffer::from(&rdma_handle_2);
             } else {
-                // CUDA case - spawn CudaActor in the same process mesh
-                let cuda_actor_mesh_2: ActorMesh<CudaActor> = proc_mesh_2
-                    .spawn(instance, "cuda_init", &(parsed_accel2.1 as i32))
-                    .await?;
-                let cuda_actor_ref_2 = cuda_actor_mesh_2.get(0).unwrap();
+                // CUDA case - spawn CudaActor on the same proc
+                let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
+                let cuda_handle = proc_2.spawn("cuda_init", cuda_actor)?;
+                let cuda_actor_ref_2: ActorRef<CudaActor> = cuda_handle.bind();
 
                 let (rdma_buf, dev_ptr) = cuda_actor_ref_2
-                    .create_buffer(instance, buffer_size, actor_2.clone())
+                    .create_buffer(&instance_2, buffer_size, actor_2.clone())
                     .await?;
                 rdma_handle_2 = rdma_buf;
+                ibv_buffer_2 = IbvBuffer::from(&rdma_handle_2);
                 device_ptr_2 = Some(dev_ptr);
 
                 buf_vec.push(Buffer {
-                    ptr: rdma_handle_2.addr as u64,
+                    ptr: ibv_buffer_2.addr as u64,
                     len: buffer_size,
                     cpu_ref: None,
                 });
@@ -703,7 +696,7 @@ pub mod test_utils {
                 cuda_actor_1
                     .clone()
                     .unwrap()
-                    .fill_buffer(instance, device_ptr_1.unwrap(), buffer_size, 42)
+                    .fill_buffer(&instance_1, device_ptr_1.unwrap(), buffer_size, 42)
                     .await?;
             } else {
                 unsafe {
@@ -720,12 +713,16 @@ pub mod test_utils {
             Ok(Self {
                 buffer_1,
                 buffer_2,
-                client_1: instance,
-                client_2: instance,
+                client_1: instance_1,
+                client_2: instance_2,
                 actor_1,
                 actor_2,
+                ibv_actor_1,
+                ibv_actor_2,
                 rdma_handle_1,
                 rdma_handle_2,
+                ibv_buffer_1,
+                ibv_buffer_2,
                 cuda_actor_1,
                 cuda_actor_2,
                 device_ptr_1,
@@ -734,13 +731,12 @@ pub mod test_utils {
         }
 
         pub async fn cleanup(self) -> Result<(), anyhow::Error> {
-            // Just release buffers from RDMA manager - CUDA cleanup happens automatically
             self.actor_1
-                .release_buffer(self.client_1, self.rdma_handle_1.clone())
+                .release_buffer(&self.client_1, self.rdma_handle_1.clone())
                 .await?;
 
             self.actor_2
-                .release_buffer(self.client_2, self.rdma_handle_2.clone())
+                .release_buffer(&self.client_2, self.rdma_handle_2.clone())
                 .await?;
             Ok(())
         }
@@ -781,7 +777,7 @@ pub mod test_utils {
             if let Some(cuda_actor) = &self.cuda_actor_1 {
                 cuda_actor
                     .verify_buffer(
-                        self.client_1,
+                        &self.client_1,
                         temp_buffer_1.as_mut_ptr() as usize,
                         self.device_ptr_1.unwrap() + offset,
                         size,
@@ -801,7 +797,7 @@ pub mod test_utils {
             if let Some(cuda_actor) = &self.cuda_actor_2 {
                 cuda_actor
                     .verify_buffer(
-                        self.client_2,
+                        &self.client_2,
                         temp_buffer_2.as_mut_ptr() as usize,
                         self.device_ptr_2.unwrap() + offset,
                         size,
