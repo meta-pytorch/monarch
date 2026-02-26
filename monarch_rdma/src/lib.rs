@@ -19,6 +19,7 @@ mod rdma_manager_actor;
 mod macros;
 
 pub use backend::ibverbs::primitives::*;
+pub use rdma_components::RdmaRemoteBuffer;
 pub use rdma_components::SegmentScannerFn;
 // Re-export segment scanner types for extension crate
 pub use rdma_components::register_segment_scanner;

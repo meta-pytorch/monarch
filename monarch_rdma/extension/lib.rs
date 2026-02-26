@@ -18,9 +18,9 @@ use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::rdma_supported;
 use monarch_rdma::register_segment_scanner;
 use pyo3::IntoPyObjectExt;
@@ -121,7 +121,7 @@ unsafe extern "C" fn pytorch_segment_scanner(
 fn setup_rdma_context(
     rdma_buffer: &PyRdmaBuffer,
     local_proc_id: String,
-) -> (ActorRef<RdmaManagerActor>, RdmaBuffer) {
+) -> (ActorRef<RdmaManagerActor>, RdmaRemoteBuffer) {
     let proc_id: ProcId = local_proc_id.parse().unwrap();
     // TODO: find some better way to look this up, or else formally define "service names"
     let local_owner_id = ActorId(proc_id, "rdma_manager".to_string(), 0);
@@ -133,7 +133,7 @@ fn setup_rdma_context(
 #[pyclass(name = "_RdmaBuffer", module = "monarch._rust_bindings.rdma")]
 #[derive(Clone, Serialize, Deserialize, Named)]
 struct PyRdmaBuffer {
-    buffer: RdmaBuffer,
+    buffer: RdmaRemoteBuffer,
     owner_ref: ActorRef<RdmaManagerActor>,
 }
 
@@ -148,7 +148,7 @@ async fn create_rdma_buffer(
     let owner_id = ActorId(proc_id, "rdma_manager".to_string(), 0);
     let owner_ref: ActorRef<RdmaManagerActor> = ActorRef::attest(owner_id);
 
-    // Create the RdmaBuffer
+    // Create the RdmaRemoteBuffer
     let buffer = owner_ref
         .request_buffer_deprecated(client.deref(), addr, size)
         .await?;

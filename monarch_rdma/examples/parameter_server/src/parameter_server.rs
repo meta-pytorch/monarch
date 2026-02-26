@@ -9,7 +9,7 @@
 //! # Parameter Server Example using RDMA
 //!
 //! This example demonstrates a distributed parameter server architecture using RDMA buffers.
-//! It shows a canonical pattern for using RdmaBuffer to efficiently share memory between actors.
+//! It shows a canonical pattern for using RdmaRemoteBuffer to efficiently share memory between actors.
 //!
 //! ## Architecture
 //!
@@ -31,7 +31,7 @@
 //!
 //! - `ParameterServerActor`: Manages shared weights and per-worker gradient buffers
 //! - `WorkerActor`: Computes gradients and applies updates from the parameter server
-//! - `RdmaBuffer`: Provides the zero-copy memory access between actors
+//! - `RdmaRemoteBuffer`: Provides the zero-copy memory access between actors
 //! - `RdmaManagerActor`: Handles the underlying RDMA connections and operations
 //!
 //! This pattern can be extended to implement more complex distributed training systems
@@ -77,9 +77,9 @@ use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::global_root_client;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use monarch_rdma::RdmaRemoteBuffer;
 use ndslice::extent;
 use ndslice::view::Ranked;
 use serde::Deserialize;
@@ -103,8 +103,8 @@ const BUFFER_SIZE: usize = 8;
 pub struct ParameterServerActor {
     weights_data: Box<[u8]>,
     grad_buffer_data: Box<[Box<[u8]>]>,
-    weights_handle: Option<RdmaBuffer>,
-    grad_buffer_handles: HashMap<usize, RdmaBuffer>,
+    weights_handle: Option<RdmaRemoteBuffer>,
+    grad_buffer_handles: HashMap<usize, RdmaRemoteBuffer>,
     owner_ref: ActorRef<RdmaManagerActor>,
 }
 
@@ -146,9 +146,12 @@ impl RemoteSpawn for ParameterServerActor {
 }
 
 // Message to get handles to the parameter server's weights and gradient buffers.
-// - OncePortRef<(RdmaBuffer, RdmaBuffer)>: OncePortRef to the parameter server's weights and gradient buffers.
+// - OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>: OncePortRef to the parameter server's weights and gradient buffers.
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct PsGetBuffers(pub usize, pub OncePortRef<(RdmaBuffer, RdmaBuffer)>);
+struct PsGetBuffers(
+    pub usize,
+    pub OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
+);
 
 // Message to update the parameter server's weights with its current gradient buffer.
 // - OncePortRef<bool>: OncePortRef used primarily for workload synchronization.
@@ -161,7 +164,7 @@ struct Log;
 
 #[async_trait]
 impl Handler<PsGetBuffers> for ParameterServerActor {
-    /// Returns RdmaBuffers for weights data and gradients data. Creates handles if necessary.
+    /// Returns RdmaRemoteBuffers for weights data and gradients data. Creates handles if necessary.
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -239,8 +242,8 @@ impl Handler<Log> for ParameterServerActor {
     ],
 )]
 pub struct WorkerActor {
-    ps_weights_handle: Option<RdmaBuffer>,
-    ps_grad_handle: Option<RdmaBuffer>,
+    ps_weights_handle: Option<RdmaRemoteBuffer>,
+    ps_grad_handle: Option<RdmaRemoteBuffer>,
     weights_data: Box<[u8]>,
     local_gradients: Box<[u8]>,
     rdma_manager: Option<ActorRef<RdmaManagerActor>>,
@@ -305,7 +308,7 @@ pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
 #[async_trait]
 impl Handler<WorkerInit> for WorkerActor {
     /// Initialize the worker. This involves:
-    /// 1) getting RdmaBuffers from the parameter server
+    /// 1) getting RdmaRemoteBuffers from the parameter server
     /// 2) assigning the associated rdma manager
     async fn handle(
         &mut self,
@@ -497,8 +500,8 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         ps_ibv_config
     );
 
-    // RdmaBuffer requires an RdmaManagerActor to be spawned on the same
-    // host for any actors using RdmaBuffer.
+    // RdmaRemoteBuffer requires an RdmaManagerActor to be spawned on the same
+    // host for any actors using RdmaRemoteBuffer.
     // We spin this up manually here, but in Python-land we assume this will
     // be spun up with the PyProcMesh.
     let ps_rdma_manager: ActorMesh<RdmaManagerActor> = ps_proc_mesh
