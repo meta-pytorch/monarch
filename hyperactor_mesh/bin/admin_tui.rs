@@ -3330,6 +3330,7 @@ mod tests {
                 total_processing_time_us: 0,
                 flight_recorder: None,
                 is_system: false,
+                failure_info: None,
             },
             children: vec![],
             parent: None,
@@ -7695,6 +7696,7 @@ mod tests {
             total_processing_time_us: 0,
             flight_recorder: None,
             is_system: false,
+            failure_info: None,
         };
         assert!(is_stopped_node(&props));
     }
@@ -7711,6 +7713,7 @@ mod tests {
             total_processing_time_us: 0,
             flight_recorder: None,
             is_system: false,
+            failure_info: None,
         };
         assert!(is_stopped_node(&props));
     }
@@ -7727,6 +7730,7 @@ mod tests {
             total_processing_time_us: 0,
             flight_recorder: None,
             is_system: false,
+            failure_info: None,
         };
         assert!(!is_stopped_node(&props));
     }
@@ -7743,6 +7747,7 @@ mod tests {
             total_processing_time_us: 0,
             flight_recorder: None,
             is_system: false,
+            failure_info: None,
         };
         assert!(!is_stopped_node(&props));
 
@@ -7755,6 +7760,7 @@ mod tests {
             total_processing_time_us: 0,
             flight_recorder: None,
             is_system: false,
+            failure_info: None,
         };
         assert!(!is_stopped_node(&props2));
     }
@@ -7784,6 +7790,8 @@ mod tests {
             system_children: vec![],
             stopped_children: vec![],
             stopped_retention_cap: 0,
+            is_poisoned: false,
+            failed_actor_count: 0,
         };
         assert!(!is_stopped_node(&proc_props));
     }
@@ -7824,6 +7832,7 @@ mod tests {
                 total_processing_time_us: 0,
                 flight_recorder: None,
                 is_system: false,
+                failure_info: None,
             },
             children: vec![],
             parent: None,
@@ -7855,6 +7864,7 @@ mod tests {
                 total_processing_time_us: 0,
                 flight_recorder: None,
                 is_system: true,
+                failure_info: None,
             },
             children: vec![],
             parent: None,
@@ -7885,6 +7895,8 @@ mod tests {
                 system_children: vec![],
                 stopped_children: vec!["x".to_string()],
                 stopped_retention_cap: 10,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -7961,6 +7973,8 @@ mod tests {
                 system_children: vec![],
                 stopped_children: vec![],
                 stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -7981,6 +7995,8 @@ mod tests {
                 system_children: vec![],
                 stopped_children: vec!["s1".into(), "s2".into()],
                 stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -8005,6 +8021,8 @@ mod tests {
                 system_children: vec![],
                 stopped_children: vec!["s1".into(), "s2".into(), "s3".into()],
                 stopped_retention_cap: 3,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -8026,6 +8044,8 @@ mod tests {
                 system_children: vec![],
                 stopped_children: vec!["s1".into()],
                 stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -8049,6 +8069,8 @@ mod tests {
                 system_children: vec!["sys1".into()],
                 stopped_children: vec!["dead1".into(), "dead2".into()],
                 stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -8073,6 +8095,8 @@ mod tests {
                 system_children: vec![],
                 stopped_children: vec!["d1".into(), "d2".into()],
                 stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -8095,6 +8119,8 @@ mod tests {
                 system_children: vec!["s1".into(), "s2".into(), "s3".into()],
                 stopped_children: vec![],
                 stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children: vec![],
             parent: None,
@@ -8228,6 +8254,7 @@ mod tests {
                 total_processing_time_us: 0,
                 flight_recorder: None,
                 is_system: false,
+                failure_info: None,
             },
             children: vec![],
             parent: None,
@@ -8269,6 +8296,7 @@ mod tests {
                 total_processing_time_us: 0,
                 flight_recorder: None,
                 is_system: false,
+                failure_info: None,
             },
             children: vec![],
             parent: None,
