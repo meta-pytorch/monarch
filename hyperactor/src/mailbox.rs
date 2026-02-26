@@ -364,7 +364,7 @@ impl MessageEnvelope {
     ) {
         tracing::error!(
             name = "undelivered_message_attempt",
-            sender = self.sender.to_string(),
+            sender = %self.sender.cached_to_string(),
             dest = self.dest.to_string(),
             error = error.to_string(),
             return_handle = %return_handle,
@@ -372,7 +372,7 @@ impl MessageEnvelope {
         metrics::MAILBOX_UNDELIVERABLE_MESSAGES.add(
             1,
             hyperactor_telemetry::kv_pairs!(
-                "sender_actor_id" => self.sender.to_string(),
+                "sender_actor_id" => self.sender.cached_to_string(),
                 "dest_actor_id" => self.dest.to_string(),
                 "message_type" => self.data.typename().unwrap_or("unknown"),
                 "error_type" =>  error.to_string(),
@@ -827,7 +827,7 @@ impl MailboxSender for UndeliverableMailboxSender {
         tracing::error!(
             name = "undelivered_message_abandoned",
             actor_name = sender_name,
-            actor_id = envelope.sender.to_string(),
+            actor_id = %envelope.sender.cached_to_string(),
             dest = envelope.dest.to_string(),
             headers = envelope.headers().to_string(), // todo: implement tracing::Value for Flattrs
             data = envelope.data().to_string(),
@@ -1575,14 +1575,14 @@ impl MailboxSender for Mailbox {
         metrics::MAILBOX_POSTS.add(
             1,
             hyperactor_telemetry::kv_pairs!(
-                "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.0.to_string(),
+                "actor_id" => envelope.sender.cached_to_string(),
+                "dest_actor_id" => envelope.dest.0.cached_to_string(),
             ),
         );
         tracing::trace!(
             name = "post",
             actor_name = envelope.sender.name(),
-            actor_id = envelope.sender.to_string(),
+            actor_id = %envelope.sender.cached_to_string(),
             "posting message to {}",
             envelope.dest
         );
