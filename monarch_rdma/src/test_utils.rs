@@ -99,8 +99,8 @@ pub mod test_utils {
 
     use crate::IbvConfig;
     use crate::RdmaBuffer;
-    use crate::rdma_components::PollTarget;
-    use crate::rdma_components::RdmaQueuePair;
+    use crate::backend::ibverbs::queue_pair::IbvQueuePair;
+    use crate::backend::ibverbs::queue_pair::PollTarget;
     use crate::rdma_manager_actor::RdmaManagerActor;
     use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::validate_execution_context;
@@ -325,7 +325,7 @@ pub mod test_utils {
     /// `Ok(true)` if all operations complete successfully within the timeout,
     /// or an error if the timeout is reached
     pub async fn wait_for_completion(
-        qp: &mut RdmaQueuePair,
+        qp: &mut IbvQueuePair,
         poll_target: PollTarget,
         expected_wr_ids: &[u64],
         timeout_secs: u64,
@@ -365,7 +365,7 @@ pub mod test_utils {
 
     /// Posts a work request to the send queue of the given RDMA queue pair.
     pub async fn send_wqe_gpu(
-        qp: &mut RdmaQueuePair,
+        qp: &mut IbvQueuePair,
         lhandle: &RdmaBuffer,
         rhandle: &RdmaBuffer,
         op_type: u32,
@@ -397,7 +397,7 @@ pub mod test_utils {
 
     /// Posts a work request to the receive queue of the given RDMA queue pair.
     pub async fn recv_wqe_gpu(
-        qp: &mut RdmaQueuePair,
+        qp: &mut IbvQueuePair,
         lhandle: &RdmaBuffer,
         _rhandle: &RdmaBuffer,
         op_type: u32,
@@ -427,7 +427,7 @@ pub mod test_utils {
         Ok(())
     }
 
-    pub async fn ring_db_gpu(qp: &RdmaQueuePair) -> Result<(), anyhow::Error> {
+    pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
         RealClock.sleep(Duration::from_millis(2)).await;
         unsafe {
             let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
@@ -458,7 +458,7 @@ pub mod test_utils {
 
     /// Wait for completion on a specific completion queue
     pub async fn wait_for_completion_gpu(
-        qp: &mut RdmaQueuePair,
+        qp: &mut IbvQueuePair,
         poll_target: PollTarget,
         timeout_secs: u64,
     ) -> Result<bool, anyhow::Error> {
