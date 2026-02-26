@@ -87,7 +87,7 @@ def main() -> None:
     # Spawn worker processes - telemetry automatically tracks them
     print(f"Spawning {NUM_WORKERS} worker processes...")
     hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS})
+    worker_procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS}, name="workers")
 
     # Spawn compute actors
     print("Spawning compute actors...")
@@ -249,6 +249,20 @@ def main() -> None:
             """SELECT given_name, class, shape_json, parent_view_json
                FROM meshes
                ORDER BY given_name""",
+        ),
+        # Find all actors in a proc mesh by joining through the actor mesh
+        # actors -> actor mesh (via mesh_id) -> proc mesh (via parent_mesh_id)
+        (
+            "Actors in each proc mesh",
+            """SELECT pm.given_name AS proc_mesh_name,
+                      am.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               INNER JOIN meshes am ON a.mesh_id = am.id
+               INNER JOIN meshes pm ON am.parent_mesh_id = pm.id
+               WHERE pm.class = 'Proc'
+               ORDER BY pm.given_name, am.given_name, a.rank""",
         ),
         # Actor status events schema
         (
