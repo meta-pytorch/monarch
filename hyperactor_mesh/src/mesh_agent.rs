@@ -307,13 +307,32 @@ impl ProcMeshAgent {
         }
 
         // Terminated actors appear as children but don't inflate
-        // the actor count.
+        // the actor count. Track them in stopped_children so the
+        // TUI can filter/gray without per-child fetches.
+        let mut stopped_children: Vec<String> = Vec::new();
         for id in self.proc.all_terminated_actor_ids() {
             let ref_str = id.to_string();
+            stopped_children.push(ref_str.clone());
+            // Terminated system actors must also appear in
+            // system_children for correct filtering.
+            if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
+                if matches!(
+                    snapshot.properties,
+                    hyperactor::introspect::NodeProperties::Actor {
+                        is_system: true,
+                        ..
+                    }
+                ) {
+                    system_children.push(ref_str.clone());
+                }
+            }
             if !children.contains(&ref_str) {
                 children.push(ref_str);
             }
         }
+
+        let stopped_retention_cap =
+            hyperactor_config::global::get(hyperactor::config::TERMINATED_SNAPSHOT_RETENTION);
 
         cx.instance()
             .publish_properties(PublishedPropertiesKind::Proc {
@@ -322,6 +341,8 @@ impl ProcMeshAgent {
                 is_system: false,
                 children,
                 system_children,
+                stopped_children,
+                stopped_retention_cap,
             });
     }
 }

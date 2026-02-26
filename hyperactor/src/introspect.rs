@@ -117,6 +117,14 @@ pub enum NodeProperties {
         /// actors. Allows the TUI to filter lazily without fetching
         /// each child individually.
         system_children: Vec<String>,
+        /// References of children that are stopped or failed.
+        /// Populated from terminated snapshots so the TUI can
+        /// filter/gray without per-child fetches.
+        stopped_children: Vec<String>,
+        /// Maximum number of terminated snapshots retained.
+        /// When `stopped_children.len() >= stopped_retention_cap`,
+        /// the list is at capacity and older entries were evicted.
+        stopped_retention_cap: usize,
     },
 
     /// Runtime metadata for a single actor instance.
@@ -293,6 +301,12 @@ pub enum PublishedPropertiesKind {
         /// by the proc so the TUI can filter without fetching each
         /// child.
         system_children: Vec<String>,
+        /// Children that are stopped or failed. Populated from
+        /// terminated snapshots so the TUI can filter/gray without
+        /// per-child fetches.
+        stopped_children: Vec<String>,
+        /// Maximum number of terminated snapshots retained.
+        stopped_retention_cap: usize,
     },
 }
 
@@ -453,12 +467,16 @@ pub async fn serve_introspect(
                                     num_actors,
                                     is_system,
                                     system_children,
+                                    stopped_children,
+                                    stopped_retention_cap,
                                     ..
                                 } => NodeProperties::Proc {
                                     proc_name,
                                     num_actors,
                                     is_system,
                                     system_children,
+                                    stopped_children,
+                                    stopped_retention_cap,
                                 },
                             };
                             NodePayload {

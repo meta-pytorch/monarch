@@ -245,16 +245,28 @@ class Instance(abc.ABC):
         ...
 
     @abstractmethod
-    def _stop_instance(self, reason: Optional[str] = None) -> None:
+    def stop(self, reason: Optional[str] = None) -> None:
         """
-        Stop this actor and all of its children.
-        This is a private API meant for use with Actors that are not part of a
-        mesh, such as the global client.
-        Do not use this directly on any normal actor, as it will not properly
-        notify the ProcMeshAgent of the stop.
-        Prefer ActorMesh.stop instead.
+        Stop this actor instance and its children gracefully. The
+        actor drains pending messages and transitions to stopped status.
+
+        An actor stopping itself when its work is done is a normal
+        lifecycle pattern (map-reduce shards, batch processing,
+        worker pools, etc.; see ``sleep_actors.py`` for an example).
+
+        This is observable in the mesh: on exit the actor emits
+        ``Signal::ChildStopped`` to its parent (always), so
+        ProcMeshAgent *does* see the stop, and terminated snapshots
+        preserve post‑mortem state for introspection.
+
+        Use ``ActorMesh.stop()`` when you need coordinated, mesh-wide
+        shutdown.
         """
         ...
+
+    def _stop_instance(self, reason: Optional[str] = None) -> None:
+        """Deprecated: use stop() instead."""
+        return self.stop(reason)
 
 
 @dataclass

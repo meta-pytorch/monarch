@@ -138,9 +138,10 @@ use crate::host_mesh::mesh_agent::HostMeshAgent;
 pub const MESH_ADMIN_ACTOR_NAME: &str = "mesh_admin";
 
 /// Timeout for targeted queries that hit a single, specific host.
-/// Longer than the fan-out timeout because the caller explicitly chose
-/// this host and is willing to wait for a response.
-const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Kept short so a slow or dying actor cannot block the
+/// single-threaded MeshAdminAgent message loop (which serializes
+/// all resolve requests, including the fast root refresh).
+const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Structured error response following the gateway RFC envelope
 /// pattern.
@@ -831,6 +832,8 @@ impl MeshAdminAgent {
                 num_actors: children.len(),
                 is_system,
                 system_children,
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
             },
             children,
             as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
