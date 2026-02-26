@@ -991,16 +991,27 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use hyperactor::id;
+    use hyperactor::channel::ChannelAddr;
+    use hyperactor::channel::ChannelTransport;
     use hyperactor::mailbox::BoxedMailboxSender;
     use hyperactor::mailbox::Mailbox;
     use hyperactor::mailbox::MailboxSender;
     use hyperactor::mailbox::MessageEnvelope;
     use hyperactor::mailbox::PortHandle;
     use hyperactor::mailbox::Undeliverable;
+    use hyperactor::reference::ActorId;
+    use hyperactor::reference::ProcId;
     use hyperactor_config::attrs::Attrs;
 
     use super::*;
+
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorId {
+        let proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            proc_name.to_string(),
+        );
+        proc_id.actor_id(actor_name, 0)
+    }
 
     #[derive(Debug, Clone)]
     struct QueueingMailboxSender {
@@ -1032,8 +1043,8 @@ mod tests {
     // Helper function to create a test message envelope
     fn envelope(data: u64) -> MessageEnvelope {
         MessageEnvelope::serialize(
-            id!(world[0].sender),
-            id!(world[0].receiver[0][1]),
+            test_actor_id("world_0", "sender"),
+            hyperactor::PortId(test_actor_id("world_0", "receiver"), 1),
             &data,
             Attrs::new(),
         )
@@ -1041,7 +1052,7 @@ mod tests {
     }
 
     fn return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         let (port, _receiver) = mbox.open_port::<Undeliverable<MessageEnvelope>>();
         port
     }

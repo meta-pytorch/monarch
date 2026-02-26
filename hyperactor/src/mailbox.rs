@@ -18,12 +18,11 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Proc;
-//! # use hyperactor::reference::{ActorId, ProcId, WorldId};
+//! # use hyperactor::reference::{ActorId, ProcId};
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
-//! # let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
-//! # let actor_id = ActorId(proc_id, "actor".to_string(), 0);
+//! # let actor_id = proc.proc_id().actor_id("actor", 0);
 //! let mbox = Mailbox::new_detached(actor_id);
 //! let (port, mut receiver) = mbox.open_port::<u64>();
 //!
@@ -38,12 +37,11 @@
 //! ```
 //! # use hyperactor::mailbox::Mailbox;
 //! # use hyperactor::Proc;
-//! # use hyperactor::reference::{ActorId, ProcId, WorldId};
+//! # use hyperactor::reference::{ActorId, ProcId};
 //! # tokio_test::block_on(async {
 //! # let proc = Proc::local();
 //! # let (client, _) = proc.instance("client").unwrap();
-//! # let proc_id = ProcId::Ranked(WorldId("world".to_string()), 0);
-//! # let actor_id = ActorId(proc_id, "actor".to_string(), 0);
+//! # let actor_id = proc.proc_id().actor_id("actor", 0);
 //! let mbox = Mailbox::new_detached(actor_id);
 //!
 //! let (port, receiver) = mbox.open_once_port::<u64>();
@@ -121,10 +119,10 @@ use crate::actor::remote::USER_PORT_OFFSET;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelTransport;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
 use crate::context;
-use crate::id;
 use crate::metrics;
 use crate::ordering::SEQ_INFO;
 use crate::reference::ActorId;
@@ -246,7 +244,11 @@ impl MessageEnvelope {
 
     /// Create a new envelope whose sender ID is unknown.
     pub(crate) fn new_unknown(dest: PortId, data: wirevalue::Any) -> Self {
-        Self::new(id!(unknown[0].unknown), dest, data, Attrs::new())
+        // Create a synthetic "unknown" actor ID for messages with no known sender
+        let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
+        let unknown_proc_id = crate::reference::ProcId(unknown_addr, "unknown".to_string());
+        let unknown_actor_id = crate::reference::ActorId(unknown_proc_id, "unknown".to_string(), 0);
+        Self::new(unknown_actor_id, dest, data, Attrs::new())
     }
 
     /// Construct a new serialized value by serializing the provided T-typed value.
@@ -1015,10 +1017,9 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         tokio::task::spawn(async move {
             // Create a client for this task.
             static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
-            let proc_id = ProcId::Ranked(
-                id!(mailbox_server),
-                NEXT_RANK.fetch_add(1, Ordering::Relaxed),
-            );
+            let rank = NEXT_RANK.fetch_add(1, Ordering::Relaxed);
+            let addr = ChannelAddr::any(ChannelTransport::Local);
+            let proc_id = ProcId(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
             let proc = Proc::new(proc_id, BoxedMailboxSender::new(server));
@@ -2693,20 +2694,18 @@ impl DialMailboxRouter {
             .prev();
 
         // First try to look up the address in our address book; failing that,
-        // try to resolve direct procs.
+        // extract the address from the ProcId (all procs are direct-addressed now).
         if let Some((key, addr)) = found
             && key.is_prefix_of(&actor_id.clone().into())
         {
             Some(addr.clone())
-        } else if actor_id.proc_id().is_direct() {
-            let (addr, _name) = actor_id.proc_id().clone().into_direct().unwrap();
+        } else {
+            let addr = actor_id.proc_id().addr().clone();
             if self.direct_addressed_remote_only {
                 addr.transport().is_remote().then_some(addr)
             } else {
                 Some(addr)
             }
-        } else {
-            None
         }
     }
 
@@ -2816,28 +2815,70 @@ mod tests {
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::context::Mailbox as MailboxContext;
-    use crate::id;
     use crate::proc::Proc;
     use crate::reference::ProcId;
     use crate::reference::WorldId;
     use crate::simnet;
 
+    // Helper functions to create test ProcId/ActorId/PortId
+    fn test_proc_id(name: &str) -> ProcId {
+        ProcId(ChannelAddr::any(ChannelTransport::Local), name.to_string())
+    }
+
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorId {
+        test_proc_id(proc_name).actor_id(actor_name, 0)
+    }
+
+    fn test_actor_id_with_pid(proc_name: &str, actor_name: &str, pid: usize) -> ActorId {
+        test_proc_id(proc_name).actor_id(actor_name, pid)
+    }
+
+    fn test_port_id(proc_name: &str, actor_name: &str, port_idx: u64) -> PortId {
+        PortId(test_actor_id(proc_name, actor_name), port_idx)
+    }
+
+    fn test_port_id_with_pid(
+        proc_name: &str,
+        actor_name: &str,
+        pid: usize,
+        port_idx: u64,
+    ) -> PortId {
+        PortId(test_actor_id_with_pid(proc_name, actor_name, pid), port_idx)
+    }
+
+    fn test_world_ref(name: &str) -> Reference {
+        Reference::World(WorldId(name.to_string()))
+    }
+
+    fn test_proc_ref(name: &str) -> Reference {
+        Reference::Proc(test_proc_id(name))
+    }
+
+    fn test_actor_ref(proc_name: &str, actor_name: &str) -> Reference {
+        Reference::Actor(test_actor_id(proc_name, actor_name))
+    }
+
     #[test]
     fn test_error() {
         let err = MailboxError::new(
             ActorId(
-                ProcId::Ranked(WorldId("myworld".to_string()), 2),
+                ProcId(
+                    ChannelAddr::any(ChannelTransport::Local),
+                    "myworld_2".to_string(),
+                ),
                 "myactor".to_string(),
                 5,
             ),
             MailboxErrorKind::Closed,
         );
-        assert_eq!(format!("{}", err), "myworld[2].myactor[5]: mailbox closed");
+        // The format is: "{proc_id},{actor_name}[{pid}]: {error}"
+        // proc_id = "{addr},{proc_name}" so overall: "{addr},{proc_name},{actor_name}[{pid}]"
+        assert!(format!("{}", err).ends_with(",myworld_2,myactor[5]: mailbox closed"));
     }
 
     #[tokio::test]
     async fn test_mailbox_basic() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         let port = port.bind();
 
@@ -2892,7 +2933,7 @@ mod tests {
 
     #[test]
     fn test_port_and_reducer() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         // accum port could have reducer typehash
         {
             let accumulator = accum::join_semilattice::<accum::Max<u64>>();
@@ -2939,7 +2980,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // changed error behavior
     async fn test_mailbox_receiver_drop() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         let (port, mut receiver) = mbox.open_port::<u64>();
         // Make sure we go through "remote" path.
         let port = port.bind();
@@ -2957,7 +2998,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_drain() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
 
         let (port, mut receiver) = mbox.open_port();
         let port = port.bind();
@@ -2978,15 +3019,15 @@ mod tests {
     async fn test_mailbox_muxer() {
         let muxer = MailboxMuxer::new();
 
-        let mbox0 = Mailbox::new_detached(id!(test[0].actor1));
-        let mbox1 = Mailbox::new_detached(id!(test[0].actor2));
+        let mbox0 = Mailbox::new_detached(test_actor_id("test_0", "actor1"));
+        let mbox1 = Mailbox::new_detached(test_actor_id("test_0", "actor2"));
 
         muxer.bind(mbox0.actor_id().clone(), mbox0.clone());
         muxer.bind(mbox1.actor_id().clone(), mbox1.clone());
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
-        let proc = Proc::new(id!(test[0]), BoxedMailboxSender::new(muxer));
+        let proc = Proc::new(test_proc_id("test_0"), BoxedMailboxSender::new(muxer));
         let (client, _) = proc.instance("client").unwrap();
 
         port.send(&client, 123u64).unwrap();
@@ -3005,7 +3046,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_client_server() {
-        let mbox = Mailbox::new_detached(id!(test[0].actor0));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "actor0"));
         let (tx, rx) = channel::local::new();
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
@@ -3035,7 +3076,7 @@ mod tests {
 
         let (_, rx) = serve::<MessageEnvelope>(ChannelAddr::Sim(dst_addr.clone())).unwrap();
         let tx = dial::<MessageEnvelope>(src_to_dst).unwrap();
-        let mbox = Mailbox::new_detached(id!(test[0].actor0));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "actor0"));
         let serve_handle = mbox.clone().serve(rx);
         let client = MailboxClient::new(tx);
         let (port, receiver) = mbox.open_once_port::<u64>();
@@ -3051,10 +3092,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_router() {
-        let mbox0 = Mailbox::new_detached(id!(world0[0].actor0));
-        let mbox1 = Mailbox::new_detached(id!(world1[0].actor0));
-        let mbox2 = Mailbox::new_detached(id!(world1[1].actor0));
-        let mbox3 = Mailbox::new_detached(id!(world1[1].actor1));
+        let mbox0 = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
+        let mbox1 = Mailbox::new_detached(test_actor_id("world1_0", "actor0"));
+        let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
+        let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
 
         let comms: Vec<(OncePortRef<u64>, OncePortReceiver<u64>)> =
             [&mbox0, &mbox1, &mbox2, &mbox3]
@@ -3067,10 +3108,10 @@ mod tests {
 
         let router = MailboxRouter::new();
 
-        router.bind(id!(world0).into(), mbox0);
-        router.bind(id!(world1[0]).into(), mbox1);
-        router.bind(id!(world1[1]).into(), mbox2);
-        router.bind(id!(world1[1].actor1).into(), mbox3);
+        router.bind(WorldId("world0".to_string()).into(), mbox0);
+        router.bind(test_proc_id("world1_0").into(), mbox1);
+        router.bind(test_proc_id("world1_1").into(), mbox2);
+        router.bind(test_actor_id("world1_1", "actor1").into(), mbox3);
 
         for (i, (port, receiver)) in comms.into_iter().enumerate() {
             router
@@ -3081,7 +3122,7 @@ mod tests {
 
         // Test undeliverable messages, and that it is delivered with the appropriate fallback.
 
-        let mbox4 = Mailbox::new_detached(id!(fallback[0].actor));
+        let mbox4 = Mailbox::new_detached(test_actor_id("fallback_0", "actor"));
 
         let (return_handle, mut return_receiver) =
             crate::mailbox::undeliverable::new_undeliverable_port();
@@ -3103,10 +3144,13 @@ mod tests {
     async fn test_dial_mailbox_router() {
         let router = DialMailboxRouter::new();
 
-        router.bind(id!(world0[0]).into(), "unix!@1".parse().unwrap());
-        router.bind(id!(world1[0]).into(), "unix!@2".parse().unwrap());
-        router.bind(id!(world1[1]).into(), "unix!@3".parse().unwrap());
-        router.bind(id!(world1[1].actor1).into(), "unix!@4".parse().unwrap());
+        router.bind(test_proc_ref("world0_0"), "unix!@1".parse().unwrap());
+        router.bind(test_proc_ref("world1_0"), "unix!@2".parse().unwrap());
+        router.bind(test_proc_ref("world1_1"), "unix!@3".parse().unwrap());
+        router.bind(
+            test_actor_ref("world1_1", "actor1"),
+            "unix!@4".parse().unwrap(),
+        );
         // Bind a direct address -- we should use its bound address!
         router.bind(
             "unix:@4,my_proc,my_actor".parse().unwrap(),
@@ -3114,8 +3158,12 @@ mod tests {
         );
 
         // We should be able to lookup the ids
-        router.lookup_addr(&id!(world0[0].actor[0])).unwrap();
-        router.lookup_addr(&id!(world1[0].actor[0])).unwrap();
+        router
+            .lookup_addr(&test_actor_id("world0_0", "actor"))
+            .unwrap();
+        router
+            .lookup_addr(&test_actor_id("world1_0", "actor"))
+            .unwrap();
 
         let actor_id = Reference::from_str("unix:@4,my_proc,my_actor")
             .unwrap()
@@ -3132,22 +3180,40 @@ mod tests {
         );
 
         // Unbind so we cannot find the ids anymore
-        router.unbind(&id!(world1).into());
-        assert!(router.lookup_addr(&id!(world1[0].actor1[0])).is_none());
-        assert!(router.lookup_addr(&id!(world1[1].actor1[0])).is_none());
-        assert!(router.lookup_addr(&id!(world1[2].actor1[0])).is_none());
-        router.lookup_addr(&id!(world0[0].actor[0])).unwrap();
-        router.unbind(&id!(world0).into());
-        assert!(router.lookup_addr(&id!(world0[0].actor[0])).is_none());
+        router.unbind(&test_world_ref("world1"));
+        assert!(
+            router
+                .lookup_addr(&test_actor_id("world1_0", "actor1"))
+                .is_none()
+        );
+        assert!(
+            router
+                .lookup_addr(&test_actor_id("world1_1", "actor1"))
+                .is_none()
+        );
+        assert!(
+            router
+                .lookup_addr(&test_actor_id("world1_2", "actor1"))
+                .is_none()
+        );
+        router
+            .lookup_addr(&test_actor_id("world0_0", "actor"))
+            .unwrap();
+        router.unbind(&test_world_ref("world0"));
+        assert!(
+            router
+                .lookup_addr(&test_actor_id("world0_0", "actor"))
+                .is_none()
+        );
     }
 
     #[tokio::test]
     #[ignore] // TODO: there's a leak here, fix it
     async fn test_dial_mailbox_router_default() {
-        let mbox0 = Mailbox::new_detached(id!(world0[0].actor0));
-        let mbox1 = Mailbox::new_detached(id!(world1[0].actor0));
-        let mbox2 = Mailbox::new_detached(id!(world1[1].actor0));
-        let mbox3 = Mailbox::new_detached(id!(world1[1].actor1));
+        let mbox0 = Mailbox::new_detached(test_actor_id("world0_0", "actor0"));
+        let mbox1 = Mailbox::new_detached(test_actor_id("world1_0", "actor0"));
+        let mbox2 = Mailbox::new_detached(test_actor_id("world1_1", "actor0"));
+        let mbox3 = Mailbox::new_detached(test_actor_id("world1_1", "actor1"));
 
         // We don't need to dial here, since we gain direct access to the
         // underlying routers.
@@ -3155,8 +3221,8 @@ mod tests {
         let world0_router = DialMailboxRouter::new_with_default(root.boxed());
         let world1_router = DialMailboxRouter::new_with_default(root.boxed());
 
-        root.bind(id!(world0).into(), world0_router.clone());
-        root.bind(id!(world1).into(), world1_router.clone());
+        root.bind(test_world_ref("world0"), world0_router.clone());
+        root.bind(test_world_ref("world1"), world1_router.clone());
 
         let mailboxes = [&mbox0, &mbox1, &mbox2, &mbox3];
 
@@ -3167,7 +3233,7 @@ mod tests {
             handles.push(handle);
 
             eprintln!("{}: {}", mbox.actor_id(), addr);
-            if mbox.actor_id().world_name() == "world0" {
+            if mbox.actor_id().proc_id().name().starts_with("world0") {
                 world0_router.bind(mbox.actor_id().clone().into(), addr);
             } else {
                 world1_router.bind(mbox.actor_id().clone().into(), addr);
@@ -3233,8 +3299,8 @@ mod tests {
         wirevalue::register_type!(MyTest);
 
         let envelope = MessageEnvelope::serialize(
-            id!(source[0].actor),
-            id!(dest[1].actor[0][123]),
+            test_actor_id("source_0", "actor"),
+            test_port_id("dest_1", "actor", 123),
             &MyTest {
                 a: 123,
                 b: "hello".into(),
@@ -3243,10 +3309,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            format!("{}", envelope),
-            r#"source[0].actor[0] > dest[1].actor[0][123]: MyTest{"a":123,"b":"hello"} {}"#
-        );
+        // Note: display format changed from "source[0].actor" to direct format
+        assert!(format!("{}", envelope).contains("MyTest{\"a\":123,\"b\":\"hello\"}"));
     }
 
     #[derive(Debug, Default)]
@@ -3266,7 +3330,7 @@ mod tests {
         let proc_forwarder = BoxedMailboxSender::new(DialMailboxRouter::new_with_default(
             BOXED_PANICKING_MAILBOX_SENDER.clone(),
         ));
-        let proc_id = id!(quux[0]);
+        let proc_id = test_proc_id("quux_0");
         let mut proc = Proc::new(proc_id.clone(), proc_forwarder);
         ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let (client, _) = proc.instance("client").unwrap();
@@ -3275,7 +3339,7 @@ mod tests {
         let return_handle = foo.port::<Undeliverable<MessageEnvelope>>();
         let message = MessageEnvelope::new(
             foo.actor_id().clone(),
-            PortId(id!(corge[0].bar), 9999u64),
+            PortId(test_actor_id("corge_0", "bar"), 9999u64),
             wirevalue::Any::serialize(&1u64).unwrap(),
             Attrs::new(),
         );
@@ -3292,8 +3356,9 @@ mod tests {
         };
         let msg_str = msg.to_string();
         assert!(msg_str.contains("undeliverable message error"));
-        assert!(msg_str.contains("sender: quux[0].foo[0]"));
-        assert!(msg_str.contains("dest: corge[0].bar[0][9999]"));
+        // Updated assertions for direct format
+        assert!(msg_str.contains("sender:") && msg_str.contains("quux_0"));
+        assert!(msg_str.contains("dest:") && msg_str.contains("corge_0"));
 
         proc.destroy_and_wait::<()>(tokio::time::Duration::from_secs(1), None, "test cleanup")
             .await
@@ -3306,8 +3371,8 @@ mod tests {
             crate::mailbox::undeliverable::new_undeliverable_port();
         // Simulate an undelivered message return.
         let envelope = MessageEnvelope::new(
-            id!(foo[0].bar),
-            PortId(id!(baz[0].corge), 9999u64),
+            test_actor_id("foo_0", "bar"),
+            PortId(test_actor_id("baz_0", "corge"), 9999u64),
             wirevalue::Any::serialize(&1u64).unwrap(),
             Attrs::new(),
         );
@@ -3347,9 +3412,19 @@ mod tests {
         fn create_receiver<M>(coalesce: bool) -> (mpsc::UnboundedSender<M>, PortReceiver<M>) {
             // Create dummy state and port_id to create PortReceiver. They are
             // not used in the test.
-            let dummy_state =
-                State::new(id!(world[0].actor), BOXED_PANICKING_MAILBOX_SENDER.clone());
-            let dummy_port_id = PortId(id!(world[0].actor), 0);
+            let dummy_actor_id = ActorId(
+                ProcId(
+                    ChannelAddr::any(ChannelTransport::Local),
+                    "world_0".to_string(),
+                ),
+                "actor".to_string(),
+                0,
+            );
+            let dummy_state = State::new(
+                dummy_actor_id.clone(),
+                BOXED_PANICKING_MAILBOX_SENDER.clone(),
+            );
+            let dummy_port_id = PortId(dummy_actor_id, 0);
             let (sender, receiver) = mpsc::unbounded_channel::<M>();
             let receiver = PortReceiver {
                 receiver,
@@ -3848,24 +3923,28 @@ mod tests {
     #[test]
     fn test_dial_mailbox_router_prefixes_single_entry() {
         let router = DialMailboxRouter::new();
-        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
+        router.bind(test_world_ref("world0"), "unix!@1".parse().unwrap());
 
         let prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
         assert_eq!(prefixes.len(), 1);
-        assert_eq!(prefixes[0], id!(world0).into());
+        assert_eq!(prefixes[0], test_world_ref("world0"));
     }
 
     #[test]
     fn test_dial_mailbox_router_prefixes_no_overlap() {
         let router = DialMailboxRouter::new();
-        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
-        router.bind(id!(world1).into(), "unix!@2".parse().unwrap());
-        router.bind(id!(world2).into(), "unix!@3".parse().unwrap());
+        router.bind(test_world_ref("world0"), "unix!@1".parse().unwrap());
+        router.bind(test_world_ref("world1"), "unix!@2".parse().unwrap());
+        router.bind(test_world_ref("world2"), "unix!@3".parse().unwrap());
 
         let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
-        let mut expected = vec![id!(world0).into(), id!(world1).into(), id!(world2).into()];
+        let mut expected = vec![
+            test_world_ref("world0"),
+            test_world_ref("world1"),
+            test_world_ref("world2"),
+        ];
         expected.sort();
 
         assert_eq!(prefixes, expected);
@@ -3874,17 +3953,17 @@ mod tests {
     #[test]
     fn test_dial_mailbox_router_prefixes_with_overlaps() {
         let router = DialMailboxRouter::new();
-        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
-        router.bind(id!(world0[0]).into(), "unix!@2".parse().unwrap());
-        router.bind(id!(world0[1]).into(), "unix!@3".parse().unwrap());
-        router.bind(id!(world1).into(), "unix!@4".parse().unwrap());
-        router.bind(id!(world1[0]).into(), "unix!@5".parse().unwrap());
+        router.bind(test_world_ref("world0"), "unix!@1".parse().unwrap());
+        router.bind(test_proc_ref("world0_0"), "unix!@2".parse().unwrap());
+        router.bind(test_proc_ref("world0_1"), "unix!@3".parse().unwrap());
+        router.bind(test_world_ref("world1"), "unix!@4".parse().unwrap());
+        router.bind(test_proc_ref("world1_0"), "unix!@5".parse().unwrap());
 
         let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // Only world0 and world1 should be covering prefixes since they cover their children
-        let mut expected = vec![id!(world0).into(), id!(world1).into()];
+        let mut expected = vec![test_world_ref("world0"), test_world_ref("world1")];
         expected.sort();
 
         assert_eq!(prefixes, expected);
@@ -3893,26 +3972,32 @@ mod tests {
     #[test]
     fn test_dial_mailbox_router_prefixes_complex_hierarchy() {
         let router = DialMailboxRouter::new();
-        router.bind(id!(world0).into(), "unix!@1".parse().unwrap());
-        router.bind(id!(world0[0]).into(), "unix!@2".parse().unwrap());
-        router.bind(id!(world0[0].actor1).into(), "unix!@3".parse().unwrap());
-        router.bind(id!(world1[0]).into(), "unix!@4".parse().unwrap());
-        router.bind(id!(world1[1]).into(), "unix!@5".parse().unwrap());
-        router.bind(id!(world2[0].actor0).into(), "unix!@6".parse().unwrap());
+        router.bind(test_world_ref("world0"), "unix!@1".parse().unwrap());
+        router.bind(test_proc_ref("world0_0"), "unix!@2".parse().unwrap());
+        router.bind(
+            test_actor_ref("world0_0", "actor1"),
+            "unix!@3".parse().unwrap(),
+        );
+        router.bind(test_proc_ref("world1_0"), "unix!@4".parse().unwrap());
+        router.bind(test_proc_ref("world1_1"), "unix!@5".parse().unwrap());
+        router.bind(
+            test_actor_ref("world2_0", "actor0"),
+            "unix!@6".parse().unwrap(),
+        );
 
         let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // Covering prefixes should be:
-        // - world0 (covers world0[0] and world0[0].actor1)
-        // - world1[0] (not covered by anything else)
-        // - world1[1] (not covered by anything else)
-        // - world2[0].actor0 (not covered by anything else)
+        // - world0 (covers world0_0 and world0_0.actor1)
+        // - world1_0 (not covered by anything else)
+        // - world1_1 (not covered by anything else)
+        // - world2_0.actor0 (not covered by anything else)
         let expected = vec![
-            id!(world0).into(),
-            id!(world1[0]).into(),
-            id!(world1[1]).into(),
-            id!(world2[0].actor0).into(),
+            test_world_ref("world0"),
+            test_proc_ref("world1_0"),
+            test_proc_ref("world1_1"),
+            test_actor_ref("world2_0", "actor0"),
         ];
 
         assert_eq!(prefixes, expected);
@@ -3921,18 +4006,18 @@ mod tests {
     #[test]
     fn test_dial_mailbox_router_prefixes_same_level() {
         let router = DialMailboxRouter::new();
-        router.bind(id!(world0[0]).into(), "unix!@1".parse().unwrap());
-        router.bind(id!(world0[1]).into(), "unix!@2".parse().unwrap());
-        router.bind(id!(world0[2]).into(), "unix!@3".parse().unwrap());
+        router.bind(test_proc_ref("world0_0"), "unix!@1".parse().unwrap());
+        router.bind(test_proc_ref("world0_1"), "unix!@2".parse().unwrap());
+        router.bind(test_proc_ref("world0_2"), "unix!@3".parse().unwrap());
 
         let mut prefixes: Vec<Reference> = router.prefixes().into_iter().collect();
         prefixes.sort();
 
         // All should be covering prefixes since none is a prefix of another
         let mut expected = vec![
-            id!(world0[0]).into(),
-            id!(world0[1]).into(),
-            id!(world0[2]).into(),
+            test_proc_ref("world0_0"),
+            test_proc_ref("world0_1"),
+            test_proc_ref("world0_2"),
         ];
         expected.sort();
 
@@ -3961,11 +4046,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_ttl_expires_in_routing_loop_returns_to_sender() {
-        let actor_id = ActorId(
-            ProcId::Ranked(id!(test_world), 0),
-            "ttl_actor".to_string(),
-            0,
-        );
+        let actor_id = ActorId(test_proc_id("test_world_0"), "ttl_actor".to_string(), 0);
         let mailbox = Mailbox::new(
             actor_id.clone(),
             BoxedMailboxSender::new(AsyncLoopForwarder),
@@ -3974,11 +4055,7 @@ mod tests {
 
         // Create a destination not owned by this mailbox to force
         // forwarding.
-        let remote_actor = ActorId(
-            ProcId::Ranked(id!(remote_world), 1),
-            "remote".to_string(),
-            0,
-        );
+        let remote_actor = ActorId(test_proc_id("remote_world_1"), "remote".to_string(), 0);
         let dest = PortId(remote_actor.clone(), /*port index*/ 4242);
 
         // Build an envelope (TTL is seeded in `MessageEnvelope::new` /
@@ -4008,11 +4085,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_ttl_success_local_delivery() {
-        let actor_id = ActorId(
-            ProcId::Ranked(id!(test_world), 0),
-            "ttl_actor".to_string(),
-            0,
-        );
+        let actor_id = ActorId(test_proc_id("test_world_0"), "ttl_actor".to_string(), 0);
         let mailbox = Mailbox::new(
             actor_id.clone(),
             BoxedMailboxSender::new(PanickingMailboxSender),
@@ -4074,7 +4147,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already bound")]
     fn test_bind_port_handle_to_actor_port_twice() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         let (handle, _rx) = mbox.open_port::<String>();
         handle.bind_actor_port();
         handle.bind_actor_port();
@@ -4082,7 +4155,7 @@ mod tests {
 
     #[test]
     fn test_bind_port_handle_to_actor_port() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         let default_port = mbox.actor_id().port_id(String::port());
         let (handle, _rx) = mbox.open_port::<String>();
         // Handle's port index is allocated by mailbox, not the actor port.
@@ -4099,7 +4172,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already bound")]
     fn test_bind_port_handle_to_actor_port_when_already_bound() {
-        let mbox = Mailbox::new_detached(id!(test[0].test));
+        let mbox = Mailbox::new_detached(test_actor_id("test_0", "test"));
         let (handle, _rx) = mbox.open_port::<String>();
         // Bound handle to the port allocated by mailbox.
         handle.bind();
@@ -4110,7 +4183,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mailbox_post_fails_when_actor_stopped() {
-        let actor_id = id!(test[0].stopped_actor);
+        let actor_id = test_actor_id("test_0", "stopped_actor");
 
         let mailbox = Mailbox::new(
             actor_id.clone(),
@@ -4153,7 +4226,7 @@ mod tests {
     async fn test_mailbox_post_fails_when_actor_failed() {
         use crate::actor::ActorErrorKind;
 
-        let actor_id = id!(test[0].failed_actor);
+        let actor_id = test_actor_id("test_0", "failed_actor");
 
         let mailbox = Mailbox::new(
             actor_id.clone(),
@@ -4196,7 +4269,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_port_handle_send_fails_when_actor_stopped() {
-        let actor_id = id!(test[0].stopped_actor);
+        let actor_id = test_actor_id("test_0", "stopped_actor");
 
         let mailbox = Mailbox::new(
             actor_id.clone(),
@@ -4224,7 +4297,7 @@ mod tests {
     async fn test_port_handle_send_fails_when_actor_failed() {
         use crate::actor::ActorErrorKind;
 
-        let actor_id = id!(test[0].failed_actor);
+        let actor_id = test_actor_id("test_0", "failed_actor");
 
         let mailbox = Mailbox::new(
             actor_id.clone(),

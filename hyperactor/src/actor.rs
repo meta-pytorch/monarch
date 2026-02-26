@@ -813,17 +813,19 @@ mod tests {
     use crate::Actor;
     use crate::OncePortHandle;
     use crate::PortRef;
+    use crate::channel::ChannelAddr;
+    use crate::channel::ChannelTransport;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
     use crate::config;
     use crate::context::Mailbox as _;
-    use crate::id;
     use crate::mailbox::BoxableMailboxSender as _;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
     use crate::mailbox::monitored_return_handle;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
+    use crate::reference::ProcId;
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongMessage;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
@@ -1498,7 +1500,10 @@ mod tests {
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::new(
-            id!(remote[0]),
+            ProcId(
+                ChannelAddr::any(ChannelTransport::Local),
+                "remote_0".to_string(),
+            ),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );
         let (remote_client, _) = remote_proc.instance("remote").unwrap();

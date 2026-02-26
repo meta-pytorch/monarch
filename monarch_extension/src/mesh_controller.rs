@@ -836,14 +836,10 @@ impl Debug for MeshControllerActor {
 
 impl MeshControllerActor {
     fn rank_of_worker(&self, actor_id: &ActorId) -> usize {
-        if actor_id.proc_id().is_ranked() {
-            actor_id.rank()
-        } else {
-            *self
-                .rank_map
-                .get(actor_id.proc_id())
-                .expect("rank map should contain worker")
-        }
+        *self
+            .rank_map
+            .get(actor_id.proc_id())
+            .expect("rank map should contain worker")
     }
 }
 

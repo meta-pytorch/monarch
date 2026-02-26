@@ -864,15 +864,28 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::channel::ChannelAddr;
+    use crate::channel::ChannelTransport;
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;
-    use crate::id;
+    use crate::reference::ActorId;
+    use crate::reference::ProcId;
     use crate::simnet;
     use crate::simnet::Dispatcher;
     use crate::simnet::Event;
     use crate::simnet::SimNetError;
+
+    // Helper to create test ProcId
+    fn test_proc_id(name: &str) -> ProcId {
+        ProcId(ChannelAddr::any(ChannelTransport::Local), name.to_string())
+    }
+
+    // Helper to create test ActorId
+    fn test_actor_id(proc_name: &str, actor_name: &str) -> ActorId {
+        test_proc_id(proc_name).actor_id(actor_name, 0)
+    }
 
     #[derive(Debug)]
     struct MessageDeliveryEvent {
@@ -970,9 +983,9 @@ mod tests {
         // Tests that we can create a simnet, config latency between distances and sample latencies between procs.
         let ext = extent!(region = 1, dc = 2, zone = 2, rack = 4, host = 4, gpu = 8);
 
-        let alice = id!(world[0]);
-        let bob = id!(world[1]);
-        let charlie = id!(world[2]);
+        let alice = test_proc_id("world_0");
+        let bob = test_proc_id("world_1");
+        let charlie = test_proc_id("world_2");
 
         let config = LatencyConfig {
             inter_zone_distribution: LatencyDistribution::Beta(
@@ -1172,7 +1185,7 @@ mod tests {
                 tx,
                 args_string,
                 kwargs_string,
-                id!(mesh_0_worker[0].worker_0),
+                test_actor_id("mesh_0_worker_0", "worker_0"),
             ))
             .unwrap();
 

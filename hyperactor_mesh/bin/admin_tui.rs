@@ -605,7 +605,7 @@ fn url_encode(s: &str) -> String {
 
 /// Extract a short display name from a full ProcId string.
 ///
-/// ProcId::Direct format is `channel_addr,name`. We want just the `name` part.
+/// ProcId format is `channel_addr,name`. We want just the `name` part.
 /// System procs are prefixed with `[system] ` — preserve the prefix and shorten
 /// the ProcId portion.
 /// If there's no comma, return the whole string.

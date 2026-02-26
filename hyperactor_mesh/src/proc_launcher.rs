@@ -234,8 +234,7 @@ pub struct LaunchOptions {
 /// include a friendly identifier in logs, crash reports, etc.
 ///
 /// Format:
-/// - `ProcId::Direct(_, name)` → `proc <name> @ <hostname>`
-/// - `ProcId::Ranked(world, rank)` → `proc <world>[<rank>] @ <hostname>`
+/// - `ProcId(_, name)` → `proc <name> @ <hostname>`
 ///
 /// Notes:
 /// - We best-effort resolve the local hostname; on failure or
@@ -243,10 +242,7 @@ pub struct LaunchOptions {
 /// - This is **not** guaranteed to be unique and should not be parsed
 ///   for program logic.
 pub fn format_process_name(proc_id: &ProcId) -> String {
-    let who = match proc_id {
-        ProcId::Direct(_, name) => name.clone(),
-        ProcId::Ranked(world_id, rank) => format!("{world_id}[{rank}]"),
-    };
+    let who = proc_id.name();
 
     let host = hostname::get()
         .unwrap_or_else(|_| "unknown_host".into())

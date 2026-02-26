@@ -69,7 +69,8 @@ impl SimAlloc {
         spec.transport = ChannelTransport::Sim(Box::new(ChannelTransport::Unix));
 
         let inner = LocalAlloc::new(spec);
-        let client_proc_id = ProcId::Ranked(WorldId(format!("{}_manager", inner.name())), 0);
+        let client_addr = ChannelAddr::any(ChannelTransport::Local);
+        let client_proc_id = ProcId(client_addr, format!("{}_manager", inner.name()));
 
         let ext = inner.extent();
 
