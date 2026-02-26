@@ -93,6 +93,17 @@
 //! buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX
 //! ```
 
+mod actions;
+mod app;
+mod fetch;
+mod filter;
+mod format;
+mod model;
+mod render;
+mod theme;
+mod tree;
+
+// Re-exports so #[cfg(test)] mod tests can use `use super::*`.
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
@@ -126,6 +137,7 @@ use hyperactor::introspect::NodeProperties;
 use hyperactor::introspect::RecordedEvent;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
+pub(crate) use model::*;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Constraint;
@@ -408,10 +420,6 @@ impl Cursor {
 }
 
 // Topology tree model
-
-/// Maximum recursion depth when walking references.
-/// Root(skipped) → Host(0) → Proc(1) → Actor(2) → ChildActor(3).
-const MAX_TREE_DEPTH: usize = 4;
 
 /// All user-visible text in the TUI.
 ///
