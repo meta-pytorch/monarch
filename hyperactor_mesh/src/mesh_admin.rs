@@ -621,6 +621,7 @@ impl MeshAdminAgent {
             },
             children,
             parent: None,
+            as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
         }
     }
 
@@ -869,6 +870,7 @@ impl MeshAdminAgent {
                 is_system: false,
             },
             children,
+            as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
             parent: Some("root".to_string()),
         })
     }
@@ -1913,5 +1915,195 @@ mod tests {
             "expected at least 4 nodes in the tree, visited {}",
             visited.len()
         );
+    }
+
+    // Verifies that the QueryChild callback in HostMeshAgent produces
+    // correct identity strings for system procs. Specifically, checks
+    // that:
+    //
+    // 1. The identity of the resolved system proc matches the
+    //    "[system] <proc_id>" reference string from the host's
+    //    children list (i.e. identity == the reference used to resolve
+    //    it).
+    // 2. The properties are NodeProperties::Proc with is_system=true.
+    // 3. The parent is set to the HostId format ("host:<actor_id>").
+    // 4. The as_of field is present and non-empty.
+    //
+    // This test would have caught a bug where `child_ref.to_string()`
+    // was used instead of `proc.proc_id().to_string()` in the
+    // QueryChild callback, producing an identity like
+    // "proc:<proc_id>" instead of "[system] <proc_id>".
+    #[tokio::test]
+    async fn test_system_proc_identity() {
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::host::Host;
+        use hyperactor::host::LocalProcManager;
+
+        use crate::host_mesh::mesh_agent::HostAgentMode;
+        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::mesh_agent::system_proc_ref;
+        use crate::mesh_agent::ProcMeshAgent;
+
+        // -- 1. Stand up a local in-process Host with a HostMeshAgent --
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+        let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
+        let host_addr = host.addr().clone();
+        let system_proc = host.system_proc().clone();
+        let system_proc_id = system_proc.proc_id().clone();
+        let host_agent_handle = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .unwrap();
+        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_addr_str = host_addr.to_string();
+
+        // -- 2. Spawn MeshAdminAgent on a separate proc --
+        let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
+        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
+        let admin_handle = admin_proc
+            .spawn(
+                "mesh_admin",
+                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
+            )
+            .unwrap();
+        let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
+
+        // -- 3. Create a bare client instance for sending messages --
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _handle) = client_proc.instance("client").unwrap();
+
+        // -- 4. Resolve the host to get its children --
+        let host_ref_str = HostId(host_agent_ref.actor_id().clone()).to_string();
+        let host_resp = admin_ref
+            .resolve(&client, host_ref_str.clone())
+            .await
+            .unwrap();
+        let host_node = host_resp.0.unwrap();
+        assert!(
+            !host_node.children.is_empty(),
+            "host should have at least one proc child"
+        );
+
+        // -- 5. Find a system proc child (starts with "[system] ") --
+        let system_child_ref = host_node
+            .children
+            .iter()
+            .find(|c| c.starts_with("[system] "))
+            .expect("host children should contain at least one system proc");
+
+        // -- 6. Resolve the system proc reference --
+        let proc_resp = admin_ref
+            .resolve(&client, system_child_ref.clone())
+            .await
+            .unwrap();
+        let proc_node = proc_resp.0.unwrap();
+
+        // -- 7. Assert identity matches the system proc ref format --
+        // The identity must equal the reference string we used to
+        // resolve it (navigation identity invariant).
+        assert_eq!(
+            proc_node.identity, *system_child_ref,
+            "identity must match the system proc ref from the host's children list"
+        );
+        assert!(
+            proc_node.identity.starts_with("[system] "),
+            "identity should start with '[system] ', got '{}'",
+            proc_node.identity
+        );
+
+        // -- 8. Assert properties are Proc with is_system=true --
+        match &proc_node.properties {
+            NodeProperties::Proc {
+                is_system,
+                proc_name,
+                ..
+            } => {
+                assert!(
+                    *is_system,
+                    "system proc '{}' should have is_system=true",
+                    proc_name
+                );
+            }
+            other => {
+                panic!(
+                    "expected NodeProperties::Proc with is_system=true, got {:?}",
+                    other
+                );
+            }
+        }
+
+        // -- 9. Assert parent is set to the HostId format --
+        assert_eq!(
+            proc_node.parent,
+            Some(host_ref_str.clone()),
+            "system proc parent should be the host reference (host:<actor_id>)"
+        );
+
+        // -- 10. Assert as_of is present and non-empty --
+        assert!(
+            !proc_node.as_of.is_empty(),
+            "as_of should be present and non-empty"
+        );
+
+        // -- 11. Verify all system proc children have correct identity --
+        // Resolve every "[system] " child to confirm each one
+        // individually satisfies the invariant.
+        let expected_system_ref = system_proc_ref(&system_proc_id.to_string());
+        let found = host_node.children.contains(&expected_system_ref);
+        assert!(
+            found,
+            "host children {:?} should contain the system proc ref '{}'",
+            host_node.children, expected_system_ref
+        );
+
+        for child_ref in &host_node.children {
+            if !child_ref.starts_with("[system] ") {
+                continue;
+            }
+            let resp = admin_ref.resolve(&client, child_ref.clone()).await.unwrap();
+            let node = resp.0.unwrap();
+
+            // Identity == reference used.
+            assert_eq!(
+                node.identity, *child_ref,
+                "system proc identity mismatch for '{}'",
+                child_ref
+            );
+
+            // Must be Proc with is_system=true.
+            assert!(
+                matches!(
+                    node.properties,
+                    NodeProperties::Proc {
+                        is_system: true,
+                        ..
+                    }
+                ),
+                "expected is_system=true for '{}', got {:?}",
+                child_ref,
+                node.properties
+            );
+
+            // Parent must be the host.
+            assert_eq!(
+                node.parent,
+                Some(host_ref_str.clone()),
+                "parent mismatch for system proc '{}'",
+                child_ref
+            );
+
+            // as_of must be non-empty.
+            assert!(
+                !node.as_of.is_empty(),
+                "as_of should be non-empty for '{}'",
+                child_ref
+            );
+        }
     }
 }

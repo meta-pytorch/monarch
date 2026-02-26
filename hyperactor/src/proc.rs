@@ -175,6 +175,23 @@ impl Drop for ProcState {
     }
 }
 
+/// Structured return type for [`Proc::actor_instance`].
+///
+/// Groups the instance, handle, and per-channel receivers that an
+/// "inverted" actor caller needs to drive the actor manually.
+pub struct ActorInstance<A: Actor> {
+    /// The actor instance (used for sending/receiving messages, spawning children, etc.).
+    pub instance: Instance<A>,
+    /// Handle to the actor (used for lifecycle control and port access).
+    pub handle: ActorHandle<A>,
+    /// Supervision events delivered to this actor.
+    pub supervision: PortReceiver<ActorSupervisionEvent>,
+    /// Control signals for the actor.
+    pub signal: PortReceiver<Signal>,
+    /// Primary work queue for handler dispatch.
+    pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
+}
+
 impl Proc {
     /// Create a new proc with the given proc id and forwarder.
     pub fn new(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self {
@@ -363,13 +380,7 @@ impl Proc {
         actor: A,
         parent: Option<InstanceCell>,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let (instance, mut actor_loop_receivers, work_rx) =
-            Instance::new(self.clone(), actor_id.clone(), false, parent);
-
-        // Bind IntrospectMessage so that every actor is externally
-        // introspectable, even if the caller does not call
-        // `handle.bind()`.
-        instance.inner.ports.bind::<IntrospectMessage>();
+        let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, parent);
 
         // Notify telemetry sinks of actor creation
         {
@@ -397,35 +408,27 @@ impl Proc {
             });
         }
 
-        Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
+        Ok(instance.start(actor, receivers))
     }
 
-    /// Wrapper for [`Proc::actor_instance::<()>`].
+    /// Create a lightweight client instance (no actor loop, no
+    /// introspect task).  This is safe to call outside a Tokio
+    /// runtime — unlike [`actor_instance`], it never calls
+    /// `tokio::spawn`.
     pub fn instance(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let (instance, handle, ..) = self.actor_instance(name)?;
-
+        let actor_id = self.allocate_root_id(name)?;
+        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, None);
+        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
+        instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
     }
 
-    /// Create and return an actor instance, its corresponding handle, its signal port receiver,
-    /// its supervision port receiver, and its message receiver. This allows actors to be
-    /// "inverted": the caller can use the returned [`Instance`] to send and receive messages,
-    /// launch child actors, etc. The actor itself does not handle any messages unless driven by
-    /// the caller. Otherwise the instance acts as a normal actor, and can be referenced and
-    /// stopped.
-    pub fn actor_instance<A: Actor>(
-        &self,
-        name: &str,
-    ) -> Result<
-        (
-            Instance<A>,
-            ActorHandle<A>,
-            PortReceiver<ActorSupervisionEvent>,
-            PortReceiver<Signal>,
-            mpsc::UnboundedReceiver<WorkCell<A>>,
-        ),
-        anyhow::Error,
-    > {
+    /// Create and return an actor instance, its handle, and its
+    /// receivers. This allows actors to be "inverted": the caller can
+    /// use the returned [`Instance`] to send and receive messages,
+    /// launch child actors, etc. The actor itself does not handle any
+    /// messages unless driven by the caller.
+    pub fn actor_instance<A: Actor>(&self, name: &str) -> Result<ActorInstance<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
         let span = tracing::debug_span!(
             "actor_instance",
@@ -434,12 +437,26 @@ impl Proc {
             actor_id = actor_id.to_string(),
         );
         let _guard = span.enter();
-        let (instance, actor_loop_receivers, work_rx) =
-            Instance::new(self.clone(), actor_id.clone(), false, None);
-        let (signal_rx, supervision_rx) = actor_loop_receivers.unwrap();
+        let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, None);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
-        Ok((instance, handle, supervision_rx, signal_rx, work_rx))
+
+        let introspect_cell = instance.inner.cell.clone();
+        let introspect_mailbox = instance.inner.mailbox.clone();
+        tokio::spawn(crate::introspect::serve_introspect(
+            introspect_cell,
+            introspect_mailbox,
+            receivers.introspect,
+        ));
+
+        let (signal_rx, supervision_rx) = receivers.actor_loop.unwrap();
+        Ok(ActorInstance {
+            instance,
+            handle,
+            supervision: supervision_rx,
+            signal: signal_rx,
+            work: receivers.work,
+        })
     }
 
     /// Traverse all actor trees in this proc, starting from root actors (pid=0).
@@ -497,7 +514,9 @@ impl Proc {
             actor_id = %actor_id,
         );
 
-        let (instance, _, _) = Instance::new(self.clone(), actor_id, false, Some(parent));
+        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, Some(parent));
+        // Client-mode instance: no actor loop, no introspect task.
+        // Receivers are intentionally dropped.
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
@@ -936,6 +955,25 @@ impl<A: Actor> Drop for InstanceState<A> {
     }
 }
 
+/// Receivers created by [`Instance::new`] that must be threaded to
+/// their respective consumers (actor loop, introspect task, etc.).
+///
+/// # Invariant S10
+///
+/// The introspect receiver is created for every instance in
+/// `Instance::new()`. Callers that run a message loop (`start()`)
+/// spawn the introspect task. `child_instance()` intentionally
+/// drops the receiver.
+pub struct InstanceReceivers<A: Actor> {
+    /// Signal and supervision receivers for the actor loop. `None`
+    /// for detached/client instances that don't run an actor loop.
+    actor_loop: Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
+    /// Work queue for dispatching messages to actor handlers.
+    work: mpsc::UnboundedReceiver<WorkCell<A>>,
+    /// Introspect message receiver for the dedicated introspect task.
+    introspect: PortReceiver<IntrospectMessage>,
+}
+
 impl<A: Actor> Instance<A> {
     /// Create a new actor instance in Created state.
     fn new(
@@ -943,11 +981,7 @@ impl<A: Actor> Instance<A> {
         actor_id: ActorId,
         detached: bool,
         parent: Option<InstanceCell>,
-    ) -> (
-        Self,
-        Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
-        mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) {
+    ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = ordered_channel(
@@ -975,6 +1009,22 @@ impl<A: Actor> Instance<A> {
 
         let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
 
+        // Introspect port: a separate channel handled by a dedicated
+        // tokio task (not the actor's message loop). Pre-registered
+        // so Ports::get finds the Occupied entry and skips WorkCell
+        // creation. bind_actor_port() registers in the mailbox
+        // dispatch table at IntrospectMessage::port().
+        //
+        // Invariant S3: senders target IntrospectMessage::port() — the
+        // same PortId used here — so routing is unchanged across processes.
+        // Invariant S4: pre-registration ensures no WorkCell creation
+        // for IntrospectMessage -- the port gets its own channel.
+        // Invariant S9: port bound exactly once here via
+        // bind_actor_port(); no other site calls bind for this port.
+        let (introspect_port, introspect_receiver) =
+            ports.open_message_port::<IntrospectMessage>().unwrap();
+        introspect_port.bind_actor_port();
+
         let cell = InstanceCell::new(
             actor_id,
             actor_type,
@@ -995,7 +1045,14 @@ impl<A: Actor> Instance<A> {
             id: instance_id,
             instance_locals: ActorLocalStorage::new(),
         });
-        (Self { inner }, actor_loop_receivers, work_rx)
+        (
+            Self { inner },
+            InstanceReceivers {
+                actor_loop: actor_loop_receivers,
+                work: work_rx,
+                introspect: introspect_receiver,
+            },
+        )
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
@@ -1067,31 +1124,23 @@ impl<A: Actor> Instance<A> {
         self.inner.self_id()
     }
 
-    /// Crate-internal access to the underlying runtime cell.
-    ///
-    /// Used by default introspection and other runtime plumbing. Not
-    /// part of the public actor API.
-    pub(crate) fn cell(&self) -> &InstanceCell {
-        &self.inner.cell
-    }
-
     /// Snapshot of this actor's introspection payload.
     ///
-    /// Returns the same [`NodePayload`] that the blanket
-    /// `Handler<IntrospectMessage>` would produce, but without going
-    /// through the actor message loop. This is safe to call from
-    /// within a handler on the same actor (no self-send deadlock).
+    /// Returns a [`NodePayload`] built from live [`InstanceCell`]
+    /// state, without going through the actor message loop. This is
+    /// safe to call from within a handler on the same actor (no
+    /// self-send deadlock).
     ///
     /// The snapshot is best-effort: it reflects framework-owned state
     /// (status, message count, flight recorder, supervision children)
-    /// at the instant of the call. `nav_parent` is left as `None` —
+    /// at the instant of the call. `parent` is left as `None` —
     /// callers are responsible for setting topology context.
     ///
     /// Note: this acquires a write lock on the flight recorder spool
     /// and clones its contents. Suitable for occasional introspection
     /// requests, not for hot paths.
     pub fn introspect_payload(&self) -> crate::introspect::NodePayload {
-        crate::introspect::default_actor_payload(&self.inner.cell)
+        crate::introspect::live_actor_payload(&self.inner.cell)
     }
 
     /// Publish domain-specific properties for introspection.
@@ -1235,20 +1284,30 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
-    fn start(
-        self,
-        actor: A,
-        actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
-        work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> ActorHandle<A> {
+    fn start(self, actor: A, receivers: InstanceReceivers<A>) -> ActorHandle<A> {
         let instance_cell = self.inner.cell.clone();
         let actor_id = self.inner.cell.actor_id().clone();
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
+
+        // Spawn the introspect task — a separate tokio task that
+        // reads InstanceCell directly and replies via the actor's
+        // Mailbox. The actor loop never sees IntrospectMessage.
+        let introspect_cell = self.inner.cell.clone();
+        let introspect_mailbox = self.inner.mailbox.clone();
+        tokio::spawn(crate::introspect::serve_introspect(
+            introspect_cell,
+            introspect_mailbox,
+            receivers.introspect,
+        ));
+
+        let actor_loop_receivers = receivers
+            .actor_loop
+            .expect("non-detached instance must have actor loop receivers");
         let actor_task_handle = A::spawn_server_task(
             panic_handler::with_backtrace_tracking(self.serve(
                 actor,
                 actor_loop_receivers,
-                work_rx,
+                receivers.work,
             ))
             .instrument(Span::current()),
         );
@@ -1606,20 +1665,6 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        // Save previous status and handler before overwriting, so
-        // introspection can report what the actor was doing before the
-        // introspect query arrived.
-        *self.inner.cell.inner.pre_dispatch_status.write().unwrap() =
-            self.inner.status_tx.borrow().clone();
-        *self.inner.cell.inner.pre_dispatch_handler.write().unwrap() = self
-            .inner
-            .cell
-            .inner
-            .last_message_handler
-            .read()
-            .unwrap()
-            .clone();
-
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler_info.clone(),
@@ -1855,25 +1900,6 @@ struct InstanceCellState {
     /// Name of the last message handler invoked.
     last_message_handler: RwLock<Option<HandlerInfo>>,
 
-    /// Actor status captured immediately before the current handler
-    /// began executing.
-    ///
-    /// Introspection reads this instead of the live `status` so that
-    /// the reported state reflects what the actor was doing *before*
-    /// the introspect query arrived — not "processing
-    /// IntrospectMessage" (the Heisenberg problem). Snapshotted at
-    /// the top of each `dispatch_to_handler` call, before `status` is
-    /// overwritten with `Processing(...)`.
-    pre_dispatch_status: RwLock<ActorStatus>,
-
-    /// Message handler that was active immediately before the current
-    /// handler began executing.
-    ///
-    /// Same rationale as `pre_dispatch_status`: introspection reports
-    /// this so the last-handler field reflects the handler that ran
-    /// before the current dispatch, not the introspect handler itself.
-    pre_dispatch_handler: RwLock<Option<HandlerInfo>>,
-
     /// Total time spent processing messages, in microseconds.
     total_processing_time_us: AtomicU64,
 
@@ -1887,6 +1913,11 @@ struct InstanceCellState {
     /// runtime handler. `None` means the actor has not published
     /// custom properties — the runtime handler falls back to
     /// `NodeProperties::Actor`.
+    ///
+    /// Invariant S8: only `Host` and `Proc` variants are accepted
+    /// (no `Root` or `Error`).
+    /// Invariant S6: Entity view reads from this field; Actor view
+    /// reads live state from `InstanceCell`.
     published_properties: RwLock<Option<crate::introspect::PublishedProperties>>,
 
     /// Optional callback for resolving non-addressable children
@@ -1894,6 +1925,9 @@ struct InstanceCellState {
     /// like `HostMeshAgent` in `Actor::init`. Invoked by the
     /// introspection runtime handler for `QueryChild` messages.
     /// `None` means `QueryChild` returns a "not_found" error.
+    ///
+    /// Invariant S7: system procs are resolvable without entering
+    /// the actor loop — the callback runs on the introspect task.
     query_child_handler:
         RwLock<Option<Box<dyn (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync>>>,
 
@@ -1945,8 +1979,6 @@ impl InstanceCell {
                 num_processed_messages: AtomicU64::new(0),
                 created_at: RealClock.system_time_now(),
                 last_message_handler: RwLock::new(None),
-                pre_dispatch_status: RwLock::new(ActorStatus::Created),
-                pre_dispatch_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
                 published_properties: RwLock::new(None),
@@ -2122,26 +2154,6 @@ impl InstanceCell {
         self.inner.last_message_handler.read().unwrap().clone()
     }
 
-    /// Actor status captured immediately before the current handler
-    /// began executing.
-    ///
-    /// Used by introspection to report what the actor was doing before
-    /// the introspect query arrived, not "processing
-    /// IntrospectMessage" (the Heisenberg problem).
-    pub fn prev_status(&self) -> ActorStatus {
-        self.inner.pre_dispatch_status.read().unwrap().clone()
-    }
-
-    /// Message handler that was active immediately before the current
-    /// handler began executing.
-    ///
-    /// Same rationale as [`prev_status`](Self::prev_status):
-    /// introspection reports this so the last-handler field reflects
-    /// the handler that ran before the current dispatch.
-    pub fn prev_last_message_handler(&self) -> Option<HandlerInfo> {
-        self.inner.pre_dispatch_handler.read().unwrap().clone()
-    }
-
     /// Total time spent processing messages, in microseconds.
     pub fn total_processing_time_us(&self) -> u64 {
         self.inner.total_processing_time_us.load(Ordering::SeqCst)
@@ -2200,11 +2212,19 @@ impl InstanceCell {
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // All actors handle signals, undeliverable messages, and
-        // introspection.
+        // Signal: pre-registered via open_message_port() in
+        // Instance::new(), handled by the actor loop's select!.
+        // Ports::bind() here reuses the existing handle.
+        //
+        // Undeliverable: dispatched through the work queue to the
+        // actor's Handler<Undeliverable<MessageEnvelope>>.
+        //
+        // IntrospectMessage: pre-registered via open_message_port()
+        // in Instance::new(), handled by a dedicated introspect task.
+        // NOT bound here — its port is registered via
+        // bind_actor_port() directly.
         ports.bind::<Signal>();
         ports.bind::<Undeliverable<MessageEnvelope>>();
-        ports.bind::<IntrospectMessage>();
         // TODO: consider sharing `ports.bound` directly.
         for entry in ports.bound.iter() {
             self.inner
@@ -2318,6 +2338,11 @@ impl<A: Actor> Ports<A> {
                     key,
                     TypeId::of::<Signal>(),
                     "cannot provision Signal port through `Ports::get`"
+                );
+                assert_ne!(
+                    key,
+                    TypeId::of::<IntrospectMessage>(),
+                    "cannot provision IntrospectMessage port through `Ports::get`"
                 );
 
                 let type_info = TypeInfo::get_by_typeid(key);
