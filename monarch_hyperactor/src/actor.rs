@@ -531,7 +531,7 @@ impl PythonActor {
         )
         .expect("create client PythonActor");
 
-        let (client, handle, supervision_rx, signal_rx, work_rx) = client_proc
+        let ai = client_proc
             .actor_instance(
                 root_client_class
                     .getattr("name")
@@ -541,8 +541,13 @@ impl PythonActor {
             )
             .expect("root instance create");
 
+        let handle = ai.handle;
+        let signal_rx = ai.signal;
+        let supervision_rx = ai.supervision;
+        let work_rx = ai.work;
+
         root_client_instance
-            .set(client)
+            .set(ai.instance)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
         let instance = root_client_instance.get().unwrap();

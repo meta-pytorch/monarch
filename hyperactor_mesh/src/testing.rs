@@ -119,18 +119,17 @@ impl TestRootClient {
 pub fn fresh_instance() -> &'static Instance<TestRootClient> {
     static INSTANCE: OnceLock<Instance<TestRootClient>> = OnceLock::new();
     let proc = Proc::direct(ChannelTransport::Unix.any(), "testproc".to_string()).unwrap();
-    let (actor, _handle, supervision_rx, signal_rx, work_rx) =
-        proc.actor_instance("testclient").unwrap();
+    let ai = proc.actor_instance("testclient").unwrap();
     // Use the OnceLock to get a 'static lifetime for the instance.
     INSTANCE
-        .set(actor)
+        .set(ai.instance)
         .map_err(|_| "already initialized root client instance")
         .unwrap();
     let instance = INSTANCE.get().unwrap();
     let client = TestRootClient {
-        signal_rx,
-        supervision_rx,
-        work_rx,
+        signal_rx: ai.signal,
+        supervision_rx: ai.supervision,
+        work_rx: ai.work,
     };
     client.run(instance);
     instance
@@ -174,18 +173,17 @@ async fn fresh_instance_with_router() -> (
     static INSTANCE: OnceLock<(Instance<TestRootClient>, DialMailboxRouter)> = OnceLock::new();
     let router = DialMailboxRouter::new();
     let proc = Proc::new(id!(test[0]), router.boxed());
-    let (actor, _handle, supervision_rx, signal_rx, work_rx) =
-        proc.actor_instance("testclient").unwrap();
+    let ai = proc.actor_instance("testclient").unwrap();
     // Use the OnceLock to get a 'static lifetime for the instance.
     INSTANCE
-        .set((actor, router))
+        .set((ai.instance, router))
         .map_err(|_| "already initialized root client instance")
         .unwrap();
     let (instance, router) = INSTANCE.get().unwrap();
     let client = TestRootClient {
-        signal_rx,
-        supervision_rx,
-        work_rx,
+        signal_rx: ai.signal,
+        supervision_rx: ai.supervision,
+        work_rx: ai.work,
     };
     client.run(instance);
     (instance, router)

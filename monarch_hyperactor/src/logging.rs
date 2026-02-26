@@ -584,9 +584,10 @@ mod tests {
         let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
             .expect("failed to start root Proc");
 
-        let (instance, ..) = proc
+        let ai = proc
             .actor_instance("client")
             .expect("failed to create proc Instance");
+        let instance = ai.instance;
 
         let host_mesh = HostMesh::local_with_bootstrap(
             crate::testresource::get("monarch/monarch_hyperactor/bootstrap").into(),

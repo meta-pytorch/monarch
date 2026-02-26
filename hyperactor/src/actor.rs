@@ -41,7 +41,6 @@ use crate::checkpoint::Checkpointable;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::context;
-use crate::introspect::IntrospectMessage;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
 use crate::mailbox::MessageEnvelope;
@@ -146,39 +145,6 @@ pub trait Actor: Sized + Send + 'static {
         handle_undeliverable_message(cx, envelope)
     }
 
-    /// Default introspection handler.
-    ///
-    /// The blanket implementation builds a structural [`NodePayload`]
-    /// from framework-known actor state (identity, type, status,
-    /// supervision parent/children). This provides a generic
-    /// self-description for any actor without requiring custom logic.
-    ///
-    /// # Addressable vs non-addressable children
-    ///
-    /// **Addressable children** are supervision children with their
-    /// own `ActorId`. These actors can be introspected directly by
-    /// sending [`IntrospectMessage::Query`] to the child.
-    ///
-    /// **Non-addressable children** are entities a parent chooses to
-    /// expose in its navigation tree that are not independently
-    /// messageable. For example, a `HostMeshAgent` may expose system
-    /// procs as children even though those procs are not actors. In
-    /// this case the parent must answer on the child's behalf via
-    /// [`IntrospectMessage::QueryChild`].
-    ///
-    /// The default handler reports only addressable children and
-    /// returns an error payload for `QueryChild`. Override this
-    /// method when your actor owns non-addressable children or needs
-    /// to return domain-specific node properties instead of the
-    /// default [`NodeProperties::Actor`].
-    async fn handle_introspect(
-        &mut self,
-        cx: &Instance<Self>,
-        msg: IntrospectMessage,
-    ) -> Result<(), anyhow::Error> {
-        default_handle_introspect(cx, msg)
-    }
-
     /// If overridden, we will use this name in place of the
     /// ActorId for talking about this actor in supervision error
     /// messages.
@@ -197,60 +163,6 @@ pub fn handle_undeliverable_message<A: Actor>(
     assert_eq!(envelope.sender(), cx.self_id());
 
     anyhow::bail!(UndeliverableMessageError::DeliveryFailure { envelope });
-}
-
-/// Default implementation of [`Actor::handle_introspect`].
-///
-/// Defined as a free function so actor implementations that override
-/// [`Actor::handle_introspect`] can delegate back to the framework
-/// default.
-///
-/// For [`IntrospectMessage::Query`], this replies with a structural
-/// [`NodePayload`] built from framework-owned state (see
-/// [`default_actor_payload`](crate::introspect::default_actor_payload)).
-///
-/// For [`IntrospectMessage::QueryChild`], the default replies with a
-/// [`NodeProperties::Error`] sentinel, since only actors that own
-/// non-addressable children (e.g. a host describing its system procs)
-/// can answer child queries.
-pub fn default_handle_introspect<A: Actor>(
-    cx: &Instance<A>,
-    msg: IntrospectMessage,
-) -> Result<(), anyhow::Error> {
-    use crate::introspect::NodePayload;
-    use crate::introspect::NodeProperties;
-    use crate::introspect::default_actor_payload;
-
-    match msg {
-        IntrospectMessage::Query { view: _, reply } => {
-            // Regular actors always return Actor properties, ignoring view.
-            let payload = default_actor_payload(cx.cell());
-            if let Err(e) = reply.send(cx, payload) {
-                tracing::debug!("introspect reply failed (querier gone?): {e}");
-            }
-        }
-        IntrospectMessage::QueryChild { child_ref, reply } => {
-            if let Err(e) = reply.send(
-                cx,
-                NodePayload {
-                    identity: String::new(),
-                    properties: NodeProperties::Error {
-                        code: "not_found".into(),
-                        message: format!(
-                            "actor {} does not handle QueryChild for {}",
-                            cx.self_id(),
-                            child_ref,
-                        ),
-                    },
-                    children: vec![],
-                    parent: None,
-                },
-            ) {
-                tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
-            }
-        }
-    }
-    Ok(())
 }
 
 /// An actor that does nothing. It is used to represent "client only" actors,
@@ -292,24 +204,6 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
         self.handle_undeliverable_message(cx, message).await
-    }
-}
-
-/// Blanket [`Handler`] impl for [`IntrospectMessage`].
-///
-/// Every [`Actor`] can be introspected by default. This forwards
-/// [`IntrospectMessage`] into [`Actor::handle_introspect`], which
-/// provides the framework default behavior and can be overridden by
-/// actors that need domain-specific introspection (e.g. to describe
-/// non-addressable children via `QueryChild`).
-#[async_trait]
-impl<A: Actor> Handler<IntrospectMessage> for A {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        message: IntrospectMessage,
-    ) -> Result<(), anyhow::Error> {
-        self.handle_introspect(cx, message).await
     }
 }
 
@@ -921,15 +815,23 @@ mod tests {
     use crate::PortRef;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
+    use crate::clock::Clock;
+    use crate::clock::RealClock;
     use crate::config;
     use crate::context::Mailbox as _;
     use crate::id;
+    use crate::introspect::IntrospectMessage;
+    use crate::introspect::IntrospectView;
+    use crate::introspect::NodePayload;
+    use crate::introspect::NodeProperties;
+    use crate::introspect::PublishedPropertiesKind;
     use crate::mailbox::BoxableMailboxSender as _;
     use crate::mailbox::MailboxSender;
     use crate::mailbox::PortLocation;
     use crate::mailbox::monitored_return_handle;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
+    use crate::reference::Reference;
     use crate::test_utils::pingpong::PingPongActor;
     use crate::test_utils::pingpong::PingPongMessage;
     use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
@@ -1723,16 +1625,11 @@ mod tests {
     ///   root/top-level actor in the proc (only supervised child actors
     ///   report a supervisor id).
     ///
-    /// This exercises the end-to-end blanket handler path rather than
-    /// calling `default_actor_payload` directly, ensuring the runtime
+    /// This exercises the end-to-end introspect task path rather than
+    /// calling `live_actor_payload` directly, ensuring the runtime
     /// wiring behaves as expected.
     #[tokio::test]
     async fn test_introspect_query_default_payload() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::IntrospectView;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, _rx) = client.open_port::<u64>();
@@ -1740,7 +1637,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        handle
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1773,18 +1670,13 @@ mod tests {
         handle.await;
     }
 
-    // Verifies the default introspection behavior for non-addressable
-    // children: a plain actor that does not override
-    // `handle_introspect` responds to `IntrospectMessage::QueryChild`
-    // with the error sentinel payload (`identity == ""`,
-    // `NodeProperties::Error { code: "not_found", .. }`).
+    // Verifies that QueryChild returns an error for actors without
+    // a registered query_child_handler callback. The runtime
+    // introspect task responds with the error sentinel payload
+    // (`identity == ""`, `NodeProperties::Error { code: "not_found",
+    // .. }`).
     #[tokio::test]
     async fn test_introspect_query_child_not_found() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-        use crate::reference::Reference;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, _rx) = client.open_port::<u64>();
@@ -1793,7 +1685,7 @@ mod tests {
 
         let child_ref = Reference::Actor(id!(nonexistent[0].child));
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        handle
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::QueryChild {
@@ -1816,50 +1708,19 @@ mod tests {
         handle.await;
     }
 
-    // Verifies that actors can override `Actor::handle_introspect` to
-    // return domain-specific `NodeProperties` (here: `Host`) for
-    // `Query`, while delegating all other introspection variants to
-    // `default_handle_introspect`.
+    // Verifies that with the runtime introspect task, custom
+    // `handle_introspect` overrides are not called. The runtime
+    // task intercepts IntrospectMessage before it reaches the
+    // actor's work queue. An actor with an override still gets
+    // standard Actor properties from the runtime task.
     #[tokio::test]
     async fn test_introspect_override() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::IntrospectView;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-
         #[derive(Debug, Default)]
         #[hyperactor::export(handlers = [])]
         struct CustomIntrospectActor;
 
         #[async_trait]
-        impl Actor for CustomIntrospectActor {
-            async fn handle_introspect(
-                &mut self,
-                cx: &Instance<Self>,
-                msg: IntrospectMessage,
-            ) -> Result<(), anyhow::Error> {
-                match msg {
-                    IntrospectMessage::Query { view: _, reply } => {
-                        reply.send(
-                            cx,
-                            NodePayload {
-                                identity: cx.self_id().to_string(),
-                                properties: NodeProperties::Host {
-                                    addr: "1.2.3.4:5678".into(),
-                                    num_procs: 42,
-                                },
-                                children: vec![],
-                                parent: None,
-                            },
-                        )?;
-                    }
-                    other => {
-                        default_handle_introspect(cx, other)?;
-                    }
-                }
-                Ok(())
-            }
-        }
+        impl Actor for CustomIntrospectActor {}
 
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
@@ -1867,8 +1728,14 @@ mod tests {
             .spawn("custom_introspect", CustomIntrospectActor)
             .unwrap();
 
-        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
         handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1879,12 +1746,12 @@ mod tests {
             .unwrap();
         let payload = reply_rx.recv().await.unwrap();
 
-        assert_eq!(
-            payload.properties,
-            NodeProperties::Host {
-                addr: "1.2.3.4:5678".into(),
-                num_procs: 42,
-            }
+        // The runtime task returns Actor properties, NOT the
+        // override's Host properties.
+        assert!(
+            matches!(payload.properties, NodeProperties::Actor { .. }),
+            "runtime task should return Actor properties, not the override's Host; got: {:?}",
+            payload.properties
         );
 
         handle.drain_and_stop("test").unwrap();
@@ -1896,11 +1763,6 @@ mod tests {
     /// that the parent's payload lists the child in `children`.
     #[tokio::test]
     async fn test_introspect_query_supervision_child() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::IntrospectView;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
 
@@ -1918,7 +1780,7 @@ mod tests {
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        child_handle
+        PortRef::<IntrospectMessage>::attest_message_port(child_handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1941,7 +1803,7 @@ mod tests {
 
         // Query the parent — children should include the child.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        parent_handle
+        PortRef::<IntrospectMessage>::attest_message_port(parent_handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1966,24 +1828,26 @@ mod tests {
     }
 
     /// A freshly spawned actor that has received no user messages
-    /// reports `actor_status == "idle"` (post-initialization) and
-    /// `last_message_handler == None` — the introspect handler does
-    /// not leak through (one-behind invariant, fresh-actor case).
+    /// reports `last_message_handler == None` — the introspect
+    /// handler does not leak through. Status is `"idle"` once
+    /// initialization completes.
     #[tokio::test]
     async fn test_introspect_fresh_actor_status() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::IntrospectView;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_fresh", actor).unwrap();
 
-        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        // Wait for the actor to finish initialization.
         handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2016,11 +1880,6 @@ mod tests {
     /// after-user-traffic case).
     #[tokio::test]
     async fn test_introspect_after_user_message() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::IntrospectView;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, mut rx) = client.open_port::<u64>();
@@ -2032,7 +1891,7 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        handle
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2066,26 +1925,27 @@ mod tests {
         handle.await;
     }
 
-    /// Two consecutive introspect queries: the second reports the
-    /// first introspect handler. This confirms the mechanism is
-    /// purely "one behind" — introspection is not hidden from
-    /// the history.
+    /// Two consecutive introspect queries: with the runtime
+    /// introspect task, neither perturbs the actor's state (S2).
+    /// Both report the same `last_message_handler` for a fresh
+    /// actor — `None`, not `IntrospectMessage`.
     #[tokio::test]
     async fn test_introspect_consecutive_queries() {
-        use crate::introspect::IntrospectMessage;
-        use crate::introspect::IntrospectView;
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, _rx) = client.open_port::<u64>();
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_consec", actor).unwrap();
 
-        // First introspect query — just to advance the snapshot.
-        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
         handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        // First introspect query.
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2094,11 +1954,11 @@ mod tests {
                 },
             )
             .unwrap();
-        let _ = reply_rx.recv().await.unwrap();
+        let payload1 = reply_rx.recv().await.unwrap();
 
-        // Second introspect query — should see the first one.
+        // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<NodePayload>();
-        handle
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2107,26 +1967,29 @@ mod tests {
                 },
             )
             .unwrap();
-        let payload = reply_rx2.recv().await.unwrap();
+        let payload2 = reply_rx2.recv().await.unwrap();
 
-        match &payload.properties {
+        // Neither should show IntrospectMessage as the handler.
+        let handler1 = match &payload1.properties {
             NodeProperties::Actor {
-                actor_status,
                 last_message_handler,
                 ..
-            } => {
-                assert_eq!(actor_status, "idle");
-                let handler = last_message_handler
-                    .as_deref()
-                    .expect("should have a handler");
-                assert!(
-                    handler.contains("IntrospectMessage"),
-                    "second introspect should see the first introspect handler; got: {}",
-                    handler
-                );
-            }
-            other => panic!("expected NodeProperties::Actor, got {:?}", other),
-        }
+            } => last_message_handler.clone(),
+            other => panic!("expected Actor, got {:?}", other),
+        };
+        let handler2 = match &payload2.properties {
+            NodeProperties::Actor {
+                last_message_handler,
+                ..
+            } => last_message_handler.clone(),
+            other => panic!("expected Actor, got {:?}", other),
+        };
+        assert_eq!(handler1, None, "fresh actor should have no handler");
+        assert_eq!(handler2, None, "second query should also show no handler");
+        assert_eq!(
+            handler1, handler2,
+            "consecutive queries should be identical"
+        );
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
@@ -2138,8 +2001,6 @@ mod tests {
     /// callback registration.
     #[tokio::test]
     async fn test_published_properties_round_trip() {
-        use crate::introspect::PublishedPropertiesKind;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, _rx) = client.open_port::<u64>();
@@ -2198,10 +2059,6 @@ mod tests {
     /// invoke it via `query_child()`, and confirm the response.
     #[tokio::test]
     async fn test_query_child_handler_round_trip() {
-        use crate::introspect::NodePayload;
-        use crate::introspect::NodeProperties;
-        use crate::reference::Reference;
-
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
         let (tx, _rx) = client.open_port::<u64>();
@@ -2224,6 +2081,7 @@ mod tests {
                 },
                 children: Vec::new(),
                 parent: None,
+                as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
             });
 
         // Now query_child returns the callback's response.
@@ -2244,6 +2102,174 @@ mod tests {
             }
             other => panic!("expected Proc, got {:?}", other),
         }
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    /// Invariant S1: a stuck/wedged actor can still be introspected.
+    ///
+    /// The introspect runtime task runs outside the actor's message
+    /// loop, so it can reply even when the actor is blocked in a
+    /// handler. The response reports the live processing status and
+    /// the user-message handler — not IntrospectMessage.
+    #[tokio::test]
+    async fn test_introspect_wedged() {
+        #[derive(Debug, Default)]
+        #[hyperactor::export(handlers = [u64])]
+        struct WedgedActor;
+
+        #[async_trait]
+        impl Actor for WedgedActor {}
+
+        #[async_trait]
+        impl Handler<u64> for WedgedActor {
+            async fn handle(
+                &mut self,
+                _cx: &Context<Self>,
+                _message: u64,
+            ) -> Result<(), anyhow::Error> {
+                // Block forever.
+                std::future::pending::<()>().await;
+                Ok(())
+            }
+        }
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let handle = proc.spawn("wedged", WedgedActor).unwrap();
+
+        // Wait for idle before sending the wedging message.
+        handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        // Send a u64 to wedge the actor in its handler.
+        handle.send(&client, 1u64).unwrap();
+
+        // Wait for the handler to start blocking.
+        RealClock.sleep(Duration::from_millis(50)).await;
+
+        // Send introspect query via the dedicated introspect port.
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+
+        // Must not hang — the introspect task runs independently.
+        let payload = RealClock
+            .timeout(Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("introspect should not hang on a wedged actor")
+            .unwrap();
+
+        match &payload.properties {
+            NodeProperties::Actor {
+                actor_status,
+                last_message_handler,
+                ..
+            } => {
+                assert!(
+                    actor_status.contains("processing"),
+                    "actor should be stuck processing; got: {}",
+                    actor_status
+                );
+                if let Some(handler) = last_message_handler {
+                    assert!(
+                        !handler.contains("IntrospectMessage"),
+                        "handler should be the user message, not introspect; got: {}",
+                        handler
+                    );
+                }
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+    }
+
+    /// Invariant S2: introspect queries do not perturb the actor's
+    /// observable state. After a user message, two consecutive
+    /// introspect queries both report the user message handler.
+    #[tokio::test]
+    async fn test_introspect_no_perturbation() {
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, mut rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_no_perturb", actor).unwrap();
+
+        // Wait for idle before sending the user message.
+        handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        // Send a user message and wait for it to be processed.
+        handle.send(&client, 42u64).unwrap();
+        let _ = rx.recv().await.unwrap();
+
+        // First introspect query.
+        let (reply_port1, reply_rx1) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port1.bind(),
+                },
+            )
+            .unwrap();
+        let payload1 = reply_rx1.recv().await.unwrap();
+
+        // Second introspect query.
+        let (reply_port2, reply_rx2) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port2.bind(),
+                },
+            )
+            .unwrap();
+        let payload2 = reply_rx2.recv().await.unwrap();
+
+        let handler1 = match &payload1.properties {
+            NodeProperties::Actor {
+                last_message_handler,
+                ..
+            } => last_message_handler.clone(),
+            other => panic!("expected Actor, got {:?}", other),
+        };
+        let handler2 = match &payload2.properties {
+            NodeProperties::Actor {
+                last_message_handler,
+                ..
+            } => last_message_handler.clone(),
+            other => panic!("expected Actor, got {:?}", other),
+        };
+
+        // Both should report the user message handler, not IntrospectMessage.
+        let h = handler1
+            .as_deref()
+            .expect("should have a handler after processing a user message");
+        assert!(
+            !h.contains("IntrospectMessage"),
+            "handler should be the user message handler, not introspect; got: {}",
+            h
+        );
+        assert_eq!(
+            handler1, handler2,
+            "consecutive introspect queries should report the same handler"
+        );
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
