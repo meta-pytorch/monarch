@@ -74,6 +74,7 @@ fn check_cuda_available() -> bool {
 
 #[cfg(test)]
 pub mod test_utils {
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -95,10 +96,13 @@ pub mod test_utils {
 
     use crate::GetIbvActorRefClient;
     use crate::IbvConfig;
+    use crate::RawLocalMemory;
+    use crate::RdmaLocalMemory;
     use crate::RdmaManagerMessageClient;
     use crate::RdmaRemoteBuffer;
     use crate::backend::ibverbs::IbvBuffer;
     use crate::backend::ibverbs::manager_actor::IbvManagerActor;
+    use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
     use crate::backend::ibverbs::queue_pair::IbvQueuePair;
     use crate::backend::ibverbs::queue_pair::PollTarget;
     use crate::rdma_manager_actor::RdmaManagerActor;
@@ -259,9 +263,21 @@ pub mod test_utils {
                         (dptr, padded_size)
                     };
 
-                    let rdma_handle = rdma_actor
-                        .request_buffer(cx, dptr as usize, padded_size)
-                        .await?;
+                    // Register via RdmaManagerActor request_buffer + IbvManagerActor request_buffer
+                    let local_memory: Arc<dyn RdmaLocalMemory> =
+                        Arc::new(RawLocalMemory::new(dptr as usize, padded_size));
+                    let handle = rdma_actor
+                        .downcast_handle(cx)
+                        .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+                    let rdma_handle = handle.request_buffer(cx, local_memory).await?;
+                    let ibv_ref = rdma_actor
+                        .get_ibv_actor_ref(cx)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("no ibverbs backend"))?;
+                    ibv_ref
+                        .request_buffer(cx, rdma_handle.id)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("buffer not found"))?;
 
                     reply.send(cx, (rdma_handle, dptr as usize))?;
                     Ok(())
@@ -443,7 +459,7 @@ pub mod test_utils {
             }
             while send_db_idx < send_wqe_idx {
                 let offset = (send_db_idx % wqe_cnt as u64) * stride as u64;
-                let src_ptr = (base_ptr as *mut u8).wrapping_add(offset as usize);
+                let src_ptr = base_ptr.wrapping_add(offset as usize);
                 rdmaxcel_sys::launch_db_ring((*dv_qp).bf.reg, src_ptr as *mut std::ffi::c_void);
                 send_db_idx += 1;
                 rdmaxcel_sys::rdmaxcel_qp_store_send_db_idx(
@@ -516,12 +532,17 @@ pub mod test_utils {
         buffer_2: Buffer,
         pub client_1: Instance<()>,
         pub client_2: Instance<()>,
+        #[allow(dead_code)]
         pub actor_1: ActorRef<RdmaManagerActor>,
+        #[allow(dead_code)]
         pub actor_2: ActorRef<RdmaManagerActor>,
         pub ibv_actor_1: ActorRef<IbvManagerActor>,
         pub ibv_actor_2: ActorRef<IbvManagerActor>,
         pub rdma_handle_1: RdmaRemoteBuffer,
         pub rdma_handle_2: RdmaRemoteBuffer,
+        pub local_memory_1: Arc<dyn RdmaLocalMemory>,
+        #[allow(dead_code)]
+        pub local_memory_2: Arc<dyn RdmaLocalMemory>,
         pub ibv_buffer_1: IbvBuffer,
         pub ibv_buffer_2: IbvBuffer,
         cuda_actor_1: Option<ActorRef<CudaActor>>,
@@ -584,6 +605,9 @@ pub mod test_utils {
             static COUNTER: AtomicUsize = AtomicUsize::new(0);
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
 
+            // Create separate procs so each RdmaManagerActor lives in its
+            // own proc (matching production layout). Using Proc::direct
+            // gives us ActorHandles for local-only request_buffer calls.
             let proc_1 = Proc::direct(
                 ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
                 format!("rdma_test_{id}_a"),
@@ -624,19 +648,29 @@ pub mod test_utils {
             let rdma_handle_2;
             let ibv_buffer_1;
             let ibv_buffer_2;
+            let local_memory_1: Arc<dyn RdmaLocalMemory>;
+            let local_memory_2: Arc<dyn RdmaLocalMemory>;
 
             // Process first accelerator
             if parsed_accel1.0 == "cpu" {
                 let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
+                let ptr = buffer.as_mut_ptr() as u64;
                 buf_vec.push(Buffer {
-                    ptr: buffer.as_mut_ptr() as u64,
+                    ptr,
                     len: buffer.len(),
                     cpu_ref: Some(buffer),
                 });
-                rdma_handle_1 = actor_1
-                    .request_buffer(&instance_1, buf_vec[0].ptr as usize, buffer_size)
+                local_memory_1 = Arc::new(RawLocalMemory::new(ptr as usize, buffer_size));
+                let handle_1 = actor_1
+                    .downcast_handle(&instance_1)
+                    .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+                rdma_handle_1 = handle_1
+                    .request_buffer(&instance_1, local_memory_1.clone())
                     .await?;
-                ibv_buffer_1 = IbvBuffer::from(&rdma_handle_1);
+                ibv_buffer_1 = ibv_actor_1
+                    .request_buffer(&instance_1, rdma_handle_1.id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("buffer not found"))?;
             } else {
                 // CUDA case - spawn CudaActor on the same proc
                 let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
@@ -647,8 +681,12 @@ pub mod test_utils {
                     .create_buffer(&instance_1, buffer_size, actor_1.clone())
                     .await?;
                 rdma_handle_1 = rdma_buf;
-                ibv_buffer_1 = IbvBuffer::from(&rdma_handle_1);
+                ibv_buffer_1 = ibv_actor_1
+                    .request_buffer(&instance_1, rdma_handle_1.id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("buffer not found"))?;
                 device_ptr_1 = Some(dev_ptr);
+                local_memory_1 = Arc::new(RawLocalMemory::new(dev_ptr, buffer_size));
 
                 buf_vec.push(Buffer {
                     ptr: ibv_buffer_1.addr as u64,
@@ -661,15 +699,23 @@ pub mod test_utils {
             // Process second accelerator
             if parsed_accel2.0 == "cpu" {
                 let mut buffer = vec![0u8; buffer_size].into_boxed_slice();
+                let ptr = buffer.as_mut_ptr() as u64;
                 buf_vec.push(Buffer {
-                    ptr: buffer.as_mut_ptr() as u64,
+                    ptr,
                     len: buffer.len(),
                     cpu_ref: Some(buffer),
                 });
-                rdma_handle_2 = actor_2
-                    .request_buffer(&instance_2, buf_vec[1].ptr as usize, buffer_size)
+                local_memory_2 = Arc::new(RawLocalMemory::new(ptr as usize, buffer_size));
+                let handle_2 = actor_2
+                    .downcast_handle(&instance_2)
+                    .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+                rdma_handle_2 = handle_2
+                    .request_buffer(&instance_2, local_memory_2.clone())
                     .await?;
-                ibv_buffer_2 = IbvBuffer::from(&rdma_handle_2);
+                ibv_buffer_2 = ibv_actor_2
+                    .request_buffer(&instance_2, rdma_handle_2.id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("buffer not found"))?;
             } else {
                 // CUDA case - spawn CudaActor on the same proc
                 let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
@@ -680,8 +726,12 @@ pub mod test_utils {
                     .create_buffer(&instance_2, buffer_size, actor_2.clone())
                     .await?;
                 rdma_handle_2 = rdma_buf;
-                ibv_buffer_2 = IbvBuffer::from(&rdma_handle_2);
+                ibv_buffer_2 = ibv_actor_2
+                    .request_buffer(&instance_2, rdma_handle_2.id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("buffer not found"))?;
                 device_ptr_2 = Some(dev_ptr);
+                local_memory_2 = Arc::new(RawLocalMemory::new(dev_ptr, buffer_size));
 
                 buf_vec.push(Buffer {
                     ptr: ibv_buffer_2.addr as u64,
@@ -721,6 +771,8 @@ pub mod test_utils {
                 ibv_actor_2,
                 rdma_handle_1,
                 rdma_handle_2,
+                local_memory_1,
+                local_memory_2,
                 ibv_buffer_1,
                 ibv_buffer_2,
                 cuda_actor_1,
@@ -731,12 +783,12 @@ pub mod test_utils {
         }
 
         pub async fn cleanup(self) -> Result<(), anyhow::Error> {
-            self.actor_1
-                .release_buffer(&self.client_1, self.rdma_handle_1.clone())
+            self.ibv_actor_1
+                .release_buffer(&self.client_1, self.rdma_handle_1.id)
                 .await?;
 
-            self.actor_2
-                .release_buffer(&self.client_2, self.rdma_handle_2.clone())
+            self.ibv_actor_2
+                .release_buffer(&self.client_2, self.rdma_handle_2.id)
                 .await?;
             Ok(())
         }

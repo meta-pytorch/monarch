@@ -55,24 +55,37 @@ use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollTarget;
-use crate::GetIbvActorRefClient;
+use crate::RdmaOp;
 use crate::RdmaOpType;
+use crate::RdmaTransportLevel;
+use crate::backend::RdmaBackend;
 use crate::rdma_components::get_registered_cuda_segments;
+use crate::rdma_manager_actor::GetIbvActorRefClient;
 use crate::rdma_manager_actor::RdmaManagerActor;
+use crate::rdma_manager_actor::RdmaManagerMessageClient;
 use crate::rdma_manager_actor::get_rdmaxcel_error_message;
 use crate::validate_execution_context;
 
 /// Messages handled by [`IbvManagerActor`].
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub enum IbvManagerMessage {
+    /// Register the MR for a buffer identified by `remote_buf_id`. Resolves
+    /// the local memory via the parent [`RdmaManagerActor`]'s
+    /// `RequestLocalMemory`, registers it as an ibverbs MR, and returns
+    /// the resulting [`IbvBuffer`].
+    ///
+    /// Returns `None` if the buffer has already been released or does not
+    /// exist.
     RequestBuffer {
-        addr: usize,
-        size: usize,
+        remote_buf_id: usize,
         #[reply]
-        reply: OncePortRef<IbvBuffer>,
+        reply: OncePortRef<Option<IbvBuffer>>,
     },
+    /// Release a buffer registration by `remote_buf_id`.
     ReleaseBuffer {
-        buffer: IbvBuffer,
+        remote_buf_id: usize,
+        #[reply]
+        reply: OncePortRef<()>,
     },
     RequestQueuePair {
         other: ActorRef<IbvManagerActor>,
@@ -117,14 +130,13 @@ pub enum IbvManagerMessage {
 }
 wirevalue::register_type!(IbvManagerMessage);
 
-/// Submit message for the [`IbvManagerActor`].
+/// Local-only submit message for the [`IbvManagerActor`].
 ///
-/// Kept as a separate struct (rather than a variant in [`IbvManagerMessage`])
-/// so it can evolve independently. Not serializable — only sent locally
-/// via [`ActorHandle`].
+/// Not serializable because [`IbvOp`] contains `Arc<dyn RdmaLocalMemory>`.
+/// Can only be sent within the same process.
 #[derive(Handler, HandleClient, Debug)]
 pub struct IbvSubmit {
-    pub op: IbvOp,
+    pub ops: Vec<IbvOp>,
     pub timeout: Duration,
     #[reply]
     pub reply: OncePortHandle<Result<(), String>>,
@@ -168,6 +180,9 @@ pub struct IbvManagerActor {
     // Map of PCI addresses to their optimal RDMA devices
     // This is populated during actor initialization using the device selection algorithm
     pci_to_device: HashMap<String, IbvDevice>,
+
+    // Map from buffer_id to registration details.
+    buffer_registrations: HashMap<usize, IbvBuffer>,
 }
 
 #[async_trait]
@@ -313,6 +328,7 @@ impl IbvManagerActor {
             mr_map: HashMap::new(),
             mrv_id: 0,
             pci_to_device,
+            buffer_registrations: HashMap::new(),
         })
     }
 
@@ -620,29 +636,59 @@ impl IbvManagerActor {
         ))
     }
 
-    /// Core submit logic used by the [`IbvSubmit`] handler.
+    /// Core submit logic: registers local MR, resolves remote
+    /// IbvBuffer lazily, executes the op, and deregisters local MR.
     async fn execute_op(
         &mut self,
         cx: &Context<'_, Self>,
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        let mut qp = self
-            .request_queue_pair(
-                cx,
-                op.remote_manager,
-                op.local_buffer.device_name.clone(),
-                op.remote_buffer.device_name.clone(),
-            )
-            .await?;
-
-        let wr_id = match op.op_type {
-            RdmaOpType::WriteFromLocal => qp.put(op.local_buffer.clone(), op.remote_buffer)?,
-            RdmaOpType::ReadIntoLocal => qp.get(op.local_buffer.clone(), op.remote_buffer)?,
+        // Register the local memory to get an IbvBuffer
+        let (local_mrv, local_device_name) =
+            self.register_mr(op.local_memory.addr(), op.local_memory.size())?;
+        let local_buffer = IbvBuffer {
+            mr_id: local_mrv.id,
+            lkey: local_mrv.lkey,
+            rkey: local_mrv.rkey,
+            addr: local_mrv.rdma_addr,
+            size: local_mrv.size,
+            device_name: local_device_name,
         };
 
-        self.wait_for_completion(&op.local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
-            .await
+        let op_result = async {
+            let mut qp = self
+                .request_queue_pair(
+                    cx,
+                    op.remote_manager.clone(),
+                    local_buffer.device_name.clone(),
+                    op.remote_buffer.device_name.clone(),
+                )
+                .await?;
+
+            let wr_id = match op.op_type {
+                RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
+                RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
+            };
+
+            self.wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
+                .await
+        }
+        .await;
+
+        // Always deregister the locally registered MR
+        let dereg_result = self.deregister_mr(local_buffer.mr_id);
+
+        match (op_result, dereg_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), Ok(())) => Err(e),
+            (Ok(()), Err(e)) => Err(e),
+            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
+                "deregister MR error: {}; op error: {}",
+                dereg_err,
+                op_err
+            )),
+        }
     }
 }
 
@@ -651,29 +697,48 @@ impl IbvManagerActor {
 impl IbvManagerMessageHandler for IbvManagerActor {
     async fn request_buffer(
         &mut self,
-        _cx: &Context<Self>,
-        addr: usize,
-        size: usize,
-    ) -> Result<IbvBuffer, anyhow::Error> {
-        let (mrv, device_name) = self.register_mr(addr, size)?;
+        cx: &Context<Self>,
+        remote_buf_id: usize,
+    ) -> Result<Option<IbvBuffer>, anyhow::Error> {
+        // If already registered, return it
+        if let Some(buf) = self.buffer_registrations.get(&remote_buf_id) {
+            return Ok(Some(buf.clone()));
+        }
 
-        Ok(IbvBuffer {
+        // Resolve local memory from the parent RdmaManagerActor.
+        // Returns None if the buffer has already been released or does
+        // not exist.
+        let owner = self.owner.get().unwrap();
+        let mem = match owner.request_local_memory(cx, remote_buf_id).await? {
+            Some(mem) => mem,
+            None => return Ok(None),
+        };
+
+        let (mrv, device_name) = self.register_mr(mem.addr(), mem.size())?;
+
+        let buf = IbvBuffer {
             mr_id: mrv.id,
             lkey: mrv.lkey,
             rkey: mrv.rkey,
             addr: mrv.rdma_addr,
             size: mrv.size,
             device_name,
-        })
+        };
+
+        self.buffer_registrations.insert(remote_buf_id, buf.clone());
+
+        Ok(Some(buf))
     }
 
     async fn release_buffer(
         &mut self,
         _cx: &Context<Self>,
-        buffer: IbvBuffer,
+        remote_buf_id: usize,
     ) -> Result<(), anyhow::Error> {
-        self.deregister_mr(buffer.mr_id)
-            .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
+        if let Some(buf) = self.buffer_registrations.remove(&remote_buf_id) {
+            self.deregister_mr(buf.mr_id)
+                .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
+        }
         Ok(())
     }
 
@@ -1012,12 +1077,64 @@ impl IbvSubmitHandler for IbvManagerActor {
     async fn ibv_submit(
         &mut self,
         cx: &Context<Self>,
-        op: IbvOp,
+        ops: Vec<IbvOp>,
         timeout: Duration,
     ) -> Result<Result<(), String>, anyhow::Error> {
-        Ok(self
-            .execute_op(cx, op, timeout)
-            .await
-            .map_err(|e| e.to_string()))
+        let deadline = Instant::now() + timeout;
+        let mut result = Ok(());
+        for op in ops {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                result = Err("submit timed out".to_string());
+                break;
+            }
+            if let Err(e) = self.execute_op(cx, op, remaining).await {
+                result = Err(e.to_string());
+                break;
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl RdmaBackend for ActorHandle<IbvManagerActor> {
+    type TransportInfo = ();
+
+    /// Submit a batch of RDMA operations.
+    ///
+    /// Delegates to the [`IbvManagerActor`], which manages QPs and connections
+    /// internally. Each op is routed based on its type (read/write).
+    /// Registers local memory on the fly; remote buffers are lazily
+    /// resolved via [`IbvManagerMessageClient::request_buffer`].
+    async fn submit(
+        &mut self,
+        cx: &(impl hyperactor::context::Actor + Send + Sync),
+        ops: Vec<RdmaOp>,
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        let mut ibv_ops = Vec::with_capacity(ops.len());
+        for op in ops {
+            let (remote_ibv_mgr, remote_ibv_buffer) = op.remote.resolve_ibv(cx).await?;
+
+            ibv_ops.push(IbvOp {
+                op_type: op.op_type,
+                local_memory: op.local.clone(),
+                remote_buffer: remote_ibv_buffer,
+                remote_manager: remote_ibv_mgr,
+            });
+        }
+
+        <Self as IbvSubmitClient>::ibv_submit(self, cx, ibv_ops, timeout)
+            .await?
+            .map_err(|e: String| anyhow::anyhow!(e))
+    }
+
+    fn transport_level(&self) -> RdmaTransportLevel {
+        RdmaTransportLevel::Nic
+    }
+
+    fn transport_info(&self) -> Option<Self::TransportInfo> {
+        None
     }
 }
