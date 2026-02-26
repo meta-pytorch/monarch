@@ -9,16 +9,16 @@
 // RDMA requires frequent unsafe code blocks
 #![allow(clippy::undocumented_unsafe_blocks)]
 
+pub(crate) mod backend;
 pub mod device_selection;
 pub mod efa;
-mod ibverbs_primitives;
 mod rdma_components;
 mod rdma_manager_actor;
 
 #[macro_use]
 mod macros;
 
-pub use ibverbs_primitives::*;
+pub use backend::ibverbs::primitives::*;
 pub use rdma_components::SegmentScannerFn;
 // Re-export segment scanner types for extension crate
 pub use rdma_components::register_segment_scanner;
