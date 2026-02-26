@@ -8,23 +8,21 @@
 
 //! # RDMA Manager Actor
 //!
-//! Manages RDMA connections and operations using `hyperactor` for asynchronous messaging.
+//! Per-process actor that owns RDMA buffer registrations and delegates
+//! transport-specific work to backend actors (currently [`IbvManagerActor`]).
 //!
-//! ## Architecture
+//! ## Responsibilities
 //!
-//! `RdmaManagerActor` is a per-host entity that delegates to backend-specific
-//! managers (currently `IbvManagerActor`) for the actual RDMA operations.
-//!
-//! ## Core Operations
-//!
-//! - Connection establishment with partner actors
-//! - RDMA operations (put/write, get/read)
-//! - Completion polling
-//! - Memory region management
-//!
-//! ## Usage
-//!
-//! See test examples: `test_rdma_write_loopback` and `test_rdma_read_loopback`.
+//! - Assigns a unique `remote_buf_id` to each registered local memory handle
+//!   and stores the `Arc<dyn RdmaLocalMemory>` for later retrieval.
+//! - Produces [`RdmaRemoteBuffer`] tokens that can be sent to remote peers so
+//!   they can address this buffer over RDMA.
+//! - Delegates MR registration, QP management, and data movement to the
+//!   ibverbs backend ([`IbvManagerActor`]).
+//! - Handles remote [`ReleaseBuffer`] requests to clean up registrations.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -35,6 +33,7 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
+use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
@@ -43,14 +42,14 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::OnceCell;
 use typeuri::Named;
 
-use crate::backend::ibverbs::IbvBuffer;
+use crate::RdmaLocalMemory;
+use crate::backend::RdmaBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
-use crate::backend::ibverbs::primitives::IbvQpInfo;
-use crate::backend::ibverbs::queue_pair::IbvQueuePair;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
@@ -63,75 +62,40 @@ pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
     }
 }
 
-/// Represents a reference to a remote RDMA buffer that can be accessed via RDMA operations.
-/// This struct encapsulates all the information needed to identify and access a memory region
-/// on a remote host using RDMA.
-#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
+/// Local-only messages for the [`RdmaManagerActor`].
+///
+/// These messages carry `Arc<dyn RdmaLocalMemory>` and are therefore
+/// not serializable — they can only be sent within the same process.
+#[derive(Handler, HandleClient, Debug)]
 pub enum RdmaManagerMessage {
+    /// Register a local memory handle and return a [`RdmaRemoteBuffer`] that
+    /// remote peers can use to address this buffer over RDMA.
     RequestBuffer {
-        addr: usize,
-        size: usize,
+        local: Arc<dyn RdmaLocalMemory>,
         #[reply]
-        /// `reply` - Reply channel to return the RDMA buffer handle
-        reply: OncePortRef<RdmaRemoteBuffer>,
+        reply: OncePortHandle<RdmaRemoteBuffer>,
     },
-    ReleaseBuffer {
-        buffer: RdmaRemoteBuffer,
-    },
-    RequestQueuePair {
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
+    /// Look up the local memory handle for a given `remote_buf_id`. Returns
+    /// `None` if the id does not correspond to a registered buffer.
+    RequestLocalMemory {
+        remote_buf_id: usize,
         #[reply]
-        /// `reply` - Reply channel to return the queue pair for communication
-        reply: OncePortRef<IbvQueuePair>,
-    },
-    Connect {
-        /// `other` - The ActorId of the actor to connect to
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        /// `endpoint` - Connection information needed to establish the RDMA connection
-        endpoint: IbvQpInfo,
-    },
-    InitializeQP {
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        /// `reply` - Reply channel to return the queue pair for communication
-        reply: OncePortRef<bool>,
-    },
-    ConnectionInfo {
-        /// `other` - The ActorId to get connection info for
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        /// `reply` - Reply channel to return the connection info
-        reply: OncePortRef<IbvQpInfo>,
-    },
-    ReleaseQueuePair {
-        /// `other` - The ActorId to release queue pair for
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        /// `qp` - The queue pair to return (ownership transferred back)
-        qp: IbvQueuePair,
-    },
-    GetQpState {
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        #[reply]
-        /// `reply` - Reply channel to return the QP state
-        reply: OncePortRef<u32>,
+        reply: OncePortHandle<Option<Arc<dyn RdmaLocalMemory>>>,
     },
 }
-wirevalue::register_type!(RdmaManagerMessage);
+
+/// Serializable release message for wire transport.
+///
+/// Used by [`RdmaRemoteBuffer::drop_buffer`] to release a buffer
+/// from a remote process.
+#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
+pub struct ReleaseBuffer {
+    pub id: usize,
+}
+wirevalue::register_type!(ReleaseBuffer);
 
 /// Serializable query for resolving the [`IbvManagerActor`] ref
-/// from a remote [`RdmaManagerActor`].
+/// from a remote [`RdmaManagerActor`]. Only used in testing.
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
@@ -172,11 +136,13 @@ impl<A: Actor> RdmaBackendActor<A> {
 #[hyperactor::export(
     spawn = true,
     handlers = [
-        RdmaManagerMessage,
         GetIbvActorRef,
+        ReleaseBuffer,
     ],
 )]
 pub struct RdmaManagerActor {
+    next_remote_buf_id: usize,
+    buffers: HashMap<usize, Arc<dyn RdmaLocalMemory>>,
     ibverbs: RdmaBackendActor<IbvManagerActor>,
 }
 
@@ -198,7 +164,11 @@ impl RemoteSpawn for RdmaManagerActor {
 
     async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let ibv = RdmaBackendActor::Created(IbvManagerActor::new(params).await?);
-        Ok(Self { ibverbs: ibv })
+        Ok(Self {
+            next_remote_buf_id: 0,
+            buffers: HashMap::new(),
+            ibverbs: ibv,
+        })
     }
 }
 
@@ -233,138 +203,44 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
 }
 
 #[async_trait]
+#[hyperactor::handle(ReleaseBuffer)]
+impl ReleaseBufferHandler for RdmaManagerActor {
+    async fn release_buffer(&mut self, cx: &Context<Self>, id: usize) -> Result<(), anyhow::Error> {
+        self.buffers.remove(&id);
+        self.ibverbs.handle().release_buffer(cx, id).await
+    }
+}
+
+#[async_trait]
 #[hyperactor::handle(RdmaManagerMessage)]
 impl RdmaManagerMessageHandler for RdmaManagerActor {
     async fn request_buffer(
         &mut self,
         cx: &Context<Self>,
-        addr: usize,
-        size: usize,
+        local: Arc<dyn RdmaLocalMemory>,
     ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
-        let ibv_buf = self.ibverbs.handle().request_buffer(cx, addr, size).await?;
+        let remote_buf_id = self.next_remote_buf_id;
+        self.next_remote_buf_id += 1;
+        let size = local.size();
+
+        self.buffers.insert(remote_buf_id, local);
+
         Ok(RdmaRemoteBuffer {
+            id: remote_buf_id,
+            size,
             owner: cx.bind().clone(),
-            mr_id: ibv_buf.mr_id,
-            lkey: ibv_buf.lkey,
-            rkey: ibv_buf.rkey,
-            addr: ibv_buf.addr,
-            size: ibv_buf.size,
-            device_name: ibv_buf.device_name,
+            backends: vec![RdmaBackendContext::Ibverbs(
+                self.ibverbs.handle().bind(),
+                Arc::new(OnceCell::new()),
+            )],
         })
     }
 
-    async fn release_buffer(
+    async fn request_local_memory(
         &mut self,
-        cx: &Context<Self>,
-        buffer: RdmaRemoteBuffer,
-    ) -> Result<(), anyhow::Error> {
-        self.ibverbs
-            .handle()
-            .release_buffer(cx, IbvBuffer::from(&buffer))
-            .await
-    }
-
-    async fn request_queue_pair(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<IbvQueuePair, anyhow::Error> {
-        let ibv_other = other
-            .get_ibv_actor_ref(cx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
-        self.ibverbs
-            .handle()
-            .request_queue_pair(cx, ibv_other, self_device, other_device)
-            .await
-    }
-
-    async fn initialize_qp(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<bool, anyhow::Error> {
-        let ibv_other = other
-            .get_ibv_actor_ref(cx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
-        self.ibverbs
-            .handle()
-            .initialize_qp(cx, ibv_other, self_device, other_device)
-            .await
-    }
-
-    async fn connect(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        endpoint: IbvQpInfo,
-    ) -> Result<(), anyhow::Error> {
-        let ibv_other = other
-            .get_ibv_actor_ref(cx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
-        self.ibverbs
-            .handle()
-            .connect(cx, ibv_other, self_device, other_device, endpoint)
-            .await
-    }
-
-    async fn connection_info(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<IbvQpInfo, anyhow::Error> {
-        let ibv_other = other
-            .get_ibv_actor_ref(cx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
-        self.ibverbs
-            .handle()
-            .connection_info(cx, ibv_other, self_device, other_device)
-            .await
-    }
-
-    async fn release_queue_pair(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-        qp: IbvQueuePair,
-    ) -> Result<(), anyhow::Error> {
-        let ibv_other = other
-            .get_ibv_actor_ref(cx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
-        self.ibverbs
-            .handle()
-            .release_queue_pair(cx, ibv_other, self_device, other_device, qp)
-            .await
-    }
-
-    async fn get_qp_state(
-        &mut self,
-        cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
-        self_device: String,
-        other_device: String,
-    ) -> Result<u32, anyhow::Error> {
-        let ibv_other = other
-            .get_ibv_actor_ref(cx)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
-        self.ibverbs
-            .handle()
-            .get_qp_state(cx, ibv_other, self_device, other_device)
-            .await
+        _cx: &Context<Self>,
+        remote_buf_id: usize,
+    ) -> Result<Option<Arc<dyn RdmaLocalMemory>>, anyhow::Error> {
+        Ok(self.buffers.get(&remote_buf_id).cloned())
     }
 }

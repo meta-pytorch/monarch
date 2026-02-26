@@ -54,6 +54,7 @@
 //! or
 //! $ buck2 run @//mode/opt //monarch/monarch_rdma/examples/parameter_server:parameter_server-unittest
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
@@ -77,6 +78,8 @@ use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::global_root_client;
 use monarch_rdma::IbvConfig;
+use monarch_rdma::RawLocalMemory;
+use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
@@ -173,7 +176,12 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
         if self.weights_handle.is_none() {
             let addr = self.weights_data.as_ptr() as usize;
             let size = self.weights_data.len();
-            let weights_handle = self.owner_ref.request_buffer(cx, addr, size).await?;
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let handle = self
+                .owner_ref
+                .downcast_handle(cx)
+                .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+            let weights_handle = handle.request_buffer(cx, local_memory).await?;
             self.weights_handle = Some(weights_handle);
         }
         let weights_handle = self
@@ -187,7 +195,13 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
             std::collections::hash_map::Entry::Vacant(e) => {
                 let addr = self.grad_buffer_data[rank].as_ptr() as usize;
                 let size = self.grad_buffer_data[rank].len();
-                let grad_buffer_handle = self.owner_ref.request_buffer(cx, addr, size).await?;
+                let local_memory: Arc<dyn RdmaLocalMemory> =
+                    Arc::new(RawLocalMemory::new(addr, size));
+                let handle = self
+                    .owner_ref
+                    .downcast_handle(cx)
+                    .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+                let grad_buffer_handle = handle.request_buffer(cx, local_memory).await?;
                 e.insert(grad_buffer_handle.clone());
                 grad_buffer_handle
             }
@@ -246,7 +260,6 @@ pub struct WorkerActor {
     ps_grad_handle: Option<RdmaRemoteBuffer>,
     weights_data: Box<[u8]>,
     local_gradients: Box<[u8]>,
-    rdma_manager: Option<ActorRef<RdmaManagerActor>>,
 }
 
 #[async_trait]
@@ -274,7 +287,6 @@ impl RemoteSpawn for WorkerActor {
             ps_grad_handle: None,
             weights_data,
             local_gradients,
-            rdma_manager: None,
         })
     }
 }
@@ -282,14 +294,8 @@ impl RemoteSpawn for WorkerActor {
 // Message to initialize the worker.
 // This message is sent to workers to establish their connection with the parameter server
 // and obtain handles to the shared weights and gradient buffers.
-// - ActorRef<RdmaManagerActor>: the actor ref to the parameter server
-// - Vec<ActorRef<RdmaManagerActor>>: the list of RdmaManagerActors. Used for the worker to get
-//   given its casted rank.
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerInit(
-    pub ActorRef<ParameterServerActor>,
-    pub Vec<ActorRef<RdmaManagerActor>>,
-);
+pub struct WorkerInit(pub ActorRef<ParameterServerActor>);
 
 // Message to signal the worker to update its gradients and transmit them to the server.
 // The PortRef<bool> is used to notify the main process when the operation completes.
@@ -307,13 +313,11 @@ pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
 
 #[async_trait]
 impl Handler<WorkerInit> for WorkerActor {
-    /// Initialize the worker. This involves:
-    /// 1) getting RdmaRemoteBuffers from the parameter server
-    /// 2) assigning the associated rdma manager
+    /// Initialize the worker. This involves getting RdmaRemoteBuffers from the parameter server.
     async fn handle(
         &mut self,
         cx: &Context<Self>,
-        WorkerInit(ps_ref, rdma_managers): WorkerInit,
+        WorkerInit(ps_ref): WorkerInit,
     ) -> Result<(), anyhow::Error> {
         let rank = cx.cast_point().rank();
 
@@ -324,14 +328,6 @@ impl Handler<WorkerInit> for WorkerActor {
         let (ps_weights_handle, ps_grad_handle) = receiver.recv().await?;
         self.ps_weights_handle = Some(ps_weights_handle);
         self.ps_grad_handle = Some(ps_grad_handle);
-        if let Some(rdma_manager) = rdma_managers.get(rank) {
-            self.rdma_manager = Some(rdma_manager.clone());
-        } else {
-            return Err(anyhow::anyhow!(
-                "Invalid rank: {}. No RDMA manager found.",
-                rank
-            ));
-        }
         Ok(())
     }
 }
@@ -362,23 +358,16 @@ impl Handler<WorkerStep> for WorkerActor {
             self.local_gradients
         );
 
-        let owner_ref = self
-            .rdma_manager
-            .as_ref()
-            .expect("worker should have been initialized");
         let ps_grad_handle = self
             .ps_grad_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let /*mut*/ buffer = owner_ref
-            .request_buffer(
-                cx,
-                self.local_gradients.as_ptr() as usize,
-                self.local_gradients.len(),
-            )
-            .await?;
+        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(
+            self.local_gradients.as_ptr() as usize,
+            self.local_gradients.len(),
+        ));
 
-        buffer.read_into(cx, ps_grad_handle.clone(), 5).await?;
+        ps_grad_handle.write_from_local(cx, local_memory, 5).await?;
 
         self.local_gradients.fill(0);
 
@@ -402,22 +391,17 @@ impl Handler<WorkerUpdate> for WorkerActor {
             rank,
             self.weights_data,
         );
-        let /*mut*/ buffer = self
-            .rdma_manager
-            .as_ref()
-            .expect("Rmda Manager should have been initialized")
-            .request_buffer(
-                cx,
-                self.weights_data.as_ptr() as usize,
-                self.weights_data.len(),
-            )
-            .await?;
-
         let ps_weights_handle = self
             .ps_weights_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        buffer.write_from(cx, ps_weights_handle.clone(), 5).await?;
+        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(
+            self.weights_data.as_ptr() as usize,
+            self.weights_data.len(),
+        ));
+        ps_weights_handle
+            .read_into_local(cx, local_memory, 5)
+            .await?;
         reply.send(cx, true)?;
         Ok(())
     }
@@ -520,7 +504,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         worker_ibv_config
     );
     // Similarly, create an RdmaManagerActor corresponding to each worker.
-    let worker_rdma_manager_mesh: ActorMesh<RdmaManagerActor> = worker_proc_mesh
+    let _worker_rdma_manager_mesh: ActorMesh<RdmaManagerActor> = worker_proc_mesh
         .spawn_service(instance, "rdma_manager", &Some(worker_ibv_config))
         .await
         .unwrap();
@@ -544,17 +528,12 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
         .await
         .unwrap();
 
-    let worker_rdma_managers: Vec<ActorRef<RdmaManagerActor>> =
-        (0..Ranked::region(&*worker_rdma_manager_mesh).num_ranks())
-            .map(|i| worker_rdma_manager_mesh.get(i).unwrap().clone())
-            .collect();
-
     // We intentionally decouple spawning with initialization, which is fairly common in Ray workloads
     // In this case, we use it for dual purpose - be able to use the cast APIs to assign rank (Monarch specific) and
     // to get access to return values for error messaging (applies to both Monarch and Ray)
     tracing::info!("initializing worker actor mesh");
     worker_actor_mesh
-        .cast(instance, WorkerInit(ps_actor.clone(), worker_rdma_managers))
+        .cast(instance, WorkerInit(ps_actor.clone()))
         .unwrap();
 
     tracing::info!("starting training loop");

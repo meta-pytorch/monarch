@@ -43,6 +43,7 @@
 /// Maximum size for a single RDMA operation in bytes (1 GiB)
 use std::fs;
 use std::result::Result;
+use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::ActorRef;
@@ -51,112 +52,113 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::GetIbvActorRefClient;
+use crate::RdmaLocalMemory;
 use crate::RdmaManagerActor;
-use crate::RdmaManagerMessageClient;
+use crate::RdmaOp;
 use crate::RdmaOpType;
+use crate::ReleaseBufferClient;
+use crate::backend::RdmaBackend;
+use crate::backend::RdmaBackendContext;
 use crate::backend::ibverbs::IbvBuffer;
-use crate::backend::ibverbs::IbvOp;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
-use crate::backend::ibverbs::manager_actor::IbvSubmitClient;
+use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 
+/// Lightweight handle representing a registered RDMA buffer.
+///
+/// Contains an id for the buffer registration, the buffer size, a reference
+/// to the owning [`RdmaManagerActor`], and backend-specific contexts for
+/// performing RDMA operations.
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
 pub struct RdmaRemoteBuffer {
-    pub owner: ActorRef<RdmaManagerActor>,
-    pub mr_id: usize,
-    pub lkey: u32,
-    pub rkey: u32,
-    pub addr: usize,
+    pub id: usize,
     pub size: usize,
-    pub device_name: String,
+    pub owner: ActorRef<RdmaManagerActor>,
+    pub backends: Vec<RdmaBackendContext>,
 }
 wirevalue::register_type!(RdmaRemoteBuffer);
 
-impl From<&RdmaRemoteBuffer> for IbvBuffer {
-    fn from(buf: &RdmaRemoteBuffer) -> Self {
-        IbvBuffer {
-            mr_id: buf.mr_id,
-            lkey: buf.lkey,
-            rkey: buf.rkey,
-            addr: buf.addr,
-            size: buf.size,
-            device_name: buf.device_name.clone(),
-        }
-    }
-}
-
 impl RdmaRemoteBuffer {
-    /// Push data from this local buffer into the remote buffer (local→remote).
+    /// Push data from local memory into this remote buffer (local->remote).
     ///
-    /// Both buffers must already be registered. Resolves the local
-    /// [`IbvManagerActor`] via [`IbvManagerActor::local_handle`] and sends
-    /// an [`IbvSubmit`] with pre-registered [`IbvBuffer`]s.
-    pub async fn read_into(
+    /// Resolves the *local* [`IbvManagerActor`] via [`IbvManagerActor::local_handle`]
+    /// and delegates to [`RdmaBackend::submit`].
+    pub async fn write_from_local(
         &self,
         client: &(impl context::Actor + Send + Sync),
-        remote: RdmaRemoteBuffer,
+        local: Arc<dyn RdmaLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
-        let local_ibv = IbvManagerActor::local_handle(client).await?;
-        let remote_ibv_ref = remote
-            .owner
-            .get_ibv_actor_ref(client)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote owner has no ibverbs backend"))?;
-        IbvSubmitClient::ibv_submit(
-            &local_ibv,
-            client,
-            IbvOp {
-                op_type: RdmaOpType::WriteFromLocal,
-                local_buffer: IbvBuffer::from(self),
-                remote_buffer: IbvBuffer::from(&remote),
-                remote_manager: remote_ibv_ref,
-            },
-            Duration::from_secs(timeout),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let mut local_ibv_backend = IbvManagerActor::local_handle(client).await?;
+        local_ibv_backend
+            .submit(
+                client,
+                vec![RdmaOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local,
+                    remote: self.clone(),
+                }],
+                Duration::from_secs(timeout),
+            )
+            .await?;
         Ok(true)
     }
 
-    /// Pull data from the remote buffer into this local buffer (remote→local).
+    /// Pull data from this remote buffer into local memory (remote->local).
     ///
-    /// Both buffers must already be registered. Resolves the local
-    /// [`IbvManagerActor`] via [`IbvManagerActor::local_handle`] and sends
-    /// an [`IbvSubmit`] with pre-registered [`IbvBuffer`]s.
-    pub async fn write_from(
+    /// Resolves the *local* [`IbvManagerActor`] via [`IbvManagerActor::local_handle`]
+    /// and delegates to [`RdmaBackend::submit`].
+    pub async fn read_into_local(
         &self,
         client: &(impl context::Actor + Send + Sync),
-        remote: RdmaRemoteBuffer,
+        local: Arc<dyn RdmaLocalMemory>,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
-        let local_ibv = IbvManagerActor::local_handle(client).await?;
-        let remote_ibv_ref = remote
-            .owner
-            .get_ibv_actor_ref(client)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("remote owner has no ibverbs backend"))?;
-        IbvSubmitClient::ibv_submit(
-            &local_ibv,
-            client,
-            IbvOp {
-                op_type: RdmaOpType::ReadIntoLocal,
-                local_buffer: IbvBuffer::from(self),
-                remote_buffer: IbvBuffer::from(&remote),
-                remote_manager: remote_ibv_ref,
-            },
-            Duration::from_secs(timeout),
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+        let mut local_ibv_backend = IbvManagerActor::local_handle(client).await?;
+        local_ibv_backend
+            .submit(
+                client,
+                vec![RdmaOp {
+                    op_type: RdmaOpType::ReadIntoLocal,
+                    local,
+                    remote: self.clone(),
+                }],
+                Duration::from_secs(timeout),
+            )
+            .await?;
         Ok(true)
     }
 
     /// Drop the buffer and release remote handles.
     pub async fn drop_buffer(&self, client: &impl context::Actor) -> Result<(), anyhow::Error> {
-        tracing::debug!("[buffer] dropping buffer {:?}", self);
-        self.owner.release_buffer(client, self.clone()).await?;
+        tracing::debug!("[buffer] dropping buffer id={}", self.id);
+        self.owner.release_buffer(client, self.id).await?;
         Ok(())
+    }
+
+    pub async fn resolve_ibv(
+        &self,
+        client: &impl context::Actor,
+    ) -> Result<(ActorRef<IbvManagerActor>, IbvBuffer), anyhow::Error> {
+        let RdmaBackendContext::Ibverbs(remote_ibv_mgr, remote_ibv_buf) =
+            self.backends.iter().map(Ok).next().unwrap_or_else(|| {
+                Err(anyhow::anyhow!(
+                    "ibverbs backend not found for buffer: {:?}",
+                    self
+                ))
+            })?;
+
+        Ok((
+            remote_ibv_mgr.clone(),
+            remote_ibv_buf
+                .get_or_try_init(async || {
+                    remote_ibv_mgr
+                        .request_buffer(client, self.id)
+                        .await?
+                        .ok_or_else(|| anyhow::anyhow!("buffer {} not found", self.id))
+                })
+                .await
+                .cloned()?,
+        ))
     }
 }
 
