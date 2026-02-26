@@ -16,9 +16,9 @@
 #[cfg(test)]
 mod tests {
     use crate::backend::ibverbs::PollTarget;
+    use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
     use crate::backend::ibverbs::primitives::get_all_devices;
     use crate::rdma_components::validate_execution_context;
-    use crate::rdma_manager_actor::RdmaManagerMessageClient;
     use crate::test_utils::test_utils::RdmaManagerTestEnv;
     use crate::test_utils::test_utils::*;
 
@@ -33,25 +33,25 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         // Poll for completion
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
-        env.actor_1
+        env.ibv_actor_1
             .release_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
                 qp_1,
             )
             .await?;
@@ -71,24 +71,24 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
-        env.actor_1
+        env.ibv_actor_1
             .release_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
                 qp_1,
             )
             .await?;
@@ -110,15 +110,15 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         // Poll for completion
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
@@ -140,15 +140,15 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -168,25 +168,25 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
         let mut qp_2 = env
-            .actor_2
+            .ibv_actor_2
             .request_queue_pair(
                 &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
+                env.ibv_actor_1.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                env.ibv_buffer_1.device_name.clone(),
             )
             .await?;
-        qp_1.recv(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
-        let wr_id = qp_2.put_with_recv(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
+        qp_1.recv(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        let wr_id = qp_2.put_with_recv(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
         env.verify_buffers(BSIZE, 0).await?;
         env.cleanup().await?;
@@ -206,15 +206,15 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         qp_1.ring_doorbell()?;
         // Poll for completion
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
@@ -236,15 +236,15 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
         let mut qp_2 = env
-            .actor_2
+            .ibv_actor_2
             .request_queue_pair(
                 &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
+                env.ibv_actor_1.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                env.ibv_buffer_1.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_2.enqueue_get(env.rdma_handle_2.clone(), env.rdma_handle_1.clone())?;
+        let wr_id = qp_2.enqueue_get(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
         qp_2.ring_doorbell()?;
         // Poll for completion
         wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
@@ -253,7 +253,7 @@ mod tests {
         Ok(())
     }
 
-    // Tests RdmaBufer's `read_into` API
+    // Tests RdmaBuffer's `read_into` API
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_into_cpu_vs_cpu() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
@@ -265,9 +265,8 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -275,7 +274,7 @@ mod tests {
         Ok(())
     }
 
-    // Tests RdmaBufer's `write_from` API
+    // Tests RdmaBuffer's `write_from` API
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_write_from_cpu_vs_cpu() -> Result<(), anyhow::Error> {
         const BSIZE: usize = 32;
@@ -287,9 +286,8 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .write_from(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -329,15 +327,15 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        qp_1.enqueue_put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
@@ -368,15 +366,15 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        qp_1.enqueue_get(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        qp_1.enqueue_get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
         ring_db_gpu(&qp_1).await?;
         // Poll for completion
         wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
@@ -406,34 +404,34 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
         let mut qp_2 = env
-            .actor_2
+            .ibv_actor_2
             .request_queue_pair(
                 &env.client_2,
-                env.actor_1.clone(),
-                env.rdma_handle_2.device_name.clone(),
-                env.rdma_handle_1.device_name.clone(),
+                env.ibv_actor_1.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                env.ibv_buffer_1.device_name.clone(),
             )
             .await?;
         recv_wqe_gpu(
             &mut qp_1,
-            &env.rdma_handle_1.clone(),
-            &env.rdma_handle_2.clone(),
+            &env.ibv_buffer_1,
+            &env.ibv_buffer_2,
             rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RECV,
         )
         .await?;
         send_wqe_gpu(
             &mut qp_2,
-            &env.rdma_handle_2.clone(),
-            &env.rdma_handle_1.clone(),
+            &env.ibv_buffer_2,
+            &env.ibv_buffer_1,
             rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
         )
         .await?;
@@ -463,15 +461,15 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
 
@@ -498,15 +496,15 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
         let mut qp_1 = env
-            .actor_1
+            .ibv_actor_1
             .request_queue_pair(
                 &env.client_1,
-                env.actor_2.clone(),
-                env.rdma_handle_1.device_name.clone(),
-                env.rdma_handle_2.device_name.clone(),
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
             )
             .await?;
-        let wr_id = qp_1.put(env.rdma_handle_1.clone(), env.rdma_handle_2.clone())?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
 
         wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
 
@@ -530,12 +528,11 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:0").await?;
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
 
         // Pre-initialize comms, and wait for hardware to transition to send state
 
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -558,10 +555,9 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cuda:1").await?;
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
 
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -585,9 +581,8 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -611,9 +606,8 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
         // Pre-initialize comms, and wait for hardware to transition to send state
-        let /*mut*/ rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .write_from(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -632,28 +626,25 @@ mod tests {
 
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
-        let rdma_handle_1 = env.rdma_handle_1.clone();
         let rdma_handle_2 = env.rdma_handle_2.clone();
-        let rdma_handle_3 = env.rdma_handle_1.clone();
         let rdma_handle_4 = env.rdma_handle_2.clone();
-        let rdma_handle_5 = env.rdma_handle_1.clone();
         let rdma_handle_6 = env.rdma_handle_2.clone();
-        let client = env.client_1;
+        let client = &env.client_1;
 
         let task1 = async {
-            rdma_handle_1
+            env.rdma_handle_1
                 .write_from(client, rdma_handle_2.clone(), 2)
                 .await
         };
 
         let task2 = async {
-            rdma_handle_3
+            env.rdma_handle_1
                 .write_from(client, rdma_handle_4.clone(), 2)
                 .await
         };
 
         let task3 = async {
-            rdma_handle_5
+            env.rdma_handle_1
                 .write_from(client, rdma_handle_6.clone(), 2)
                 .await
         };
@@ -682,9 +673,8 @@ mod tests {
         )
         .await?;
 
-        let rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 2)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -710,9 +700,8 @@ mod tests {
         )
         .await?;
 
-        let rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .write_from(env.client_1, env.rdma_handle_2.clone(), 2)
+        env.rdma_handle_1
+            .write_from(&env.client_1, env.rdma_handle_2.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -742,9 +731,8 @@ mod tests {
         )
         .await?;
 
-        let rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -774,9 +762,8 @@ mod tests {
         )
         .await?;
 
-        let rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .write_from(env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_1
+            .write_from(&env.client_1, env.rdma_handle_2.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -806,9 +793,8 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         println!("Performing RDMA read operation on 2GB tensor...");
-        let rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .read_into(env.client_1, env.rdma_handle_2.clone(), 30)
+        env.rdma_handle_1
+            .read_into(&env.client_1, env.rdma_handle_2.clone(), 30)
             .await?;
 
         println!("Verifying first 2MB...");
@@ -846,9 +832,8 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         println!("Performing RDMA write operation on 2GB tensor...");
-        let rdma_handle_1 = env.rdma_handle_1.clone();
-        rdma_handle_1
-            .write_from(env.client_1, env.rdma_handle_2.clone(), 30)
+        env.rdma_handle_1
+            .write_from(&env.client_1, env.rdma_handle_2.clone(), 30)
             .await?;
 
         println!("Verifying first 2MB...");

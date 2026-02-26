@@ -29,6 +29,7 @@
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
@@ -37,12 +38,14 @@ use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
+use hyperactor::context;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use crate::backend::ibverbs::IbvBuffer;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
@@ -127,6 +130,15 @@ pub enum RdmaManagerMessage {
 }
 wirevalue::register_type!(RdmaManagerMessage);
 
+/// Serializable query for resolving the [`IbvManagerActor`] ref
+/// from a remote [`RdmaManagerActor`].
+#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
+pub struct GetIbvActorRef {
+    #[reply]
+    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
+}
+wirevalue::register_type!(GetIbvActorRef);
+
 #[derive(Debug)]
 enum RdmaBackendActor<A: Actor> {
     Uninit,
@@ -161,14 +173,23 @@ impl<A: Actor> RdmaBackendActor<A> {
     spawn = true,
     handlers = [
         RdmaManagerMessage,
+        GetIbvActorRef,
     ],
 )]
 pub struct RdmaManagerActor {
-    // Eventually, this will be an Option, but for now
-    // to maintain existing behavior, we assume that
-    // RdmaManagerActor only exists if ibverbs is supported.
-    // This will change very soon.
     ibverbs: RdmaBackendActor<IbvManagerActor>,
+}
+
+impl RdmaManagerActor {
+    /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
+    /// with the caller.
+    pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
+        let proc_id = client.mailbox().actor_id().0.clone();
+        let actor_ref = ActorRef::attest(ActorId(proc_id, "rdma_manager".to_string(), 0));
+        actor_ref
+            .downcast_handle(client)
+            .expect("RdmaManagerActor is not in the local process")
+    }
 }
 
 #[async_trait]
@@ -201,6 +222,17 @@ impl Actor for RdmaManagerActor {
 }
 
 #[async_trait]
+#[hyperactor::handle(GetIbvActorRef)]
+impl GetIbvActorRefHandler for RdmaManagerActor {
+    async fn get_ibv_actor_ref(
+        &mut self,
+        _cx: &Context<Self>,
+    ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
+        Ok(Some(self.ibverbs.handle().bind()))
+    }
+}
+
+#[async_trait]
 #[hyperactor::handle(RdmaManagerMessage)]
 impl RdmaManagerMessageHandler for RdmaManagerActor {
     async fn request_buffer(
@@ -209,10 +241,16 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         addr: usize,
         size: usize,
     ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
-        self.ibverbs
-            .handle()
-            .request_buffer(cx, cx.bind().clone(), addr, size)
-            .await
+        let ibv_buf = self.ibverbs.handle().request_buffer(cx, addr, size).await?;
+        Ok(RdmaRemoteBuffer {
+            owner: cx.bind().clone(),
+            mr_id: ibv_buf.mr_id,
+            lkey: ibv_buf.lkey,
+            rkey: ibv_buf.rkey,
+            addr: ibv_buf.addr,
+            size: ibv_buf.size,
+            device_name: ibv_buf.device_name,
+        })
     }
 
     async fn release_buffer(
@@ -220,7 +258,10 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         cx: &Context<Self>,
         buffer: RdmaRemoteBuffer,
     ) -> Result<(), anyhow::Error> {
-        self.ibverbs.handle().release_buffer(cx, buffer).await
+        self.ibverbs
+            .handle()
+            .release_buffer(cx, IbvBuffer::from(&buffer))
+            .await
     }
 
     async fn request_queue_pair(
@@ -230,9 +271,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
+        let ibv_other = other
+            .get_ibv_actor_ref(cx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
         self.ibverbs
             .handle()
-            .request_queue_pair(cx, cx.bind().clone(), other, self_device, other_device)
+            .request_queue_pair(cx, ibv_other, self_device, other_device)
             .await
     }
 
@@ -243,9 +288,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
+        let ibv_other = other
+            .get_ibv_actor_ref(cx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
         self.ibverbs
             .handle()
-            .initialize_qp(cx, other, self_device, other_device)
+            .initialize_qp(cx, ibv_other, self_device, other_device)
             .await
     }
 
@@ -257,9 +306,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other_device: String,
         endpoint: IbvQpInfo,
     ) -> Result<(), anyhow::Error> {
+        let ibv_other = other
+            .get_ibv_actor_ref(cx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
         self.ibverbs
             .handle()
-            .connect(cx, other, self_device, other_device, endpoint)
+            .connect(cx, ibv_other, self_device, other_device, endpoint)
             .await
     }
 
@@ -270,9 +323,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
+        let ibv_other = other
+            .get_ibv_actor_ref(cx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
         self.ibverbs
             .handle()
-            .connection_info(cx, other, self_device, other_device)
+            .connection_info(cx, ibv_other, self_device, other_device)
             .await
     }
 
@@ -284,9 +341,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         other_device: String,
         qp: IbvQueuePair,
     ) -> Result<(), anyhow::Error> {
+        let ibv_other = other
+            .get_ibv_actor_ref(cx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
         self.ibverbs
             .handle()
-            .release_queue_pair(cx, other, self_device, other_device, qp)
+            .release_queue_pair(cx, ibv_other, self_device, other_device, qp)
             .await
     }
 
@@ -297,9 +358,13 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
+        let ibv_other = other
+            .get_ibv_actor_ref(cx)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("remote has no ibverbs backend"))?;
         self.ibverbs
             .handle()
-            .get_qp_state(cx, other, self_device, other_device)
+            .get_qp_state(cx, ibv_other, self_device, other_device)
             .await
     }
 }
