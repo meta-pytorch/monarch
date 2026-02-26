@@ -16,7 +16,6 @@ use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_rdma::RawLocalMemory;
 use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
@@ -116,6 +115,65 @@ unsafe extern "C" fn pytorch_segment_scanner(
     }
 }
 
+/// A handle to a region of local memory that prevents the backing Python
+/// object from being garbage-collected while RDMA operations are in flight.
+#[pyclass(name = "_LocalMemoryHandle", module = "monarch._rust_bindings.rdma")]
+#[derive(Clone)]
+pub struct PyLocalMemoryHandle {
+    addr: usize,
+    size: usize,
+    _obj: Py<PyAny>,
+}
+
+impl std::fmt::Debug for PyLocalMemoryHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyLocalMemoryHandle")
+            .field("addr", &self.addr)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RdmaLocalMemory for PyLocalMemoryHandle {
+    fn addr(&self) -> usize {
+        self.addr
+    }
+
+    fn size(&self) -> usize {
+        self.size
+    }
+}
+
+#[pymethods]
+impl PyLocalMemoryHandle {
+    #[new]
+    fn new(obj: Py<PyAny>, addr: usize, size: usize) -> Self {
+        Self {
+            addr,
+            size,
+            _obj: obj,
+        }
+    }
+
+    #[getter]
+    fn addr(&self) -> usize {
+        self.addr
+    }
+
+    #[getter]
+    fn size(&self) -> usize {
+        self.size
+    }
+
+    #[pyo3(name = "__repr__")]
+    fn repr(&self) -> String {
+        format!(
+            "<LocalMemoryHandle addr={:#x} size={}>",
+            self.addr, self.size
+        )
+    }
+}
+
 #[pyclass(name = "_RdmaBuffer", module = "monarch._rust_bindings.rdma")]
 #[derive(Clone, Named)]
 struct PyRdmaBuffer {
@@ -123,14 +181,12 @@ struct PyRdmaBuffer {
 }
 
 async fn create_rdma_buffer(
-    addr: usize,
-    size: usize,
+    local: PyLocalMemoryHandle,
     client: PyInstance,
 ) -> PyResult<PyRdmaBuffer> {
     let owner_handle = RdmaManagerActor::local_handle(client.deref());
 
-    // TODO(slurye): Make this a local memory handle that actually keeps the memory alive.
-    let local: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+    let local: Arc<dyn RdmaLocalMemory> = Arc::new(local);
     let buffer = owner_handle
         .request_buffer(client.deref(), local)
         .await
@@ -145,28 +201,26 @@ impl PyRdmaBuffer {
     fn create_rdma_buffer_nonblocking<'py>(
         _cls: &Bound<'_, PyType>,
         _py: Python<'py>,
-        addr: usize,
-        size: usize,
+        local: PyLocalMemoryHandle,
         client: PyInstance,
     ) -> PyResult<PyPythonTask> {
         if !rdma_supported() {
             return Err(PyException::new_err("RDMA is not supported on this system"));
         }
-        PyPythonTask::new(create_rdma_buffer(addr, size, client))
+        PyPythonTask::new(create_rdma_buffer(local, client))
     }
 
     #[classmethod]
     fn create_rdma_buffer_blocking<'py>(
         _cls: &Bound<'_, PyType>,
         py: Python<'py>,
-        addr: usize,
-        size: usize,
+        local: PyLocalMemoryHandle,
         client: PyInstance,
     ) -> PyResult<PyRdmaBuffer> {
         if !rdma_supported() {
             return Err(PyException::new_err("RDMA is not supported on this system"));
         }
-        signal_safe_block_on(py, create_rdma_buffer(addr, size, client))?
+        signal_safe_block_on(py, create_rdma_buffer(local, client))?
     }
 
     #[classmethod]
@@ -179,31 +233,23 @@ impl PyRdmaBuffer {
         format!("<RdmaBuffer'{:?}'>", self.buffer)
     }
 
-    /// Reads data from the local buffer and places it into this remote RDMA buffer.
-    ///
-    /// This operation appears as "read_into" from the caller's perspective (reading from local memory
-    /// into the remote buffer), but internally it's implemented as a "write_from" operation on the
-    /// local buffer since the data flows from the local buffer to the remote one.
+    /// Reads from this remote RDMA buffer into a local memory region.
     ///
     /// # Arguments
-    /// * `addr` - The address of the local buffer to read from
-    /// * `size` - The size of the data to transfer
-    /// * `client` - The actor who does the reading.
+    /// * `dst` - Local memory region to read into
+    /// * `client` - The actor performing the read
     /// * `timeout` - Maximum time in seconds to wait for the operation
-    #[pyo3(signature = (addr, size, client, timeout))]
     fn read_into<'py>(
         &self,
         _py: Python<'py>,
-        addr: usize,
-        size: usize,
+        dst: PyLocalMemoryHandle,
         client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
         let buffer = self.buffer.clone();
 
         PyPythonTask::new(async move {
-            let local_memory: Arc<dyn monarch_rdma::RdmaLocalMemory> =
-                Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(dst);
 
             buffer
                 .read_into_local(client.deref(), local_memory, timeout)
@@ -214,31 +260,23 @@ impl PyRdmaBuffer {
         })
     }
 
-    /// Writes data from this remote RDMA buffer into a local buffer.
-    ///
-    /// This operation appears as "write_from" from the caller's perspective (writing from the remote
-    /// buffer into local memory), but internally it's implemented as a "read_into" operation on the
-    /// local buffer since the data flows from the remote buffer to the local one.
+    /// Writes from a local memory region into this remote RDMA buffer.
     ///
     /// # Arguments
-    /// * `addr` - The address of the local buffer to write to
-    /// * `size` - The size of the data to transfer
-    /// * `client` - The actor who does the writing
+    /// * `src` - Local memory region to write from
+    /// * `client` - The actor performing the write
     /// * `timeout` - Maximum time in seconds to wait for the operation
-    #[pyo3(signature = (addr, size, client, timeout))]
     fn write_from<'py>(
         &self,
         _py: Python<'py>,
-        addr: usize,
-        size: usize,
+        src: PyLocalMemoryHandle,
         client: PyInstance,
         timeout: u64,
     ) -> PyResult<PyPythonTask> {
         let buffer = self.buffer.clone();
 
         PyPythonTask::new(async move {
-            let local_memory: Arc<dyn monarch_rdma::RdmaLocalMemory> =
-                Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(src);
 
             buffer
                 .write_from_local(client.deref(), local_memory, timeout)
@@ -338,6 +376,7 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // This calls torch.cuda.memory._snapshot() to get CUDA memory segments.
     register_segment_scanner(Some(pytorch_segment_scanner));
 
+    module.add_class::<PyLocalMemoryHandle>()?;
     module.add_class::<PyRdmaBuffer>()?;
     module.add_class::<PyRdmaManager>()?;
     Ok(())

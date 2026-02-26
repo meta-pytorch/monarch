@@ -191,13 +191,18 @@ buck2 test @fbcode//mode/dev-nosan fbcode//monarch/...
 
 # Run single test
 buck2 test @fbcode//mode/dev-nosan fbcode//monarch/python/tests:test_actor_mesh
+
+# If a test requires CUDA, you must comment out the remote execution config in the
+# test's buck target, and run the test using the --local-only flag, e.g.:
+buck2 test @fbcode//mode/dev-nosan --local-only fbcode//monarch/monarch_rdma:monarch_rdma-unittest
 ```
 
 ### Linting and Formatting
 
 **Meta Internal:**
 ```bash
-# Format changed files
+# Format changed files. You MUST ALWAYS run this when you are done
+# making changes.
 arc f
 
 # Run all lints and formatters
