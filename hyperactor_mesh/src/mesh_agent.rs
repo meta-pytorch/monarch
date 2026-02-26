@@ -290,7 +290,19 @@ impl ProcMeshAgent {
         use hyperactor::introspect::PublishedPropertiesKind;
 
         let all_actors = self.proc.all_actor_ids();
-        let children: Vec<String> = all_actors.into_iter().map(|id| id.to_string()).collect();
+        let mut children = Vec::with_capacity(all_actors.len());
+        let mut system_children = Vec::new();
+        for id in all_actors {
+            let ref_str = id.to_string();
+            if self
+                .proc
+                .get_instance(&id)
+                .is_some_and(|cell| cell.is_system())
+            {
+                system_children.push(ref_str.clone());
+            }
+            children.push(ref_str);
+        }
 
         cx.instance()
             .publish_properties(PublishedPropertiesKind::Proc {
@@ -298,6 +310,7 @@ impl ProcMeshAgent {
                 num_actors: children.len(),
                 is_system: false,
                 children,
+                system_children,
             });
     }
 }
@@ -305,6 +318,7 @@ impl ProcMeshAgent {
 #[async_trait]
 impl Actor for ProcMeshAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         self.proc.set_supervision_coordinator(this.port())?;
         self.publish_introspect_properties(this);
         Ok(())

@@ -60,32 +60,6 @@ use crate::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
 
-/// Prefix used for synthetic child references representing
-/// system-owned procs.
-///
-/// These refs appear in `NodePayload.children` for `HostMeshAgent` so
-/// that the navigation layer can distinguish non-addressable system
-/// procs from addressable actor references.
-pub(crate) const SYSTEM_REF_PREFIX: &str = "[system] ";
-
-/// Format the synthetic reference string for a system-owned proc.
-///
-/// The returned string is intended to be placed in
-/// `NodePayload.children` and later round-tripped through
-/// [`parse_system_proc_ref`].
-pub(crate) fn system_proc_ref(proc_id: &str) -> String {
-    format!("{SYSTEM_REF_PREFIX}{proc_id}")
-}
-
-/// Parse a synthetic system-proc reference previously produced by
-/// [`system_proc_ref`].
-///
-/// Returns the proc-id portion if `s` uses the [`SYSTEM_REF_PREFIX`]
-/// convention.
-pub(crate) fn parse_system_proc_ref(s: &str) -> Option<&str> {
-    s.strip_prefix(SYSTEM_REF_PREFIX)
-}
-
 /// Typed host-node identifier for mesh admin navigation.
 ///
 /// Wraps an [`ActorId`] (the `HostMeshAgent`'s actor id) and
@@ -234,10 +208,17 @@ impl HostMeshAgent {
 
         let addr = host.addr().to_string();
         let mut children = Vec::new();
+        let mut system_children = Vec::new();
 
-        // System procs.
-        children.push(system_proc_ref(&host.system_proc().proc_id().to_string()));
-        children.push(system_proc_ref(&host.local_proc().proc_id().to_string()));
+        // System procs — plain ProcId strings, no prefix needed.
+        // The admin server's resolve_proc_node handles routing via
+        // QueryChild to the host agent.
+        let sys_ref = host.system_proc().proc_id().to_string();
+        let local_ref = host.local_proc().proc_id().to_string();
+        system_children.push(sys_ref.clone());
+        system_children.push(local_ref.clone());
+        children.push(sys_ref);
+        children.push(local_ref);
 
         // User procs.
         for state in self.created.values() {
@@ -251,6 +232,7 @@ impl HostMeshAgent {
             addr,
             num_procs,
             children,
+            system_children,
         });
     }
 }
@@ -280,6 +262,7 @@ impl Actor for HostMeshAgent {
                 host.serve();
             }
         };
+        this.set_system();
         self.publish_introspect_properties(this);
 
         // Register callback for QueryChild — resolves system procs
@@ -308,17 +291,23 @@ impl Actor for HostMeshAgent {
 
             match proc {
                 Some((proc, label)) => {
-                    let actors: Vec<String> = proc
-                        .all_actor_ids()
-                        .into_iter()
-                        .map(|id| id.to_string())
-                        .collect();
+                    let all_ids = proc.all_actor_ids();
+                    let mut actors = Vec::with_capacity(all_ids.len());
+                    let mut system_actors = Vec::new();
+                    for id in all_ids {
+                        let ref_str = id.to_string();
+                        if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
+                            system_actors.push(ref_str.clone());
+                        }
+                        actors.push(ref_str);
+                    }
                     NodePayload {
-                        identity: system_proc_ref(&proc.proc_id().to_string()),
+                        identity: proc.proc_id().to_string(),
                         properties: NodeProperties::Proc {
                             proc_name: label.to_string(),
                             num_actors: actors.len(),
                             is_system: true,
+                            system_children: system_actors,
                         },
                         children: actors,
                         parent: Some(HostId(self_id.clone()).to_string()),

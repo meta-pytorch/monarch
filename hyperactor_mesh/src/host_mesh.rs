@@ -1127,7 +1127,7 @@ impl HostMeshRef {
             .collect();
         let root_client_id = crate::global_root_client().self_id().clone();
         let agent_handle = proc.spawn(
-            "mesh_admin",
+            crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
             MeshAdminAgent::new(hosts, Some(root_client_id)),
         )?;
         let agent_ref = agent_handle.bind::<MeshAdminAgent>();

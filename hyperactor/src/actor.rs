@@ -2017,6 +2017,7 @@ mod tests {
                 addr: "10.0.0.1:8080".into(),
                 num_procs: 3,
                 children: vec!["proc_a".into(), "proc_b".into()],
+                system_children: Vec::new(),
             });
 
         // Read them back.
@@ -2029,6 +2030,7 @@ mod tests {
                 addr,
                 num_procs,
                 children,
+                ..
             } => {
                 assert_eq!(addr, "10.0.0.1:8080");
                 assert_eq!(*num_procs, 3);
@@ -2047,6 +2049,7 @@ mod tests {
                 num_actors: 7,
                 is_system: false,
                 children: vec!["actor_a".into()],
+                system_children: Vec::new(),
             });
         let props = handle.cell().published_properties().unwrap();
         assert!(matches!(props.kind, PublishedPropertiesKind::Proc { .. }));
@@ -2078,6 +2081,7 @@ mod tests {
                     proc_name: "test_proc".into(),
                     num_actors: 42,
                     is_system: true,
+                    system_children: Vec::new(),
                 },
                 children: Vec::new(),
                 parent: None,
@@ -2095,6 +2099,7 @@ mod tests {
                 proc_name,
                 num_actors,
                 is_system,
+                ..
             } => {
                 assert_eq!(proc_name, "test_proc");
                 assert_eq!(*num_actors, 42);

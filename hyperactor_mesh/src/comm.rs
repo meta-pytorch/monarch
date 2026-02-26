@@ -154,6 +154,11 @@ impl CommMeshConfig {
 
 #[async_trait]
 impl Actor for CommActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+
     // This is an override of the default actor behavior.
     async fn handle_undeliverable_message(
         &mut self,

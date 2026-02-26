@@ -84,6 +84,9 @@ pub enum NodeProperties {
         started_at: String,
         /// Username who started the mesh.
         started_by: String,
+        /// Children that are infrastructure-owned (system procs,
+        /// admin procs) and should be hidden by default.
+        system_children: Vec<String>,
     },
 
     /// A host in the mesh, represented by its `HostMeshAgent`.
@@ -92,6 +95,9 @@ pub enum NodeProperties {
         addr: String,
         /// Number of procs currently reported on this host.
         num_procs: usize,
+        /// References of children that are system/infrastructure
+        /// procs.
+        system_children: Vec<String>,
     },
 
     /// Properties describing a proc running on a host.
@@ -103,6 +109,10 @@ pub enum NodeProperties {
         /// Whether this proc is infrastructure-owned rather than
         /// user-created.
         is_system: bool,
+        /// References of children that are system/infrastructure
+        /// actors. Allows the TUI to filter lazily without fetching
+        /// each child individually.
+        system_children: Vec<String>,
     },
 
     /// Runtime metadata for a single actor instance.
@@ -262,6 +272,8 @@ pub enum PublishedPropertiesKind {
         num_procs: usize,
         /// Custom children list (system procs + user procs).
         children: Vec<String>,
+        /// Children that are system/infrastructure procs.
+        system_children: Vec<String>,
     },
     /// A proc running on a host.
     Proc {
@@ -273,6 +285,10 @@ pub enum PublishedPropertiesKind {
         is_system: bool,
         /// Custom children list (all actors in the proc).
         children: Vec<String>,
+        /// Children that are system/infrastructure actors, reported
+        /// by the proc so the TUI can filter without fetching each
+        /// child.
+        system_children: Vec<String>,
     },
 }
 
@@ -329,12 +345,13 @@ pub fn live_actor_payload(cell: &InstanceCell) -> NodePayload {
             last_message_handler: last_handler.map(|info| info.to_string()),
             total_processing_time_us: cell.total_processing_time_us(),
             flight_recorder,
-            is_system: cell.published_properties().is_some_and(|p| {
-                matches!(
-                    p.kind,
-                    PublishedPropertiesKind::Host { .. } | PublishedPropertiesKind::Proc { .. }
-                )
-            }),
+            is_system: cell.is_system()
+                || cell.published_properties().is_some_and(|p| {
+                    matches!(
+                        p.kind,
+                        PublishedPropertiesKind::Host { .. } | PublishedPropertiesKind::Proc { .. }
+                    )
+                }),
         },
         children,
         parent: supervisor,
@@ -399,17 +416,26 @@ pub async fn serve_introspect(
                             };
                             let properties = match props.kind {
                                 PublishedPropertiesKind::Host {
-                                    addr, num_procs, ..
-                                } => NodeProperties::Host { addr, num_procs },
+                                    addr,
+                                    num_procs,
+                                    system_children,
+                                    ..
+                                } => NodeProperties::Host {
+                                    addr,
+                                    num_procs,
+                                    system_children,
+                                },
                                 PublishedPropertiesKind::Proc {
                                     proc_name,
                                     num_actors,
                                     is_system,
+                                    system_children,
                                     ..
                                 } => NodeProperties::Proc {
                                     proc_name,
                                     num_actors,
                                     is_system,
+                                    system_children,
                                 },
                             };
                             NodePayload {
