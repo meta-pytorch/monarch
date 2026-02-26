@@ -26,7 +26,7 @@
 //!
 //! # Design Invariants
 //!
-//! The introspection subsystem maintains ten invariants (S1--S10).
+//! The introspection subsystem maintains eleven invariants (S1--S11).
 //! Each is documented at the code site that enforces it.
 //!
 //! - **S1.** Introspection must not depend on actor responsiveness --
@@ -56,6 +56,10 @@
 //! - **S10.** Introspect receiver lifecycle -- created in
 //!   `Instance::new()`, spawned in `start()`, dropped in
 //!   `child_instance()`.
+//! - **S11.** Terminated snapshots do not keep actors resolvable --
+//!   `store_terminated_snapshot` writes to the proc's snapshot map,
+//!   not the instances map. `resolve_actor_ref` checks terminal
+//!   status independently and is unaffected by snapshot storage.
 
 use std::time::SystemTime;
 
@@ -378,6 +382,10 @@ pub fn live_actor_payload(cell: &InstanceCell) -> NodePayload {
 /// - **S6:** View semantics -- Actor view uses live structural state +
 ///   supervision children; Entity view uses published properties +
 ///   domain children.
+/// - **S11:** Terminated snapshots do not keep actors resolvable --
+///   `store_terminated_snapshot` writes to the proc's snapshot map,
+///   not the instances map. `resolve_actor_ref` checks terminal status
+///   independently and is unaffected by snapshot storage.
 pub async fn serve_introspect(
     cell: InstanceCell,
     mailbox: crate::mailbox::Mailbox,
@@ -398,10 +406,25 @@ pub async fn serve_introspect(
             msg = receiver.recv() => {
                 match msg {
                     Ok(msg) => msg,
-                    Err(_) => break,
+                    Err(_) => {
+                        // Channel closed. If the actor reached a
+                        // terminal state, snapshot it before exiting
+                        // so it remains queryable post-mortem.
+                        if cell.status().borrow().is_terminal() {
+                            let snapshot = live_actor_payload(&cell);
+                            cell.store_terminated_snapshot(snapshot);
+                        }
+                        break;
+                    }
                 }
             }
-            _ = status.wait_for(ActorStatus::is_terminal) => break,
+            _ = status.wait_for(ActorStatus::is_terminal) => {
+                // Snapshot for post-mortem introspection before
+                // dropping our InstanceCell reference.
+                let snapshot = live_actor_payload(&cell);
+                cell.store_terminated_snapshot(snapshot);
+                break;
+            }
         };
 
         let result = match msg {
