@@ -9,7 +9,7 @@
 //! # CUDA RDMA Ping-Pong Example
 //!
 //! This example demonstrates how to use RDMA to perform a ping-pong data transfer between two CUDA devices.
-//! It shows a pattern for using RdmaBuffer with CUDA memory for efficient zero-copy
+//! It shows a pattern for using RdmaRemoteBuffer with CUDA memory for efficient zero-copy
 //! bidirectional data transfer between GPUs.
 //!
 //! ## Architecture
@@ -32,7 +32,7 @@
 //! ## Key Components
 //!
 //! - `CudaRdmaActor`: Manages CUDA memory and RDMA operations for a single device
-//! - `RdmaBuffer`: Provides zero-copy memory access between actors
+//! - `RdmaRemoteBuffer`: Provides zero-copy memory access between actors
 //! - `RdmaManagerActor`: Handles the underlying RDMA connections and operations
 //!
 //! ## To run this
@@ -78,9 +78,9 @@ use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::global_root_client;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RdmaBuffer;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::cu_check;
 use ndslice::Extent;
 use ndslice::ViewExt;
@@ -259,7 +259,7 @@ pub struct CudaRdmaActor {
     cpu_buffer: Box<[u8]>,
     cu_ptr: usize,
     // RDMA buffer handle for the CUDA memory
-    rdma_buffer_handle: Option<RdmaBuffer>,
+    rdma_buffer_handle: Option<RdmaRemoteBuffer>,
     // Reference to the RDMA manager actor
     rdma_manager: ActorRef<RdmaManagerActor>,
 }
@@ -385,7 +385,7 @@ struct InitializeBuffer(pub u8, pub OncePortRef<bool>);
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PerformPingPong(
     pub ActorRef<CudaRdmaActor>,
-    pub RdmaBuffer,
+    pub RdmaRemoteBuffer,
     pub i32,
     pub i32,
     pub OncePortRef<bool>,
@@ -635,7 +635,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 
 // Message to get the buffer handle from an actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaBuffer>);
+struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {
@@ -803,11 +803,11 @@ pub async fn run() -> Result<(), anyhow::Error> {
     receiver_2.recv().await?;
 
     // Get the remote buffer handle from device 1
-    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
+    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaRemoteBuffer>();
     device_1_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_1 = receiver_remote.recv().await?;
 
-    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
+    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaRemoteBuffer>();
     device_2_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_2 = receiver_remote.recv().await?;
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();

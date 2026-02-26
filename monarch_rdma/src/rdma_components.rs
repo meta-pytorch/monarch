@@ -59,7 +59,7 @@ use crate::backend::ibverbs::IbvQueuePair;
 use crate::backend::ibverbs::PollTarget;
 
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
-pub struct RdmaBuffer {
+pub struct RdmaRemoteBuffer {
     pub owner: ActorRef<RdmaManagerActor>,
     pub mr_id: usize,
     pub lkey: u32,
@@ -68,17 +68,17 @@ pub struct RdmaBuffer {
     pub size: usize,
     pub device_name: String,
 }
-wirevalue::register_type!(RdmaBuffer);
+wirevalue::register_type!(RdmaRemoteBuffer);
 
-impl RdmaBuffer {
-    /// Read from the RdmaBuffer into the provided memory.
+impl RdmaRemoteBuffer {
+    /// Read from the RdmaRemoteBuffer into the provided memory.
     ///
     /// This method transfers data from the buffer into the local memory region provided over RDMA.
-    /// This involves calling a `Put` operation on the RdmaBuffer's actor side.
+    /// This involves calling a `Put` operation on the RdmaRemoteBuffer's actor side.
     ///
     /// # Arguments
     /// * `client` - The actor who is reading.
-    /// * `remote` - RdmaBuffer representing the remote memory region
+    /// * `remote` - RdmaRemoteBuffer representing the remote memory region
     /// * `timeout` - Timeout in seconds for the RDMA operation to complete.
     ///
     /// # Returns
@@ -86,7 +86,7 @@ impl RdmaBuffer {
     pub async fn read_into(
         &self,
         client: &impl context::Actor,
-        remote: RdmaBuffer,
+        remote: RdmaRemoteBuffer,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         tracing::debug!(
@@ -122,15 +122,15 @@ impl RdmaBuffer {
         result
     }
 
-    /// Write from the provided memory into the RdmaBuffer.
+    /// Write from the provided memory into the RdmaRemoteBuffer.
     ///
     /// This method performs an RDMA write operation, transferring data from the caller's
     /// memory region to this buffer.
-    /// This involves calling a `Fetch` operation on the RdmaBuffer's actor side.
+    /// This involves calling a `Fetch` operation on the RdmaRemoteBuffer's actor side.
     ///
     /// # Arguments
     /// * `client` - The actor who is writing.
-    /// * `remote` - RdmaBuffer representing the remote memory region
+    /// * `remote` - RdmaRemoteBuffer representing the remote memory region
     /// * `timeout` - Timeout in seconds for the RDMA operation to complete.
     ///
     /// # Returns
@@ -138,7 +138,7 @@ impl RdmaBuffer {
     pub async fn write_from(
         &self,
         client: &impl context::Actor,
-        remote: RdmaBuffer,
+        remote: RdmaRemoteBuffer,
         timeout: u64,
     ) -> Result<bool, anyhow::Error> {
         tracing::debug!(

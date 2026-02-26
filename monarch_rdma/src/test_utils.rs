@@ -98,7 +98,7 @@ pub mod test_utils {
     use ndslice::extent;
 
     use crate::IbvConfig;
-    use crate::RdmaBuffer;
+    use crate::RdmaRemoteBuffer;
     use crate::backend::ibverbs::queue_pair::IbvQueuePair;
     use crate::backend::ibverbs::queue_pair::PollTarget;
     use crate::rdma_manager_actor::RdmaManagerActor;
@@ -164,7 +164,7 @@ pub mod test_utils {
             size: usize,
             rdma_actor: ActorRef<RdmaManagerActor>,
             #[reply]
-            reply: hyperactor::OncePortRef<(RdmaBuffer, usize)>,
+            reply: hyperactor::OncePortRef<(RdmaRemoteBuffer, usize)>,
         },
         FillBuffer {
             device_ptr: usize,
@@ -366,8 +366,8 @@ pub mod test_utils {
     /// Posts a work request to the send queue of the given RDMA queue pair.
     pub async fn send_wqe_gpu(
         qp: &mut IbvQueuePair,
-        lhandle: &RdmaBuffer,
-        rhandle: &RdmaBuffer,
+        lhandle: &RdmaRemoteBuffer,
+        rhandle: &RdmaRemoteBuffer,
         op_type: u32,
     ) -> Result<(), anyhow::Error> {
         unsafe {
@@ -398,8 +398,8 @@ pub mod test_utils {
     /// Posts a work request to the receive queue of the given RDMA queue pair.
     pub async fn recv_wqe_gpu(
         qp: &mut IbvQueuePair,
-        lhandle: &RdmaBuffer,
-        _rhandle: &RdmaBuffer,
+        lhandle: &RdmaRemoteBuffer,
+        _rhandle: &RdmaRemoteBuffer,
         op_type: u32,
     ) -> Result<(), anyhow::Error> {
         // Populate params using lhandle and rhandle
@@ -520,8 +520,8 @@ pub mod test_utils {
         pub client_2: &'static hyperactor::Instance<hyperactor_mesh::GlobalClientActor>,
         pub actor_1: ActorRef<RdmaManagerActor>,
         pub actor_2: ActorRef<RdmaManagerActor>,
-        pub rdma_handle_1: RdmaBuffer,
-        pub rdma_handle_2: RdmaBuffer,
+        pub rdma_handle_1: RdmaRemoteBuffer,
+        pub rdma_handle_2: RdmaRemoteBuffer,
         cuda_actor_1: Option<ActorRef<CudaActor>>,
         cuda_actor_2: Option<ActorRef<CudaActor>>,
         device_ptr_1: Option<usize>,
