@@ -220,17 +220,26 @@ def test_meshes_table(cleanup_callbacks) -> None:
         f"Expected columns {expected_columns}, got {actual_columns}"
     )
 
-    # Verify given_name contains our mesh name
+    # Verify given_name is the user-provided name (not the full name with UUID suffix)
     given_names = result_dict.get("given_name", [])
-    has_test_mesh = any("test_mesh_worker" in name for name in given_names)
-    assert has_test_mesh, (
-        f"Expected to find 'test_mesh_worker' in mesh names, got: {given_names}"
+    full_names = result_dict.get("full_name", [])
+    assert "test_mesh_worker" in given_names, (
+        f"Expected exact 'test_mesh_worker' in given_names, got: {given_names}"
     )
+    for gn, fn in zip(given_names, full_names):
+        if gn == "test_mesh_worker":
+            # full_name includes a UUID suffix, so it should differ from given_name
+            assert fn != gn, (
+                f"Expected full_name to differ from given_name, but both are '{gn}'"
+            )
+            assert fn.startswith("test_mesh_worker"), (
+                f"Expected full_name to start with 'test_mesh_worker', got: {fn}"
+            )
 
     # Verify parent_view_json is populated (serialized Region from ndslice)
     parent_views = result_dict.get("parent_view_json", [])
     for name, view in zip(given_names, parent_views):
-        if "test_mesh_worker" in name:
+        if name == "test_mesh_worker":
             assert view is not None, (
                 f"Expected parent_view_json to be populated for '{name}', got None"
             )
@@ -246,7 +255,7 @@ def test_meshes_table(cleanup_callbacks) -> None:
     # Verify shape_json describes the actor mesh's shape (serialized Extent from ndslice)
     shape_jsons = result_dict.get("shape_json", [])
     for name, shape in zip(given_names, shape_jsons):
-        if "test_mesh_worker" in name:
+        if name == "test_mesh_worker":
             assert shape is not None and shape != "", (
                 f"Expected shape_json to be populated for '{name}', got '{shape}'"
             )

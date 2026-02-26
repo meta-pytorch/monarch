@@ -1153,7 +1153,7 @@ impl ProcMeshRef {
                 id: mesh_id_hash,
                 timestamp: RealClock.system_time_now(),
                 class: actor_type,
-                given_name: name_str.clone(),
+                given_name: mesh.name().name().to_string(),
                 full_name: name_str,
                 shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
                 parent_mesh_id: Some(parent_mesh_id_hash),
