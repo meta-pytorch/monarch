@@ -68,7 +68,9 @@ impl ActorSupervisionEvent {
             .unwrap_or_else(|| self.actor_id.to_string())
     }
 
-    fn actually_failing_actor(&self) -> &ActorSupervisionEvent {
+    /// Walk the `UnhandledSupervisionEvent` chain to find the root-cause
+    /// actor that originally failed.
+    pub fn actually_failing_actor(&self) -> &ActorSupervisionEvent {
         let mut event = self;
         while let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(e)) =
             &event.actor_status

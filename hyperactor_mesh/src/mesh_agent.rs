@@ -334,6 +334,8 @@ impl ProcMeshAgent {
         let stopped_retention_cap =
             hyperactor_config::global::get(hyperactor::config::TERMINATED_SNAPSHOT_RETENTION);
 
+        // FI-5: is_poisoned iff failed_actor_count > 0.
+        let failed_actor_count = self.supervision_events.len();
         cx.instance()
             .publish_properties(PublishedPropertiesKind::Proc {
                 proc_name: self.proc.proc_id().to_string(),
@@ -343,6 +345,8 @@ impl ProcMeshAgent {
                 system_children,
                 stopped_children,
                 stopped_retention_cap,
+                is_poisoned: failed_actor_count > 0,
+                failed_actor_count,
             });
     }
 }
@@ -568,6 +572,8 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
                 .entry(event.actor_id.clone())
                 .or_default()
                 .push(event.clone());
+            // Republish so introspection picks up is_poisoned / failed_actor_count.
+            self.publish_introspect_properties(cx);
         }
         if let Some(supervisor) = self.state.supervisor() {
             supervisor.send(cx, event)?;

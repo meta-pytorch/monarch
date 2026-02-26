@@ -835,6 +835,8 @@ impl MeshAdminAgent {
                 system_children,
                 stopped_children: vec![],
                 stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children,
             as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
