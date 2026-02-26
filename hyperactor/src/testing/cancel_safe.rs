@@ -230,7 +230,7 @@ pub async fn assert_cancel_safe_async<F, T, P, FutStep>(
 ///   reference internally.
 #[macro_export]
 macro_rules! assert_cancel_safe {
-    ($make_future:expr, $expected:expr) => {{ $crate::test_utils::cancel_safe::assert_cancel_safe(|| $make_future, &$expected) }};
+    ($make_future:expr, $expected:expr) => {{ $crate::testing::cancel_safe::assert_cancel_safe(|| $make_future, &$expected) }};
 }
 
 /// Async convenience macro for `assert_cancel_safe_async`.
@@ -255,7 +255,7 @@ macro_rules! assert_cancel_safe {
 #[macro_export]
 macro_rules! assert_cancel_safe_async {
     ($make_future:expr, $expected:expr, $on_pending:expr) => {{
-        $crate::test_utils::cancel_safe::assert_cancel_safe_async(
+        $crate::testing::cancel_safe::assert_cancel_safe_async(
             || $make_future,
             &$expected,
             $on_pending,

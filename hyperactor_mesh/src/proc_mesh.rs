@@ -383,12 +383,16 @@ impl ProcMesh {
         };
 
         let bind_allocated_procs = |router: &DialMailboxRouter| {
-            // Route all of the allocated procs:
+            // Bind procs whose ProcId address differs from their mailbox
+            // serving address. In the v0 bootstrap path, the ProcId embeds
+            // the bootstrap channel address while the proc's mailbox is
+            // served on a separate address. Without an explicit binding the
+            // DialMailboxRouter would direct-dial the bootstrap channel
+            // (which expects Allocator2Process, not MessageEnvelope).
             for AllocatedProc { proc_id, addr, .. } in running.iter() {
-                if proc_id.is_direct() {
-                    continue;
+                if proc_id.addr() != addr {
+                    router.bind(proc_id.clone().into(), addr.clone());
                 }
-                router.bind(proc_id.clone().into(), addr.clone());
             }
         };
 
@@ -464,7 +468,7 @@ impl ProcMesh {
 
         let stop = Arc::new(Notify::new());
         let extent = alloc.extent().clone();
-        let alloc_name = alloc.world_id().to_string();
+        let alloc_name = alloc.alloc_name().to_string();
 
         let alloc_task = {
             let stop = Arc::clone(&stop);
@@ -478,7 +482,7 @@ impl ProcMesh {
                                 if let Err(error) = alloc.stop_and_wait().await {
                                     tracing::error!(
                                         name = "ProcMeshStatus",
-                                        alloc_name = %alloc.world_id(),
+                                        alloc_name = %alloc.alloc_name(),
                                         status = "FailedToStopAlloc",
                                         %error,
                                     );
@@ -492,7 +496,7 @@ impl ProcMesh {
                                     None => break,
                                     Some(proc_state) => {
                                         tracing::debug!(
-                                            alloc_name = %alloc.world_id(),
+                                            alloc_name = %alloc.alloc_name(),
                                             "unmonitored allocation event: {}", proc_state);
                                     }
                                 }
@@ -1330,10 +1334,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proc_mesh_allocate() {
-        let (mesh, actor, router) = testing::local_proc_mesh(extent!(replica = 4)).await;
+        let (mesh, actor, _router) = testing::local_proc_mesh(extent!(replica = 4)).await;
         assert_eq!(mesh.extent(), extent!(replica = 4));
         assert_eq!(mesh.ranks.len(), 4);
-        assert!(!router.prefixes().is_empty());
 
         // All of the agents are alive, and reachable (both ways).
         for proc_ref in mesh.values() {

@@ -81,30 +81,3 @@ pub struct OncePortRef<M> {
 }
 ```
 This wraps a `PortId` with a phantom message type `M` for type safety. Internally, the system enforces one-time delivery semantics, ensuring the port is closed after receiving a single message.
-
-## `GangRef<A>`
-
-A `GangRef<A>` is a typed reference to a gang of actors, all of which implement the same `Referable` type `A`.
-```rust
-let gang_ref: GangRef<MyActor> = GangRef::attest(GangId::new(...));
-```
-You can extract an `ActorRef<A>` for a specific rank in the gang:
-```rust
-let actor = gang_ref.rank(0); // ActorRef<MyActor>
-```
-This allows you to route messages to specific members of a replicated actor group, or to iterate over the gang for broadcasting, synchronization, or indexing.
-
-### Definition
-```rust
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Hash, Ord)]
-pub struct GangRef<A: Referable> {
-    gang_id: GangId,
-    phantom: PhantomData<A>,
-}
-```
-
-#### Methods
-- `gang_ref.rank(rank: usize) -> ActorRef<A>`
-Returns a typed actor reference for the actor at the given rank in the gang. The method doesn’t validate the rank, so correctness is up to the caller.
-- `gang_ref.gang_id() -> &GangId`
-Returns the underlying, untyped gang identifier.

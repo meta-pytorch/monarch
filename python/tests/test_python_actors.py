@@ -1228,7 +1228,7 @@ class UndeliverableMessageSender(Actor):
     def send_undeliverable(self) -> None:
         actor_instance = context().actor_instance
         port_id = PortId(
-            actor_id=ActorId(world_name="bogus", rank=0, actor_name="bogus"),
+            actor_id=ActorId(addr="local:0", proc_name="bogus", actor_name="bogus"),
             port=1234,
         )
         port_ref = PortRef(port_id)
