@@ -46,8 +46,8 @@ use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
+use super::queue_pair::IbvQueuePair;
 use crate::rdma_components::RdmaBuffer;
-use crate::rdma_components::RdmaQueuePair;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::rdma_manager_actor::RdmaManagerMessageClient;
@@ -73,7 +73,7 @@ pub(crate) enum IbvManagerMessage {
         self_device: String,
         other_device: String,
         #[reply]
-        reply: OncePortRef<RdmaQueuePair>,
+        reply: OncePortRef<IbvQueuePair>,
     },
     Connect {
         other: ActorRef<RdmaManagerActor>,
@@ -99,7 +99,7 @@ pub(crate) enum IbvManagerMessage {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-        qp: RdmaQueuePair,
+        qp: IbvQueuePair,
     },
     GetQpState {
         other: ActorRef<RdmaManagerActor>,
@@ -122,8 +122,8 @@ wirevalue::register_type!(IbvManagerMessage);
     ],
 )]
 pub(crate) struct IbvManagerActor {
-    // Nested map: local_device -> (ActorId, remote_device) -> RdmaQueuePair
-    device_qps: HashMap<String, HashMap<(ActorId, String), RdmaQueuePair>>,
+    // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
+    device_qps: HashMap<String, HashMap<(ActorId, String), IbvQueuePair>>,
 
     // Track QPs currently being created to prevent duplicate creation
     // Wrapped in Arc<Mutex> to allow safe concurrent access
@@ -131,7 +131,7 @@ pub(crate) struct IbvManagerActor {
 
     // Map of RDMA device names to their domains and loopback QPs
     // Created lazily when memory is registered for a specific device
-    device_domains: HashMap<String, (IbvDomain, Option<RdmaQueuePair>)>,
+    device_domains: HashMap<String, (IbvDomain, Option<IbvQueuePair>)>,
 
     config: IbvConfig,
 
@@ -152,10 +152,10 @@ pub(crate) struct IbvManagerActor {
 impl Drop for IbvManagerActor {
     fn drop(&mut self) {
         // Helper function to destroy QP resources
-        // We can't use Drop on RdmaQueuePair because it derives Clone
+        // We can't use Drop on IbvQueuePair because it derives Clone
         // Note: rdmaxcel_qp_destroy handles destroying both the QP and its CQs internally,
         // so we must NOT call ibv_destroy_cq separately (would cause double-free/SIGSEGV)
-        fn destroy_queue_pair(qp: &RdmaQueuePair, _context: &str) {
+        fn destroy_queue_pair(qp: &IbvQueuePair, _context: &str) {
             unsafe {
                 if qp.qp != 0 {
                     let rdmaxcel_qp = qp.qp as *mut rdmaxcel_sys::rdmaxcel_qp;
@@ -269,7 +269,7 @@ impl IbvManagerActor {
         &mut self,
         device_name: &str,
         rdma_device: &IbvDevice,
-    ) -> Result<(IbvDomain, Option<RdmaQueuePair>), anyhow::Error> {
+    ) -> Result<(IbvDomain, Option<IbvQueuePair>), anyhow::Error> {
         // Check if we already have a domain for this device
         if let Some((domain, qp)) = self.device_domains.get(device_name) {
             return Ok((domain.clone(), qp.clone()));
@@ -286,7 +286,7 @@ impl IbvManagerActor {
         // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
         // For EFA, we don't need a loopback QP for segment scanning
         let qp = if mlx5dv_supported() && !crate::efa::is_efa_device() {
-            let mut qp = RdmaQueuePair::new(domain.context, domain.pd, self.config.clone())
+            let mut qp = IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
                 .map_err(|e| {
                     anyhow::anyhow!(
                         "could not create loopback QP for device {}: {}",
@@ -550,10 +550,10 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         other: ActorRef<RdmaManagerActor>,
         self_device: String,
         other_device: String,
-    ) -> Result<RdmaQueuePair, anyhow::Error> {
+    ) -> Result<IbvQueuePair, anyhow::Error> {
         let other_id = other.actor_id().clone();
 
-        // Use the nested map structure: local_device -> (actor_id, remote_device) -> RdmaQueuePair
+        // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
         let inner_key = (other_id.clone(), other_device.clone());
 
         // Check if queue pair exists in map
@@ -784,8 +784,8 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             (domain.context, domain.pd)
         };
 
-        let qp = RdmaQueuePair::new(domain_context, domain_pd, self.config.clone())
-            .map_err(|e| anyhow::anyhow!("could not create RdmaQueuePair: {}", e))?;
+        let qp = IbvQueuePair::new(domain_context, domain_pd, self.config.clone())
+            .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?;
 
         // Insert the QP into the nested map structure
         self.device_qps
@@ -840,7 +840,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         _other: ActorRef<RdmaManagerActor>,
         _self_device: String,
         _other_device: String,
-        _qp: RdmaQueuePair,
+        _qp: IbvQueuePair,
     ) -> Result<(), anyhow::Error> {
         Ok(())
     }
