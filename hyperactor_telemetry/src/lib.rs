@@ -329,10 +329,10 @@ pub fn notify_actor_created(event: ActorEvent) {
     dispatch_or_buffer(EntityEvent::Actor(event));
 }
 
-/// Event data for actor mesh creation.
-/// This is passed to EntityEventDispatcher implementations when an actor mesh is spawned.
+/// Event data for mesh creation.
+/// This is passed to EntityEventDispatcher implementations when a mesh is spawned.
 #[derive(Debug, Clone)]
-pub struct ActorMeshEvent {
+pub struct MeshEvent {
     /// Unique identifier for this mesh (hashed)
     pub id: u64,
     /// Timestamp when the mesh was created
@@ -351,11 +351,11 @@ pub struct ActorMeshEvent {
     pub parent_view_json: Option<String>,
 }
 
-/// Notify the registered dispatcher that an actor mesh was created.
+/// Notify the registered dispatcher that a mesh was created.
 /// If no dispatcher is registered yet, the event is buffered and will be
 /// replayed when `set_entity_dispatcher` is called.
-pub fn notify_actor_mesh_created(event: ActorMeshEvent) {
-    dispatch_or_buffer(EntityEvent::ActorMesh(event));
+pub fn notify_mesh_created(event: MeshEvent) {
+    dispatch_or_buffer(EntityEvent::Mesh(event));
 }
 
 /// Event data for actor status changes.
@@ -395,8 +395,8 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
 pub enum EntityEvent {
     /// An actor was created.
     Actor(ActorEvent),
-    /// An actor mesh was created.
-    ActorMesh(ActorMeshEvent),
+    /// A mesh was created.
+    Mesh(MeshEvent),
     /// An actor changed status.
     ActorStatus(ActorStatusEvent),
 }
@@ -420,7 +420,7 @@ pub enum EntityEvent {
 ///     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
 ///         match event {
 ///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
-///             EntityEvent::ActorMesh(mesh) => println!("Mesh: {}", mesh.full_name),
+///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
 ///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
 ///         }
 ///         Ok(())
