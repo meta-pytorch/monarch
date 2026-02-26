@@ -19,22 +19,21 @@ import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import (
     _proc_mesh_spawn_callbacks,
     SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.distributed_telemetry import start_telemetry
+from monarch.job import ProcessJob
 
 
 class WorkerActor(Actor):
     """Simple worker actor that can spawn child processes."""
 
     @endpoint
-    def spawn_child(self, name: str) -> None:
-        """Spawn a child process from this worker's host."""
-        this_host().spawn_procs(name=name)
+    def ping(self) -> None:
+        pass
 
 
 @pytest.fixture
@@ -76,7 +75,8 @@ def test_distributed_telemetry_auto_callback(cleanup_callbacks) -> None:
     assert len(_proc_mesh_spawn_callbacks) == initial_callback_count + 1
 
     # Spawn workers - callback should fire and add them as children
-    this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    host.spawn_procs(per_host={"workers": 2})
 
     # Query should return data from coordinator + 2 workers = 3 sources
     # Each source has 10 hosts, so we expect 30 total hosts
@@ -92,13 +92,15 @@ def test_distributed_telemetry_grandchild(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=True)
 
     # Spawn workers
-    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = host.spawn_procs(per_host={"workers": 2})
 
     # Spawn worker actors for business logic
     workers = worker_procs.spawn("worker", WorkerActor)
+    workers.initialized.get()
 
-    # Have worker 0 spawn a grandchild - telemetry automatically tracks it
-    workers.slice(workers=0).spawn_child.call_one("grandchild").get()
+    # Spawn a grandchild - telemetry automatically tracks it
+    host.spawn_procs(name="grandchild")
 
     # Query should return data from coordinator + 2 workers + 1 grandchild = 4 sources
     # Each source has 10 hosts, so we expect 40 total hosts
@@ -137,7 +139,8 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     enable_record_batch_tracing(batch_size=5)
 
     # Spawn some workers to generate trace events
-    this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    host.spawn_procs(per_host={"workers": 2})
 
     # The sink should have received and flushed some batches
     # Note: The exact count depends on the number of trace events generated
@@ -152,7 +155,8 @@ def test_actors_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn some worker actors - this should trigger notify_actor_created
-    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = host.spawn_procs(per_host={"workers": 2})
     _ = worker_procs.spawn("test_worker", WorkerActor)
 
     # Query the actors table to verify actors were recorded
@@ -186,13 +190,10 @@ def test_actor_meshes_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn some worker actors - this should trigger notify_actor_mesh_created
-    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = host.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
-
-    # Force the spawn to complete by calling an endpoint on the workers.
-    # The spawn is async, so we need to wait for it to finish before querying.
-    # pyre-ignore[29]: workers is an ActorMesh
-    workers.spawn_child.call("dummy_child").get()
+    workers.initialized.get()
 
     # Query the actor_meshes table to verify actor meshes were recorded
     result = engine.query("SELECT * FROM actor_meshes")
@@ -270,11 +271,10 @@ def test_actors_join_actor_meshes_on_mesh_id(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn actors — this populates both the actors and actor_meshes tables
-    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = host.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("join_test_worker", WorkerActor)
-
-    # Force spawn to complete
-    workers.spawn_child.call("dummy").get()
+    workers.initialized.get()
 
     # Join actors with actor_meshes on mesh_id = id
     result = engine.query(
@@ -315,11 +315,10 @@ def test_actor_status_events_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn worker actors — actors go through status transitions during spawn
-    worker_procs = this_host().spawn_procs(per_host={"workers": 2})
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = host.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("status_test_worker", WorkerActor)
-
-    # Force spawn to complete by calling an endpoint
-    workers.spawn_child.call("dummy_status").get()
+    workers.initialized.get()
 
     # Query the actor_status_events table
     result = engine.query("SELECT * FROM actor_status_events")

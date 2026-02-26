@@ -30,8 +30,9 @@ import time
 os.environ["USE_UNIFIED_LAYER"] = "true"
 
 import pyarrow as pa
-from monarch.actor import Actor, endpoint, this_host
+from monarch.actor import Actor, endpoint
 from monarch.distributed_telemetry import start_telemetry
+from monarch.job import ProcessJob
 
 
 NUM_WORKERS = 3
@@ -60,16 +61,8 @@ class ComputeActor(Actor):
         """Do nested work to generate hierarchical spans."""
         return self._do_nested_work(depth)
 
-    @endpoint
-    def spawn_child_work(self) -> None:
-        """Spawn a child process to do work."""
-        child_procs = this_host().spawn_procs(name="child_worker")
-        child_actors = child_procs.spawn("child_compute", ComputeActor)
-        # pyre-ignore[29]: child_actors is an ActorMesh
-        child_actors.compute.call(100).get()
 
-
-def print_table(table: pa.Table, max_rows: int = 20) -> None:
+def print_table(table: pa.Table, max_rows: int = 50) -> None:
     """Pretty print a PyArrow table."""
     if table.num_rows == 0:
         print("(empty result)")
@@ -93,7 +86,8 @@ def main() -> None:
 
     # Spawn worker processes - telemetry automatically tracks them
     print(f"Spawning {NUM_WORKERS} worker processes...")
-    worker_procs = this_host().spawn_procs(per_host={"workers": NUM_WORKERS})
+    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS})
 
     # Spawn compute actors
     print("Spawning compute actors...")
@@ -110,9 +104,12 @@ def main() -> None:
     nested_results = workers.nested_work.call(3).get()
     print(f"Nested work results: {list(nested_results)}")
 
-    # Have worker 0 spawn a child and do work
-    print("Having worker 0 spawn a child process...")
-    workers.slice(workers=0).spawn_child_work.call_one().get()
+    # Spawn a child process and do work
+    print("Spawning a child process...")
+    child_procs = hosts.spawn_procs(name="child_worker")
+    child_actors = child_procs.spawn("child_compute", ComputeActor)
+    # pyre-ignore[29]: child_actors is an ActorMesh
+    child_actors.compute.call(100).get()
 
     # Give a moment for all trace events to be flushed
     print("Waiting for trace events to flush...")
