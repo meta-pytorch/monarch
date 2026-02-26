@@ -2304,6 +2304,7 @@ fn render_node_detail(
             last_message_handler,
             total_processing_time_us,
             flight_recorder,
+            ..
         } => {
             render_actor_detail(
                 frame,
@@ -2672,6 +2673,7 @@ mod tests {
                 last_message_handler: None,
                 total_processing_time_us: 0,
                 flight_recorder: None,
+                is_system: false,
             },
             children: vec![],
             parent: None,

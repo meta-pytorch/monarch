@@ -2131,4 +2131,121 @@ mod tests {
         handle.drain_and_stop("test").unwrap();
         handle.await;
     }
+
+    /// Verify the PublishedProperties round-trip: an actor can push
+    /// properties via `publish_properties` and read them back via
+    /// `published_properties()`. Also verifies the QueryChild
+    /// callback registration.
+    #[tokio::test]
+    async fn test_published_properties_round_trip() {
+        use crate::introspect::PublishedPropertiesKind;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, _rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_pub", actor).unwrap();
+
+        // Before publishing, properties are None.
+        assert!(handle.cell().published_properties().is_none());
+
+        // Publish Host properties.
+        handle
+            .cell()
+            .set_published_properties(PublishedPropertiesKind::Host {
+                addr: "10.0.0.1:8080".into(),
+                num_procs: 3,
+                children: vec!["proc_a".into(), "proc_b".into()],
+            });
+
+        // Read them back.
+        let props = handle
+            .cell()
+            .published_properties()
+            .expect("should have published properties");
+        match &props.kind {
+            PublishedPropertiesKind::Host {
+                addr,
+                num_procs,
+                children,
+            } => {
+                assert_eq!(addr, "10.0.0.1:8080");
+                assert_eq!(*num_procs, 3);
+                assert_eq!(children.len(), 2);
+            }
+            other => panic!("expected Host, got {:?}", other),
+        }
+        // Timestamp should be recent.
+        assert!(props.published_at.elapsed().unwrap().as_secs() < 5);
+
+        // Overwrite with Proc properties.
+        handle
+            .cell()
+            .set_published_properties(PublishedPropertiesKind::Proc {
+                proc_name: "my_proc".into(),
+                num_actors: 7,
+                is_system: false,
+                children: vec!["actor_a".into()],
+            });
+        let props = handle.cell().published_properties().unwrap();
+        assert!(matches!(props.kind, PublishedPropertiesKind::Proc { .. }));
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
+
+    /// Verify the query_child_handler callback: register a callback,
+    /// invoke it via `query_child()`, and confirm the response.
+    #[tokio::test]
+    async fn test_query_child_handler_round_trip() {
+        use crate::introspect::NodePayload;
+        use crate::introspect::NodeProperties;
+        use crate::reference::Reference;
+
+        let proc = Proc::local();
+        let (client, _) = proc.instance("client").unwrap();
+        let (tx, _rx) = client.open_port::<u64>();
+        let actor = EchoActor(tx.bind());
+        let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
+
+        // Before registering, query_child returns None.
+        let test_ref = Reference::Actor(id!(test[0].child));
+        assert!(handle.cell().query_child(&test_ref).is_none());
+
+        // Register a callback.
+        handle
+            .cell()
+            .set_query_child_handler(|child_ref| NodePayload {
+                identity: child_ref.to_string(),
+                properties: NodeProperties::Proc {
+                    proc_name: "test_proc".into(),
+                    num_actors: 42,
+                    is_system: true,
+                },
+                children: Vec::new(),
+                parent: None,
+            });
+
+        // Now query_child returns the callback's response.
+        let payload = handle
+            .cell()
+            .query_child(&test_ref)
+            .expect("callback should produce a payload");
+        assert_eq!(payload.identity, test_ref.to_string());
+        match &payload.properties {
+            NodeProperties::Proc {
+                proc_name,
+                num_actors,
+                is_system,
+            } => {
+                assert_eq!(proc_name, "test_proc");
+                assert_eq!(*num_actors, 42);
+                assert!(*is_system);
+            }
+            other => panic!("expected Proc, got {:?}", other),
+        }
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+    }
 }
