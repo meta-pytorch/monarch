@@ -8,5 +8,6 @@
 
 //! ibverbs backend implementation for RDMA operations.
 
+pub(crate) mod domain;
 pub(crate) mod manager_actor;
 pub mod primitives;

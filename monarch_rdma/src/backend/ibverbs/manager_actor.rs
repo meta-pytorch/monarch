@@ -38,6 +38,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use super::domain::IbvDomain;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDevice;
 use super::primitives::IbvMemoryRegionView;
@@ -46,7 +47,6 @@ use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use crate::rdma_components::RdmaBuffer;
-use crate::rdma_components::RdmaDomain;
 use crate::rdma_components::RdmaQueuePair;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::RdmaManagerActor;
@@ -131,7 +131,7 @@ pub(crate) struct IbvManagerActor {
 
     // Map of RDMA device names to their domains and loopback QPs
     // Created lazily when memory is registered for a specific device
-    device_domains: HashMap<String, (RdmaDomain, Option<RdmaQueuePair>)>,
+    device_domains: HashMap<String, (IbvDomain, Option<RdmaQueuePair>)>,
 
     config: IbvConfig,
 
@@ -269,14 +269,14 @@ impl IbvManagerActor {
         &mut self,
         device_name: &str,
         rdma_device: &IbvDevice,
-    ) -> Result<(RdmaDomain, Option<RdmaQueuePair>), anyhow::Error> {
+    ) -> Result<(IbvDomain, Option<RdmaQueuePair>), anyhow::Error> {
         // Check if we already have a domain for this device
         if let Some((domain, qp)) = self.device_domains.get(device_name) {
             return Ok((domain.clone(), qp.clone()));
         }
 
         // Create new domain for this device
-        let domain = RdmaDomain::new(rdma_device.clone()).map_err(|e| {
+        let domain = IbvDomain::new(rdma_device.clone()).map_err(|e| {
             anyhow::anyhow!("could not create domain for device {}: {}", device_name, e)
         })?;
 
