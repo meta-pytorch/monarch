@@ -1149,7 +1149,7 @@ impl ProcMeshRef {
             self.name().to_string().hash(&mut parent_hasher);
             let parent_mesh_id_hash = parent_hasher.finish();
 
-            hyperactor_telemetry::notify_actor_mesh_created(hyperactor_telemetry::ActorMeshEvent {
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
                 timestamp: RealClock.system_time_now(),
                 class: actor_type,
