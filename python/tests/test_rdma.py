@@ -561,6 +561,24 @@ class ClientActor(Actor):
         self.action = action
 
     @endpoint
+    async def perform_stale_overlap_tracking(self, buffer: RDMABuffer) -> None:
+        """Bug: larger read_into fully containing a smaller one leaves stale
+        tracking data, so a subsequent conflicting write_from goes undetected.
+
+        Byte offsets into self.data_a (uint8 view, 400 bytes):
+            [100, 150)  — first read_into
+            [80, 180)   — second read_into, fully contains first
+            [155, 195)  — write_from, overlaps [80,180) but not stale [100,150)
+        """
+        local = self.data_a.view(torch.uint8).flatten()
+        action = RDMAAction()
+        action.read_into(buffer, local[100:150])
+        action.read_into(buffer, local[80:180])
+        # Should raise: READ_INTO at [80,180) + WRITE_FROM at [155,195) overlap.
+        # Bug: stale [100,150) doesn't overlap [155,195), so no error is raised.
+        action.write_from(buffer, local[155:195])
+
+    @endpoint
     async def get_local_data_sums(self) -> dict:
         """Get sums of local data for verification"""
         return {
@@ -769,3 +787,23 @@ async def test_rdma_action_slicing():
     assert (
         operation_results["data_a_sum"] == sum_a_initial * 2.5
     )  # multi-filled from 100 to 250
+
+
+@needs_rdma
+async def test_rdma_action_stale_overlap_tracking():
+    """When a larger read_into range fully contains a smaller one, the overlap
+    tracker should expand the tracked region.  A subsequent conflicting
+    write_from that falls outside the stale range but inside the correct
+    expanded range must be detected.
+    """
+    server_proc = this_host().spawn_procs(per_host={"processes": 1})
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+
+    # 10 float32 = 40 bytes — small enough to fit all local slices
+    server = server_proc.spawn("server", DataServerActor, "X", 10)
+    client = client_proc.spawn("client", ClientActor)
+
+    buffer = await server.create_buffer.call_one()
+
+    with pytest.raises(Exception, match="write_from"):
+        await client.perform_stale_overlap_tracking.call_one(buffer)
