@@ -156,6 +156,12 @@ struct ProcState {
     /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
+    /// Snapshots of terminated actors for post-mortem introspection.
+    /// Populated by the introspect task just before it exits on
+    /// terminal status. Bounded by
+    /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
+    terminated_snapshots: DashMap<ActorId, crate::introspect::NodePayload>,
+
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
@@ -243,6 +249,7 @@ impl Proc {
                 forwarder,
                 roots: DashMap::new(),
                 instances: DashMap::new(),
+                terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 clock,
             }),
@@ -502,6 +509,26 @@ impl Proc {
             .collect()
     }
 
+    /// Look up a terminated actor's snapshot by ID.
+    pub fn terminated_snapshot(
+        &self,
+        actor_id: &ActorId,
+    ) -> Option<crate::introspect::NodePayload> {
+        self.state()
+            .terminated_snapshots
+            .get(actor_id)
+            .map(|e| e.value().clone())
+    }
+
+    /// Return all terminated actor IDs currently retained.
+    pub fn all_terminated_actor_ids(&self) -> Vec<ActorId> {
+        self.state()
+            .terminated_snapshots
+            .iter()
+            .map(|e| e.key().clone())
+            .collect()
+    }
+
     /// Create a child instance. Called from `Instance`.
     fn child_instance(
         &self,
@@ -725,8 +752,21 @@ impl Proc {
         Ok((stopped_actors, aborted_actors))
     }
 
-    /// Resolve an actor reference to an actor residing on this proc.
-    /// Returns None if the actor is not found on this proc.
+    /// Resolve an actor reference to a **live** actor on this proc.
+    ///
+    /// Returns `None` if:
+    /// - the actor was never spawned here,
+    /// - the actor's `InstanceCell` has been dropped, or
+    /// - the actor's status is terminal (stopped or failed).
+    ///
+    /// The terminal-status check guards a race window: the introspect
+    /// task (`serve_introspect`) holds a strong `InstanceCell` Arc
+    /// and drops it only after observing terminal status. Between the
+    /// actor reaching terminal and the introspect task reacting,
+    /// `upgrade()` on the weak ref succeeds even though the actor is
+    /// dead. The `is_terminal()` check closes that window. Once the
+    /// introspect task exits, the Arc is dropped and `upgrade()`
+    /// returns `None` on its own.
     ///
     /// Bounds:
     /// - `R: Actor` — must be a real actor that can live in this
@@ -737,11 +777,14 @@ impl Proc {
         &self,
         actor_ref: &ActorRef<R>,
     ) -> Option<ActorHandle<R>> {
-        self.inner
-            .instances
-            .get(actor_ref.actor_id())?
-            .upgrade()?
-            .downcast_handle()
+        let cell = self.inner.instances.get(actor_ref.actor_id())?.upgrade()?;
+        // An actor whose status is terminal has stopped processing
+        // messages even if its InstanceCell Arc is still alive (e.g.
+        // held by the introspect task during teardown).
+        if cell.status().borrow().is_terminal() {
+            return None;
+        }
+        cell.downcast_handle()
     }
 
     /// Create a root allocation in the proc.
@@ -2230,6 +2273,28 @@ impl InstanceCell {
         self.inner.is_system.load(Ordering::Relaxed)
     }
 
+    /// Store a post-mortem snapshot for this actor in the proc's
+    /// `terminated_snapshots` map. Called by the introspect task
+    /// just before exiting on terminal status.
+    pub fn store_terminated_snapshot(&self, payload: crate::introspect::NodePayload) {
+        let snapshots = &self.inner.proc.inner.terminated_snapshots;
+        snapshots.insert(self.actor_id().clone(), payload);
+        let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
+        let excess = snapshots.len().saturating_sub(max);
+        if excess > 0 {
+            // Collect keys to evict — arbitrary order (DashMap is
+            // unordered). We grab just the ones we need to remove.
+            let to_remove: Vec<ActorId> = snapshots
+                .iter()
+                .take(excess)
+                .map(|e| e.key().clone())
+                .collect();
+            for key in to_remove {
+                snapshots.remove(&key);
+            }
+        }
+    }
+
     /// This is temporary so that we can share binding code between handle and instance.
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
@@ -3317,6 +3382,128 @@ mod tests {
                     MailboxErrorKind::OwnerTerminated(ActorStatus::Failed(ActorErrorKind::Generic(msg)))
                         if msg.contains("intentional failure")
                 )
+        );
+    }
+
+    /// Wait for a terminated snapshot to appear for the given actor.
+    /// The introspect task runs in a separate tokio task and may not
+    /// have stored the snapshot by the time `handle.await` returns.
+    async fn wait_for_terminated_snapshot(
+        proc: &Proc,
+        actor_id: &ActorId,
+    ) -> crate::introspect::NodePayload {
+        // The introspect task runs in a separate tokio task; give it
+        // ample time under load (10 s total).
+        for _ in 0..500 {
+            if let Some(snapshot) = proc.terminated_snapshot(actor_id) {
+                return snapshot;
+            }
+            RealClock.sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for terminated snapshot for {}", actor_id);
+    }
+
+    // Verifies that when an actor is stopped, the proc eventually
+    // records a "terminated snapshot" for it (written by the
+    // introspect task, which runs asynchronously). The test asserts
+    // the snapshot is absent while the actor is live, then stops the
+    // actor, waits for the introspect task to observe the terminal
+    // state, and confirms:
+    //   - the stored snapshot reports a `stopped:*` actor_status, and
+    //   - the actor id moves from the live set to the terminated set.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminated_snapshot_stored_on_stop() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        // Actor is live — no terminated snapshot yet.
+        assert!(proc.terminated_snapshot(&actor_id).is_none());
+        assert!(!proc.all_terminated_actor_ids().contains(&actor_id));
+
+        // Stop the actor and wait for it to fully terminate.
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        // The introspect task runs in a separate tokio task; wait for
+        // it to observe the terminal status and store the snapshot.
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        assert_matches!(
+            &snapshot.properties,
+            crate::introspect::NodeProperties::Actor { actor_status, .. }
+                if actor_status.starts_with("stopped:")
+        );
+
+        // Actor should appear in terminated IDs but not in live IDs.
+        assert!(proc.all_terminated_actor_ids().contains(&actor_id));
+        assert!(
+            !proc.all_actor_ids().contains(&actor_id),
+            "stopped actor should not appear in live actor IDs"
+        );
+    }
+
+    // Verifies that an actor failure results in a terminated snapshot
+    // being stored. The test installs a ProcSupervisionCoordinator
+    // (required for failure handling), spawns an actor, triggers a
+    // failure via a message, waits for the actor to terminate, then
+    // waits for the introspect task to persist the terminal snapshot
+    // and asserts the snapshot reports a `failed:*` actor_status.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminated_snapshot_stored_on_failure() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        // Supervision coordinator required for actor failure handling.
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        // Trigger a failure.
+        handle
+            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")))
+            .unwrap();
+        handle.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        assert_matches!(
+            &snapshot.properties,
+            crate::introspect::NodeProperties::Actor { actor_status, .. }
+                if actor_status.starts_with("failed:")
+        );
+    }
+
+    // Invariant: resolve_actor_ref returns None for terminal actors.
+    //
+    // A live actor is resolvable. After drain_and_stop + await, the
+    // actor's status is terminal and resolve_actor_ref must return
+    // None — even though the introspect task may still hold a strong
+    // InstanceCell Arc (it drops the Arc only after observing
+    // terminal status asynchronously). The is_terminal() check in
+    // resolve_actor_ref closes that race window.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_resolve_actor_ref_none_for_terminal_actor() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
+        let actor_ref: ActorRef<TestActor> = handle.bind();
+
+        // Actor is live — resolve should succeed.
+        assert!(
+            proc.resolve_actor_ref(&actor_ref).is_some(),
+            "live actor should be resolvable"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        // Actor is terminal — resolve must return None regardless of
+        // whether the introspect task has dropped its Arc yet.
+        assert!(
+            proc.resolve_actor_ref(&actor_ref).is_none(),
+            "terminal actor must not be resolvable"
         );
     }
 }
