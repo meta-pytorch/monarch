@@ -342,6 +342,79 @@ impl Cursor {
 /// Root(skipped) → Host(0) → Proc(1) → Actor(2) → ChildActor(3).
 const MAX_TREE_DEPTH: usize = 4;
 
+/// All user-visible text in the TUI.
+///
+/// Gathered into a single struct so that localisation (or
+/// white-labelling) is a drop-in replacement — construct an
+/// alternative `Labels` and pass it to `App`.
+struct Labels {
+    // App identity
+    app_name: &'static str,
+
+    // Chrome / decoration
+    separator: &'static str,
+    selection_caret: &'static str,
+    refresh_icon: &'static str,
+    no_selection: &'static str,
+
+    // Header stat labels
+    uptime: &'static str,
+    system: &'static str,
+    sys_on: &'static str,
+    sys_off: &'static str,
+
+    // Detail pane labels
+    hosts: &'static str,
+    started_by: &'static str,
+    uptime_detail: &'static str,
+    started_at: &'static str,
+    data_as_of: &'static str,
+    address: &'static str,
+    procs: &'static str,
+    name: &'static str,
+    actors: &'static str,
+    actor_type: &'static str,
+    messages: &'static str,
+    created: &'static str,
+    last_handler: &'static str,
+    children: &'static str,
+    status: &'static str,
+    processing_time: &'static str,
+}
+
+impl Labels {
+    /// English (default) label set.
+    fn en() -> Self {
+        Self {
+            app_name: "mesh-admin",
+            separator: " • ",
+            selection_caret: "▸ ",
+            refresh_icon: "⟳ ",
+            no_selection: "No selection",
+            uptime: "up: ",
+            system: "sys:",
+            sys_on: "on",
+            sys_off: "off",
+            hosts: "Hosts: ",
+            started_by: "Started by: ",
+            uptime_detail: "Uptime: ",
+            started_at: "Started at: ",
+            data_as_of: "Data as of: ",
+            address: "Address: ",
+            procs: "Procs: ",
+            name: "Name: ",
+            actors: "Actors: ",
+            actor_type: "Type: ",
+            messages: "Messages: ",
+            created: "Created: ",
+            last_handler: "Last handler: ",
+            children: "Children: ",
+            status: "Status: ",
+            processing_time: "Processing time: ",
+        }
+    }
+}
+
 /// Lightweight classification for a topology node, used for UI
 /// concerns (primarily color-coding and a few display heuristics).
 ///
@@ -437,7 +510,7 @@ struct ColorScheme {
     stat_system: Style,    // config toggles (state)
     stat_url: Style,       // connection info (secondary)
     stat_label: Style,     // stat labels/prefixes
-    stat_value: Style,     // stat numeric values
+    _stat_value: Style,    // stat numeric values
 }
 
 impl ColorScheme {
@@ -471,7 +544,7 @@ impl ColorScheme {
             stat_system: Style::default().fg(Color::Blue),
             stat_url: Style::default().fg(Color::DarkGray),
             stat_label: Style::default().fg(Color::Gray),
-            stat_value: Style::default()
+            _stat_value: Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         }
@@ -484,6 +557,24 @@ impl ColorScheme {
             NodeType::Host => self.node_host,
             NodeType::Proc => self.node_proc,
             NodeType::Actor => self.node_actor,
+        }
+    }
+}
+
+/// Complete visual presentation — colors + text.
+///
+/// Swap in a different `Theme` to localise or white-label the TUI.
+struct Theme {
+    scheme: ColorScheme,
+    labels: Labels,
+}
+
+impl Theme {
+    /// English, dark-background default.
+    fn default() -> Self {
+        Self {
+            scheme: ColorScheme::default(),
+            labels: Labels::en(),
         }
     }
 }
@@ -639,13 +730,14 @@ struct App {
     /// selected node fails.
     detail_error: Option<String>,
 
-    /// Timestamp string for the last successful refresh (local time).
-    last_refresh: String,
+    /// Human-readable refresh interval (e.g. "1s", "5s").
+    refresh_interval_label: String,
     /// Top-level connection/refresh error surfaced in the header.
     error: Option<String>,
 
-    /// Whether to show system/infrastructure procs (toggled via `s`).
-    show_system_procs: bool,
+    /// Whether to show system/infrastructure procs and actors
+    /// (toggled via `s`).
+    show_system: bool,
 
     /// Fetch cache with generation-based staleness.
     fetch_cache: HashMap<String, FetchState<NodePayload>>,
@@ -654,8 +746,8 @@ struct App {
     /// Monotonic sequence counter for timestamp ordering.
     seq_counter: u64,
 
-    /// Color scheme for the entire UI.
-    scheme: ColorScheme,
+    /// Visual presentation (colors + labels).
+    theme: Theme,
 }
 
 /// Result of handling a key event.
@@ -690,13 +782,13 @@ impl App {
             tree_viewport_height: 20, // Default, updated during rendering
             detail: None,
             detail_error: None,
-            last_refresh: String::new(),
+            refresh_interval_label: String::new(),
             error: None,
-            show_system_procs: false,
+            show_system: false,
             fetch_cache: HashMap::new(),
             refresh_gen: 0,
             seq_counter: 0,
-            scheme: ColorScheme::default(),
+            theme: Theme::default(),
         }
     }
 
@@ -839,7 +931,7 @@ impl App {
             if let Some(child_node) = build_tree_node(
                 &self.client,
                 &self.base_url,
-                self.show_system_procs,
+                self.show_system,
                 &mut self.fetch_cache,
                 &mut path,
                 child_ref,
@@ -875,7 +967,6 @@ impl App {
         };
         self.fetch_cache
             .retain(|k, _| k == "root" || live_refs.contains(k.as_str()));
-        self.last_refresh = chrono::Local::now().format("%H:%M:%S").to_string();
 
         // Restore selection position.
         let rows = self.visible_rows();
@@ -934,8 +1025,27 @@ impl App {
             NodeProperties::Proc { .. } | NodeProperties::Actor { .. }
         );
 
+        // Extract system_children from the parent for lazy filtering.
+        let system_children: HashSet<&str> = match &payload.properties {
+            NodeProperties::Root {
+                system_children, ..
+            }
+            | NodeProperties::Host {
+                system_children, ..
+            }
+            | NodeProperties::Proc {
+                system_children, ..
+            } => system_children.iter().map(|s| s.as_str()).collect(),
+            _ => HashSet::new(),
+        };
+
         let mut child_nodes = Vec::new();
         for child_ref in &children {
+            // Skip system children when filtering is active.
+            if !self.show_system && system_children.contains(child_ref.as_str()) {
+                continue;
+            }
+
             if is_proc_or_actor {
                 // Lazy: use placeholder.
                 if let Some(cached) = self.get_cached_payload(child_ref.as_str()) {
@@ -956,11 +1066,8 @@ impl App {
                 };
 
                 if let Some(cp) = child_payload {
-                    // Apply system proc filtering.
-                    if let NodeProperties::Proc { is_system, .. } = cp.properties
-                        && !self.show_system_procs
-                        && is_system
-                    {
+                    // Apply system filtering for procs and actors.
+                    if !self.show_system && is_system_node(&cp.properties) {
                         continue;
                     }
                     child_nodes.push(TreeNode::from_payload(child_ref.clone(), &cp));
@@ -1154,7 +1261,7 @@ impl App {
             }
             KeyCode::Char('s') => {
                 // Toggle system proc visibility
-                self.show_system_procs = !self.show_system_procs;
+                self.show_system = !self.show_system;
                 KeyResult::NeedsRefresh
             }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1206,7 +1313,7 @@ impl App {
 // Tree-building infrastructure (free functions)
 //
 // Extracted from `App` methods so that `refresh()` can pass disjoint
-// Borrows of `App` fields (client, base_url, show_system_procs) to
+// Borrows of `App` fields (client, base_url, show_system) to
 // The tree builder without complex borrowing.
 
 /// Unified fetch+join path for all cache writes.
@@ -1305,6 +1412,20 @@ fn get_cached_payload<'a>(
         FetchState::Ready { value, .. } => Some(value),
         _ => None,
     })
+}
+
+/// Returns true if the node properties indicate a system actor or proc.
+fn is_system_node(properties: &NodeProperties) -> bool {
+    matches!(
+        properties,
+        NodeProperties::Proc {
+            is_system: true,
+            ..
+        } | NodeProperties::Actor {
+            is_system: true,
+            ..
+        }
+    )
 }
 
 /// Flatten a tree into visible rows using algebraic fold.
@@ -1554,7 +1675,7 @@ fn collapse_all(node: &mut TreeNode) {
 fn build_tree_node<'a>(
     client: &'a reqwest::Client,
     base_url: &'a str,
-    show_system_procs: bool,
+    show_system: bool,
     cache: &'a mut HashMap<String, FetchState<NodePayload>>,
     path: &'a mut Vec<String>,
     reference: &'a str,
@@ -1596,11 +1717,8 @@ fn build_tree_node<'a>(
             }
         };
 
-        // Filter system procs.
-        if let NodeProperties::Proc { is_system, .. } = payload.properties
-            && !show_system_procs
-            && is_system
-        {
+        // Filter system procs and system actors.
+        if !show_system && is_system_node(&payload.properties) {
             path.pop();
             return None;
         }
@@ -1618,22 +1736,40 @@ fn build_tree_node<'a>(
                 NodeProperties::Proc { .. } | NodeProperties::Actor { .. }
             );
 
+            // Extract system_children from the parent so we can filter
+            // lazily without fetching each child individually.
+            let system_children: HashSet<&str> = match &payload.properties {
+                NodeProperties::Root {
+                    system_children, ..
+                }
+                | NodeProperties::Host {
+                    system_children, ..
+                }
+                | NodeProperties::Proc {
+                    system_children, ..
+                } => system_children.iter().map(|s| s.as_str()).collect(),
+                _ => HashSet::new(),
+            };
+
             let sorted = sorted_children(&payload);
 
             for child_ref in &sorted {
+                // Skip system children when filtering is active.
+                if !show_system && system_children.contains(child_ref.as_str()) {
+                    continue;
+                }
+
                 if is_proc_or_actor {
                     // Lazy: create placeholder for unexpanded children,
-                    // But recursively build expanded ones.
+                    // but recursively build expanded ones.
                     let child_is_expanded =
                         expanded_keys.contains(&(child_ref.to_string(), depth + 1));
 
                     if child_is_expanded {
-                        // Child was previously expanded - recursively build it
-                        // To preserve its expanded state and children.
                         if let Some(child_node) = build_tree_node(
                             client,
                             base_url,
-                            show_system_procs,
+                            show_system,
                             cache,
                             path,
                             child_ref,
@@ -1646,8 +1782,7 @@ fn build_tree_node<'a>(
                         {
                             children.push(child_node);
                         } else {
-                            // Recursive build failed (cycle, depth limit, etc.)
-                            // Fall back to placeholder so node still appears.
+                            // Recursive build failed - fall back to placeholder.
                             if let Some(cached) = get_cached_payload(cache, child_ref) {
                                 children.push(TreeNode::from_payload(child_ref.clone(), cached));
                             } else {
@@ -1667,7 +1802,7 @@ fn build_tree_node<'a>(
                     if let Some(child_node) = build_tree_node(
                         client,
                         base_url,
-                        show_system_procs,
+                        show_system,
                         cache,
                         path,
                         child_ref,
@@ -1718,7 +1853,9 @@ fn build_tree_node<'a>(
 fn derive_label(payload: &NodePayload) -> String {
     match &payload.properties {
         NodeProperties::Root { num_hosts, .. } => format!("Mesh Root ({} hosts)", num_hosts),
-        NodeProperties::Host { addr, num_procs } => format!("{}  ({} procs)", addr, num_procs),
+        NodeProperties::Host {
+            addr, num_procs, ..
+        } => format!("{}  ({} procs)", addr, num_procs),
         NodeProperties::Proc {
             proc_name,
             num_actors,
@@ -1945,7 +2082,7 @@ async fn main() -> io::Result<()> {
             .template("{spinner:.cyan} {msg}")
             .expect("valid template"),
     );
-    spinner.set_message(format!("m-admin — Connecting to {} ...", app.base_url));
+    spinner.set_message(format!("mesh-admin — Connecting to {} ...", app.base_url));
     spinner.enable_steady_tick(Duration::from_millis(80));
 
     let splash_start = RealClock.now();
@@ -1974,6 +2111,12 @@ async fn run_app(
     mut app: App,
 ) -> io::Result<()> {
     let mut refresh_interval = tokio::time::interval(Duration::from_millis(args.refresh_ms));
+    app.refresh_interval_label = if args.refresh_ms >= 1000 && args.refresh_ms.is_multiple_of(1000)
+    {
+        format!("{}s", args.refresh_ms / 1000)
+    } else {
+        format!("{}ms", args.refresh_ms)
+    };
     let mut events = EventStream::new();
 
     loop {
@@ -2053,16 +2196,21 @@ fn ui(frame: &mut ratatui::Frame<'_>, app: &App) {
 /// selection context, and system state. Uses semantic colors from the
 /// scheme for visual hierarchy and readability.
 fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let l = &app.theme.labels;
+
     // Error state overrides normal display
     if let Some(err) = &app.error {
         let header = Paragraph::new(vec![
-            Line::from(Span::styled("m-admin", app.scheme.app_name)),
-            Line::from(Span::styled(format!("ERROR: {}", err), app.scheme.error)),
+            Line::from(Span::styled(l.app_name, app.theme.scheme.app_name)),
+            Line::from(Span::styled(
+                format!("ERROR: {}", err),
+                app.theme.scheme.error,
+            )),
         ])
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(app.scheme.border),
+                .border_style(app.theme.scheme.border),
         );
         frame.render_widget(header, area);
         return;
@@ -2070,7 +2218,7 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     // Gather stats
     let selection = app.current_selection();
-    let sys_state = if app.show_system_procs { "on" } else { "off" };
+    let sys_state = if app.show_system { l.sys_on } else { l.sys_off };
 
     // Extract uptime and username from root node
     let (uptime_str, username) = if let Some(root_payload) = app.get_cached_payload("root") {
@@ -2088,85 +2236,64 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         (None, None)
     };
 
-    // Line 1: App name • URL • up: 2h 34m • @user • sys:off
+    // Line 1: App name • URL • up: 2h 34m • @user • sys:off • ⟳ 1s
     let mut line1_spans = vec![
-        Span::styled("m-admin", app.scheme.app_name),
-        Span::styled(" • ", app.scheme.stat_label),
-        Span::styled(&app.base_url, app.scheme.stat_url),
+        Span::styled(l.app_name, app.theme.scheme.app_name),
+        Span::styled(l.separator, app.theme.scheme.stat_label),
+        Span::styled(&app.base_url, app.theme.scheme.stat_url),
     ];
 
     // Add uptime if available
     if let Some(uptime) = uptime_str {
         line1_spans.extend(vec![
-            Span::styled(" • ", app.scheme.stat_label),
-            Span::styled("up: ", app.scheme.stat_label),
-            Span::styled(uptime, app.scheme.stat_timing),
+            Span::styled(l.separator, app.theme.scheme.stat_label),
+            Span::styled(l.uptime, app.theme.scheme.stat_label),
+            Span::styled(uptime, app.theme.scheme.stat_timing),
         ]);
     }
 
     // Add username if available
     if let Some(user) = username {
         line1_spans.extend(vec![
-            Span::styled(" • ", app.scheme.stat_label),
-            Span::styled(format!("@{}", user), app.scheme.stat_system),
+            Span::styled(l.separator, app.theme.scheme.stat_label),
+            Span::styled(format!("@{}", user), app.theme.scheme.stat_system),
         ]);
     }
 
-    // Cache size and error count
-    let cache_size = app.fetch_cache.len();
-    let error_count = app
-        .fetch_cache
-        .values()
-        .filter(|state| matches!(state, FetchState::Error { .. }))
-        .count();
-
     line1_spans.extend(vec![
-        Span::styled(" • ", app.scheme.stat_label),
-        Span::styled("cache:", app.scheme.stat_label),
-        Span::styled(cache_size.to_string(), app.scheme.stat_value),
+        Span::styled(l.separator, app.theme.scheme.stat_label),
+        Span::styled(l.system, app.theme.scheme.stat_label),
+        Span::styled(sys_state, app.theme.scheme.stat_system),
     ]);
 
-    if error_count > 0 {
+    if !app.refresh_interval_label.is_empty() {
         line1_spans.extend(vec![
-            Span::styled(" err:", app.scheme.stat_label),
-            Span::styled(error_count.to_string(), app.scheme.error),
+            Span::styled(l.separator, app.theme.scheme.stat_label),
+            Span::styled(l.refresh_icon, app.theme.scheme.stat_timing),
+            Span::styled(&app.refresh_interval_label, app.theme.scheme.stat_timing),
         ]);
     }
 
-    line1_spans.extend(vec![
-        Span::styled(" • ", app.scheme.stat_label),
-        Span::styled("sys:", app.scheme.stat_label),
-        Span::styled(sys_state, app.scheme.stat_system),
-    ]);
-
-    // Line 2: Selection context • Last refresh time
+    // Line 2: Selection context
     let mut line2_spans = vec![];
 
     if let Some((node_type, label)) = selection {
         let type_str = node_type.label();
-        let type_style = app.scheme.node_style(node_type);
+        let type_style = app.theme.scheme.node_style(node_type);
         line2_spans.extend(vec![
-            Span::styled("▸ ", app.scheme.stat_selection),
+            Span::styled(l.selection_caret, app.theme.scheme.stat_selection),
             Span::styled(type_str, type_style),
             Span::styled(" ", Style::default()),
-            Span::styled(label, app.scheme.stat_selection),
+            Span::styled(label, app.theme.scheme.stat_selection),
         ]);
     } else {
-        line2_spans.push(Span::styled("No selection", app.scheme.info));
-    }
-
-    if !app.last_refresh.is_empty() {
-        line2_spans.extend(vec![
-            Span::styled(" • ", app.scheme.stat_label),
-            Span::styled("⟳ ", app.scheme.stat_timing),
-            Span::styled(&app.last_refresh, app.scheme.stat_timing),
-        ]);
+        line2_spans.push(Span::styled(l.no_selection, app.theme.scheme.info));
     }
 
     let header = Paragraph::new(vec![Line::from(line1_spans), Line::from(line2_spans)]).block(
         Block::default()
             .borders(Borders::BOTTOM)
-            .border_style(app.scheme.border),
+            .border_style(app.theme.scheme.border),
     );
 
     frame.render_widget(header, area);
@@ -2220,13 +2347,13 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             };
 
             let style = if vis_idx == app.cursor.pos() {
-                app.scheme.stat_selection.add_modifier(Modifier::BOLD)
+                app.theme.scheme.stat_selection.add_modifier(Modifier::BOLD)
             } else {
-                app.scheme.node_style(node.node_type)
+                app.theme.scheme.node_style(node.node_type)
             };
 
             let marker = if vis_idx == app.cursor.pos() {
-                "▸ "
+                app.theme.labels.selection_caret
             } else {
                 "  "
             };
@@ -2241,7 +2368,7 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let block = Block::default()
         .title("Topology")
         .borders(Borders::ALL)
-        .border_style(app.scheme.border);
+        .border_style(app.theme.scheme.border);
 
     let list = List::new(items)
         .block(block)
@@ -2261,21 +2388,23 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 /// node" placeholder message.
 fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     match &app.detail {
-        Some(payload) => render_node_detail(frame, area, payload, &app.scheme),
+        Some(payload) => {
+            render_node_detail(frame, area, payload, &app.theme.scheme, &app.theme.labels)
+        }
         None => {
             let msg = app
                 .detail_error
                 .as_deref()
                 .unwrap_or("Select a node to view details");
             let msg_style = if app.detail_error.is_some() {
-                app.scheme.error
+                app.theme.scheme.error
             } else {
-                app.scheme.info
+                app.theme.scheme.info
             };
             let block = Block::default()
                 .title("Details")
                 .borders(Borders::ALL)
-                .border_style(app.scheme.border);
+                .border_style(app.theme.scheme.border);
             let p = Paragraph::new(Span::styled(msg, msg_style)).block(block);
             frame.render_widget(p, area);
         }
@@ -2294,26 +2423,30 @@ fn render_node_detail(
     area: Rect,
     payload: &NodePayload,
     scheme: &ColorScheme,
+    labels: &Labels,
 ) {
     match &payload.properties {
         NodeProperties::Root {
             num_hosts,
             started_at,
             started_by,
+            ..
         } => {
             render_root_detail(
-                frame, area, payload, *num_hosts, started_at, started_by, scheme,
+                frame, area, payload, *num_hosts, started_at, started_by, scheme, labels,
             );
         }
-        NodeProperties::Host { addr, num_procs } => {
-            render_host_detail(frame, area, payload, addr, *num_procs, scheme);
+        NodeProperties::Host {
+            addr, num_procs, ..
+        } => {
+            render_host_detail(frame, area, payload, addr, *num_procs, scheme, labels);
         }
         NodeProperties::Proc {
             proc_name,
             num_actors,
             ..
         } => {
-            render_proc_detail(frame, area, payload, proc_name, *num_actors, scheme);
+            render_proc_detail(frame, area, payload, proc_name, *num_actors, scheme, labels);
         }
         NodeProperties::Actor {
             actor_status,
@@ -2337,6 +2470,7 @@ fn render_node_detail(
                 *total_processing_time_us,
                 flight_recorder.as_deref(),
                 scheme,
+                labels,
             );
         }
         NodeProperties::Error { code, message } => {
@@ -2376,6 +2510,7 @@ fn render_root_detail(
     started_at: &str,
     started_by: &str,
     scheme: &ColorScheme,
+    l: &Labels,
 ) {
     let block = Block::default()
         .title("Root Details")
@@ -2385,11 +2520,11 @@ fn render_root_detail(
     let uptime_str = format_uptime(started_at);
 
     let mut lines = vec![
-        detail_line("Hosts: ", num_hosts.to_string()),
-        detail_line("Started by: ", started_by),
-        detail_line("Uptime: ", &uptime_str),
-        detail_line("Started at: ", format_local_time(started_at)),
-        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
+        detail_line(l.hosts, num_hosts.to_string()),
+        detail_line(l.started_by, started_by),
+        detail_line(l.uptime_detail, &uptime_str),
+        detail_line(l.started_at, format_local_time(started_at)),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2414,6 +2549,7 @@ fn render_host_detail(
     addr: &str,
     num_procs: usize,
     scheme: &ColorScheme,
+    l: &Labels,
 ) {
     let block = Block::default()
         .title("Host Details")
@@ -2421,9 +2557,9 @@ fn render_host_detail(
         .border_style(scheme.border);
 
     let mut lines = vec![
-        detail_line("Address: ", addr),
-        detail_line("Procs: ", num_procs.to_string()),
-        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
+        detail_line(l.address, addr),
+        detail_line(l.procs, num_procs.to_string()),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
         Line::default(),
     ];
     for child in &payload.children {
@@ -2453,6 +2589,7 @@ fn render_proc_detail(
     proc_name: &str,
     num_actors: usize,
     scheme: &ColorScheme,
+    l: &Labels,
 ) {
     let block = Block::default()
         .title("Proc Details")
@@ -2460,9 +2597,9 @@ fn render_proc_detail(
         .border_style(scheme.border);
 
     let mut lines = vec![
-        detail_line("Name: ", proc_name),
-        detail_line("Actors: ", num_actors.to_string()),
-        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
+        detail_line(l.name, proc_name),
+        detail_line(l.actors, num_actors.to_string()),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
         Line::default(),
     ];
     for (i, actor) in payload.children.iter().enumerate() {
@@ -2503,6 +2640,7 @@ fn render_actor_detail(
     total_processing_time_us: u64,
     flight_recorder_json: Option<&str>,
     scheme: &ColorScheme,
+    l: &Labels,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2517,7 +2655,7 @@ fn render_actor_detail(
 
     let info = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled(l.status, Style::default().fg(Color::Gray)),
             Span::styled(
                 actor_status,
                 Style::default().fg(if actor_status == "Running" {
@@ -2527,17 +2665,17 @@ fn render_actor_detail(
                 }),
             ),
         ]),
-        detail_line("Data as of: ", format_relative_time(&payload.as_of)),
-        detail_line("Type: ", actor_type),
-        detail_line("Messages: ", messages_processed.to_string()),
+        detail_line(l.data_as_of, format_relative_time(&payload.as_of)),
+        detail_line(l.actor_type, actor_type),
+        detail_line(l.messages, messages_processed.to_string()),
         detail_line(
-            "Processing time: ",
+            l.processing_time,
             humantime::format_duration(std::time::Duration::from_micros(total_processing_time_us))
                 .to_string(),
         ),
-        detail_line("Created: ", created_at),
-        detail_line("Last handler: ", last_message_handler.unwrap_or("-")),
-        detail_line("Children: ", payload.children.len().to_string()),
+        detail_line(l.created, created_at),
+        detail_line(l.last_handler, last_message_handler.unwrap_or("-")),
+        detail_line(l.children, payload.children.len().to_string()),
     ])
     .block(info_block);
     frame.render_widget(info, chunks[0]);
@@ -4649,7 +4787,7 @@ mod tests {
     // System proc filter toggles visibility.
     #[test]
     fn system_proc_filter_toggles_visibility() {
-        // Verify that toggling show_system_procs filters/unfilters nodes.
+        // Verify that toggling show_system filters/unfilters nodes.
         // Note: This tests the filtering logic at the model level.
         let tree = TreeNode {
             reference: "root".into(),
@@ -4680,7 +4818,7 @@ mod tests {
             ],
         };
 
-        // With show_system_procs=false, system procs would be filtered
+        // With show_system=false, system procs would be filtered
         // (actual filtering happens in build logic, not flatten)
         // Here we verify the tree structure allows both types
         let rows = flatten_tree(&tree);
@@ -5864,7 +6002,7 @@ mod tests {
             ],
         };
 
-        // All nodes render (show_system_procs=true)
+        // All nodes render (show_system=true)
         let rows_all = flatten_tree(&tree);
         assert_eq!(rows_all.len(), 3);
 
