@@ -82,6 +82,17 @@
 //!
 //! Together these ensure that the TUI can correlate responses to tree
 //! nodes, and that upward/downward navigation is consistent.
+//!
+//! ## Robustness invariant
+//!
+//! **`MeshAdminAgent` must never crash the OS process it resides in.**
+//! Every handler catches errors and converts them into structured
+//! error payloads (`ResolveReferenceResponse(Err(..))`,
+//! `NodeProperties::Error`, etc.) rather than propagating panics or
+//! unwinding. Failed reply sends (the caller went away) are silently
+//! swallowed. This is critical because the admin agent is
+//! co-located with the mesh coordinator — an unhandled panic would
+//! tear down the entire mesh.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -852,21 +863,53 @@ impl MeshAdminAgent {
         let mut payload = if self.self_actor_id.as_ref() == Some(actor_id) {
             cx.introspect_payload()
         } else {
-            let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
-            let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-            introspect_port.send(
-                cx,
-                IntrospectMessage::Query {
-                    view: hyperactor::introspect::IntrospectView::Actor,
-                    reply: reply_handle.bind(),
-                },
-            )?;
+            // Check terminated snapshots first — fast, no ambiguity.
+            // If found, the actor is definitively dead.
+            let terminated = {
+                let proc_id = actor_id.proc_id();
+                let mesh_agent_id = proc_id.actor_id("agent", 0);
+                let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
+                let child_ref = Reference::Actor(actor_id.clone());
+                let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+                agent_port.send(
+                    cx,
+                    IntrospectMessage::QueryChild {
+                        child_ref,
+                        reply: reply_handle.bind(),
+                    },
+                )?;
+                RealClock
+                    .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .filter(|p| !matches!(p.properties, NodeProperties::Error { .. }))
+            };
 
-            RealClock
-                .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-                .await
-                .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
-                .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?
+            match terminated {
+                Some(snapshot) => snapshot,
+                None => {
+                    // Not terminated — query the live actor with
+                    // the full timeout.
+                    let introspect_port =
+                        PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+                    let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+                    introspect_port.send(
+                        cx,
+                        IntrospectMessage::Query {
+                            view: hyperactor::introspect::IntrospectView::Actor,
+                            reply: reply_handle.bind(),
+                        },
+                    )?;
+                    RealClock
+                        .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                        .await
+                        .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to receive actor introspection: {}", e)
+                        })?
+                }
+            }
         };
 
         // Actors on standalone procs: parent is the proc.

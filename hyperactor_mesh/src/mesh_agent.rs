@@ -289,10 +289,12 @@ impl ProcMeshAgent {
     fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
         use hyperactor::introspect::PublishedPropertiesKind;
 
-        let all_actors = self.proc.all_actor_ids();
-        let mut children = Vec::with_capacity(all_actors.len());
+        // Live actors.
+        let live_ids = self.proc.all_actor_ids();
+        let num_live = live_ids.len();
+        let mut children = Vec::with_capacity(num_live);
         let mut system_children = Vec::new();
-        for id in all_actors {
+        for id in live_ids {
             let ref_str = id.to_string();
             if self
                 .proc
@@ -304,10 +306,19 @@ impl ProcMeshAgent {
             children.push(ref_str);
         }
 
+        // Terminated actors appear as children but don't inflate
+        // the actor count.
+        for id in self.proc.all_terminated_actor_ids() {
+            let ref_str = id.to_string();
+            if !children.contains(&ref_str) {
+                children.push(ref_str);
+            }
+        }
+
         cx.instance()
             .publish_properties(PublishedPropertiesKind::Proc {
                 proc_name: self.proc.proc_id().to_string(),
-                num_actors: children.len(),
+                num_actors: num_live,
                 is_system: false,
                 children,
                 system_children,
@@ -321,6 +332,36 @@ impl Actor for ProcMeshAgent {
         this.set_system();
         self.proc.set_supervision_coordinator(this.port())?;
         self.publish_introspect_properties(this);
+
+        // Resolve terminated actor snapshots via QueryChild so that
+        // dead actors remain directly queryable by reference.
+        let proc = self.proc.clone();
+        this.set_query_child_handler(move |child_ref| {
+            use hyperactor::introspect::NodePayload;
+            use hyperactor::introspect::NodeProperties;
+            use hyperactor::reference::Reference;
+
+            if let Reference::Actor(id) = child_ref {
+                if let Some(snapshot) = proc.terminated_snapshot(id) {
+                    return snapshot;
+                }
+            }
+
+            NodePayload {
+                identity: String::new(),
+                properties: NodeProperties::Error {
+                    code: "not_found".into(),
+                    message: format!("child {} not found", child_ref),
+                },
+                children: Vec::new(),
+                parent: None,
+                as_of: humantime::format_rfc3339_millis(
+                    hyperactor::clock::RealClock.system_time_now(),
+                )
+                .to_string(),
+            }
+        });
+
         Ok(())
     }
 }
