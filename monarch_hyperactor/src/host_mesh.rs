@@ -182,32 +182,27 @@ impl PyHostMesh {
         PyPythonTask::new(mesh_impl)
     }
 
-    /// Spawn a MeshAdminAgent and return its HTTP address as a string.
+    /// Spawn a MeshAdminAgent on the head host's system proc and
+    /// return its HTTP address as a string.
     ///
-    /// If `bind_addr` is provided, the admin proc binds to that address
-    /// (parsed as a `ChannelAddr`). Otherwise, the globally configured
-    /// default transport is used.
+    /// When `admin_port` is provided, the HTTP server binds to that
+    /// fixed port; otherwise an ephemeral port is chosen.
     fn _spawn_admin(
         &self,
         instance: &PyInstance,
-        bind_addr: Option<String>,
+        admin_port: Option<u16>,
     ) -> PyResult<PyPythonTask> {
         let host_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         PyPythonTask::new(async move {
-            let addr = match bind_addr {
-                Some(s) => s
-                    .parse::<hyperactor::channel::ChannelAddr>()
-                    .map_err(|e| PyException::new_err(e.to_string()))?,
-                None => default_bind_spec().binding_addr(),
-            };
-            let admin_proc = Proc::direct(addr, "mesh_admin_proc".to_string())
-                .map_err(|e| PyException::new_err(e.to_string()))?;
-            let host_mesh_addr = host_mesh
-                .spawn_admin(instance.deref(), &admin_proc)
+            // Sends a SpawnMeshAdmin message to ranks[0]'s
+            // HostMeshAgent, which spawns the admin on that host's
+            // system proc.
+            let addr = host_mesh
+                .spawn_admin(instance.deref(), admin_port)
                 .await
                 .map_err(|e| PyException::new_err(e.to_string()))?;
-            Ok(host_mesh_addr.to_string())
+            Ok(addr)
         })
     }
 
