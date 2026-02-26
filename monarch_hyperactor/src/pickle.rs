@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use monarch_types::py_global;
+use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use pyo3::types::PyTuple;
@@ -41,6 +42,8 @@ py_global!(flatten, "monarch._src.actor.pickle", "flatten");
 
 // cloudpickle module for serialization
 py_global!(cloudpickle, "cloudpickle", "cloudpickle");
+
+py_global!(_unpickle, "pickle", "loads");
 
 // Importing monarch._src.actor.pickle applies a monkeypatch to cloudpickle
 // that injects RemoteImportLoader into pickled function globals, enabling
@@ -588,6 +591,13 @@ pub fn pickle(
     let frozen_buffer = buffer.borrow_mut(py).freeze();
     let inner = active.into_pickling_state(frozen_buffer);
     Ok(PicklingState { inner: Some(inner) })
+}
+
+pub(crate) fn unpickle<'py>(
+    py: Python<'py>,
+    buffer: crate::buffers::FrozenBuffer,
+) -> PyResult<Bound<'py, PyAny>> {
+    _unpickle(py).call1((buffer.into_py_any(py)?,))
 }
 
 /// Register the pickle Python bindings into the given module.
