@@ -48,7 +48,7 @@ use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::ibverbs::primitives::IbvQpInfo;
 use crate::backend::ibverbs::queue_pair::IbvQueuePair;
-use crate::rdma_components::RdmaBuffer;
+use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
 pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
@@ -70,10 +70,10 @@ pub enum RdmaManagerMessage {
         size: usize,
         #[reply]
         /// `reply` - Reply channel to return the RDMA buffer handle
-        reply: OncePortRef<RdmaBuffer>,
+        reply: OncePortRef<RdmaRemoteBuffer>,
     },
     ReleaseBuffer {
-        buffer: RdmaBuffer,
+        buffer: RdmaRemoteBuffer,
     },
     RequestQueuePair {
         other: ActorRef<RdmaManagerActor>,
@@ -208,7 +208,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
         cx: &Context<Self>,
         addr: usize,
         size: usize,
-    ) -> Result<RdmaBuffer, anyhow::Error> {
+    ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
         self.ibverbs
             .handle()
             .request_buffer(cx, cx.bind().clone(), addr, size)
@@ -218,7 +218,7 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
     async fn release_buffer(
         &mut self,
         cx: &Context<Self>,
-        buffer: RdmaBuffer,
+        buffer: RdmaRemoteBuffer,
     ) -> Result<(), anyhow::Error> {
         self.ibverbs.handle().release_buffer(cx, buffer).await
     }
