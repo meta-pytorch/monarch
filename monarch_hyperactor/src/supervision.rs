@@ -13,9 +13,6 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
-use crate::context::PyInstance;
-use crate::pytokio::PyPythonTask;
-use crate::pytokio::PyShared;
 
 /// Trait for types that can provide supervision events.
 ///
