@@ -2,7 +2,7 @@
 
 ## What the `ProcAgent` Is
 
-Every proc in a mesh runs a `ProcAgent`. It plays the same role on the proc side that the `HostMeshAgent` plays on the host side: it implements the control-plane interface for "managing this proc as part of a mesh".
+Every proc in a mesh runs a `ProcAgent`. It plays the same role on the proc side that the `HostAgent` plays on the host side: it implements the control-plane interface for "managing this proc as part of a mesh".
 
 The agent has several responsibilities, all of which will be documented on this page:
 - wiring the proc into the mesh router,

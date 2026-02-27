@@ -46,13 +46,13 @@ async fn bootstrap_canonical_simple() {
     //     an in-process service proc (`Proc::new(..)`), and
     //     stores the `BootstrapProcManager` for later spawns.
     //
-    // (3) Install HostMeshAgent (still no new OS process).
-    //     `host.system_proc().spawn::<HostMeshAgent>("agent",
-    //     host).await?` creates the HostMeshAgent actor in that
+    // (3) Install HostAgent (still no new OS process).
+    //     `host.system_proc().spawn::<HostAgent>("host_agent",
+    //     host).await?` creates the HostAgent actor in that
     //     service proc.
     //
     // (4) Collect & assemble. The trampoline returns a
-    //     direct-addressed `ActorRef<HostMeshAgent>`; we collect
+    //     direct-addressed `ActorRef<HostAgent>`; we collect
     //     one per rank and assemble a `HostMesh`.
     //
     // Note: When the Host is later asked to start a proc
@@ -66,7 +66,7 @@ async fn bootstrap_canonical_simple() {
 
     // 6) Spawn a ProcMesh named "p0" on the host mesh:
     //
-    // (1) Each HostMeshAgent (running inside its host's service
+    // (1) Each HostAgent (running inside its host's service
     //     proc) receives the request.
     //
     // (2) The Host calls into its `BootstrapProcManager::spawn`,
