@@ -287,5 +287,112 @@ class InitErrorTest(unittest.TestCase):
             fresh_db._db_path = saved
 
 
+# ---------------------------------------------------------------------------
+# Summary / aggregate queries
+# ---------------------------------------------------------------------------
+
+
+class GetSummaryTest(_DbTestBase):
+    def test_returns_dict(self):
+        summary = db.get_summary()
+        self.assertIsInstance(summary, dict)
+
+    def test_top_level_keys(self):
+        summary = db.get_summary()
+        for key in (
+            "mesh_counts",
+            "actor_counts",
+            "message_counts",
+            "errors",
+            "timeline",
+            "health_score",
+        ):
+            self.assertIn(key, summary)
+
+    def test_mesh_counts(self):
+        summary = db.get_summary()
+        mc = summary["mesh_counts"]
+        self.assertEqual(mc["total"], 10)
+        self.assertIn("by_class", mc)
+        self.assertEqual(mc["by_class"]["Host"], 2)
+        self.assertEqual(mc["by_class"]["Proc"], 4)
+
+    def test_actor_counts(self):
+        summary = db.get_summary()
+        ac = summary["actor_counts"]
+        self.assertEqual(ac["total"], 10)
+        self.assertIn("by_status", ac)
+        # All 10 actors should be represented across statuses.
+        total_by_status = sum(ac["by_status"].values())
+        self.assertEqual(total_by_status, 10)
+
+    def test_actor_status_includes_failed(self):
+        summary = db.get_summary()
+        by_status = summary["actor_counts"]["by_status"]
+        self.assertIn("failed", by_status)
+        self.assertGreaterEqual(by_status["failed"], 1)
+
+    def test_message_counts(self):
+        summary = db.get_summary()
+        mc = summary["message_counts"]
+        self.assertGreater(mc["total"], 50)
+        self.assertIn("by_status", mc)
+        self.assertIn("by_endpoint", mc)
+        self.assertIn("delivery_rate", mc)
+        self.assertGreater(mc["delivery_rate"], 0)
+        self.assertLessEqual(mc["delivery_rate"], 1.0)
+
+    def test_message_by_endpoint_has_entries(self):
+        summary = db.get_summary()
+        by_ep = summary["message_counts"]["by_endpoint"]
+        self.assertGreater(len(by_ep), 0)
+        # All endpoint counts should sum to total.
+        self.assertEqual(sum(by_ep.values()), summary["message_counts"]["total"])
+
+    def test_errors_failed_actors(self):
+        summary = db.get_summary()
+        fa = summary["errors"]["failed_actors"]
+        self.assertIsInstance(fa, list)
+        self.assertGreaterEqual(len(fa), 1)
+        for a in fa:
+            self.assertIn("actor_id", a)
+            self.assertIn("full_name", a)
+            self.assertIn("reason", a)
+            self.assertIn("timestamp_us", a)
+
+    def test_errors_stopped_actors(self):
+        summary = db.get_summary()
+        sa = summary["errors"]["stopped_actors"]
+        self.assertIsInstance(sa, list)
+        self.assertGreaterEqual(len(sa), 1)
+
+    def test_errors_failed_messages_count(self):
+        summary = db.get_summary()
+        self.assertIsInstance(summary["errors"]["failed_messages"], int)
+
+    def test_timeline(self):
+        summary = db.get_summary()
+        tl = summary["timeline"]
+        self.assertIn("start_us", tl)
+        self.assertIn("end_us", tl)
+        self.assertIn("failure_onset_us", tl)
+        self.assertGreater(tl["start_us"], 0)
+        self.assertGreater(tl["end_us"], tl["start_us"])
+        self.assertIsNotNone(tl["failure_onset_us"])
+        self.assertGreater(tl["total_status_events"], 0)
+        self.assertGreater(tl["total_message_events"], 0)
+
+    def test_health_score_range(self):
+        summary = db.get_summary()
+        score = summary["health_score"]
+        self.assertGreaterEqual(score, 0)
+        self.assertLessEqual(score, 100)
+
+    def test_health_score_reflects_failures(self):
+        # With failed/stopped actors, health should be below 100.
+        summary = db.get_summary()
+        self.assertLess(summary["health_score"], 100)
+
+
 if __name__ == "__main__":
     unittest.main()

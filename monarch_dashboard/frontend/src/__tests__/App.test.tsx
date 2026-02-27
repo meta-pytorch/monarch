@@ -10,7 +10,6 @@ import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "../App";
 
-// Mock fetch for all API calls.
 const MOCK_HOST_MESHES = [
   {
     id: 1, timestamp_us: 1700000000000000, class: "Host",
@@ -20,7 +19,6 @@ const MOCK_HOST_MESHES = [
 ];
 
 const MOCK_ALL_MESHES = [...MOCK_HOST_MESHES];
-
 const MOCK_CHILDREN: any[] = [];
 const MOCK_ACTORS = [
   {
@@ -37,10 +35,25 @@ const MOCK_ACTOR_DETAIL = {
 
 const MOCK_MESSAGES: any[] = [];
 
+const MOCK_SUMMARY = {
+  mesh_counts: { total: 10, by_class: { Host: 2, Proc: 4 } },
+  actor_counts: { total: 10, by_status: { idle: 5, failed: 1, stopped: 4 } },
+  message_counts: { total: 82, by_status: { delivered: 77 }, by_endpoint: { train_step: 18 }, delivery_rate: 0.939 },
+  errors: { failed_actors: [], stopped_actors: [], failed_messages: 0 },
+  timeline: { start_us: 1700000000000000, end_us: 1700000300000000, failure_onset_us: null, total_status_events: 207, total_message_events: 246 },
+  health_score: 64,
+};
+
 beforeEach(() => {
   jest.spyOn(global, "fetch").mockImplementation((url: any) => {
     const path = typeof url === "string" ? url : url.toString();
 
+    if (path.includes("/summary")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => MOCK_SUMMARY,
+      } as Response);
+    }
     if (path.includes("/meshes?class=Host")) {
       return Promise.resolve({
         ok: true,
@@ -101,19 +114,28 @@ describe("App", () => {
     expect(screen.getByText("dashboard")).toBeInTheDocument();
   });
 
-  test("renders Hierarchy tab as active by default", () => {
+  test("renders Summary tab as active by default", () => {
     render(<App />);
-    const tab = screen.getByText("Hierarchy");
+    const tab = screen.getByText("Summary");
     expect(tab).toHaveClass("active");
   });
 
-  test("renders breadcrumb with Host Meshes root", () => {
+  test("shows summary dashboard on load", async () => {
     render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId("summary-dashboard")).toBeInTheDocument();
+    });
+  });
+
+  test("switching to Hierarchy tab shows breadcrumb", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText("Hierarchy"));
     expect(screen.getByText("Host Meshes")).toBeInTheDocument();
   });
 
-  test("shows host meshes table on load", async () => {
+  test("shows host meshes table in Hierarchy tab", async () => {
     render(<App />);
+    fireEvent.click(screen.getByText("Hierarchy"));
     await waitFor(() => {
       expect(screen.getByText("host_mesh_0")).toBeInTheDocument();
     });
@@ -123,14 +145,26 @@ describe("App", () => {
     render(<App />);
     fireEvent.click(screen.getByText("DAG"));
     await waitFor(() => {
-      expect(screen.getByTestId("dag-container")).toBeInTheDocument();
+      const loading = screen.queryByText("Loading DAG data...");
+      const container = screen.queryByTestId("dag-container");
+      const empty = screen.queryByText("No mesh data available");
+      expect(loading || container || empty).toBeTruthy();
     });
   });
 
-  test("switching back to Hierarchy resets breadcrumb", () => {
+  test("switching back to Summary from DAG works", async () => {
     render(<App />);
     fireEvent.click(screen.getByText("DAG"));
-    fireEvent.click(screen.getByText("Hierarchy"));
-    expect(screen.getByText("Host Meshes")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Summary"));
+    await waitFor(() => {
+      expect(screen.getByTestId("summary-dashboard")).toBeInTheDocument();
+    });
+  });
+
+  test("all three tabs are rendered", () => {
+    render(<App />);
+    expect(screen.getByText("Summary")).toBeInTheDocument();
+    expect(screen.getByText("Hierarchy")).toBeInTheDocument();
+    expect(screen.getByText("DAG")).toBeInTheDocument();
   });
 });

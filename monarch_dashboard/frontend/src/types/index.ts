@@ -70,3 +70,46 @@ export interface NavItem {
   meshId?: number;
   actorId?: number;
 }
+
+/** Aggregate summary returned by GET /api/summary. */
+export interface Summary {
+  mesh_counts: {
+    total: number;
+    by_class: Record<string, number>;
+  };
+  actor_counts: {
+    total: number;
+    by_status: Record<string, number>;
+  };
+  message_counts: {
+    total: number;
+    by_status: Record<string, number>;
+    by_endpoint: Record<string, number>;
+    delivery_rate: number;
+  };
+  errors: {
+    failed_actors: Array<{
+      actor_id: number;
+      full_name: string;
+      reason: string | null;
+      timestamp_us: number;
+      mesh_id: number;
+    }>;
+    stopped_actors: Array<{
+      actor_id: number;
+      full_name: string;
+      reason: string | null;
+      timestamp_us: number;
+      mesh_id: number;
+    }>;
+    failed_messages: number;
+  };
+  timeline: {
+    start_us: number;
+    end_us: number;
+    failure_onset_us: number | null;
+    total_status_events: number;
+    total_message_events: number;
+  };
+  health_score: number;
+}

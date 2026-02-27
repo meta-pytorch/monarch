@@ -309,5 +309,29 @@ class SentMessagesRoutesTest(_RouteTestBase):
         self.assertEqual(set(sm.keys()), expected_keys)
 
 
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+
+class SummaryRoutesTest(_RouteTestBase):
+    def test_summary_returns_200(self):
+        resp = self.client.get("/api/summary")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_summary_top_level_keys(self):
+        resp = self.client.get("/api/summary")
+        data = resp.get_json()
+        for key in (
+            "mesh_counts",
+            "actor_counts",
+            "message_counts",
+            "errors",
+            "timeline",
+            "health_score",
+        ):
+            self.assertIn(key, data)
+
+
 if __name__ == "__main__":
     unittest.main()

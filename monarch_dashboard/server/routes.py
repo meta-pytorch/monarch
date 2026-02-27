@@ -29,6 +29,12 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@api.route("/summary")
+def summary():
+    """Aggregate metrics for the summary dashboard."""
+    return jsonify(db.get_summary())
+
+
 # ---------------------------------------------------------------------------
 # Meshes
 # ---------------------------------------------------------------------------
