@@ -1354,6 +1354,19 @@ mod tests {
     use crate::metrics;
     use crate::sync::mvar::MVar;
 
+    /// Like the `logs_assert` injected by `#[traced_test]`, but without scope
+    /// filtering. Use when asserting on events emitted outside the test's span
+    /// (e.g. from spawned tasks or panic hooks).
+    fn logs_assert_unscoped(f: impl Fn(&[&str]) -> Result<(), String>) {
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs_str = std::str::from_utf8(&buf).expect("Logs contain invalid UTF8");
+        let lines: Vec<&str> = logs_str.lines().collect();
+        match f(&lines) {
+            Ok(()) => {}
+            Err(msg) => panic!("{}", msg),
+        }
+    }
+
     #[cfg(target_os = "linux")] // uses abstract names
     #[tracing_test::traced_test]
     #[tokio::test]
@@ -2154,7 +2167,7 @@ mod tests {
             Ok(Ok(())) => {
                 let current_status = *tx_status.borrow();
                 assert_eq!(current_status, TxStatus::Closed);
-                logs_assert(|logs| {
+                logs_assert_unscoped(|logs| {
                     if logs.iter().any(|log| log.contains(expected_log)) {
                         Ok(())
                     } else {
