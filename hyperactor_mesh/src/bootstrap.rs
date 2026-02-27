@@ -276,7 +276,7 @@ macro_rules! ok {
     };
 }
 
-async fn halt<R>() -> R {
+pub async fn halt<R>() -> R {
     future::pending::<()>().await;
     unreachable!()
 }
@@ -290,11 +290,14 @@ async fn halt<R>() -> R {
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
 /// - `config`: optional runtime config overlay.
 /// - `exit_on_shutdown`: if true, exit the process after handling a shutdown request.
+/// - `listener`: when `Some`, it is used as the frontend listening socket
+///   instead of binding a new one.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
     exit_on_shutdown: bool,
+    listener: Option<std::net::TcpListener>,
 ) -> anyhow::Result<ActorHandle<HostMeshAgent>> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
@@ -310,8 +313,13 @@ pub async fn host(
     let manager = BootstrapProcManager::new(command)?;
 
     // REMOVE(V0): forward unknown destinations to the default sender.
-    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
-        .await?;
+    let host = Host::new_with_default(
+        manager,
+        addr,
+        Some(crate::router::global().clone().boxed()),
+        listener,
+    )
+    .await?;
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
@@ -562,7 +570,7 @@ impl Bootstrap {
                 config,
                 exit_on_shutdown,
             } => {
-                ok!(host(addr, command, config, exit_on_shutdown).await);
+                ok!(host(addr, command, config, exit_on_shutdown, None).await);
                 halt().await
             }
             Bootstrap::V0ProcMesh { config } => bootstrap_v0_proc_mesh(config).await,
@@ -3448,6 +3456,7 @@ mod tests {
             Some(BootstrapCommand::test()),
             None,
             false,
+            None,
         )
         .await
         .unwrap();
