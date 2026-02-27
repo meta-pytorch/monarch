@@ -14,7 +14,8 @@ configuration overrides.
 """
 
 import contextlib
-from typing import Any, Callable, Dict, Iterator
+import sys
+from typing import Any, Callable, Dict, Iterator, TYPE_CHECKING, TypedDict
 
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import (
@@ -36,50 +37,57 @@ __all__ = [
     "parametrize_config",
 ]
 
+if TYPE_CHECKING:
+    if sys.version_info >= (3, 12):
+        from typing import NotRequired, Unpack
 
-def configure(
-    *,
-    default_transport: ChannelTransport | None = None,
-    enable_log_forwarding: bool | None = None,
-    enable_file_capture: bool | None = None,
-    tail_log_lines: int | None = None,
-    codec_max_frame_length: int | None = None,
-    message_delivery_timeout: str | None = None,
-    host_spawn_ready_timeout: str | None = None,
-    mesh_proc_spawn_max_idle: str | None = None,
-    process_exit_timeout: str | None = None,
-    message_ack_time_interval: str | None = None,
-    message_ack_every_n_messages: int | None = None,
-    message_ttl_default: int | None = None,
-    split_max_buffer_size: int | None = None,
-    split_max_buffer_age: str | None = None,
-    stop_actor_timeout: str | None = None,
-    cleanup_timeout: str | None = None,
-    remote_allocator_heartbeat_interval: str | None = None,
-    default_encoding: Encoding | None = None,
-    channel_net_rx_buffer_full_check_interval: str | None = None,
-    message_latency_sampling_rate: float | None = None,
-    enable_dest_actor_reordering_buffer: bool | None = None,
-    mesh_bootstrap_enable_pdeathsig: bool | None = None,
-    mesh_terminate_concurrency: int | None = None,
-    mesh_terminate_timeout: str | None = None,
-    shared_asyncio_runtime: bool | None = None,
-    small_write_threshold: int | None = None,
-    max_cast_dimension_size: int | None = None,
-    remote_alloc_bind_to_inaddr_any: bool | None = None,
-    remote_alloc_bootstrap_addr: str | None = None,
-    remote_alloc_allowed_port_range: slice | None = None,
-    read_log_buffer: int | None = None,
-    force_file_log: bool | None = None,
-    prefix_with_rank: bool | None = None,
-    actor_spawn_max_idle: str | None = None,
-    get_actor_state_max_idle: str | None = None,
-    supervision_watchdog_timeout: str | None = None,
-    proc_stop_max_idle: str | None = None,
-    get_proc_state_max_idle: str | None = None,
-    actor_queue_dispatch: bool | None = None,
-    **kwargs: object,
-) -> None:
+        class ConfigureArgs(TypedDict):
+            default_transport: NotRequired[ChannelTransport | str]
+            enable_log_forwarding: NotRequired[bool]
+            enable_file_capture: NotRequired[bool]
+            tail_log_lines: NotRequired[int]
+            codec_max_frame_length: NotRequired[int]
+            message_delivery_timeout: NotRequired[str]
+            host_spawn_ready_timeout: NotRequired[str]
+            mesh_proc_spawn_max_idle: NotRequired[str]
+            process_exit_timeout: NotRequired[str]
+            message_ack_time_interval: NotRequired[str]
+            message_ack_every_n_messages: NotRequired[int]
+            message_ttl_default: NotRequired[int]
+            split_max_buffer_size: NotRequired[int]
+            split_max_buffer_age: NotRequired[str]
+            stop_actor_timeout: NotRequired[str]
+            cleanup_timeout: NotRequired[str]
+            remote_allocator_heartbeat_interval: NotRequired[str]
+            default_encoding: NotRequired[Encoding]
+            channel_net_rx_buffer_full_check_interval: NotRequired[str]
+            message_latency_sampling_rate: NotRequired[float]
+            enable_dest_actor_reordering_buffer: NotRequired[bool]
+            mesh_bootstrap_enable_pdeathsig: NotRequired[bool]
+            mesh_terminate_concurrency: NotRequired[int]
+            mesh_terminate_timeout: NotRequired[str]
+            shared_asyncio_runtime: NotRequired[bool]
+            small_write_threshold: NotRequired[int]
+            max_cast_dimension_size: NotRequired[int]
+            remote_alloc_bind_to_inaddr_any: NotRequired[bool]
+            remote_alloc_bootstrap_addr: NotRequired[str]
+            remote_alloc_allowed_port_range: NotRequired[slice]
+            read_log_buffer: NotRequired[int]
+            force_file_log: NotRequired[bool]
+            prefix_with_rank: NotRequired[bool]
+            actor_spawn_max_idle: NotRequired[str]
+            get_actor_state_max_idle: NotRequired[str]
+            supervision_watchdog_timeout: NotRequired[str]
+            proc_stop_max_idle: NotRequired[str]
+            get_proc_state_max_idle: NotRequired[str]
+            actor_queue_dispatch: NotRequired[bool]
+
+        ConfigureKwargsType = Unpack[ConfigureArgs]
+    else:
+        ConfigureKwargsType = object
+
+
+def configure(**kwargs: "ConfigureKwargsType") -> None:
     """Configure Hyperactor runtime defaults for this process.
 
     This updates the **Runtime** configuration layer from Python, setting
@@ -156,94 +164,7 @@ def configure(
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """
 
-    params: Dict[str, Any] = dict(kwargs)
-    if default_transport is not None:
-        params["default_transport"] = default_transport
-    if enable_log_forwarding is not None:
-        params["enable_log_forwarding"] = enable_log_forwarding
-    if enable_file_capture is not None:
-        params["enable_file_capture"] = enable_file_capture
-    if tail_log_lines is not None:
-        params["tail_log_lines"] = tail_log_lines
-    if codec_max_frame_length is not None:
-        params["codec_max_frame_length"] = codec_max_frame_length
-    if message_delivery_timeout is not None:
-        params["message_delivery_timeout"] = message_delivery_timeout
-    if host_spawn_ready_timeout is not None:
-        params["host_spawn_ready_timeout"] = host_spawn_ready_timeout
-    if mesh_proc_spawn_max_idle is not None:
-        params["mesh_proc_spawn_max_idle"] = mesh_proc_spawn_max_idle
-    if process_exit_timeout is not None:
-        params["process_exit_timeout"] = process_exit_timeout
-    if message_ack_time_interval is not None:
-        params["message_ack_time_interval"] = message_ack_time_interval
-    if message_ack_every_n_messages is not None:
-        params["message_ack_every_n_messages"] = message_ack_every_n_messages
-    if message_ttl_default is not None:
-        params["message_ttl_default"] = message_ttl_default
-    if split_max_buffer_size is not None:
-        params["split_max_buffer_size"] = split_max_buffer_size
-    if split_max_buffer_age is not None:
-        params["split_max_buffer_age"] = split_max_buffer_age
-    if stop_actor_timeout is not None:
-        params["stop_actor_timeout"] = stop_actor_timeout
-    if cleanup_timeout is not None:
-        params["cleanup_timeout"] = cleanup_timeout
-    if remote_allocator_heartbeat_interval is not None:
-        params["remote_allocator_heartbeat_interval"] = (
-            remote_allocator_heartbeat_interval
-        )
-    if default_encoding is not None:
-        params["default_encoding"] = default_encoding
-    if channel_net_rx_buffer_full_check_interval is not None:
-        params["channel_net_rx_buffer_full_check_interval"] = (
-            channel_net_rx_buffer_full_check_interval
-        )
-    if message_latency_sampling_rate is not None:
-        params["message_latency_sampling_rate"] = message_latency_sampling_rate
-    if enable_dest_actor_reordering_buffer is not None:
-        params["enable_dest_actor_reordering_buffer"] = (
-            enable_dest_actor_reordering_buffer
-        )
-    if mesh_bootstrap_enable_pdeathsig is not None:
-        params["mesh_bootstrap_enable_pdeathsig"] = mesh_bootstrap_enable_pdeathsig
-    if mesh_terminate_concurrency is not None:
-        params["mesh_terminate_concurrency"] = mesh_terminate_concurrency
-    if mesh_terminate_timeout is not None:
-        params["mesh_terminate_timeout"] = mesh_terminate_timeout
-    if shared_asyncio_runtime is not None:
-        params["shared_asyncio_runtime"] = shared_asyncio_runtime
-    if small_write_threshold is not None:
-        params["small_write_threshold"] = small_write_threshold
-    if max_cast_dimension_size is not None:
-        params["max_cast_dimension_size"] = max_cast_dimension_size
-    # Forward new alloc config keys
-    if remote_alloc_bind_to_inaddr_any is not None:
-        params["remote_alloc_bind_to_inaddr_any"] = remote_alloc_bind_to_inaddr_any
-    if remote_alloc_bootstrap_addr is not None:
-        params["remote_alloc_bootstrap_addr"] = remote_alloc_bootstrap_addr
-    if remote_alloc_allowed_port_range is not None:
-        params["remote_alloc_allowed_port_range"] = remote_alloc_allowed_port_range
-    if read_log_buffer is not None:
-        params["read_log_buffer"] = read_log_buffer
-    if force_file_log is not None:
-        params["force_file_log"] = force_file_log
-    if prefix_with_rank is not None:
-        params["prefix_with_rank"] = prefix_with_rank
-    if actor_spawn_max_idle is not None:
-        params["actor_spawn_max_idle"] = actor_spawn_max_idle
-    if get_actor_state_max_idle is not None:
-        params["get_actor_state_max_idle"] = get_actor_state_max_idle
-    if supervision_watchdog_timeout is not None:
-        params["supervision_watchdog_timeout"] = supervision_watchdog_timeout
-    if proc_stop_max_idle is not None:
-        params["proc_stop_max_idle"] = proc_stop_max_idle
-    if get_proc_state_max_idle is not None:
-        params["get_proc_state_max_idle"] = get_proc_state_max_idle
-    if actor_queue_dispatch is not None:
-        params["actor_queue_dispatch"] = actor_queue_dispatch
-
-    _configure(**params)
+    _configure(**kwargs)
 
 
 def get_global_config() -> Dict[str, Any]:
@@ -279,7 +200,7 @@ def clear_runtime_config() -> None:
 
 
 @contextlib.contextmanager
-def configured(**overrides) -> Iterator[Dict[str, Any]]:
+def configured(**overrides: "ConfigureKwargsType") -> Iterator[Dict[str, Any]]:
     """Temporarily apply Python-side config overrides for this
     process.
 
@@ -329,6 +250,7 @@ def configured(**overrides) -> Iterator[Dict[str, Any]]:
     finally:
         # Restore previous runtime
         clear_runtime_config()
+        # pyre-fixme[6]: Values are already from the config function.
         configure(**prev)
 
 
@@ -396,6 +318,7 @@ def parametrize_config(
             async def async_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
+                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return await fn(*args, **kwargs)
 
@@ -407,6 +330,7 @@ def parametrize_config(
             def sync_wrapper(
                 _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any
             ) -> Any:
+                # pyre-fixme[6]: Values are checked inside the function.
                 with configured(**_config_overrides):
                     return fn(*args, **kwargs)
 

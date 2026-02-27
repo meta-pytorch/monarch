@@ -582,6 +582,7 @@ def configured_with_redirected_stdio(
     """Apply config overrides and capture stdio for the duration of
     the block."""
     with (
+        # pyre-fixme[6]: These override types are checked by the function.
         configured(**config_overrides) as config,
         redirected_stdio(capture_stderr) as paths,
     ):
