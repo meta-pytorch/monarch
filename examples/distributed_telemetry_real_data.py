@@ -86,7 +86,8 @@ def main() -> None:
 
     # Spawn worker processes - telemetry automatically tracks them
     print(f"Spawning {NUM_WORKERS} worker processes...")
-    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS}, name="workers")
 
     # Spawn compute actors
@@ -346,6 +347,9 @@ def main() -> None:
         print()
 
     print("Demo complete!")
+
+    # Clean up
+    hosts.shutdown().get()
 
 
 if __name__ == "__main__":
