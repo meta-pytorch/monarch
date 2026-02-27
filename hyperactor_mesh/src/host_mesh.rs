@@ -59,9 +59,9 @@ use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
 use crate::host_mesh::mesh_agent::ProcState;
 use crate::host_mesh::mesh_agent::ShutdownHostClient;
 use crate::host_mesh::mesh_agent::SpawnMeshAdminClient;
-use crate::mesh_agent::ProcMeshAgent;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
+use crate::proc_agent::ProcAgent;
 use crate::proc_mesh::ProcRef;
 use crate::resource;
 use crate::resource::CreateOrUpdateClient;
@@ -345,7 +345,7 @@ impl HostMesh {
     /// a [`HostRef`] for it.
     async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<HostRef> {
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager = LocalProcManager::new(spawn);
         let host = Host::new(manager, addr).await?;
         let addr = host.addr().clone();
@@ -988,7 +988,7 @@ impl HostMeshRef {
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    ActorRef::attest(host.named_proc(&proc_name).actor_id("agent", 0)),
+                    ActorRef::attest(host.named_proc(&proc_name).actor_id("proc_agent", 0)),
                 ));
             }
         }

@@ -186,7 +186,7 @@ struct ActorInstanceState {
 ///
 /// ## Supervision event ingestion (remote)
 ///
-/// `ProcMeshAgent` is the *process/rank-local* sink for
+/// `ProcAgent` is the *process/rank-local* sink for
 /// `ActorSupervisionEvent`s produced by the runtime (actor failures,
 /// routing failures, undeliverables, etc.).
 ///
@@ -214,7 +214,7 @@ struct ActorInstanceState {
         resource::GetRankStatus { cast = true },
     ]
 )]
-pub struct ProcMeshAgent {
+pub struct ProcAgent {
     proc: Proc,
     remote: Remote,
     state: State,
@@ -232,7 +232,7 @@ pub struct ProcMeshAgent {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
 }
 
-impl ProcMeshAgent {
+impl ProcAgent {
     #[hyperactor::observe_result("MeshAgent")]
     pub(crate) async fn bootstrap(
         proc_id: ProcId,
@@ -244,7 +244,7 @@ impl ProcMeshAgent {
         // this process can reach actors in this proc.
         crate::router::global().bind(proc_id.into(), proc.clone());
 
-        let agent = ProcMeshAgent {
+        let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
             state: State::UnconfiguredV0 { sender },
@@ -261,7 +261,7 @@ impl ProcMeshAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        let agent = ProcMeshAgent {
+        let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
             state: State::V1,
@@ -270,7 +270,7 @@ impl ProcMeshAgent {
             supervision_events: HashMap::new(),
             shutdown_tx,
         };
-        proc.spawn::<Self>("agent", agent)
+        proc.spawn::<Self>("proc_agent", agent)
     }
 
     async fn destroy_and_wait_except_current<'a>(
@@ -352,7 +352,7 @@ impl ProcMeshAgent {
 }
 
 #[async_trait]
-impl Actor for ProcMeshAgent {
+impl Actor for ProcAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
         self.proc.set_supervision_coordinator(this.port())?;
@@ -393,7 +393,7 @@ impl Actor for ProcMeshAgent {
 
 #[async_trait]
 #[hyperactor::handle(MeshAgentMessage)]
-impl MeshAgentMessageHandler for ProcMeshAgent {
+impl MeshAgentMessageHandler for ProcAgent {
     async fn configure(
         &mut self,
         cx: &Context<Self>,
@@ -546,7 +546,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
+impl Handler<ActorSupervisionEvent> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -620,7 +620,7 @@ pub struct ActorState {
 wirevalue::register_type!(ActorState);
 
 #[async_trait]
-impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
+impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -676,7 +676,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::Stop> for ProcMeshAgent {
+impl Handler<resource::Stop> for ProcAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         // We don't remove the actor from the state map, instead we just store
         // its state as Stopped.
@@ -720,7 +720,7 @@ impl Handler<resource::Stop> for ProcMeshAgent {
 /// `std::process::exit(0/1)` after shutdown. Any sender must *not* expect a
 /// reply or send any further message, and should watch `ProcStatus` instead.
 #[async_trait]
-impl Handler<resource::StopAll> for ProcMeshAgent {
+impl Handler<resource::StopAll> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -733,7 +733,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
             .destroy_and_wait_except_current(cx, timeout, &message.reason)
             .await;
         // Exit here to cleanup all remaining resources held by the process.
-        // This means ProcMeshAgent will never run cleanup or any other code
+        // This means ProcAgent will never run cleanup or any other code
         // from exiting its root actor. Senders of this message should never
         // send any further messages or expect a reply.
         match stop_result {
@@ -741,7 +741,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
                 // No need to clean up any state, the process is exiting.
                 tracing::info!(
                     actor = %cx.self_id(),
-                    "exiting process after receiving StopAll message on ProcMeshAgent. \
+                    "exiting process after receiving StopAll message on ProcAgent. \
                     stopped actors = {:?}, aborted actors = {:?}",
                     stopped_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     aborted_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
@@ -753,7 +753,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
                 std::process::exit(0);
             }
             Err(e) => {
-                tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcMeshAgent: {:?}", e);
+                tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcAgent: {:?}", e);
                 if let Some(tx) = self.shutdown_tx.take() {
                     let _ = tx.send(1);
                     return Ok(());
@@ -765,7 +765,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::GetRankStatus> for ProcMeshAgent {
+impl Handler<resource::GetRankStatus> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -818,7 +818,7 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
                 .expect("valid single-run overlay")
         };
         let result = get_rank_status.reply.send(cx, overlay);
-        // Ignore errors, because returning Err from here would cause the ProcMeshAgent
+        // Ignore errors, because returning Err from here would cause the ProcAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.
         if let Err(e) = result {
@@ -834,7 +834,7 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
+impl Handler<resource::GetState<ActorState>> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -883,7 +883,7 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
         };
 
         let result = get_state.reply.send(cx, state);
-        // Ignore errors, because returning Err from here would cause the ProcMeshAgent
+        // Ignore errors, because returning Err from here would cause the ProcAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.
         if let Err(e) = result {
@@ -907,7 +907,7 @@ pub struct NewClientInstance {
 }
 
 #[async_trait]
-impl Handler<NewClientInstance> for ProcMeshAgent {
+impl Handler<NewClientInstance> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -928,7 +928,7 @@ pub struct GetProc {
 }
 
 #[async_trait]
-impl Handler<GetProc> for ProcMeshAgent {
+impl Handler<GetProc> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,

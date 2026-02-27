@@ -185,11 +185,11 @@ and MeshFailure is in hyperactor_mesh.
 ActorSupervisionEvent is propagated in hyperactor/src/proc.rs, in InstanceCell::send_supervision_event_or_crash
 and its callers. It can be handled by an actor that implements `handle_supervision_event`.
 Events are first bubbled up to parent actors in the same proc, before being sent
-to the `ProcMeshAgent` which collects all the events on a proc.
+to the `ProcAgent` which collects all the events on a proc.
 
 MeshSupervisionEvents are created by the set of MeshControllers, such as ActorMeshController
 and ProcMeshController in hyperactor_mesh/src/v1/mesh_controller.rs.
-They aggregate events from ProcMeshAgents they query, and deliver the events to
+They aggregate events from ProcAgents they query, and deliver the events to
 their owners.
 
 The MeshController also ensures the lifecycle principles, when an actor stops,

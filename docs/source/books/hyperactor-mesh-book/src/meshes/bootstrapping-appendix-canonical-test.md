@@ -74,7 +74,7 @@ async fn bootstrap_canonical_simple() {
     //     process for the proc.
     //
     // (3) Inside that new process, bootstrap runs and a
-    //     `ProcMeshAgent` is started to manage it.
+    //     `ProcAgent` is started to manage it.
     //
     // (4) We collect the per-host procs into a `ProcMesh` and
     //     return it.
@@ -86,7 +86,7 @@ async fn bootstrap_canonical_simple() {
     // 7) Spawn an ActorMesh<TestActor> named "a0" on the proc mesh:
     //
     // (1) For each proc (already running in its own OS process),
-    //     the `ProcMeshAgent` receives the request.
+    //     the `ProcAgent` receives the request.
     //
     // (2) It spawns a `TestActor` inside that existing proc (no
     //     new OS process).

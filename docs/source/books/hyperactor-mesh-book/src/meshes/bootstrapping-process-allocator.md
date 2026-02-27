@@ -199,7 +199,7 @@ What that path does (summarizing the code in `bootstrap_v0_proc_mesh()`):
    Allocator2Process::StartProc(proc_id, listen_transport)
    ```
    the child:
-   - boots a real `Proc` **inside this process** via `ProcMeshAgent::bootstrap(proc_id.clone())`
+   - boots a real `Proc` **inside this process** via `ProcAgent::bootstrap(proc_id.clone())`
    - serves that proc on a fresh address
    - and crucially sends **back** to the allocator:
      ```text

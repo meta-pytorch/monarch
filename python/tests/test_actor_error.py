@@ -825,7 +825,7 @@ async def test_process_exit_handling(error_actor_cls) -> None:
 
 class FaultActor(Actor):
     # This will dereference a null pointer and crash the process
-    # This should also kill the ProcMeshAgent, rendering it unresponsive.
+    # This should also kill the ProcAgent, rendering it unresponsive.
     # In this case, actor mesh should still return a SupervisionError,
     # and proc_mesh.stop() should still work, albeit it will do nothing
     # because all the processes should be dead already.
@@ -897,7 +897,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
 
     # new call should fail with check of health state of actor mesh
     # after the proc mesh is stopped, the actor mesh is also stopped, and
-    # the ProcMeshAgent is no longer reachable.
+    # the ProcAgent is no longer reachable.
     with pytest.raises(
         SupervisionError,
         match="Endpoint call healthy.check\\(\\) failed, Actor.*healthy.*is "

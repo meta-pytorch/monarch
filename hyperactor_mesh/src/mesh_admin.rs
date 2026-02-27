@@ -815,7 +815,7 @@ impl MeshAdminAgent {
     /// First tries `IntrospectMessage::QueryChild` against the owning
     /// `HostMeshAgent` (system procs). If that returns an error
     /// payload, falls back to sending `IntrospectMessage::Query` to
-    /// the conventional `ProcMeshAgent` actor (`<proc_id>/agent[0]`)
+    /// the conventional `ProcAgent` actor (`<proc_id>/agent[0]`)
     /// for user procs.
     async fn resolve_proc_node(
         &self,
@@ -860,10 +860,10 @@ impl MeshAdminAgent {
             return Ok(payload);
         }
 
-        // Fall back to querying the ProcMeshAgent directly (user
-        // procs). The conventional ProcMeshAgent ActorId is
-        // <proc_id>/agent[0].
-        let mesh_agent_id = proc_id.actor_id("agent", 0);
+        // Fall back to querying the ProcAgent directly (user
+        // procs). The conventional ProcAgent ActorId is
+        // <proc_id>/proc_agent[0].
+        let mesh_agent_id = proc_id.actor_id("proc_agent", 0);
         let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
         let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
         agent_port.send(
@@ -882,7 +882,7 @@ impl MeshAdminAgent {
                 anyhow::anyhow!("failed to receive proc mesh agent introspection: {}", e)
             })?;
 
-        // The ProcMeshAgent sets identity to its own ActorId, but the
+        // The ProcAgent sets identity to its own ActorId, but the
         // caller asked for the proc by ProcId. Override so the
         // payload matches the reference the TUI navigated to.
         payload.identity = proc_id.to_string();
@@ -991,7 +991,7 @@ impl MeshAdminAgent {
     /// via `PortRef::attest_message_port`. The blanket handler
     /// returns a `NodePayload` with `NodeProperties::Actor` (or a
     /// domain-specific override like `NodeProperties::Proc` for
-    /// `ProcMeshAgent`).
+    /// `ProcAgent`).
     ///
     /// The resolver sets `parent` based on the actor's position
     /// in the topology: if the actor lives in a system proc, the
@@ -1083,13 +1083,13 @@ impl MeshAdminAgent {
         }
 
         // Set parent based on topology. If the actor returns Proc
-        // properties (ProcMeshAgent override), its parent is the host
+        // properties (ProcAgent override), its parent is the host
         // agent. Otherwise, it's a regular actor and its parent is
         // the proc.
         let proc_id = actor_id.proc_id();
         match &payload.properties {
             NodeProperties::Proc { .. } => {
-                // ProcMeshAgent: parent is the host agent.
+                // ProcAgent: parent is the host agent.
                 let host_addr = match proc_id {
                     ProcId::Direct(addr, _) => addr.to_string(),
                     _ => proc_id.to_string(),
@@ -1101,7 +1101,7 @@ impl MeshAdminAgent {
             _ => {
                 // Regular actor: parent is the proc. We use the
                 // system proc ref format if the proc is a known
-                // system/local proc, otherwise the ProcMeshAgent
+                // system/local proc, otherwise the ProcAgent
                 // ActorId.
                 let _host_addr = match proc_id {
                     ProcId::Direct(addr, _) => Some(addr.to_string()),
@@ -1399,7 +1399,7 @@ async fn tree_dump(
 /// `HostMeshAgent`'s children list:
 ///
 /// - System proc ref `"[system] unix:@hash,service"` → `"service"`
-/// - ProcMeshAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
+/// - ProcAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
 ///   `"my_proc"`
 /// - Bare ProcId `"unix:@hash,my_proc"` → `"my_proc"`
 ///
@@ -1512,13 +1512,13 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // -- 1. Stand up a local in-process Host with a HostMeshAgent --
         // Use Unix transport for all procs — Local transport does not
         // support cross-proc message routing.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1670,14 +1670,14 @@ mod tests {
         use crate::Name;
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
         use crate::resource::Rank;
 
         // Stand up a local in-process Host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1830,11 +1830,11 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // Stand up a local in-process Host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1986,11 +1986,11 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // Stand up a local host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2084,11 +2084,11 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // -- 1. Stand up a local in-process Host with a HostMeshAgent --
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())

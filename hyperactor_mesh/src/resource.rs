@@ -46,8 +46,8 @@ use crate::Name;
 use crate::StatusOverlay;
 use crate::bootstrap;
 use crate::host_mesh::mesh_agent::ProcState;
-use crate::mesh_agent::ActorSpec;
-use crate::mesh_agent::ActorState;
+use crate::proc_agent::ActorSpec;
+use crate::proc_agent::ActorState;
 
 /// The current lifecycle status of a resource.
 #[derive(

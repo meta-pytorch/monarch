@@ -23,7 +23,7 @@ use hyperactor_mesh::host_mesh::HostMeshRef;
 use hyperactor_mesh::host_mesh::mesh_agent::GetLocalProcClient;
 use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
 use hyperactor_mesh::host_mesh::mesh_agent::ShutdownHost;
-use hyperactor_mesh::mesh_agent::GetProcClient;
+use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
 use hyperactor_mesh::transport::default_bind_spec;
@@ -328,7 +328,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             .instance("temp")
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        let local_proc_agent: hyperactor::ActorHandle<hyperactor_mesh::mesh_agent::ProcMeshAgent> =
+        let local_proc_agent: hyperactor::ActorHandle<hyperactor_mesh::proc_agent::ProcAgent> =
             host_mesh_agent
                 .get_local_proc(&temp_instance)
                 .await
