@@ -10,7 +10,7 @@ use hyperactor::ActorRef;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::reference::ProcId;
 use hyperactor_mesh::global_root_client;
-use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
+use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::resource::ListClient;
 
 #[derive(clap::Args, Debug)]
@@ -34,8 +34,8 @@ impl ListCommand {
         let client = global_root_client();
 
         // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
-        let agent: ActorRef<HostMeshAgent> =
-            ActorRef::attest(ProcId::Direct(host, "service".to_string()).actor_id("agent", 0));
+        let agent: ActorRef<HostAgent> =
+            ActorRef::attest(ProcId::Direct(host, "service".to_string()).actor_id("host_agent", 0));
 
         let resources = agent.list(&client).await?;
         println!("{}", serde_json::to_string_pretty(&resources)?);

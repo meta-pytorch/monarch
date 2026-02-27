@@ -22,7 +22,7 @@ So the through line is: *one process that can speak hyperactor → host → proc
 
 ## Pieces (conceptual)
 
-- **Host**: a long-lived runtime that owns "all procs on this machine" and gives them a single front door (`*` / mux). It also runs a **`HostMeshAgent`** in its system proc so other parts of the mesh can tell it "start/stop this proc."
+- **Host**: a long-lived runtime that owns "all procs on this machine" and gives them a single front door (`*` / mux). It also runs a **`HostAgent`** in its system proc so other parts of the mesh can tell it "start/stop this proc."
 - **Proc**: an actor runtime. In v1 the proc also runs a **`ProcAgent`** so it can be managed the same way as the host — that's why the agent handlers all look like the resource ones you saw.
 - **Actor mesh**: the thing you actually care about as a user — N copies of your actor (often one per proc), callable as a group.
 

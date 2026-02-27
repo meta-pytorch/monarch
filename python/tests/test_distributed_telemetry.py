@@ -75,14 +75,18 @@ def test_distributed_telemetry_auto_callback(cleanup_callbacks) -> None:
     assert len(_proc_mesh_spawn_callbacks) == initial_callback_count + 1
 
     # Spawn workers - callback should fire and add them as children
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    hosts.spawn_procs(per_host={"workers": 2})
 
     # Query should return data from coordinator + 2 workers = 3 sources
     # Each source has 10 hosts, so we expect 30 total hosts
     result = engine.query("SELECT COUNT(*) as total_hosts FROM hosts")
     total_hosts = result.to_pydict()["total_hosts"][0]
     assert total_hosts == 30, f"Expected 30 hosts, got {total_hosts}"
+
+    # Clean up
+    hosts.shutdown().get()
 
 
 @pytest.mark.timeout(180)
@@ -92,15 +96,16 @@ def test_distributed_telemetry_grandchild(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=True)
 
     # Spawn workers
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
 
     # Spawn worker actors for business logic
     workers = worker_procs.spawn("worker", WorkerActor)
     workers.initialized.get()
 
     # Spawn a grandchild - telemetry automatically tracks it
-    host.spawn_procs(name="grandchild")
+    hosts.spawn_procs(name="grandchild")
 
     # Query should return data from coordinator + 2 workers + 1 grandchild = 4 sources
     # Each source has 10 hosts, so we expect 40 total hosts
@@ -113,6 +118,9 @@ def test_distributed_telemetry_grandchild(cleanup_callbacks) -> None:
     result = engine.query("SELECT COUNT(*) as total_metrics FROM metrics")
     total_metrics = result.to_pydict()["total_metrics"][0]
     assert total_metrics == 960 * 4, f"Expected {960 * 4} metrics, got {total_metrics}"
+
+    # Clean up
+    hosts.shutdown().get()
 
 
 @pytest.mark.timeout(60)
@@ -139,13 +147,17 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
     enable_record_batch_tracing(batch_size=5)
 
     # Spawn some workers to generate trace events
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    hosts.spawn_procs(per_host={"workers": 2})
 
     # The sink should have received and flushed some batches
     # Note: The exact count depends on the number of trace events generated
     final_count = get_record_batch_flush_count()
     assert final_count >= 0, "Flush count should be non-negative"
+
+    # Clean up
+    hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -155,8 +167,9 @@ def test_actors_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn some worker actors - this should trigger notify_actor_created
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("test_worker", WorkerActor)
     workers.initialized.get()
 
@@ -183,6 +196,9 @@ def test_actors_table(cleanup_callbacks) -> None:
         f"Expected to find 'test_worker' in actor names, got: {full_names}"
     )
 
+    # Clean up
+    hosts.shutdown().get()
+
 
 @pytest.mark.timeout(120)
 def test_meshes_table(cleanup_callbacks) -> None:
@@ -191,8 +207,9 @@ def test_meshes_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn some worker actors - this should trigger notify_mesh_created
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
     workers.initialized.get()
 
@@ -274,6 +291,9 @@ def test_meshes_table(cleanup_callbacks) -> None:
                 f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
             )
 
+    # Clean up
+    hosts.shutdown().get()
+
 
 @pytest.mark.timeout(120)
 def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
@@ -281,7 +301,8 @@ def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
-    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="proc_mesh_test")
     workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
     workers.initialized.get()
@@ -331,6 +352,9 @@ def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
                 f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
             )
 
+    # Clean up
+    hosts.shutdown().get()
+
 
 @pytest.mark.timeout(120)
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
@@ -338,8 +362,9 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn actors — this populates both the actors and meshes tables
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("join_test_worker", WorkerActor)
     workers.initialized.get()
 
@@ -375,61 +400,138 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
         f"Expected 2 joined rows for 2 workers, got: {joined_count}"
     )
 
+    # Clean up
+    hosts.shutdown().get()
+
 
 @pytest.mark.timeout(120)
-def test_bootstrap_actors_captured(cleanup_callbacks) -> None:
-    """Test that bootstrap actors (ProcAgent, HostMeshAgent) are captured in the actors table.
-
-    These actors are spawned during process bootstrap, before `set_entity_dispatcher`
-    is called. The buffering mechanism in `hyperactor_telemetry` should buffer their
-    creation events and replay them when the dispatcher is registered.
-    """
+def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
+    """Test that all actor meshes within a proc mesh have actors in the actors table."""
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
-    # Spawn workers so we also check worker-side bootstrap actors
-    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="worker_procs")
-    worker_procs.initialized.get()
+    # Spawn a named proc mesh and user actors
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
+    workers = worker_procs.spawn("worker_actors", WorkerActor)
+    workers.initialized.get()
 
-    # Query all actors
-    result = engine.query("SELECT full_name FROM actors")
-    full_names = result.to_pydict().get("full_name", [])
-
-    # The Bootstrap actor HostMeshAgent is spawned with name "agent",
-    # ProcAgent has the name "proc_agent".
-    # Their full_name looks like "unix:@...,<proc>,agent[0]".
-    agent_names = [
-        name for name in full_names if ",agent[" in name or ",proc_agent[" in name
-    ]
-
-    # TODO: Enable this after finding discrepancy between OSS and internal test
-    # # Verify the HostMeshAgent (on the "service" proc) was captured.
-    # # This is the first actor spawned during bootstrap, before set_entity_dispatcher.
-    # has_host_mesh_agent = any(",service,agent[" in name for name in full_names)
-    # assert has_host_mesh_agent, (
-    #     f"Expected HostMeshAgent on service proc, but not found. "
-    #     f"Agent actors: {agent_names}"
-    # )
-
-    # # Verify the ProcAgent (on the "local" proc) was captured.
-    # has_proc_mesh_agent = any(",local,agent[" in name for name in full_names)
-    # assert has_proc_mesh_agent, (
-    #     f"Expected ProcAgent on local proc, but not found. "
-    #     f"Agent actors: {agent_names}"
-    # )
-
-    # Verify ProcAgent actors on the 2 worker procs were captured.
-    # Their full_name matches the pattern "worker_procs_<id>,agent[0]".
-    worker_proc_agents = [
-        name
-        for name in full_names
-        if "worker_procs_" in name and (",agent[" in name or ",proc_agent[" in name)
-    ]
-    assert len(worker_proc_agents) == 2, (
-        f"Expected 2 ProcAgent actors on worker procs "
-        f"(matching 'worker_procs_*,agent['), got {len(worker_proc_agents)}. "
-        f"All agent actors: {agent_names}"
+    # Get the proc mesh entry so we can filter child meshes by parent_mesh_id
+    proc_result = engine.query(
+        "SELECT id FROM meshes WHERE class = 'Proc' AND given_name = 'workers_procs'"
     )
+    proc_ids = proc_result.to_pydict().get("id", [])
+    assert len(proc_ids) == 1, f"Expected exactly 1 proc mesh, got {len(proc_ids)}"
+    proc_mesh_id = proc_ids[0]
+
+    # ProcAgent actors have mesh_id pointing directly to the proc mesh
+    proc_agents = engine.query(f"SELECT id FROM actors WHERE mesh_id = {proc_mesh_id}")
+    proc_agents_count = len(proc_agents.to_pydict().get("id", []))
+    assert proc_agents_count == 2, (
+        f"Expected 2 ProcAgent actors, got {proc_agents_count}"
+    )
+
+    # Query all child actor meshes of this proc mesh
+    child_meshes = engine.query(
+        f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {proc_mesh_id}"
+    )
+    child_dict = child_meshes.to_pydict()
+    child_classes = set(child_dict.get("class", []))
+    child_names = child_dict.get("given_name", [])
+    child_ids = child_dict.get("id", [])
+
+    assert set(child_names) == {
+        "worker_actors",
+        "telemetry",
+        "logger",
+        "setup",
+        "comm",
+    }
+
+    # For every child actor mesh, verify that actors exist in the actors table
+    for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
+        actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
+        actor_dict = actor_result.to_pydict()
+        actor_count = len(actor_dict.get("id", []))
+
+        # Each mesh on a 2-worker proc mesh should have exactly 2 actors
+        assert actor_count == 2, (
+            f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
+            f"got {actor_count}"
+        )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
+    """Test that all actor meshes within a proc mesh have actors in the actors table."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn a named proc mesh and user actors
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
+    workers = worker_procs.spawn("worker_actors", WorkerActor)
+    workers.initialized.get()
+
+    # Get the hosts mesh entry so we can filter child meshes by parent_mesh_id
+    host_mesh_result = engine.query(
+        "SELECT id FROM meshes WHERE class = 'Host' AND given_name = 'hosts'"
+    )
+    host_mesh_ids = host_mesh_result.to_pydict().get("id", [])
+    assert len(host_mesh_ids) == 1, (
+        f"Expected exactly 1 hosts mesh, got {len(host_mesh_ids)}"
+    )
+    host_mesh_id = host_mesh_ids[0]
+
+    # Query all proc meshes of this hosts mesh
+    proc_meshes = engine.query(
+        f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {host_mesh_id}"
+    )
+    proc_dict = proc_meshes.to_pydict()
+    proc_given_names = set(proc_dict.get("given_name", []))
+    assert proc_given_names == {"workers_procs"}
+
+    # Query all child actor meshes of this hosts mesh
+    child_meshes = engine.query(
+        f"""
+        SELECT m.id, m.class, m.given_name
+        FROM meshes m
+        INNER JOIN meshes proc ON m.parent_mesh_id = proc.id
+        INNER JOIN meshes hosts ON proc.parent_mesh_id = hosts.id
+        WHERE hosts.id = {host_mesh_id}
+        """
+    )
+    child_dict = child_meshes.to_pydict()
+    child_classes = set(child_dict.get("class", []))
+    child_names = child_dict.get("given_name", [])
+    child_ids = child_dict.get("id", [])
+
+    # The proc mesh should contain user-spawned actor and telemetry, logger, setup, agent, and comm actors.
+    assert set(child_names) == {
+        "worker_actors",
+        "telemetry",
+        "logger",
+        "setup",
+        "comm",
+    }
+
+    # For every child actor mesh, verify that actors exist in the actors table
+    for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
+        actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
+        actor_dict = actor_result.to_pydict()
+        actor_count = len(actor_dict.get("id", []))
+
+        # Each mesh on a 2-worker proc mesh should have exactly 2 actors
+        assert actor_count == 2, (
+            f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
+            f"got {actor_count}"
+        )
+
+    # Clean up
+    hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -438,8 +540,9 @@ def test_actor_status_events_table(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn worker actors — actors go through status transitions during spawn
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    worker_procs = host.spawn_procs(per_host={"workers": 2})
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("status_test_worker", WorkerActor)
     workers.initialized.get()
 
@@ -485,3 +588,6 @@ def test_actor_status_events_table(cleanup_callbacks) -> None:
     assert new_statuses.issubset(valid_statuses), (
         f"Found unexpected status values: {new_statuses - valid_statuses}"
     )
+
+    # Clean up
+    hosts.shutdown().get()
