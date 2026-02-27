@@ -20,9 +20,9 @@ use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::host;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::HostMeshRef;
-use hyperactor_mesh::host_mesh::mesh_agent::GetLocalProcClient;
-use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
-use hyperactor_mesh::host_mesh::mesh_agent::ShutdownHost;
+use hyperactor_mesh::host_mesh::host_agent::GetLocalProcClient;
+use hyperactor_mesh::host_mesh::host_agent::HostAgent;
+use hyperactor_mesh::host_mesh::host_agent::ShutdownHost;
 use hyperactor_mesh::proc_agent::GetProcClient;
 use hyperactor_mesh::proc_mesh::ProcRef;
 use hyperactor_mesh::shared_cell::SharedCell;
@@ -196,7 +196,7 @@ impl PyHostMesh {
         let instance = instance.clone();
         PyPythonTask::new(async move {
             // Sends a SpawnMeshAdmin message to ranks[0]'s
-            // HostMeshAgent, which spawns the admin on that host's
+            // HostAgent, which spawns the admin on that host's
             // system proc.
             let addr = host_mesh
                 .spawn_admin(instance.deref(), admin_port)
@@ -283,7 +283,7 @@ impl PyHostMeshRefImpl {
 static ROOT_CLIENT_INSTANCE_FOR_HOST: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
 /// Static storage for the host mesh agent created by bootstrap_host().
-static HOST_MESH_AGENT_FOR_HOST: OnceLock<ActorHandle<HostMeshAgent>> = OnceLock::new();
+static HOST_MESH_AGENT_FOR_HOST: OnceLock<ActorHandle<HostAgent>> = OnceLock::new();
 
 /// Bootstrap the client host and root client actor.
 ///

@@ -88,9 +88,9 @@ use serde::Serialize;
 use typeuri::Named;
 pub use value_mesh::ValueMesh;
 
-use crate::host_mesh::HostMeshAgent;
+use crate::host_mesh::HostAgent;
 use crate::host_mesh::HostMeshRefParseError;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::host_agent::ProcState;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::shortuuid::ShortUuid;
@@ -172,7 +172,7 @@ pub enum Error {
     ProcCreationError {
         state: Box<resource::State<ProcState>>,
         host_rank: usize,
-        mesh_agent: ActorRef<HostMeshAgent>,
+        mesh_agent: ActorRef<HostAgent>,
     },
 
     #[error(
