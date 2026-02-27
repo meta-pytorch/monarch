@@ -733,9 +733,8 @@ pub(crate) mod tls {
     /// Load certificates from a Pem value.
     pub(super) fn load_certs(pem: &Pem) -> Result<Vec<CertificateDer<'static>>> {
         let mut reader = BufReader::new(pem.reader()?);
-        let certs = rustls_pemfile::certs(&mut reader)?
-            .into_iter()
-            .map(CertificateDer::from)
+        let certs = rustls_pemfile::certs(&mut reader)
+            .filter_map(Result::ok)
             .collect();
         Ok(certs)
     }
@@ -745,12 +744,9 @@ pub(crate) mod tls {
         let mut reader = BufReader::new(pem.reader()?);
         loop {
             break match rustls_pemfile::read_one(&mut reader)? {
-                Some(rustls_pemfile::Item::RSAKey(key)) => Ok(PrivateKeyDer::try_from(key)
-                    .map_err(|_| anyhow::anyhow!("invalid RSA private key format"))?),
-                Some(rustls_pemfile::Item::PKCS8Key(key)) => Ok(PrivateKeyDer::try_from(key)
-                    .map_err(|_| anyhow::anyhow!("invalid PKCS8 private key format"))?),
-                Some(rustls_pemfile::Item::ECKey(key)) => Ok(PrivateKeyDer::try_from(key)
-                    .map_err(|_| anyhow::anyhow!("invalid EC private key format"))?),
+                Some(rustls_pemfile::Item::Pkcs1Key(key)) => Ok(PrivateKeyDer::Pkcs1(key)),
+                Some(rustls_pemfile::Item::Pkcs8Key(key)) => Ok(PrivateKeyDer::Pkcs8(key)),
+                Some(rustls_pemfile::Item::Sec1Key(key)) => Ok(PrivateKeyDer::Sec1(key)),
                 Some(_) => continue,
                 None => anyhow::bail!("no private key found in TLS key file"),
             };

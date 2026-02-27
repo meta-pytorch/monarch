@@ -61,7 +61,7 @@ rand = { version = "0.8", features = ["small_rng"] }
 rand_distr = "0.4"
 regex = "1.12.3"
 rustls = "0.23.37"
-rustls-pemfile = "1.0.0"
+rustls-pemfile = "2.2.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
