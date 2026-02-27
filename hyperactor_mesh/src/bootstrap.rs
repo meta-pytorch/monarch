@@ -290,8 +290,8 @@ pub async fn halt<R>() -> R {
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
 /// - `config`: optional runtime config overlay.
 /// - `exit_on_shutdown`: if true, exit the process after handling a shutdown request.
-/// When `listener` is `Some`, it is used as the frontend listening socket
-/// instead of binding a new one.
+/// - `listener`: when `Some`, it is used as the frontend listening socket
+///   instead of binding a new one.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
@@ -3456,6 +3456,7 @@ mod tests {
             Some(BootstrapCommand::test()),
             None,
             false,
+            None,
         )
         .await
         .unwrap();

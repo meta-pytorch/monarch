@@ -1097,7 +1097,7 @@ u19txmtkiMEH+aNmekk=
             // Create a TLS server bound to localhost with dynamic port
             let addr = TlsAddr::new("localhost", 0);
 
-            let (local_addr, mut rx) = serve::<u64>(addr).expect("failed to serve");
+            let (local_addr, mut rx) = serve::<u64>(addr, None).expect("failed to serve");
 
             // Dial the server
             let tx = dial::<u64>(match &local_addr {
@@ -1129,7 +1129,7 @@ u19txmtkiMEH+aNmekk=
 
             let addr = TlsAddr::new("localhost", 0);
 
-            let (local_addr, mut rx) = serve::<String>(addr).expect("failed to serve");
+            let (local_addr, mut rx) = serve::<String>(addr, None).expect("failed to serve");
             let tx = dial::<String>(match &local_addr {
                 ChannelAddr::Tls(addr) => addr.clone(),
                 _ => panic!("unexpected address type"),
@@ -1360,7 +1360,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap(), None).unwrap();
         {
             let tx = channel::dial::<u64>(addr.clone()).unwrap();
             tx.post(123);
@@ -1406,7 +1406,7 @@ mod tests {
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
-        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap(), None).unwrap();
 
         let tx = channel::dial::<String>(addr.clone()).unwrap();
         // Default size is okay
@@ -1438,7 +1438,7 @@ mod tests {
         let _guard_delivery_timeout =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
-        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap(), None).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx);
@@ -1460,7 +1460,7 @@ mod tests {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
             _ => panic!("expected MetaTls address"),
         };
-        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
+        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr, None).unwrap();
         {
             let tx = channel::dial::<u64>(local_addr.clone()).unwrap();
             tx.post(123);
@@ -2685,7 +2685,7 @@ mod tests {
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).unwrap();
+        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr, None).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;
@@ -2790,7 +2790,7 @@ mod tests {
 
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap(), None).unwrap();
         let socket_addr = match addr {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),

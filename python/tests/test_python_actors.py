@@ -1413,7 +1413,7 @@ def test_fd_bootstrap():
     procs = []
     workers = []
 
-    for i in range(2):
+    for _i in range(2):
         # Create a TCP socket bound to an ephemeral port.
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
