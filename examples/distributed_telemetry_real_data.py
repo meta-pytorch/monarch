@@ -86,7 +86,8 @@ def main() -> None:
 
     # Spawn worker processes - telemetry automatically tracks them
     print(f"Spawning {NUM_WORKERS} worker processes...")
-    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS}, name="workers")
 
     # Spawn compute actors
@@ -250,8 +251,9 @@ def main() -> None:
                FROM meshes
                ORDER BY given_name""",
         ),
-        # Find all actors in a proc mesh by joining through the actor mesh
-        # actors -> actor mesh (via mesh_id) -> proc mesh (via parent_mesh_id)
+        # Find all actors in a proc mesh.
+        # Regular actors: actor -> actor mesh (mesh_id) -> proc mesh (parent_mesh_id)
+        # ProcMeshAgent actors: actor -> proc mesh (mesh_id) directly
         (
             "Actors in each proc mesh",
             """SELECT pm.given_name AS proc_mesh_name,
@@ -259,10 +261,66 @@ def main() -> None:
                       a.full_name AS actor_name,
                       a.rank
                FROM actors a
-               INNER JOIN meshes am ON a.mesh_id = am.id
-               INNER JOIN meshes pm ON am.parent_mesh_id = pm.id
+               JOIN meshes am ON a.mesh_id = am.id
+               JOIN meshes pm ON am.parent_mesh_id = pm.id
                WHERE pm.class = 'Proc'
-               ORDER BY pm.given_name, am.given_name, a.rank""",
+               UNION ALL
+               SELECT pm.given_name AS proc_mesh_name,
+                      pm.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               JOIN meshes pm ON a.mesh_id = pm.id
+               WHERE pm.class = 'Proc'
+               ORDER BY proc_mesh_name, actor_mesh_name, rank""",
+        ),
+        # Find all prochmesh in each host mesh
+        (
+            "Proc mesh in each host mesh",
+            """SELECT hm.given_name AS host_mesh_name,
+                      pm.given_name AS proc_mesh_name,
+                      pm.id AS proc_mesh_id
+               FROM meshes pm
+               INNER JOIN meshes hm ON pm.parent_mesh_id = hm.id
+               WHERE hm.class = 'Host' AND pm.class = 'Proc'
+               ORDER BY hm.given_name, pm.given_name""",
+        ),
+        # Find all actors in a proc mesh.
+        # Regular actors: actor -> actor mesh (mesh_id) -> proc mesh (parent_mesh_id)
+        # ProcAgent actors: actor -> proc mesh (mesh_id) directly
+        # HostAgent actors: actor -> host mesh (mesh_id) directly
+        (
+            "Actors in each host mesh",
+            """SELECT hm.given_name AS host_mesh_name,
+                      pm.given_name AS proc_mesh_name,
+                      am.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               JOIN meshes am ON a.mesh_id = am.id
+               JOIN meshes pm ON am.parent_mesh_id = pm.id
+               JOIN meshes hm ON pm.parent_mesh_id = hm.id
+               WHERE hm.class = 'Host'
+               UNION ALL
+               SELECT hm.given_name AS host_mesh_name,
+                      pm.given_name AS proc_mesh_name,
+                      pm.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               JOIN meshes pm ON a.mesh_id = pm.id
+               JOIN meshes hm ON pm.parent_mesh_id = hm.id
+               WHERE pm.class = 'Proc' AND hm.class = 'Host'
+               UNION ALL
+               SELECT hm.given_name AS host_mesh_name,
+                      hm.given_name AS proc_mesh_name,
+                      hm.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               JOIN meshes hm ON a.mesh_id = hm.id
+               WHERE hm.class = 'Host'
+               ORDER BY host_mesh_name, proc_mesh_name, actor_mesh_name, rank""",
         ),
         # Actor status events schema
         (
@@ -310,6 +368,9 @@ def main() -> None:
         print()
 
     print("Demo complete!")
+
+    # Clean up
+    hosts.shutdown().get()
 
 
 if __name__ == "__main__":
