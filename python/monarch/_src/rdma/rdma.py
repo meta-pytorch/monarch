@@ -22,6 +22,8 @@ try:
         _LocalMemoryHandle,
         _RdmaBuffer,
         _RdmaManager,
+        is_ibverbs_available as _is_ibverbs_available,
+        rdma_supported as _rdma_supported,
     )
 except ImportError as e:
     logging.error("RDMA is not available: {}".format(e))
@@ -50,19 +52,24 @@ warnings.simplefilter("once", RDMAReadTransferWarning)
 warnings.simplefilter("once", RDMAWriteTransferWarning)
 
 
-def is_rdma_available():
-    return _RdmaBuffer.rdma_supported()
+def is_ibverbs_available() -> bool:
+    """Whether ibverbs RDMA hardware is available on this system."""
+    return _is_ibverbs_available()
 
 
 def get_rdma_backend() -> str:
     """Return available RDMA backend.
 
     Returns:
-        str: One of 'ibverbs' or 'none' indicating the available backend.
+        str: One of 'ibverbs', 'tcp', or 'none' indicating the available backend.
              Both Mellanox and EFA hardware are accessed through ibverbs.
+             'tcp' indicates the TCP fallback transport is enabled.
     """
-    if is_rdma_available():
+    if _is_ibverbs_available():
         return "ibverbs"
+
+    if _rdma_supported():
+        return "tcp"
 
     return "none"
 
@@ -258,9 +265,19 @@ class RDMABuffer:
             # Check if CUDA caching allocator is using expandable segments
             _check_cuda_expandable_segments_enabled()
 
-        assert get_rdma_backend() != "none", (
-            "Tried to create an RDMABuffer, but RDMA is not available on this platform."
+        backend = get_rdma_backend()
+        assert backend != "none", (
+            "Tried to create an RDMABuffer, but RDMA is not available on this platform. "
+            "To enable TCP fallback transport, call "
+            "monarch.configure(rdma_allow_tcp_fallback=True) before creating buffers."
         )
+        if backend == "tcp":
+            logging.warning(
+                "No ibverbs RDMA hardware detected. Falling back to TCP transport, "
+                "which has significantly lower throughput and higher latency than "
+                "native RDMA. To disable this fallback and fail explicitly, call "
+                "monarch.configure(rdma_allow_tcp_fallback=False)."
+            )
 
         # We need to ensure that _RdmaManager is initialized at this point, because under the hood
         # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case.

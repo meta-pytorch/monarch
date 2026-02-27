@@ -20,8 +20,10 @@ use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::ibverbs_supported;
 use monarch_rdma::rdma_supported;
 use monarch_rdma::register_segment_scanner;
+use monarch_types::py_module_add_function;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
 use pyo3::exceptions::PyValueError;
@@ -223,11 +225,6 @@ impl PyRdmaBuffer {
         signal_safe_block_on(py, create_rdma_buffer(local, client))?
     }
 
-    #[classmethod]
-    fn rdma_supported<'py>(_cls: &Bound<'_, PyType>, _py: Python<'py>) -> bool {
-        rdma_supported()
-    }
-
     #[pyo3(name = "__repr__")]
     fn repr(&self) -> String {
         format!("<RdmaBuffer'{:?}'>", self.buffer)
@@ -371,6 +368,20 @@ impl PyRdmaManager {
     }
 }
 
+/// Whether ibverbs RDMA hardware is available on this system.
+#[pyfunction]
+#[pyo3(name = "is_ibverbs_available")]
+fn is_ibverbs_available_py() -> bool {
+    ibverbs_supported()
+}
+
+/// Whether any RDMA backend (ibverbs or TCP fallback) is available.
+#[pyfunction]
+#[pyo3(name = "rdma_supported")]
+fn rdma_supported_py() -> bool {
+    rdma_supported()
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register the PyTorch segment scanner callback.
     // This calls torch.cuda.memory._snapshot() to get CUDA memory segments.
@@ -379,5 +390,11 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyLocalMemoryHandle>()?;
     module.add_class::<PyRdmaBuffer>()?;
     module.add_class::<PyRdmaManager>()?;
+    py_module_add_function!(
+        module,
+        "monarch._rust_bindings.rdma",
+        is_ibverbs_available_py
+    );
+    py_module_add_function!(module, "monarch._rust_bindings.rdma", rdma_supported_py);
     Ok(())
 }

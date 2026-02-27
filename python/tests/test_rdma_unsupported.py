@@ -14,11 +14,12 @@ behavior when RDMA support is missing.
 """
 
 import pytest
-from monarch.rdma import is_rdma_available
+from monarch.config import configured
+from monarch.rdma import is_ibverbs_available
 
 
 needs_no_rdma = pytest.mark.skipif(
-    is_rdma_available(),
+    is_ibverbs_available(),
     reason="RDMA is available, test only runs on systems without RDMA support",
 )
 
@@ -40,18 +41,19 @@ async def test_rdma_manager_creation_fails_when_unsupported():
     from monarch._src.actor.future import Future
     from monarch.actor import this_host
 
-    proc_mesh = this_host().spawn_procs(per_host={"cpus": 1})
+    with configured(rdma_allow_tcp_fallback=False):
+        proc_mesh = this_host().spawn_procs(per_host={"cpus": 1})
 
-    with pytest.raises(Exception) as exc_info:
-        await Future(
-            coro=_RdmaManager.create_rdma_manager_nonblocking(
-                await Future(coro=proc_mesh._proc_mesh.task()),
-                context().actor_instance,
+        with pytest.raises(Exception) as exc_info:
+            await Future(
+                coro=_RdmaManager.create_rdma_manager_nonblocking(
+                    await Future(coro=proc_mesh._proc_mesh.task()),
+                    context().actor_instance,
+                )
             )
-        )
 
-    error_message = str(exc_info.value)
-    assert (
-        "Cannot create IbvManagerActor because RDMA is not supported on this machine"
-        in error_message
-    ), f"Expected specific error message not found. Actual error: {error_message}"
+        error_message = str(exc_info.value)
+        assert (
+            "Cannot create IbvManagerActor because RDMA is not supported on this machine"
+            in error_message
+        ), f"Expected specific error message not found. Actual error: {error_message}"

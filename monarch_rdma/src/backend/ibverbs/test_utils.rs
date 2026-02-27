@@ -634,8 +634,14 @@ impl IbvTestEnv {
         }
 
         // Resolve ibverbs details lazily via resolve_ibv
-        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1.resolve_ibv(&instance_1).await?;
-        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2.resolve_ibv(&instance_2).await?;
+        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1
+            .resolve_ibv(&instance_1)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 1"))??;
+        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
+            .resolve_ibv(&instance_2)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))??;
 
         // Fill buffer1 with test data
         if parsed_accel1.0 == "cuda" {

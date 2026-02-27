@@ -738,13 +738,6 @@ fn ibverbs_supported_impl() -> bool {
     }
 }
 
-/// Checks if RDMA is fully supported on this system.
-///
-/// This is the canonical function to check if RDMA can be used.
-pub fn rdma_supported() -> bool {
-    ibverbs_supported()
-}
-
 /// Represents a view of a memory region that can be registered with an RDMA device.
 ///
 /// This is a 'view' of a registered Memory Region, allowing multiple views into a single

@@ -9,7 +9,8 @@
 //! # RDMA Manager Actor
 //!
 //! Per-process actor that owns RDMA buffer registrations and delegates
-//! transport-specific work to backend actors (currently [`IbvManagerActor`]).
+//! transport-specific work to backend actors ([`IbvManagerActor`] and
+//! [`TcpManagerActor`]).
 //!
 //! ## Responsibilities
 //!
@@ -18,7 +19,8 @@
 //! - Produces [`RdmaRemoteBuffer`] tokens that can be sent to remote peers so
 //!   they can address this buffer over RDMA.
 //! - Delegates MR registration, QP management, and data movement to the
-//!   ibverbs backend ([`IbvManagerActor`]).
+//!   ibverbs backend ([`IbvManagerActor`]) when available, or falls back to
+//!   the TCP backend ([`TcpManagerActor`]).
 //! - Handles remote [`ReleaseBuffer`] requests to clean up registrations.
 
 use std::collections::HashMap;
@@ -46,10 +48,11 @@ use tokio::sync::OnceCell;
 use typeuri::Named;
 
 use crate::RdmaLocalMemory;
-use crate::backend::RdmaBackendContext;
+use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
+use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes
@@ -65,7 +68,7 @@ pub fn get_rdmaxcel_error_message(error_code: i32) -> String {
 /// Local-only messages for the [`RdmaManagerActor`].
 ///
 /// These messages carry `Arc<dyn RdmaLocalMemory>` and are therefore
-/// not serializable — they can only be sent within the same process.
+/// not serializable -- they can only be sent within the same process.
 #[derive(Handler, HandleClient, Debug)]
 pub enum RdmaManagerMessage {
     /// Register a local memory handle and return a [`RdmaRemoteBuffer`] that
@@ -103,6 +106,15 @@ pub struct GetIbvActorRef {
 }
 wirevalue::register_type!(GetIbvActorRef);
 
+/// Serializable query for resolving the [`TcpManagerActor`] ref
+/// from a remote [`RdmaManagerActor`].
+#[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
+pub struct GetTcpActorRef {
+    #[reply]
+    pub reply: OncePortRef<ActorRef<TcpManagerActor>>,
+}
+wirevalue::register_type!(GetTcpActorRef);
+
 #[derive(Debug)]
 enum RdmaBackendActor<A: Actor> {
     Uninit,
@@ -137,13 +149,15 @@ impl<A: Actor> RdmaBackendActor<A> {
     spawn = true,
     handlers = [
         GetIbvActorRef,
+        GetTcpActorRef,
         ReleaseBuffer,
     ],
 )]
 pub struct RdmaManagerActor {
     next_remote_buf_id: usize,
     buffers: HashMap<usize, Arc<dyn RdmaLocalMemory>>,
-    ibverbs: RdmaBackendActor<IbvManagerActor>,
+    ibverbs: Option<RdmaBackendActor<IbvManagerActor>>,
+    tcp: RdmaBackendActor<TcpManagerActor>,
 }
 
 impl RdmaManagerActor {
@@ -163,11 +177,25 @@ impl RemoteSpawn for RdmaManagerActor {
     type Params = Option<IbvConfig>;
 
     async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
-        let ibv = RdmaBackendActor::Created(IbvManagerActor::new(params).await?);
+        let ibv = match IbvManagerActor::new(params).await {
+            Ok(actor) => Some(RdmaBackendActor::Created(actor)),
+            Err(e) => {
+                if hyperactor_config::global::get(crate::config::RDMA_ALLOW_TCP_FALLBACK) {
+                    tracing::warn!("ibverbs initialization failed, TCP fallback enabled: {}", e);
+                    None
+                } else {
+                    return Err(e);
+                }
+            }
+        };
+
+        let tcp = RdmaBackendActor::Created(TcpManagerActor::new());
+
         Ok(Self {
             next_remote_buf_id: 0,
             buffers: HashMap::new(),
             ibverbs: ibv,
+            tcp,
         })
     }
 }
@@ -175,7 +203,10 @@ impl RemoteSpawn for RdmaManagerActor {
 #[async_trait]
 impl Actor for RdmaManagerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        self.ibverbs.spawn(this)?;
+        if let Some(ibv) = &mut self.ibverbs {
+            ibv.spawn(this)?;
+        }
+        self.tcp.spawn(this)?;
         tracing::debug!("RdmaManagerActor initialized with lazy domain/QP creation");
         Ok(())
     }
@@ -198,7 +229,18 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
         &mut self,
         _cx: &Context<Self>,
     ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
-        Ok(Some(self.ibverbs.handle().bind()))
+        Ok(self.ibverbs.as_ref().map(|ibv| ibv.handle().bind()))
+    }
+}
+
+#[async_trait]
+#[hyperactor::handle(GetTcpActorRef)]
+impl GetTcpActorRefHandler for RdmaManagerActor {
+    async fn get_tcp_actor_ref(
+        &mut self,
+        _cx: &Context<Self>,
+    ) -> Result<ActorRef<TcpManagerActor>, anyhow::Error> {
+        Ok(self.tcp.handle().bind())
     }
 }
 
@@ -207,7 +249,10 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
 impl ReleaseBufferHandler for RdmaManagerActor {
     async fn release_buffer(&mut self, cx: &Context<Self>, id: usize) -> Result<(), anyhow::Error> {
         self.buffers.remove(&id);
-        self.ibverbs.handle().release_buffer(cx, id).await
+        if let Some(ibv) = &self.ibverbs {
+            ibv.handle().release_buffer(cx, id).await?;
+        }
+        Ok(())
     }
 }
 
@@ -225,14 +270,22 @@ impl RdmaManagerMessageHandler for RdmaManagerActor {
 
         self.buffers.insert(remote_buf_id, local);
 
+        let mut backends = Vec::new();
+
+        if let Some(ibv) = &self.ibverbs {
+            backends.push(RdmaRemoteBackendContext::Ibverbs(
+                ibv.handle().bind(),
+                Arc::new(OnceCell::new()),
+            ));
+        }
+
+        backends.push(RdmaRemoteBackendContext::Tcp(self.tcp.handle().bind()));
+
         Ok(RdmaRemoteBuffer {
             id: remote_buf_id,
             size,
             owner: cx.bind().clone(),
-            backends: vec![RdmaBackendContext::Ibverbs(
-                self.ibverbs.handle().bind(),
-                Arc::new(OnceCell::new()),
-            )],
+            backends,
         })
     }
 

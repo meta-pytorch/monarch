@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.rdma import get_rdma_backend, is_rdma_available, RDMAAction, RDMABuffer
+from monarch.rdma import get_rdma_backend, is_ibverbs_available, RDMAAction, RDMABuffer
 
 
 needs_cuda = pytest.mark.skipif(
@@ -21,7 +21,7 @@ needs_cuda = pytest.mark.skipif(
     reason="CUDA not available",
 )
 needs_rdma = pytest.mark.skipif(
-    not is_rdma_available(),
+    not is_ibverbs_available(),
     reason="RDMA not available",
 )
 
@@ -32,12 +32,12 @@ needs_rdma = pytest.mark.skipif(
 
 
 def test_rdma_api_basics():
-    """is_rdma_available() and get_rdma_backend() return sane values."""
-    result = is_rdma_available()
+    """is_ibverbs_available() and get_rdma_backend() return sane values."""
+    result = is_ibverbs_available()
     assert isinstance(result, bool)
 
     backend = get_rdma_backend()
-    assert backend in ("ibverbs", "none")
+    assert backend in ("ibverbs", "tcp", "none")
 
 
 def test_memoryview_addr_and_contiguity():

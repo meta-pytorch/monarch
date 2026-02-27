@@ -16,6 +16,7 @@ doctest = false
 hyperactor_mesh = { version = "0.0.0", path = "../../hyperactor_mesh" }
 monarch_hyperactor = { version = "0.0.0", path = "../../monarch_hyperactor" }
 monarch_rdma = { version = "0.0.0", path = ".." }
+monarch_types = { version = "0.0.0", path = "../../monarch_types" }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
