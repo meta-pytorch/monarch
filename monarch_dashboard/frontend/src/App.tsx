@@ -12,6 +12,7 @@ import { Breadcrumb } from "./components/Breadcrumb";
 import { MeshTable } from "./components/MeshTable";
 import { ActorTable } from "./components/ActorTable";
 import { ActorDetail } from "./components/ActorDetail";
+import { DagView } from "./components/DagView";
 import { NavItem, Mesh, Actor } from "./types";
 import "./App.css";
 
@@ -159,20 +160,7 @@ function App() {
             </div>
           </>
         )}
-        {activeTab === "dag" && (
-          <div className="dag-placeholder">
-            <div className="placeholder-icon">
-              <svg viewBox="0 0 48 48" width="48" height="48" fill="none">
-                <circle cx="12" cy="24" r="6" stroke="var(--accent-primary)" strokeWidth="2" />
-                <circle cx="36" cy="12" r="4" stroke="var(--accent-secondary)" strokeWidth="2" />
-                <circle cx="36" cy="36" r="4" stroke="var(--accent-secondary)" strokeWidth="2" />
-                <line x1="18" y1="22" x2="32" y2="13" stroke="var(--border-subtle)" strokeWidth="1.5" />
-                <line x1="18" y1="26" x2="32" y2="35" stroke="var(--border-subtle)" strokeWidth="1.5" />
-              </svg>
-            </div>
-            <p>DAG view will be implemented in Milestone 4</p>
-          </div>
-        )}
+        {activeTab === "dag" && <DagView />}
       </main>
     </div>
   );
