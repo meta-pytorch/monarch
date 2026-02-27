@@ -256,7 +256,7 @@ class Instance(abc.ABC):
 
         This is observable in the mesh: on exit the actor emits
         ``Signal::ChildStopped`` to its parent (always), so
-        ProcMeshAgent *does* see the stop, and terminated snapshots
+        ProcAgent *does* see the stop, and terminated snapshots
         preserve post‑mortem state for introspection.
 
         Use ``ActorMesh.stop()`` when you need coordinated, mesh-wide

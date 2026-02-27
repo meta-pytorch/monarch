@@ -70,12 +70,12 @@ use crate::assign::Ranks;
 use crate::comm::CommMeshConfig;
 use crate::host_mesh::mesh_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
-use crate::mesh_agent;
-use crate::mesh_agent::ActorState;
-use crate::mesh_agent::MeshAgentMessageClient;
-use crate::mesh_agent::ProcMeshAgent;
-use crate::mesh_agent::ReconfigurableMailboxSender;
 use crate::mesh_controller::ActorMeshController;
+use crate::proc_agent;
+use crate::proc_agent::ActorState;
+use crate::proc_agent::MeshAgentMessageClient;
+use crate::proc_agent::ProcAgent;
+use crate::proc_agent::ReconfigurableMailboxSender;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
@@ -91,7 +91,7 @@ declare_attrs! {
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while waiting for a response to GetState
-    /// from ProcMeshAgent.
+    /// from ProcAgent.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
         Some("get_actor_state_max_idle".to_string()),
@@ -106,12 +106,12 @@ pub struct ProcRef {
     /// The rank of this proc at creation.
     create_rank: usize,
     /// The agent managing this proc.
-    agent: ActorRef<ProcMeshAgent>,
+    agent: ActorRef<ProcAgent>,
 }
 
 impl ProcRef {
     /// Create a new proc ref from the provided id, create rank and agent.
-    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcMeshAgent>) -> Self {
+    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcAgent>) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -227,7 +227,7 @@ impl ProcMesh {
         let region = allocation.extent().clone().into();
         let ranks = allocation.ranks();
 
-        // Set the global supervision sink to the first ProcMeshAgent's
+        // Set the global supervision sink to the first ProcAgent's
         // supervision event handler. Last-mesh-wins semantics: if a
         // previous mesh installed a sink, it is replaced.
         if let Some(first) = ranks.first() {
@@ -255,7 +255,7 @@ impl ProcMesh {
         )
         .unwrap();
 
-        // Notify telemetry that the ProcMeshAgent mesh was created.
+        // Notify telemetry that the ProcAgent mesh was created.
         {
             let name_str = name.to_string();
             let mut mesh_hasher = DefaultHasher::new();
@@ -803,11 +803,11 @@ impl ProcMeshRef {
         vm.join().await.transpose()
     }
 
-    pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcMeshAgent> {
+    pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcAgent> {
         let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
-        // This name must match the ProcMeshAgent name, which can change depending on the allocator.
+        // This name must match the ProcAgent name, which can change depending on the allocator.
         // Since we control the agent_name, it is guaranteed to be a valid mesh identifier.
-        // No controller for the ProcMeshAgent mesh.
+        // No controller for the ProcAgent mesh.
         ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone(), None)
     }
 
@@ -1054,10 +1054,10 @@ impl ProcMeshRef {
 
         agent_mesh.cast(
             cx,
-            resource::CreateOrUpdate::<mesh_agent::ActorSpec> {
+            resource::CreateOrUpdate::<proc_agent::ActorSpec> {
                 name: name.clone(),
                 rank: Default::default(),
-                spec: mesh_agent::ActorSpec {
+                spec: proc_agent::ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: serialized_params.clone(),
                 },

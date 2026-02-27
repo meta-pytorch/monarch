@@ -80,7 +80,7 @@ use crate::transport::default_bind_spec;
 /// agent. Newer meshes override older ones ("last sink wins").
 ///
 /// Uses `PortRef` (not `PortHandle`) because the sink target
-/// (`ProcMeshAgent`) runs in a remote worker process.
+/// (`ProcAgent`) runs in a remote worker process.
 static GLOBAL_SUPERVISION_SINK: OnceLock<RwLock<Option<PortRef<ActorSupervisionEvent>>>> =
     OnceLock::new();
 
@@ -103,7 +103,7 @@ fn sink_cell() -> &'static RwLock<Option<PortRef<ActorSupervisionEvent>>> {
 /// log/inspect overrides.
 ///
 /// Note: the sink is a [`PortRef`] (not a `PortHandle`) because the
-/// destination [`ProcMeshAgent`] may live in a different
+/// destination [`ProcAgent`] may live in a different
 /// process/rank.
 pub(crate) fn set_global_supervision_sink(
     sink: PortRef<ActorSupervisionEvent>,

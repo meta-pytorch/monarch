@@ -1,8 +1,8 @@
-# Proc meshes & ProcMeshAgent
+# Proc meshes & ProcAgent
 
-## What the `ProcMeshAgent` Is
+## What the `ProcAgent` Is
 
-Every proc in a mesh runs a `ProcMeshAgent`. It plays the same role on the proc side that the `HostMeshAgent` plays on the host side: it implements the control-plane interface for "managing this proc as part of a mesh".
+Every proc in a mesh runs a `ProcAgent`. It plays the same role on the proc side that the `HostMeshAgent` plays on the host side: it implements the control-plane interface for "managing this proc as part of a mesh".
 
 The agent has several responsibilities, all of which will be documented on this page:
 - wiring the proc into the mesh router,
@@ -19,7 +19,7 @@ results in an actual actor being constructed inside the proc using the `Remote` 
 
 To anchor that discussion, here is the essential shape of the agent:
 ```rust
-pub struct ProcMeshAgent {
+pub struct ProcAgent {
     proc: Proc, // local actor runtime
     remote: Remote,  // registry of SpawnableActor entries (built from RemoteSpawn + remote!(...))
     state: State, // v0/v1 bootstrapping mode
@@ -38,10 +38,10 @@ The sections that follow walk the spawn flow end-to-end. Additional responsibili
 
 At a high level, the v1 path for creating an actor on every proc looks like this:
 ```text
-ProcMeshRef ──(CreateOrUpdate<ActorSpec>)──▶ ProcMeshAgent mesh
-                      ProcMeshAgent ──(Remote::gspawn)──▶ Proc / Remote registry
+ProcMeshRef ──(CreateOrUpdate<ActorSpec>)──▶ ProcAgent mesh
+                      ProcAgent ──(Remote::gspawn)──▶ Proc / Remote registry
 ```
-("`ProcMeshRef` turns `spawn::<A>` into a broadcast `CreateOrUpdate<ActorSpec>` to the `ProcMeshAgent` mesh; each `ProcMeshAgent` then calls `Remote::gspawn` into its local `Proc` using the `Remote` registry.")
+("`ProcMeshRef` turns `spawn::<A>` into a broadcast `CreateOrUpdate<ActorSpec>` to the `ProcAgent` mesh; each `ProcAgent` then calls `Remote::gspawn` into its local `Proc` using the `Remote` registry.")
 
 From the caller's point of view it starts as:
 ```rust
@@ -136,22 +136,22 @@ What this does, step by step:
    )?;
    ```
    This is where the proc mesh turns a local method call into a **distributed control-plane request**:
-   - `agent_mesh` is an `ActorMeshRef<ProcMeshAgent>` – one `ProcMeshAgent` per proc,
-   - `cast` sends the same `CreateOrUpdate<ActorSpec>` to **every** `ProcMeshAgent`,
+   - `agent_mesh` is an `ActorMeshRef<ProcAgent>` – one `ProcAgent` per proc,
+   - `cast` sends the same `CreateOrUpdate<ActorSpec>` to **every** `ProcAgent`,
    - the `name` field is the *mesh-level* actor name ("this actor, on this mesh"),
    - `actor_type` is the *global* type name resolved via `Remote`,
    - `params_data` is the serialized `A::Params`.
 
 At this point the proc mesh has done its part: it has told every proc in the mesh: "For mesh actor name, please ensure you have one local actor of type `actor_type`, constructed from `params_data`."
 
-### How `ProcMeshAgent` handles `CreateOrUpdate<ActorSpec>`
+### How `ProcAgent` handles `CreateOrUpdate<ActorSpec>`
 
-Once the `ProcMeshRef` has broadcast a `CreateOrUpdate<ActorSpec>` to every proc, each proc's `ProcMeshAgent` receives that message and attempts to construct the actor locally.
+Once the `ProcMeshRef` has broadcast a `CreateOrUpdate<ActorSpec>` to every proc, each proc's `ProcAgent` receives that message and attempts to construct the actor locally.
 
 The entry point is:
 ```rust
 #[async_trait]
-impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
+impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
     async fn handle(
         &mut self,
         _cx: &Context<Self>,
@@ -270,11 +270,11 @@ From the agent's point of view, the work for the message is:
 
 That's it. The handler does **not** try to decide whether the *mesh-level* spawn "succeeded" or "failed" - it just persists the per-proc result.
 
-Those per-proc results are later *read* by the resource query handlers (`Handler<GetRankStatus>`, `Handler<GetState<ActorState>>` on `ProcMeshAgent`).
+Those per-proc results are later *read* by the resource query handlers (`Handler<GetRankStatus>`, `Handler<GetState<ActorState>>` on `ProcAgent`).
 
 ## Completing the Spawn: How `GetRankStatus` Decides Success
 
-Once every `ProcMeshAgent` has received the `CreateOrUpdate<ActorSpec>` message and updated its local `actor_states`, the caller still does not know:
+Once every `ProcAgent` has received the `CreateOrUpdate<ActorSpec>` message and updated its local `actor_states`, the caller still does not know:
 - **Did every proc spawn the actor successfully?**
 - **Did any proc report a supervision failure?**
 - **Are all actors running, or did one terminate immediately?**
@@ -283,7 +283,7 @@ To answer these questions, the `ProcMeshRef` performs a *second* distributed que
 ```rust
 resource::GetRankStatus{ name, reply }
 ```
-This message is broadcast to the same `ProcMeshAgent` mesh. Each agent replies with a small "overlay" describing *its* result for that actor name:
+This message is broadcast to the same `ProcAgent` mesh. Each agent replies with a small "overlay" describing *its* result for that actor name:
 - no entry yet -> `NotExist`
 - spawn failed -> `Failed(error)`
 - spawned and running -> `Running`

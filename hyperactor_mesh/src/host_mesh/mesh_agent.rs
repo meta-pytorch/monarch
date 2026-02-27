@@ -57,7 +57,7 @@ use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
 use crate::mesh_admin::MeshAdminMessageClient;
-use crate::mesh_agent::ProcMeshAgent;
+use crate::proc_agent::ProcAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
 
@@ -96,7 +96,7 @@ impl FromStr for HostId {
 }
 
 pub(crate) type ProcManagerSpawnFuture =
-    Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcMeshAgent>>> + Send>>;
+    Pin<Box<dyn Future<Output = anyhow::Result<ActorHandle<ProcAgent>>> + Send>>;
 pub(crate) type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture + Send + Sync>;
 
 /// Represents the different ways a [`Host`] can be managed by an agent.
@@ -163,7 +163,7 @@ impl HostAgentMode {
 #[derive(Debug)]
 pub(crate) struct ProcCreationState {
     pub(crate) rank: usize,
-    pub(crate) created: Result<(ProcId, ActorRef<ProcMeshAgent>), HostError>,
+    pub(crate) created: Result<(ProcId, ActorRef<ProcAgent>), HostError>,
     pub(crate) stopped: bool,
 }
 
@@ -184,7 +184,7 @@ pub struct HostMeshAgent {
     pub(crate) host: Option<HostAgentMode>,
     pub(crate) created: HashMap<Name, ProcCreationState>,
     /// Stores the lazily initialized proc mesh agent for the local proc.
-    local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
+    local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
 }
 
 impl HostMeshAgent {
@@ -588,7 +588,7 @@ impl Handler<ShutdownHost> for HostMeshAgent {
 pub struct ProcState {
     pub proc_id: ProcId,
     pub create_rank: usize,
-    pub mesh_agent: ActorRef<ProcMeshAgent>,
+    pub mesh_agent: ActorRef<ProcAgent>,
     pub bootstrap_command: Option<BootstrapCommand>,
     pub proc_status: Option<bootstrap::ProcStatus>,
 }
@@ -740,7 +740,7 @@ impl Handler<SpawnMeshAdmin> for HostMeshAgent {
 #[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
 pub struct GetLocalProc {
     #[reply]
-    pub proc_mesh_agent: PortHandle<ActorHandle<ProcMeshAgent>>,
+    pub proc_mesh_agent: PortHandle<ActorHandle<ProcAgent>>,
 }
 
 #[async_trait]
@@ -751,7 +751,7 @@ impl Handler<GetLocalProc> for HostMeshAgent {
         GetLocalProc { proc_mesh_agent }: GetLocalProc,
     ) -> anyhow::Result<()> {
         let agent = self.local_mesh_agent.get_or_init(|| {
-            ProcMeshAgent::boot_v1(self.host.as_ref().unwrap().local_proc().clone(), None)
+            ProcAgent::boot_v1(self.host.as_ref().unwrap().local_proc().clone(), None)
         });
 
         match agent {
@@ -800,7 +800,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
     ) -> anyhow::Result<Self> {
         let host = if local {
             let spawn: ProcManagerSpawnFn =
-                Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+                Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
             let manager = LocalProcManager::new(spawn);
             let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Local(host)
@@ -908,7 +908,7 @@ mod tests {
                     // The proc itself should be direct addressed, with its name directly.
                     proc_id,
                     // The mesh agent should run in the same proc, under the name
-                    // "agent".
+                    // "proc_agent".
                     mesh_agent,
                     bootstrap_command,
                     proc_status: Some(ProcStatus::Ready { started_at: _, addr: _, agent: proc_status_mesh_agent}),
@@ -916,7 +916,7 @@ mod tests {
                 }),
             } if name == resource_name
               && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("proc_agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

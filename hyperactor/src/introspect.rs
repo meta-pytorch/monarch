@@ -200,7 +200,7 @@ pub enum NodeProperties {
         /// enabled/available.
         flight_recorder: Option<String>,
         /// Whether this actor is infrastructure-owned (e.g.
-        /// ProcMeshAgent, HostMeshAgent) rather than user-created.
+        /// ProcAgent, HostMeshAgent) rather than user-created.
         is_system: bool,
         /// Structured failure information, present only for failed
         /// actors. `None` for running or cleanly stopped actors.
@@ -244,7 +244,7 @@ wirevalue::register_type!(NodePayload);
 /// Context for introspection query - what aspect of the actor to
 /// describe.
 ///
-/// Infrastructure actors (e.g., ProcMeshAgent, HostMeshAgent)
+/// Infrastructure actors (e.g., ProcAgent, HostMeshAgent)
 /// have dual nature: they manage entities (Proc, Host) while also
 /// being actors themselves. IntrospectView allows callers to
 /// specify which aspect to query.
@@ -309,7 +309,7 @@ pub struct RecordedEvent {
 
 /// Domain-specific properties an actor may publish for introspection.
 ///
-/// Infrastructure actors (HostMeshAgent, ProcMeshAgent) push these to
+/// Infrastructure actors (HostMeshAgent, ProcAgent) push these to
 /// make their managed-entity metadata available to the introspection
 /// runtime without going through the actor's message handler. The
 /// runtime handler reads the last-published value and merges it into

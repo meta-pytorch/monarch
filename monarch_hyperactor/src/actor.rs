@@ -631,9 +631,9 @@ impl PythonActor {
             }
             if let Some(err) = err {
                 let event = actor_error_to_event(instance, &actor, err);
-                // The proc supervision handler will send to ProcMeshAgent, which
+                // The proc supervision handler will send to ProcAgent, which
                 // just records it in v1. We want to crash instead, as nothing will
-                // monitor the client ProcMeshAgent for now.
+                // monitor the client ProcAgent for now.
                 tracing::error!(
                     actor_id = %instance.self_id(),
                     "could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
