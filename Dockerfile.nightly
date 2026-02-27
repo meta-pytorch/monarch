@@ -34,3 +34,13 @@ RUN apt-get update && apt-get install vim -y
 
 # Install kubectl (nice to have on client for debugging; not necessary).
 RUN curl -LO https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin
+
+# Set /workspace as the working directory
+WORKDIR /workspace
+
+# Allow non-root user to update /workspace
+RUN chgrp -R 0 /workspace && \
+    chmod -R g=u /workspace
+
+# Set container to run as non-root user
+USER 1001
