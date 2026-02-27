@@ -98,6 +98,7 @@ class Indirect(Actor):
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_choose():
     host = fake_in_process_host()
     proc = host.spawn_procs(per_host={"gpus": 2})
@@ -145,6 +146,7 @@ class From(Actor):
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_mesh_passed_to_mesh():
     host = fake_in_process_host()
     proc = host.spawn_procs(per_host={"gpus": 2})
@@ -372,6 +374,7 @@ def test_rust_binding_modules_correct() -> None:
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_proc_mesh_liveness() -> None:
     mesh = this_host().spawn_procs(per_host={"gpus": 2})
     counter = mesh.spawn("counter", Counter, 1)
@@ -1129,6 +1132,7 @@ class LsActor(Actor):
 
 
 # Workspace sync test - requires rsync server infrastructure.
+@isolate_in_subprocess
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
     with (
@@ -1626,6 +1630,7 @@ class Named(Actor):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_instance_name():
     cr, result = (
         this_host()

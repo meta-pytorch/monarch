@@ -72,6 +72,7 @@ def test_multi_host_mesh() -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_spawn_proc_mesh() -> None:
     host = ProcessJob({"hosts": 8}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="proc")
@@ -121,6 +122,7 @@ class RankActor(Actor):
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_shutdown_host_mesh() -> None:
     hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     pm = hm.spawn_procs(per_host={"gpus": 2})
@@ -138,6 +140,7 @@ def test_shutdown_sliced_host_mesh_throws_exception() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
     hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     hm.initialized.get()
