@@ -49,6 +49,9 @@ kind: MonarchMesh
 metadata:
   name: mesh1
   namespace: monarch-tests
+  # uncomment to use kueue
+  # labels:
+  #   kueue.x-k8s.io/queue-name: user-queue
 spec:
   # Number of worker pods in the mesh
   replicas: 2
@@ -85,6 +88,9 @@ kind: MonarchMesh
 metadata:
   name: mesh2
   namespace: monarch-tests
+  # uncomment to use kueue
+  # labels:
+  #   kueue.x-k8s.io/queue-name: user-queue
 spec:
   # Number of worker pods in the mesh
   replicas: 2
