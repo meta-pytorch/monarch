@@ -114,7 +114,7 @@ configuration::
 
     kubectl apply -f manifests/kueue_quota.yaml
 
-Then uncomment the kueue labels in ``manifests/ddp_mesh.yaml`` and apply it::
+Then deploy the MonarchMesh with kueue labels::
 
     kubectl apply -f manifests/ddp_mesh.yaml
 
@@ -281,7 +281,6 @@ async def main(
     queue: str | None = None,
 ) -> None:
     """Run DDP training on Kubernetes.
- 
     Args:
         num_hosts: Number of worker pods (must match MonarchMesh replicas)
         gpus_per_host: GPUs per pod (must match nvidia.com/gpu in MonarchMesh)
