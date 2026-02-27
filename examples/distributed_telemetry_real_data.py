@@ -273,6 +273,33 @@ def main() -> None:
                WHERE pm.class = 'Proc'
                ORDER BY proc_mesh_name, actor_mesh_name, rank""",
         ),
+        # Find all prochmesh in each host mesh
+        (
+            "Proc mesh in each host mesh",
+            """SELECT hm.given_name AS host_mesh_name,
+                      pm.given_name AS proc_mesh_name,
+                      pm.id AS proc_mesh_id
+               FROM meshes pm
+               INNER JOIN meshes hm ON pm.parent_mesh_id = hm.id
+               WHERE hm.class = 'Host' AND pm.class = 'Proc'
+               ORDER BY hm.given_name, pm.given_name""",
+        ),
+        # Find all actors in a host mesh by joining through actor mesh and proc mesh
+        # actors -> actor mesh (via mesh_id) -> proc mesh (via parent_mesh_id) -> host mesh (via parent_mesh_id)
+        (
+            "Actors in each host",
+            """SELECT hm.given_name AS host_mesh_name,
+                      pm.given_name AS proc_mesh_name,
+                      am.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               INNER JOIN meshes am ON a.mesh_id = am.id
+               INNER JOIN meshes pm ON am.parent_mesh_id = pm.id
+               INNER JOIN meshes hm ON pm.parent_mesh_id = hm.id
+               WHERE hm.class = 'Host'
+               ORDER BY hm.given_name, pm.given_name, am.given_name, a.rank""",
+        ),
         # Actor status events schema
         (
             "Schema of 'actor_status_events' table",
