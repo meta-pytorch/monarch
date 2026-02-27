@@ -1337,7 +1337,7 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()) });
+            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
         let procs = Arc::clone(&proc_manager.procs);
         let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Local))
             .await
@@ -1403,7 +1403,7 @@ mod tests {
     async fn test_process_proc_manager() {
         hyperactor_telemetry::initialize_logging(crate::clock::ClockKind::default());
 
-        // EchoActor is "agent" used to test connectivity.
+        // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
         );
@@ -1489,7 +1489,7 @@ mod tests {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_id = ProcId::Direct(addr.clone(), "p".into());
-        let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
+        let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
         let h = LocalHandle::<()> {
             proc_id,
             addr,
@@ -1619,7 +1619,7 @@ mod tests {
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
+            let agent = ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,

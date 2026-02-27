@@ -1513,7 +1513,7 @@ mod tests {
     use hyperactor::reference::UnboundPort;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::Name;
-    use hyperactor_mesh::host_mesh::mesh_agent::ProcState;
+    use hyperactor_mesh::host_mesh::host_agent::ProcState;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
     use pyo3::PyTypeInfo;
@@ -1609,7 +1609,7 @@ mod tests {
             assert!(py_msg.contains(", state: "));
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
-            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent>";
+            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostAgent>";
             assert!(py_msg.starts_with(expected_prefix));
         });
     }

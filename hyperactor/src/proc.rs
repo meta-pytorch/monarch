@@ -14,8 +14,11 @@
 use std::any::Any;
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::future::Future;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -391,10 +394,8 @@ impl Proc {
         let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, parent);
 
         // Notify telemetry sinks of actor creation
-        {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::Hash;
-            use std::hash::Hasher;
+        // ProcAent and HostAgent are notified separately.
+        if actor_id.name() != "host_agent" && actor_id.name() != "proc_agent" {
             let mut actor_hasher = DefaultHasher::new();
             actor_id.hash(&mut actor_hasher);
             let actor_id_hash = actor_hasher.finish();
@@ -1238,7 +1239,7 @@ impl<A: Actor> Instance<A> {
     /// actor loop), so it must be `Send + Sync` and must not access
     /// actor-mutable state. Capture cloned `Proc` references.
     ///
-    /// Only `HostMeshAgent` uses this today — for resolving system
+    /// Only `HostAgent` uses this today — for resolving system
     /// procs that have no independent `ProcMeshAgent`.
     pub fn set_query_child_handler(
         &self,
@@ -1995,7 +1996,7 @@ struct InstanceCellState {
 
     /// Optional callback for resolving non-addressable children
     /// (e.g., system procs). Registered by infrastructure actors
-    /// like `HostMeshAgent` in `Actor::init`. Invoked by the
+    /// like `HostAgent` in `Actor::init`. Invoked by the
     /// introspection runtime handler for `QueryChild` messages.
     /// `None` means `QueryChild` returns a "not_found" error.
     ///
@@ -2314,7 +2315,7 @@ impl InstanceCell {
     /// introspection. The `published_at` timestamp is set
     /// automatically to `RealClock.system_time_now()`.
     ///
-    /// Infrastructure actors (HostMeshAgent, ProcMeshAgent) call this
+    /// Infrastructure actors (HostAgent, ProcMeshAgent) call this
     /// to make their managed-entity metadata available without going
     /// through the actor's message handler.
     pub fn set_published_properties(&self, kind: PublishedPropertiesKind) {
