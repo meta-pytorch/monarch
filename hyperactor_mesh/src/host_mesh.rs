@@ -260,6 +260,23 @@ impl HostMesh {
             parent_mesh_id: None,
             parent_view_json: None,
         });
+
+        // Notify telemetry of each HostAgent actor in this mesh.
+        // These are skipped in Proc::spawn_inner. mesh_id directly points to host mesh.
+        let now = RealClock.system_time_now();
+        for (rank, host) in self.current_ref.hosts().iter().enumerate() {
+            let actor_id = host.mesh_agent().actor_id().clone();
+            let mut actor_hasher = DefaultHasher::new();
+            actor_id.hash(&mut actor_hasher);
+
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: actor_hasher.finish(),
+                timestamp: now,
+                mesh_id: mesh_id_hash,
+                rank: rank as u64,
+                full_name: actor_id.to_string(),
+            });
+        }
     }
 
     /// Bring up a local single-host mesh and, in the launcher
