@@ -223,3 +223,428 @@ pub(crate) fn format_uptime(started_at: &str) -> String {
         Err(_) => "unknown".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hyperactor::introspect::NodePayload;
+    use hyperactor::introspect::NodeProperties;
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn derive_label_root_basic() {
+        let payload = NodePayload {
+            identity: "root".to_string(),
+            properties: NodeProperties::Root {
+                num_hosts: 3,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                started_by: "testuser".to_string(),
+                system_children: vec!["sys1".into()],
+            },
+            children: vec!["h1".into(), "h2".into(), "h3".into()],
+            parent: None,
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "Mesh Root (3 hosts)");
+    }
+
+    #[test]
+    fn derive_label_host_no_system_children() {
+        let payload = NodePayload {
+            identity: "host:h1".to_string(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8000".to_string(),
+                num_procs: 3,
+                system_children: vec![],
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "10.0.0.1:8000  (3 procs: 3 user)");
+    }
+
+    #[test]
+    fn derive_label_host_with_system_children() {
+        let payload = NodePayload {
+            identity: "host:h1".to_string(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8000".to_string(),
+                num_procs: 5,
+                system_children: vec!["sys1".into(), "sys2".into()],
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(
+            derive_label(&payload),
+            "10.0.0.1:8000  (5 procs: 3 user, 2 system)"
+        );
+    }
+
+    #[test]
+    fn derive_label_host_all_system() {
+        let payload = NodePayload {
+            identity: "host:h1".to_string(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8000".to_string(),
+                num_procs: 2,
+                system_children: vec!["s1".into(), "s2".into()],
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "10.0.0.1:8000  (2 procs: 2 system)");
+    }
+
+    #[test]
+    fn derive_label_proc_no_system_no_stopped() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 4,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "myproc  (4 actors: 4 live)");
+    }
+
+    #[test]
+    fn derive_label_proc_with_system_no_stopped() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 5,
+                is_system: false,
+                system_children: vec!["sys1".into(), "sys2".into()],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(
+            derive_label(&payload),
+            "myproc  (5 actors: 2 system, 3 live)"
+        );
+    }
+
+    #[test]
+    fn derive_label_proc_with_stopped() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 3,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["s1".into(), "s2".into()],
+                stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(
+            derive_label(&payload),
+            "myproc  (5 actors: 3 live, 2 stopped)"
+        );
+    }
+
+    #[test]
+    fn derive_label_proc_stopped_at_retention_cap() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 1,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["s1".into(), "s2".into(), "s3".into()],
+                stopped_retention_cap: 3,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert!(derive_label(&payload).contains("3 stopped (max retained)"));
+    }
+
+    #[test]
+    fn derive_label_proc_stopped_retention_cap_zero_never_annotates() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 0,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["s1".into()],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let label = derive_label(&payload);
+        assert!(label.contains("1 stopped"));
+        assert!(!label.contains("max retained"));
+    }
+
+    #[test]
+    fn derive_label_proc_system_and_stopped_and_live() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 5,
+                is_system: false,
+                system_children: vec!["sys1".into()],
+                stopped_children: vec!["dead1".into(), "dead2".into()],
+                stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(
+            derive_label(&payload),
+            "myproc  (7 actors: 1 system, 4 live, 2 stopped)"
+        );
+    }
+
+    #[test]
+    fn derive_label_proc_all_stopped_none_live() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 0,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["d1".into(), "d2".into()],
+                stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "myproc  (2 actors: 2 stopped)");
+    }
+
+    #[test]
+    fn derive_label_proc_saturating_sub_prevents_underflow() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 1,
+                is_system: false,
+                system_children: vec!["s1".into(), "s2".into(), "s3".into()],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let label = derive_label(&payload);
+        assert!(label.contains("3 system"));
+        assert!(!label.contains("live"));
+    }
+
+    #[test]
+    fn derive_label_proc_poisoned() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 2,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["dead1".into()],
+                stopped_retention_cap: 100,
+                is_poisoned: true,
+                failed_actor_count: 1,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let label = derive_label(&payload);
+        assert!(label.contains("[POISONED: 1 failed]"));
+    }
+
+    #[test]
+    fn derive_label_proc_not_poisoned() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 3,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec![],
+                stopped_retention_cap: 100,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let label = derive_label(&payload);
+        assert!(!label.contains("POISONED"));
+    }
+
+    #[test]
+    fn derive_label_actor_standard_actor_id() {
+        let payload = NodePayload {
+            identity: "myworld[0].worker[3]".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "Running".to_string(),
+                actor_type: "Worker".to_string(),
+                messages_processed: 42,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                last_message_handler: Some("handle_task".to_string()),
+                total_processing_time_us: 1000,
+                flight_recorder: None,
+                is_system: false,
+                failure_info: None,
+            },
+            children: vec![],
+            parent: Some("myworld[0]".to_string()),
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "worker[3]");
+    }
+
+    #[test]
+    fn derive_label_actor_unparseable_identity() {
+        let payload = NodePayload {
+            identity: "not-a-valid-actor-id!!!".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "Running".to_string(),
+                actor_type: "Unknown".to_string(),
+                messages_processed: 0,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                is_system: false,
+                failure_info: None,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "not-a-valid-actor-id!!!");
+    }
+
+    #[test]
+    fn format_value_string() {
+        let v = Value::String("hello world".to_string());
+        assert_eq!(format_value(&v), "hello world");
+    }
+
+    #[test]
+    fn format_value_number() {
+        let v = serde_json::json!(42);
+        assert_eq!(format_value(&v), "42");
+    }
+
+    #[test]
+    fn format_value_bool() {
+        assert_eq!(format_value(&serde_json::json!(true)), "true");
+        assert_eq!(format_value(&serde_json::json!(false)), "false");
+    }
+
+    #[test]
+    fn format_value_null() {
+        assert_eq!(format_value(&Value::Null), "null");
+    }
+
+    #[test]
+    fn format_value_array() {
+        let v = serde_json::json!([1, 2, 3]);
+        assert_eq!(format_value(&v), "[3]");
+    }
+
+    #[test]
+    fn format_value_object() {
+        let v = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
+        assert_eq!(format_value(&v), "{5}");
+    }
+
+    #[test]
+    fn format_event_summary_message_field() {
+        let fields = serde_json::json!({"message": "something happened", "other": 42});
+        assert_eq!(
+            format_event_summary("event_name", &fields),
+            "something happened"
+        );
+    }
+
+    #[test]
+    fn format_event_summary_handler_field() {
+        let fields = serde_json::json!({"handler": "on_tick", "count": 7});
+        assert_eq!(
+            format_event_summary("event_name", &fields),
+            "handler: on_tick"
+        );
+    }
+
+    #[test]
+    fn format_event_summary_fallback_to_name() {
+        let fields = Value::Null;
+        assert_eq!(format_event_summary("my_event", &fields), "my_event");
+    }
+
+    #[test]
+    fn format_local_time_invalid_string_fallback() {
+        assert_eq!(format_local_time("xxxxxxxxxxx12:34:56yyy"), "12:34:56");
+    }
+
+    #[test]
+    fn format_local_time_too_short_fallback() {
+        assert_eq!(format_local_time("short"), "short");
+    }
+
+    #[test]
+    fn format_relative_time_parse_failure_fallback() {
+        assert_eq!(format_relative_time("not-a-date"), "not-a-date");
+    }
+
+    #[test]
+    fn format_uptime_parse_failure() {
+        assert_eq!(format_uptime("garbage"), "unknown");
+    }
+}
