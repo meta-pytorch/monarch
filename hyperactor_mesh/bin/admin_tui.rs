@@ -4051,6 +4051,70 @@ mod tests {
         }
     }
 
+    // Error with newer stamp wins over Ready with older stamp.
+    #[test]
+    fn join_error_newer_beats_ready_older() {
+        let ready = FetchState::Ready {
+            stamp: Stamp {
+                ts_micros: 1000,
+                seq: 1,
+            },
+            generation: 1,
+            value: mock_payload("old"),
+        };
+        let error = FetchState::<NodePayload>::Error {
+            stamp: Stamp {
+                ts_micros: 2000,
+                seq: 1,
+            },
+            msg: "newer error".to_string(),
+        };
+
+        let result1 = error.join(&ready);
+        let result2 = ready.join(&error);
+        assert!(matches!(result1, FetchState::Error { .. }));
+        assert!(matches!(result2, FetchState::Error { .. }));
+    }
+
+    // Unknown × Error both orders → Error (identity law).
+    #[test]
+    fn join_unknown_error_both_orders() {
+        let error = FetchState::<NodePayload>::Error {
+            stamp: Stamp {
+                ts_micros: 1000,
+                seq: 1,
+            },
+            msg: "some error".to_string(),
+        };
+
+        let result1 = FetchState::Unknown.join(&error);
+        let result2 = error.join(&FetchState::Unknown);
+        assert!(matches!(result1, FetchState::Error { .. }));
+        assert!(matches!(result2, FetchState::Error { .. }));
+    }
+
+    // Error.join(&Error) with same state is idempotent.
+    #[test]
+    fn join_error_same_state_idempotent() {
+        let error = FetchState::<NodePayload>::Error {
+            stamp: Stamp {
+                ts_micros: 1000,
+                seq: 1,
+            },
+            msg: "same".to_string(),
+        };
+
+        let result = error.join(&error);
+        match result {
+            FetchState::Error { stamp, msg } => {
+                assert_eq!(stamp.ts_micros, 1000);
+                assert_eq!(stamp.seq, 1);
+                assert_eq!(msg, "same");
+            }
+            _ => panic!("Expected Error state"),
+        }
+    }
+
     // Tree operation tests
 
     // Flatten collapsed node hides children.
@@ -8263,6 +8327,24 @@ mod tests {
         assert!(!node.stopped);
     }
 
+    // Root label shows host count.
+    #[test]
+    fn derive_label_root_basic() {
+        let payload = NodePayload {
+            identity: "root".to_string(),
+            properties: NodeProperties::Root {
+                num_hosts: 3,
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+                started_by: "testuser".to_string(),
+                system_children: vec!["sys1".into()],
+            },
+            children: vec!["h1".into(), "h2".into(), "h3".into()],
+            parent: None,
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "Mesh Root (3 hosts)");
+    }
+
     // Host label with no system children shows user count only.
     #[test]
     fn derive_label_host_no_system_children() {
@@ -8338,6 +8420,32 @@ mod tests {
             as_of: "".to_string(),
         };
         assert_eq!(derive_label(&payload), "myproc  (4 actors: 4 live)");
+    }
+
+    // Proc label with system children but no stopped shows system and live.
+    #[test]
+    fn derive_label_proc_with_system_no_stopped() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 5,
+                is_system: false,
+                system_children: vec!["sys1".into(), "sys2".into()],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // num_system=2, num_live=5-2=3, no stopped. total=5.
+        assert_eq!(
+            derive_label(&payload),
+            "myproc  (5 actors: 2 system, 3 live)"
+        );
     }
 
     // Proc label shows live and stopped counts.
@@ -8755,6 +8863,155 @@ mod tests {
         };
         let label = derive_label(&payload);
         assert!(!label.contains("POISONED"));
+    }
+
+    // Actor label formats as name[pid] when identity parses as ActorId.
+    #[test]
+    fn derive_label_actor_standard_actor_id() {
+        let payload = NodePayload {
+            identity: "myworld[0].worker[3]".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "Running".to_string(),
+                actor_type: "Worker".to_string(),
+                messages_processed: 42,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                last_message_handler: Some("handle_task".to_string()),
+                total_processing_time_us: 1000,
+                flight_recorder: None,
+                is_system: false,
+                failure_info: None,
+            },
+            children: vec![],
+            parent: Some("myworld[0]".to_string()),
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "worker[3]");
+    }
+
+    // Actor label falls back to raw identity when it doesn't parse as ActorId.
+    #[test]
+    fn derive_label_actor_unparseable_identity() {
+        let payload = NodePayload {
+            identity: "not-a-valid-actor-id!!!".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "Running".to_string(),
+                actor_type: "Unknown".to_string(),
+                messages_processed: 0,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                is_system: false,
+                failure_info: None,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "not-a-valid-actor-id!!!");
+    }
+
+    // --- format_value tests ---
+
+    // format_value renders a string as-is.
+    #[test]
+    fn format_value_string() {
+        let v = Value::String("hello world".to_string());
+        assert_eq!(format_value(&v), "hello world");
+    }
+
+    // format_value renders a number as its string form.
+    #[test]
+    fn format_value_number() {
+        let v = serde_json::json!(42);
+        assert_eq!(format_value(&v), "42");
+    }
+
+    // format_value renders a bool as "true"/"false".
+    #[test]
+    fn format_value_bool() {
+        assert_eq!(format_value(&serde_json::json!(true)), "true");
+        assert_eq!(format_value(&serde_json::json!(false)), "false");
+    }
+
+    // format_value renders null as the string "null".
+    #[test]
+    fn format_value_null() {
+        assert_eq!(format_value(&Value::Null), "null");
+    }
+
+    // format_value renders an array as its length in brackets.
+    #[test]
+    fn format_value_array() {
+        let v = serde_json::json!([1, 2, 3]);
+        assert_eq!(format_value(&v), "[3]");
+    }
+
+    // format_value renders an object as its field count in braces.
+    #[test]
+    fn format_value_object() {
+        let v = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
+        assert_eq!(format_value(&v), "{5}");
+    }
+
+    // --- format_event_summary tests ---
+
+    // format_event_summary prefers "message" field.
+    #[test]
+    fn format_event_summary_message_field() {
+        let fields = serde_json::json!({"message": "something happened", "other": 42});
+        assert_eq!(
+            format_event_summary("event_name", &fields),
+            "something happened"
+        );
+    }
+
+    // format_event_summary uses "handler" field when no message.
+    #[test]
+    fn format_event_summary_handler_field() {
+        let fields = serde_json::json!({"handler": "on_tick", "count": 7});
+        assert_eq!(
+            format_event_summary("event_name", &fields),
+            "handler: on_tick"
+        );
+    }
+
+    // format_event_summary falls back to event name when fields is not an object.
+    #[test]
+    fn format_event_summary_fallback_to_name() {
+        let fields = Value::Null;
+        assert_eq!(format_event_summary("my_event", &fields), "my_event");
+    }
+
+    // --- format_local_time tests ---
+
+    // format_local_time falls back to substring extraction for invalid input.
+    #[test]
+    fn format_local_time_invalid_string_fallback() {
+        // Not a valid RFC 3339 timestamp but has enough chars for 11..19 slice.
+        assert_eq!(format_local_time("xxxxxxxxxxx12:34:56yyy"), "12:34:56");
+    }
+
+    // format_local_time falls back to full string when too short for slice.
+    #[test]
+    fn format_local_time_too_short_fallback() {
+        assert_eq!(format_local_time("short"), "short");
+    }
+
+    // --- format_relative_time tests ---
+
+    // format_relative_time returns the raw string on parse failure.
+    #[test]
+    fn format_relative_time_parse_failure_fallback() {
+        assert_eq!(format_relative_time("not-a-date"), "not-a-date");
+    }
+
+    // --- format_uptime tests ---
+
+    // format_uptime returns "unknown" on parse failure.
+    #[test]
+    fn format_uptime_parse_failure() {
+        assert_eq!(format_uptime("garbage"), "unknown");
     }
 
     // is_failed_node returns true for actor with failure_info.
