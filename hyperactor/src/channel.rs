@@ -36,6 +36,13 @@ pub(crate) mod local;
 pub(crate) mod net;
 pub mod sim;
 
+// Public TLS API for HTTP services (mesh admin, TUI, etc.). The
+// implementation lives in `net` but we re-export here to keep `net`'s
+// internal types out of the public API surface.
+pub use net::try_tls_acceptor;
+pub use net::try_tls_connector;
+pub use net::try_tls_pem_bundle;
+
 /// The type of error that can occur on channel operations.
 #[derive(thiserror::Error, Debug)]
 pub enum ChannelError {

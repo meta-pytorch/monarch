@@ -77,6 +77,18 @@
 //!   `"(max retained)"` appears iff `stopped_retention_cap > 0` and
 //!   `stopped_children.len() >= stopped_retention_cap`.
 //!
+//! TLS and transport invariants:
+//! - **TLS auto-detection (client)**: `client::build_client` probes
+//!   for TLS material in priority order: explicit CLI paths (`--tls-ca`,
+//!   `--tls-cert`, `--tls-key`) → `hyperactor::channel::try_tls_pem_bundle`
+//!   (OSS config attrs, then Meta well-known paths) → plain HTTP fallback.
+//! - **Pre-built client injection**: `App::new` receives a pre-built
+//!   `reqwest::Client` and `base_url` (including scheme). TLS
+//!   configuration is external to the app state.
+//! - **Scheme-inclusive base URL**: `base_url` always starts with
+//!   `http://` or `https://`; bare `host:port` addresses are resolved
+//!   to a scheme during client construction, never stored schemeless.
+//!
 //! Laziness + recursion benefits:
 //! - **Lazy expansion**: proc/actor children are placeholders until
 //!   expanded, keeping refresh costs bounded and scaling work to what
@@ -95,6 +107,7 @@
 
 mod actions;
 mod app;
+mod client;
 mod fetch;
 mod filter;
 mod format;
@@ -179,10 +192,14 @@ async fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    // Build the HTTP client and base URL, configuring TLS when
+    // certificates are available.
+    let (base_url, client) = client::build_client(&args);
+
     // Show an indicatif spinner on stderr while fetching initial data.
     // This runs before the alternate screen so it's visible as a normal
     // Terminal line.
-    let mut app = App::new(&args.addr, args.theme, args.lang);
+    let mut app = App::new(base_url, client, args.theme, args.lang);
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()

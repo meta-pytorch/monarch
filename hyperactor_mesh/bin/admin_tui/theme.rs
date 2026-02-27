@@ -56,7 +56,10 @@ impl std::fmt::Display for LangName {
 #[derive(Debug, Parser)]
 #[command(name = "admin-tui", about = "TUI client for hyperactor admin API")]
 pub(crate) struct Args {
-    /// Admin server address (e.g., 127.0.0.1:8080)
+    /// Admin server address.
+    ///
+    /// Accepts `host:port` (scheme auto-detected), or an explicit URL
+    /// like `https://host:port` or `http://host:port`.
     #[arg(long, short)]
     pub(crate) addr: String,
 
@@ -71,6 +74,26 @@ pub(crate) struct Args {
     /// Display language
     #[arg(long, default_value_t = LangName::En, value_enum)]
     pub(crate) lang: LangName,
+
+    /// Path to a PEM CA certificate for TLS server verification.
+    ///
+    /// On Meta infrastructure, `/var/facebook/rootcanal/ca.pem` is
+    /// auto-detected when present. OSS users should supply this
+    /// explicitly.
+    #[arg(long)]
+    pub(crate) tls_ca: Option<String>,
+
+    /// Path to a PEM client certificate for mutual TLS.
+    ///
+    /// On Meta infrastructure, the `THRIFT_TLS_CL_CERT_PATH` env var
+    /// is checked automatically. OSS users requiring mutual TLS
+    /// should supply both `--tls-cert` and `--tls-key`.
+    #[arg(long)]
+    pub(crate) tls_cert: Option<String>,
+
+    /// Path to a PEM client private key for mutual TLS.
+    #[arg(long)]
+    pub(crate) tls_key: Option<String>,
 }
 
 /// All user-visible text in the TUI.

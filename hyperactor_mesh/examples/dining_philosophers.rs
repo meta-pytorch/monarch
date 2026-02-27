@@ -262,17 +262,28 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.
-    let mesh_admin_addr = host_mesh.spawn_admin(instance, None).await?;
-    println!("Mesh admin server listening on http://{}", mesh_admin_addr);
-    println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);
-    println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);
+    let mesh_admin_url = host_mesh.spawn_admin(instance, None).await?;
+    let cacert = if mesh_admin_url.starts_with("https") {
+        "--cacert /var/facebook/rootcanal/ca.pem "
+    } else {
+        ""
+    };
+    println!("Mesh admin server listening on {}", mesh_admin_url);
     println!(
-        "  - API docs:      curl http://{}/SKILL.md",
-        mesh_admin_addr
+        "  - Root node:     curl {}{}/v1/root",
+        cacert, mesh_admin_url
+    );
+    println!(
+        "  - Mesh tree:     curl {}{}/v1/tree",
+        cacert, mesh_admin_url
+    );
+    println!(
+        "  - API docs:      curl {}{}/SKILL.md",
+        cacert, mesh_admin_url
     );
     println!(
         "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}",
-        mesh_admin_addr
+        mesh_admin_url
     );
     let host_addr = &host_mesh.hosts()[0];
     println!(
