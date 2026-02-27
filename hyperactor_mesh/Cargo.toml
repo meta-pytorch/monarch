@@ -9,7 +9,7 @@ license = "BSD-3-Clause"
 
 [[bin]]
 name = "hyperactor_mesh_admin_tui"
-path = "bin/admin_tui.rs"
+path = "bin/admin_tui/main.rs"
 
 [[bin]]
 name = "hyperactor_mesh_test_bootstrap"
