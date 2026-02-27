@@ -739,6 +739,18 @@ pub trait ProcManager {
 /// ```
 pub type ManagerAgent<M> = <<M as ProcManager>::Handle as ProcHandle>::Agent; // rust issue #112792
 
+/// Lifecycle status for procs managed by [`LocalProcManager`].
+///
+/// Used by [`LocalProcManager::request_stop`] to track background
+/// teardown progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalProcStatus {
+    /// A stop has been requested but teardown is still in progress.
+    Stopping,
+    /// Teardown completed.
+    Stopped,
+}
+
 /// A ProcManager that spawns **in-process** procs (test-only).
 ///
 /// The proc runs inside this same OS process; there is **no** child
@@ -753,6 +765,7 @@ pub type ManagerAgent<M> = <<M as ProcManager>::Handle as ProcHandle>::Agent; //
 ///   No OS signals are sent or required.
 pub struct LocalProcManager<S> {
     procs: Arc<Mutex<HashMap<ProcId, Proc>>>,
+    stopping: Arc<Mutex<HashMap<ProcId, LocalProcStatus>>>,
     spawn: S,
 }
 
@@ -762,8 +775,61 @@ impl<S> LocalProcManager<S> {
     pub fn new(spawn: S) -> Self {
         Self {
             procs: Arc::new(Mutex::new(HashMap::new())),
+            stopping: Arc::new(Mutex::new(HashMap::new())),
             spawn,
         }
+    }
+
+    /// Non-blocking stop: remove the proc and spawn a background task
+    /// that tears it down.
+    ///
+    /// Status transitions through `Stopping` -> `Stopped` and is
+    /// observable via [`local_proc_status`]. Idempotent: no-ops if
+    /// the proc is already stopping or stopped.
+    pub async fn request_stop(&self, proc: &ProcId, timeout: Duration, reason: &str) {
+        {
+            let guard = self.stopping.lock().await;
+            if guard.contains_key(proc) {
+                return;
+            }
+        }
+
+        let mut proc_handle = {
+            let mut guard = self.procs.lock().await;
+            match guard.remove(proc) {
+                Some(p) => p,
+                None => return,
+            }
+        };
+
+        let proc_id = proc_handle.proc_id().clone();
+        self.stopping
+            .lock()
+            .await
+            .insert(proc_id.clone(), LocalProcStatus::Stopping);
+
+        let stopping = Arc::clone(&self.stopping);
+        let reason = reason.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = proc_handle
+                .destroy_and_wait::<()>(timeout, None, &reason)
+                .await
+            {
+                tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
+            }
+            stopping
+                .lock()
+                .await
+                .insert(proc_id, LocalProcStatus::Stopped);
+        });
+    }
+
+    /// Query the lifecycle status of a proc that was stopped via
+    /// [`request_stop`].
+    ///
+    /// Returns `None` if the proc was never stopped through this path.
+    pub async fn local_proc_status(&self, proc: &ProcId) -> Option<LocalProcStatus> {
+        self.stopping.lock().await.get(proc).copied()
     }
 }
 
