@@ -433,6 +433,72 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
+    """Test that all actor meshes within a proc mesh have actors in the actors table."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn a named proc mesh and user actors
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = host.spawn_procs(per_host={"workers": 2}, name="workers_procs")
+    workers = worker_procs.spawn("worker_actors", WorkerActor)
+    workers.initialized.get()
+
+    # Get the host mesh entry so we can filter child meshes by parent_mesh_id
+    host_mesh_result = engine.query(
+        "SELECT id FROM meshes WHERE class = 'Host' AND given_name = 'hosts'"
+    )
+    host_mesh_ids = host_mesh_result.to_pydict().get("id", [])
+    assert len(host_mesh_ids) == 1, (
+        f"Expected exactly 1 host mesh, got {len(host_mesh_ids)}"
+    )
+    host_mesh_id = host_mesh_ids[0]
+
+    # Query all proc meshes of this host mesh
+    proc_meshes = engine.query(
+        f"SELECT id, class, given_name FROM meshes WHERE parent_mesh_id = {host_mesh_id}"
+    )
+    proc_dict = proc_meshes.to_pydict()
+    proc_given_names = set(proc_dict.get("given_name", []))
+    assert proc_given_names == {"workers_procs"}
+
+    # Query all child actor meshes of this host mesh
+    child_meshes = engine.query(
+        f"""
+        SELECT m.id, m.class, m.given_name
+        FROM meshes m
+        INNER JOIN meshes proc ON m.parent_mesh_id = proc.id
+        INNER JOIN meshes host ON proc.parent_mesh_id = host.id
+        WHERE host.id = {host_mesh_id}
+        """
+    )
+    child_dict = child_meshes.to_pydict()
+    child_classes = set(child_dict.get("class", []))
+    child_names = child_dict.get("given_name", [])
+    child_ids = child_dict.get("id", [])
+
+    # The proc mesh should contain user-spawned actor and telemetry, logger, setup, agent, and comm actors.
+    assert set(child_names) == {
+        "worker_actors",
+        "telemetry",
+        "logger",
+        "setup",
+        "comm",
+    }
+
+    # For every child actor mesh, verify that actors exist in the actors table
+    for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
+        actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
+        actor_dict = actor_result.to_pydict()
+        actor_count = len(actor_dict.get("id", []))
+
+        # Each mesh on a 2-worker proc mesh should have exactly 2 actors
+        assert actor_count == 2, (
+            f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
+            f"got {actor_count}"
+        )
+
+
+@pytest.mark.timeout(120)
 def test_actor_status_events_table(cleanup_callbacks) -> None:
     """Test that the actor_status_events table is populated when actors change status."""
     engine = start_telemetry(use_fake_data=False, batch_size=10)
