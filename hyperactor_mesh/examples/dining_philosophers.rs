@@ -21,10 +21,8 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortRef;
-use hyperactor::Proc;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -264,8 +262,7 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.
-    let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "mesh_admin_proc".to_string())?;
-    let mesh_admin_addr = host_mesh.spawn_admin(instance, &admin_proc).await?;
+    let mesh_admin_addr = host_mesh.spawn_admin(instance, None).await?;
     println!("Mesh admin server listening on http://{}", mesh_admin_addr);
     println!("  - Root node:     curl http://{}/v1/root", mesh_admin_addr);
     println!("  - Mesh tree:     curl http://{}/v1/tree", mesh_admin_addr);

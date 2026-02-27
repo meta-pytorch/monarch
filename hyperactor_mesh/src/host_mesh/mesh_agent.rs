@@ -56,6 +56,7 @@ use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
+use crate::mesh_admin::MeshAdminMessageClient;
 use crate::mesh_agent::ProcMeshAgent;
 use crate::resource;
 use crate::resource::ProcSpec;
@@ -176,6 +177,7 @@ pub(crate) struct ProcCreationState {
         resource::GetRankStatus { cast = true },
         resource::List,
         ShutdownHost,
+        SpawnMeshAdmin,
     ]
 )]
 pub struct HostMeshAgent {
@@ -670,6 +672,64 @@ impl Handler<resource::List> for HostMeshAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
         list.reply
             .send(cx, self.created.keys().cloned().collect())?;
+        Ok(())
+    }
+}
+
+/// Message to spawn a [`MeshAdminAgent`] on this host's system proc.
+///
+/// The handler spawns the admin agent, queries its HTTP address via
+/// `GetAdminAddr`, and replies with the address string.
+#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
+pub struct SpawnMeshAdmin {
+    /// All hosts in the mesh as `(address, agent_ref)` pairs. Passed
+    /// through to [`MeshAdminAgent::new`] so the admin can fan out
+    /// introspection queries to every host.
+    pub hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
+
+    /// `ActorId` of the process-global root client, exposed as a
+    /// child node in the admin introspection tree. `None` if no root
+    /// client is available.
+    pub root_client_actor_id: Option<ActorId>,
+
+    /// Fixed port for the admin HTTP server. When `Some`, the server
+    /// binds to `[::]:<port>`; when `None`, an ephemeral port is
+    /// chosen.
+    pub admin_port: Option<u16>,
+
+    /// Reply port for the admin HTTP address string (e.g.
+    /// `"myhost.facebook.com:8080"`).
+    #[reply]
+    pub addr: hyperactor::PortRef<String>,
+}
+wirevalue::register_type!(SpawnMeshAdmin);
+
+#[async_trait]
+impl Handler<SpawnMeshAdmin> for HostMeshAgent {
+    /// Spawns a [`MeshAdminAgent`] on this host's system proc, waits
+    /// for its HTTP server to bind, and replies with the listen
+    /// address.
+    async fn handle(&mut self, cx: &Context<Self>, msg: SpawnMeshAdmin) -> anyhow::Result<()> {
+        let proc = self
+            .host
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("host is not available"))?
+            .system_proc();
+
+        let agent_handle = proc.spawn(
+            crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
+            crate::mesh_admin::MeshAdminAgent::new(
+                msg.hosts,
+                msg.root_client_actor_id,
+                msg.admin_port,
+            ),
+        )?;
+        let response = agent_handle.get_admin_addr(cx).await?;
+        let addr_str = response
+            .addr
+            .ok_or_else(|| anyhow::anyhow!("mesh admin agent did not report an address"))?;
+
+        msg.addr.send(cx, addr_str)?;
         Ok(())
     }
 }

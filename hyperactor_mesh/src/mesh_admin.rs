@@ -107,6 +107,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -130,7 +131,6 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 use typeuri::Named;
 
-use crate::global_root_client;
 use crate::host_mesh::mesh_agent::HostId;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
 
@@ -326,6 +326,16 @@ pub struct MeshAdminAgent {
     /// Bound address of the admin HTTP server once started in `init`.
     admin_addr: Option<std::net::SocketAddr>,
 
+    /// Hostname-based address string (e.g.
+    /// ``"myhost.facebook.com:8080"``) for the admin HTTP server.
+    /// Uses the machine's hostname rather than a raw IP so it works
+    /// with DNS and TLS certificate validation in Tupperware/MAST.
+    admin_host: Option<String>,
+
+    /// Optional fixed port for the admin HTTP server. When `Some`,
+    /// `init` binds to ``[::]:<port>`` instead of an ephemeral port.
+    admin_port: Option<u16>,
+
     /// When the mesh was started (ISO-8601 timestamp).
     started_at: String,
 
@@ -354,6 +364,7 @@ impl MeshAdminAgent {
     pub fn new(
         hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
         root_client_actor_id: Option<ActorId>,
+        admin_port: Option<u16>,
     ) -> Self {
         let host_agents_by_actor_id: HashMap<ActorId, String> = hosts
             .iter()
@@ -372,6 +383,8 @@ impl MeshAdminAgent {
             root_client_actor_id,
             self_actor_id: None,
             admin_addr: None,
+            admin_host: None,
+            admin_port,
             started_at,
             started_by,
         }
@@ -386,6 +399,7 @@ impl std::fmt::Debug for MeshAdminAgent {
             .field("root_client_actor_id", &self.root_client_actor_id)
             .field("self_actor_id", &self.self_actor_id)
             .field("admin_addr", &self.admin_addr)
+            .field("admin_host", &self.admin_host)
             .field("started_at", &self.started_at)
             .field("started_by", &self.started_by)
             .finish()
@@ -404,25 +418,64 @@ struct BridgeState {
     /// Reference to the `MeshAdminAgent` actor that performs
     /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
+    /// Dedicated client mailbox on system_proc for HTTP bridge reply
+    /// ports. Using a separate `Instance<()>` avoids sharing the
+    /// actor's own mailbox with the HTTP bridge and ensures the
+    /// bridge context is routable via system_proc's frontend address.
+    // Previous approach used `this.clone_for_py()` which cloned the
+    // admin actor's Instance:
+    //   bridge_cx: Instance<MeshAdminAgent>,
+    bridge_cx: Instance<()>,
+    /// Keep the handle alive so the bridge mailbox is not dropped.
+    _bridge_handle: ActorHandle<()>,
 }
 
 #[async_trait]
 impl Actor for MeshAdminAgent {
-    /// Initializes the mesh admin HTTP server.
+    /// Initializes the mesh admin agent and its HTTP server.
     ///
-    /// Binds an ephemeral local TCP listener, builds the axum router,
-    /// and spawns the server in a background task. The chosen
-    /// listen address is stored in `admin_addr` so it can be returned
-    /// via `GetAdminAddr`.
+    /// 1. Binds well-known message ports (`proc.spawn()` does not
+    ///    call `bind()` — unlike `gspawn` — so the actor must do it
+    ///    itself before becoming reachable).
+    /// 2. Binds a TCP listener (ephemeral or fixed port).
+    /// 3. Creates a dedicated `Instance<()>` client mailbox on
+    ///    system_proc for the HTTP bridge's reply ports, keeping
+    ///    bridge traffic off the actor's own mailbox.
+    /// 4. Spawns the axum server in a background task.
+    ///
+    /// The hostname-based listen address is stored in `admin_host` so
+    /// it can be returned via `GetAdminAddr`.
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Bind well-known ports before the HTTP server is spawned, so
+        // messages (including Undeliverable bounces) can be delivered
+        // as soon as the admin is reachable.
+        this.bind::<Self>();
         self.self_actor_id = Some(this.self_id().clone());
 
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        self.admin_addr = Some(addr);
+        let port = self.admin_port.unwrap_or(0);
+        // Bind dual-stack (IPv6 + IPv4) so the server is reachable
+        // regardless of which address family the hostname resolves
+        // to.
+        let listener = TcpListener::bind(format!("[::]:{}", port)).await?;
+        let bound_addr = listener.local_addr()?;
+        // Report the hostname (e.g. Tupperware container name) + port
+        // rather than a raw IP, so the address works with DNS and TLS
+        // certificate validation.
+        let host = hostname::get()
+            .unwrap_or_else(|_| "localhost".into())
+            .into_string()
+            .unwrap_or_else(|_| "localhost".to_string());
+        self.admin_addr = Some(bound_addr);
+        self.admin_host = Some(format!("{}:{}", host, bound_addr.port()));
 
+        // Create a dedicated client mailbox on system_proc for the
+        // HTTP bridge's reply ports. This avoids sharing the admin
+        // actor's own mailbox with async HTTP handlers.
+        let (bridge_cx, bridge_handle) = this.proc().instance("admin_bridge")?;
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_id().clone()),
+            bridge_cx,
+            _bridge_handle: bridge_handle,
         });
         let router = create_mesh_admin_router(bridge_state);
         tokio::spawn(async move {
@@ -431,7 +484,10 @@ impl Actor for MeshAdminAgent {
             }
         });
 
-        tracing::info!("mesh admin server listening on http://{}", addr);
+        tracing::info!(
+            "mesh admin server listening on http://{}",
+            self.admin_host.as_deref().unwrap_or("unknown")
+        );
         Ok(())
     }
 
@@ -481,7 +537,7 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
         match msg {
             MeshAdminMessage::GetAdminAddr { reply } => {
                 let resp = MeshAdminAddrResponse {
-                    addr: self.admin_addr.map(|a| a.to_string()),
+                    addr: self.admin_host.clone(),
                 };
                 if let Err(e) = reply.send(cx, resp) {
                     tracing::debug!("GetAdminAddr reply failed (caller gone?): {e}");
@@ -1050,7 +1106,7 @@ async fn resolve_reference_bridge(
             )
         })?;
 
-    let cx = global_root_client();
+    let cx = &state.bridge_cx;
     let response = RealClock
         .timeout(SINGLE_HOST_TIMEOUT, state.admin_ref.resolve(cx, reference))
         .await
@@ -1099,7 +1155,7 @@ async fn tree_dump(
     State(state): State<Arc<BridgeState>>,
     headers: axum::http::header::HeaderMap,
 ) -> Result<String, ApiError> {
-    let cx = global_root_client();
+    let cx = &state.bridge_cx;
 
     // Build base URL from the Host header for clickable links.
     let host = headers
@@ -1330,6 +1386,7 @@ mod tests {
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
             None,
+            None,
         );
 
         let payload = agent.build_root_payload();
@@ -1396,7 +1453,11 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    None,
+                    None,
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1549,7 +1610,11 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    None,
+                    None,
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1646,6 +1711,7 @@ mod tests {
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1)],
             Some(client_actor_id.clone()),
+            None,
         );
 
         let payload = agent.build_root_payload();
@@ -1718,6 +1784,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     Some(root_client_actor_id.clone()),
+                    None,
                 ),
             )
             .unwrap();
@@ -1856,7 +1923,7 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None),
+                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None, None),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1955,7 +2022,11 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    None,
+                    None,
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();

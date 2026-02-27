@@ -58,8 +58,7 @@ use crate::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
 use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
 use crate::host_mesh::mesh_agent::ProcState;
 use crate::host_mesh::mesh_agent::ShutdownHostClient;
-use crate::mesh_admin::MeshAdminAgent;
-use crate::mesh_admin::MeshAdminMessageClient;
+use crate::host_mesh::mesh_agent::SpawnMeshAdminClient;
 use crate::mesh_agent::ProcMeshAgent;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
@@ -1111,32 +1110,30 @@ impl HostMeshRef {
         &self.ranks
     }
 
-    /// Spawn a [`MeshAdminAgent`] on `proc` and return its HTTP address.
+    /// Spawn a [`MeshAdminAgent`] on the head host's system proc and
+    /// return its HTTP address.
     ///
-    /// The agent aggregates admin state across all hosts in this mesh,
-    /// serving an HTTP API on an ephemeral port.
+    /// Sends a `SpawnMeshAdmin` message to `ranks[0]`'s
+    /// `HostMeshAgent`, which spawns the admin agent on that host's
+    /// system proc. When `admin_port` is `Some`, the HTTP server
+    /// binds to that fixed port; otherwise it picks an ephemeral one.
     pub async fn spawn_admin(
         &self,
         cx: &impl hyperactor::context::Actor,
-        proc: &hyperactor::Proc,
-    ) -> anyhow::Result<std::net::SocketAddr> {
+        admin_port: Option<u16>,
+    ) -> anyhow::Result<String> {
         let hosts: Vec<(String, ActorRef<HostMeshAgent>)> = self
             .ranks
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
         let root_client_id = crate::global_root_client().self_id().clone();
-        let agent_handle = proc.spawn(
-            crate::mesh_admin::MESH_ADMIN_ACTOR_NAME,
-            MeshAdminAgent::new(hosts, Some(root_client_id)),
-        )?;
-        let agent_ref = agent_handle.bind::<MeshAdminAgent>();
 
-        let response = agent_ref.get_admin_addr(cx).await?;
-        let addr_str = response
-            .addr
-            .ok_or_else(|| anyhow::anyhow!("mesh admin agent did not report an address"))?;
-        let addr: std::net::SocketAddr = addr_str.parse()?;
+        let head_agent = self.ranks[0].mesh_agent();
+        let addr = head_agent
+            .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_port)
+            .await?;
+
         Ok(addr)
     }
 
