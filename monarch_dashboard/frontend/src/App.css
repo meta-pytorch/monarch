@@ -55,9 +55,9 @@
   --radius-lg: 12px;
 
   /* Fonts */
-  --font-display: "IBM Plex Mono", "Fira Code", monospace;
-  --font-body: "Outfit", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", "Fira Code", monospace;
+  --font-display: "SF Mono", "Monaco", "Menlo", "Consolas", monospace;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", "Monaco", "Menlo", "Consolas", monospace;
 }
 
 /* ---- Reset & base ---- */
