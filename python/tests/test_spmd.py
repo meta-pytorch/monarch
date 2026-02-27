@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from isolate_in_subprocess import isolate_in_subprocess
+
 from monarch._src.job.spmd import _parse_torchrun, SPMDJob
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
 from monarch.spmd import (
@@ -54,6 +56,7 @@ class EnvCapture(Actor):
         }
 
 
+@isolate_in_subprocess
 def test_spmd_actor_main_with_script() -> None:
     """Test that SPMDActor can execute a PyTorch DDP training script."""
     proc_mesh = this_host().spawn_procs(
@@ -110,6 +113,7 @@ if __name__ == "__main__":
             assert result is True
 
 
+@isolate_in_subprocess
 def test_setup_torch_elastic_env() -> None:
     """Test the setup_torch_elastic_env helper function."""
     proc_mesh = this_host().spawn_procs(
@@ -132,6 +136,7 @@ def test_setup_torch_elastic_env() -> None:
         assert env["WORLD_SIZE"] == "8"
 
 
+@isolate_in_subprocess
 async def test_setup_torch_elastic_env_async() -> None:
     """Test the async setup_torch_elastic_env_async helper function."""
     proc_mesh = this_host().spawn_procs(
@@ -154,6 +159,7 @@ async def test_setup_torch_elastic_env_async() -> None:
         assert env["WORLD_SIZE"] == "8"
 
 
+@isolate_in_subprocess
 def test_spmd_actor_rank_calculations() -> None:
     """Test that rank calculations match expected values for different mesh sizes."""
     GPUS_PER_HOST = 4
