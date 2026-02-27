@@ -227,6 +227,19 @@ mod tests {
     use crate::from_yaml;
     use crate::to_yaml;
 
+    /// Like the `logs_assert` injected by `#[traced_test]`, but without scope
+    /// filtering. Use when asserting on events emitted outside the test's span
+    /// (e.g. from spawned tasks or panic hooks).
+    fn logs_assert_unscoped(f: impl Fn(&[&str]) -> Result<(), String>) {
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs_str = std::str::from_utf8(&buf).expect("Logs contain invalid UTF8");
+        let lines: Vec<&str> = logs_str.lines().collect();
+        match f(&lines) {
+            Ok(()) => {}
+            Err(msg) => panic!("{}", msg),
+        }
+    }
+
     #[derive(
         Debug,
         Clone,
@@ -423,7 +436,7 @@ mod tests {
         // For some reason, logs_contain fails to find these lines individually
         // (possibly to do with the fact that we have newlines in our log entries);
         // instead, we test it manually.
-        logs_assert(|logged_lines: &[&str]| {
+        logs_assert_unscoped(|logged_lines: &[&str]| {
             let mut expected_lines = expected_lines.clone(); // this is an `Fn` closure
             for logged in logged_lines {
                 expected_lines.remove(logged);

@@ -47,6 +47,19 @@ mod tests {
 
     use super::*;
 
+    /// Like the `logs_assert` injected by `#[traced_test]`, but without scope
+    /// filtering. Use when asserting on events emitted outside the test's span
+    /// (e.g. from spawned tasks or panic hooks).
+    fn logs_assert_unscoped(f: impl Fn(&[&str]) -> Result<(), String>) {
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs_str = std::str::from_utf8(&buf).expect("Logs contain invalid UTF8");
+        let lines: Vec<&str> = logs_str.lines().collect();
+        match f(&lines) {
+            Ok(()) => {}
+            Err(msg) => panic!("{}", msg),
+        }
+    }
+
     #[traced_test]
     #[tokio::test]
     async fn test_current_task_id_returns_valid_id() {
@@ -184,7 +197,7 @@ mod tests {
             logs_match!($expr, format!("{} not in logs", stringify!($expr)));
         };
         ($expr:expr, $msg:expr) => {
-            logs_assert(|lines| {
+            logs_assert_unscoped(|lines| {
                 if lines.iter().any($expr) {
                     Ok(())
                 } else {
@@ -334,7 +347,7 @@ mod tests {
         assert_eq!(results, vec![0, 10, 20]);
 
         // Verify spawn events were logged (at least 3)
-        logs_assert(|lines| {
+        logs_assert_unscoped(|lines| {
             let spawn_count = lines
                 .iter()
                 .filter(|line| line.contains("spawned_tokio_task"))
@@ -346,7 +359,7 @@ mod tests {
         });
 
         // Verify execution events were logged
-        logs_assert(|lines| {
+        logs_assert_unscoped(|lines| {
             let exec_count = lines
                 .iter()
                 .filter(|line| line.contains("concurrent_execution"))
@@ -467,7 +480,7 @@ mod tests {
         logs_match!(|line| line.contains("attempting_risky_operation"));
 
         // Verify critical error event
-        logs_assert(|lines| {
+        logs_assert_unscoped(|lines| {
             if lines
                 .iter()
                 .any(|line| line.contains("critical_error") && line.contains("error_code"))

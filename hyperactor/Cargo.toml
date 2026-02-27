@@ -90,7 +90,7 @@ tempfile = "3.22"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio-test = "0.4.5"
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
-tracing-test = { version = "0.2.3", features = ["no-env-filter"] }
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
 [features]
 default = []
