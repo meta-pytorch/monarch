@@ -122,8 +122,9 @@ use typeuri::Named;
 use crate::global_root_client;
 use crate::host_mesh::mesh_agent::HostId;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
-use crate::host_mesh::mesh_agent::parse_system_proc_ref;
-use crate::host_mesh::mesh_agent::system_proc_ref;
+
+/// Actor name used when spawning the mesh admin agent.
+pub const MESH_ADMIN_ACTOR_NAME: &str = "mesh_admin";
 
 /// Timeout for targeted queries that hit a single, specific host.
 /// Longer than the fan-out timeout because the caller explicitly chose
@@ -541,14 +542,6 @@ impl MeshAdminAgent {
             return Ok(self.build_root_payload());
         }
 
-        // System proc refs are non-addressable children of a
-        // HostMeshAgent. They use the "[system] <proc_id>" format
-        // which does not parse as a Reference, so intercept them
-        // before attempting Reference::from_str.
-        if parse_system_proc_ref(reference_string).is_some() {
-            return self.resolve_system_proc_node(cx, reference_string).await;
-        }
-
         // Host refs use the "host:<actor_id>" format so they are
         // unambiguous from plain actor references. The same
         // HostMeshAgent ActorId can appear both as a host (from root)
@@ -609,8 +602,12 @@ impl MeshAdminAgent {
             .values()
             .map(|agent| HostId(agent.actor_id().clone()).to_string())
             .collect();
+        // Standalone procs (admin, root client) are infrastructure.
+        let mut system_children: Vec<String> = Vec::new();
         for actor_id in self.standalone_proc_actors() {
-            children.push(actor_id.proc_id().to_string());
+            let proc_ref = actor_id.proc_id().to_string();
+            system_children.push(proc_ref.clone());
+            children.push(proc_ref);
         }
         NodePayload {
             identity: "root".to_string(),
@@ -618,6 +615,7 @@ impl MeshAdminAgent {
                 num_hosts: self.hosts.len(),
                 started_at: self.started_at.clone(),
                 started_by: self.started_by.clone(),
+                system_children,
             },
             children,
             parent: None,
@@ -656,71 +654,6 @@ impl MeshAdminAgent {
 
         payload.identity = HostId(actor_id.clone()).to_string();
         payload.parent = Some("root".to_string());
-        Ok(payload)
-    }
-
-    /// Resolve a system proc reference (e.g. `"[system]
-    /// tcp!127.0.0.1:12345,system"`) into a proc-level `NodePayload`.
-    ///
-    /// System procs are non-addressable children of a
-    /// `HostMeshAgent`. The resolver strips the `"[system] "` prefix,
-    /// parses the embedded `ProcId`, finds the owning
-    /// `HostMeshAgent`, and sends `IntrospectMessage::QueryChild`
-    /// with `Reference::Proc` so the host can answer on the proc's
-    /// behalf.
-    async fn resolve_system_proc_node(
-        &self,
-        cx: &Context<'_, Self>,
-        reference_string: &str,
-    ) -> Result<NodePayload, anyhow::Error> {
-        let proc_id_str = parse_system_proc_ref(reference_string)
-            .ok_or_else(|| anyhow::anyhow!("not a system proc reference: {}", reference_string))?;
-        let proc_id: ProcId = proc_id_str.parse().map_err(|e| {
-            anyhow::anyhow!(
-                "invalid proc id in system ref '{}': {}",
-                reference_string,
-                e
-            )
-        })?;
-        let host_addr = match &proc_id {
-            ProcId::Direct(addr, _) => addr.to_string(),
-            ProcId::Ranked(world_id, _) => {
-                return Err(anyhow::anyhow!(
-                    "ranked proc references not yet supported: {}",
-                    world_id
-                ));
-            }
-        };
-
-        let agent = self
-            .hosts
-            .get(&host_addr)
-            .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
-
-        let child_ref = Reference::Proc(proc_id);
-        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(agent.actor_id());
-        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-        introspect_port.send(
-            cx,
-            IntrospectMessage::QueryChild {
-                child_ref,
-                reply: reply_handle.bind(),
-            },
-        )?;
-
-        let mut payload = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying system proc"))?
-            .map_err(|e| anyhow::anyhow!("failed to receive system proc introspection: {}", e))?;
-
-        // Override the identity to match the child reference string
-        // from the host's children list, so that the TUI can
-        // correlate navigated nodes with their parent's child
-        // entries.
-        payload.identity = reference_string.to_string();
-        // Set parent to the host reference (host:<actor_id>).
-        payload.parent = Some(HostId(agent.actor_id().clone()).to_string());
         Ok(payload)
     }
 
@@ -828,9 +761,11 @@ impl MeshAdminAgent {
             .standalone_proc_anchor(proc_id)
             .ok_or_else(|| anyhow::anyhow!("no anchor actor for standalone proc {}", proc_id))?;
 
-        let children = if self.self_actor_id.as_ref() == Some(actor_id) {
+        let (children, system_children) = if self.self_actor_id.as_ref() == Some(actor_id) {
             // Self-proc: we are the only actor; no message needed.
-            vec![actor_id.to_string()]
+            // The admin agent is a system actor.
+            let self_ref = actor_id.to_string();
+            (vec![self_ref.clone()], vec![self_ref])
         } else {
             // Query the anchor actor for its supervision children.
             let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
@@ -851,10 +786,23 @@ impl MeshAdminAgent {
                     anyhow::anyhow!("failed to receive anchor actor introspection: {}", e)
                 })?;
 
-            // Anchor actor + its supervision children.
-            let mut children = vec![actor_id.to_string()];
+            // Check if anchor actor is system.
+            let anchor_ref = actor_id.to_string();
+            let anchor_is_system = matches!(
+                &actor_payload.properties,
+                NodeProperties::Actor {
+                    is_system: true,
+                    ..
+                }
+            );
+
+            let mut children = vec![anchor_ref.clone()];
+            let mut system_children = Vec::new();
+            if anchor_is_system {
+                system_children.push(anchor_ref);
+            }
             children.extend(actor_payload.children);
-            children
+            (children, system_children)
         };
 
         let proc_name = match proc_id {
@@ -862,12 +810,16 @@ impl MeshAdminAgent {
             _ => proc_id.to_string(),
         };
 
+        // A standalone proc is system if all its actors are system.
+        let is_system = !system_children.is_empty() && system_children.len() == children.len();
+
         Ok(NodePayload {
             identity: proc_id.to_string(),
             properties: NodeProperties::Proc {
                 proc_name,
                 num_actors: children.len(),
-                is_system: false,
+                is_system,
+                system_children,
             },
             children,
             as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
@@ -944,32 +896,14 @@ impl MeshAdminAgent {
                 // system proc ref format if the proc is a known
                 // system/local proc, otherwise the ProcMeshAgent
                 // ActorId.
-                let host_addr = match proc_id {
+                let _host_addr = match proc_id {
                     ProcId::Direct(addr, _) => Some(addr.to_string()),
                     _ => None,
                 };
 
-                // Check if this is a system proc by seeing if the
-                // host lists it as a system proc child.
-                let is_system = host_addr
-                    .as_ref()
-                    .and_then(|addr| self.hosts.get(addr))
-                    .map(|agent| {
-                        // If the actor's proc is the same proc the
-                        // host agent lives in (system proc) or any
-                        // other known infrastructure proc, treat it
-                        // as system.
-                        agent.actor_id().proc_id() == proc_id
-                    })
-                    .unwrap_or(false);
-
-                if is_system {
-                    payload.parent = Some(system_proc_ref(&proc_id.to_string()));
-                } else {
-                    // User proc: parent is the proc node, whose
-                    // identity is the ProcId string.
-                    payload.parent = Some(proc_id.to_string());
-                }
+                // Parent is the proc node, whose identity is the
+                // ProcId string (same for system and user procs).
+                payload.parent = Some(proc_id.to_string());
             }
         }
 
@@ -1261,13 +1195,6 @@ async fn tree_dump(
 /// Note: `ActorId::Display` for `ProcId::Direct` uses commas as
 /// separators (`proc_id,actor_name[idx]`), not slashes.
 fn derive_tree_label(reference: &str) -> String {
-    // System proc refs: "[system] transport!addr,name" → name.
-    if let Some(proc_id_str) = parse_system_proc_ref(reference) {
-        if let Some((_addr, name)) = proc_id_str.rsplit_once(',') {
-            return name.to_string();
-        }
-        return proc_id_str.to_string();
-    }
     // ActorId (Direct): "transport!addr,proc_name,actor[idx]"
     // ProcId (Direct): "transport!addr,proc_name"
     // In both cases, split on ',' and take the second segment (the
@@ -1401,7 +1328,7 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
+                MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
             )
             .unwrap();
@@ -1554,7 +1481,7 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
+                MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
             )
             .unwrap();
@@ -1720,7 +1647,7 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
+                MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     Some(root_client_actor_id.clone()),
@@ -1861,7 +1788,7 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
+                MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None),
             )
             .unwrap();
@@ -1917,22 +1844,15 @@ mod tests {
         );
     }
 
-    // Verifies that the QueryChild callback in HostMeshAgent produces
-    // correct identity strings for system procs. Specifically, checks
-    // that:
+    // Verifies that system procs are correctly identified via the
+    // host's system_children field and that resolving them produces
+    // correct payloads:
     //
-    // 1. The identity of the resolved system proc matches the
-    //    "[system] <proc_id>" reference string from the host's
-    //    children list (i.e. identity == the reference used to resolve
-    //    it).
+    // 1. The identity of the resolved system proc matches the plain
+    //    ProcId reference from the host's system_children list.
     // 2. The properties are NodeProperties::Proc with is_system=true.
     // 3. The parent is set to the HostId format ("host:<actor_id>").
     // 4. The as_of field is present and non-empty.
-    //
-    // This test would have caught a bug where `child_ref.to_string()`
-    // was used instead of `proc.proc_id().to_string()` in the
-    // QueryChild callback, producing an identity like
-    // "proc:<proc_id>" instead of "[system] <proc_id>".
     #[tokio::test]
     async fn test_system_proc_identity() {
         use hyperactor::Proc;
@@ -1942,7 +1862,6 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::host_mesh::mesh_agent::system_proc_ref;
         use crate::mesh_agent::ProcMeshAgent;
 
         // -- 1. Stand up a local in-process Host with a HostMeshAgent --
@@ -1968,7 +1887,7 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
+                MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
             )
             .unwrap();
@@ -1990,12 +1909,18 @@ mod tests {
             "host should have at least one proc child"
         );
 
-        // -- 5. Find a system proc child (starts with "[system] ") --
-        let system_child_ref = host_node
-            .children
-            .iter()
-            .find(|c| c.starts_with("[system] "))
-            .expect("host children should contain at least one system proc");
+        // -- 5. Find a system proc child via system_children --
+        let system_children = match &host_node.properties {
+            NodeProperties::Host {
+                system_children, ..
+            } => system_children.clone(),
+            other => panic!("expected Host properties, got {:?}", other),
+        };
+        assert!(
+            !system_children.is_empty(),
+            "host should report at least one system child"
+        );
+        let system_child_ref = &system_children[0];
 
         // -- 6. Resolve the system proc reference --
         let proc_resp = admin_ref
@@ -2004,17 +1929,12 @@ mod tests {
             .unwrap();
         let proc_node = proc_resp.0.unwrap();
 
-        // -- 7. Assert identity matches the system proc ref format --
+        // -- 7. Assert identity matches the proc_id --
         // The identity must equal the reference string we used to
         // resolve it (navigation identity invariant).
         assert_eq!(
             proc_node.identity, *system_child_ref,
             "identity must match the system proc ref from the host's children list"
-        );
-        assert!(
-            proc_node.identity.starts_with("[system] "),
-            "identity should start with '[system] ', got '{}'",
-            proc_node.identity
         );
 
         // -- 8. Assert properties are Proc with is_system=true --
@@ -2052,9 +1972,9 @@ mod tests {
         );
 
         // -- 11. Verify all system proc children have correct identity --
-        // Resolve every "[system] " child to confirm each one
-        // individually satisfies the invariant.
-        let expected_system_ref = system_proc_ref(&system_proc_id.to_string());
+        // Resolve every system child to confirm each one individually
+        // satisfies the invariant.
+        let expected_system_ref = system_proc_id.to_string();
         let found = host_node.children.contains(&expected_system_ref);
         assert!(
             found,
@@ -2062,10 +1982,7 @@ mod tests {
             host_node.children, expected_system_ref
         );
 
-        for child_ref in &host_node.children {
-            if !child_ref.starts_with("[system] ") {
-                continue;
-            }
+        for child_ref in &system_children {
             let resp = admin_ref.resolve(&client, child_ref.clone()).await.unwrap();
             let node = resp.0.unwrap();
 

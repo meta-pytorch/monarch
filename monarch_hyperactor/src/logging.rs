@@ -19,6 +19,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -85,7 +86,13 @@ impl LoggerRuntimeActor {
         Ok(())
     }
 }
-impl Actor for LoggerRuntimeActor {}
+#[async_trait]
+impl Actor for LoggerRuntimeActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl RemoteSpawn for LoggerRuntimeActor {
