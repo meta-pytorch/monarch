@@ -75,7 +75,7 @@ class ProcLauncher(Actor, ABC):
     Implementations control how procs are spawned (Docker, VMs, custom
     orchestrators, etc.) while Monarch handles lifecycle wiring.
 
-    The launcher runs in the same proc as HostMeshAgent.
+    The launcher runs in the same proc as HostAgent.
     """
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
