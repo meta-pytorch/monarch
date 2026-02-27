@@ -1415,6 +1415,9 @@ impl<A: Actor> Instance<A> {
                         // terminal status.
                         assert!(event.actor_status.is_terminal());
                         self.mailbox().close(event.actor_status.clone());
+                        // FI-1: store supervision_event BEFORE change_status.
+                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
+                            Some(event.clone());
                         self.change_status(event.actor_status.clone());
                         Some(event)
                     }
@@ -1422,13 +1425,17 @@ impl<A: Actor> Instance<A> {
                         let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                         let status = ActorStatus::Failed(error_kind);
                         self.mailbox().close(status.clone());
-                        self.change_status(status.clone());
-                        Some(ActorSupervisionEvent::new(
+                        let event = ActorSupervisionEvent::new(
                             self.inner.cell.actor_id().clone(),
                             actor.display_name(),
-                            status,
+                            status.clone(),
                             None,
-                        ))
+                        );
+                        // FI-1: store supervision_event BEFORE change_status.
+                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
+                            Some(event.clone());
+                        self.change_status(status);
+                        Some(event)
                     }
                 }
             }
@@ -1997,6 +2004,13 @@ struct InstanceCellState {
     query_child_handler:
         RwLock<Option<Box<dyn (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync>>>,
 
+    /// The supervision event produced when this actor failed, if any.
+    /// Written in `serve()` BEFORE `change_status()` transitions to
+    /// terminal, so that `serve_introspect` sees it when
+    /// `wait_for(is_terminal)` fires. `None` for actors that stopped
+    /// cleanly. Write-once per actor lifetime (FI-2).
+    supervision_event: std::sync::Mutex<Option<crate::supervision::ActorSupervisionEvent>>,
+
     /// Whether this actor is infrastructure/system (hidden by default
     /// in the TUI `s` toggle). Set by spawning code via
     /// `Instance::set_system()`.
@@ -2021,6 +2035,54 @@ impl InstanceCellState {
         assert_eq!(self.actor_id.proc_id(), child.actor_id.proc_id());
         self.children.remove(&child.actor_id.pid()).is_some()
     }
+}
+
+/// Select which terminated snapshots to evict when the retention cap
+/// is exceeded.
+///
+/// Each entry is `(actor_id, Option<occurred_at>)` where `Some` means
+/// the actor has `failure_info` (i.e. it failed), and `None` means a
+/// clean stop.
+///
+/// Eviction priority:
+/// 1. Cleanly-stopped actors are evicted first (arbitrary order).
+/// 2. If more evictions are needed, failed actors are evicted
+///    newest-first (descending `occurred_at`), preserving the
+///    earliest failures which are closest to the root cause.
+fn select_eviction_candidates(
+    entries: &[(ActorId, Option<String>)],
+    excess: usize,
+) -> Vec<ActorId> {
+    let mut clean: Vec<&ActorId> = Vec::new();
+    let mut failed: Vec<(&ActorId, &str)> = Vec::new();
+    for (id, occurred_at) in entries {
+        match occurred_at {
+            Some(ts) => failed.push((id, ts.as_str())),
+            None => clean.push(id),
+        }
+    }
+
+    let mut to_remove: Vec<ActorId> = Vec::new();
+    let mut remaining = excess;
+
+    // Evict cleanly-stopped first.
+    for id in clean {
+        if remaining == 0 {
+            break;
+        }
+        to_remove.push(id.clone());
+        remaining -= 1;
+    }
+
+    // If still over cap, evict most-recent failures first.
+    if remaining > 0 {
+        failed.sort_by(|a, b| b.1.cmp(a.1));
+        for (id, _) in failed.into_iter().take(remaining) {
+            to_remove.push(id.clone());
+        }
+    }
+
+    to_remove
 }
 
 impl InstanceCell {
@@ -2054,6 +2116,7 @@ impl InstanceCell {
                 recording: hyperactor_telemetry::recorder().record(64),
                 published_properties: RwLock::new(None),
                 query_child_handler: RwLock::new(None),
+                supervision_event: std::sync::Mutex::new(None),
                 is_system: AtomicBool::new(false),
                 ports,
             }),
@@ -2088,6 +2151,12 @@ impl InstanceCell {
     /// The instance's status observer.
     pub fn status(&self) -> &watch::Receiver<ActorStatus> {
         &self.inner.status
+    }
+
+    /// The supervision event stored when this actor failed.
+    /// `None` for actors that stopped cleanly or are still running.
+    pub fn supervision_event(&self) -> Option<crate::supervision::ActorSupervisionEvent> {
+        self.inner.supervision_event.lock().unwrap().clone()
     }
 
     /// Send a signal to the actor.
@@ -2288,20 +2357,34 @@ impl InstanceCell {
     /// Store a post-mortem snapshot for this actor in the proc's
     /// `terminated_snapshots` map. Called by the introspect task
     /// just before exiting on terminal status.
+    ///
+    /// Eviction policy when the retention cap is exceeded:
+    /// 1. Evict cleanly-stopped actors first (no `failure_info`).
+    /// 2. When only failed actors remain, evict the most recent
+    ///    (by `occurred_at`), preserving the earliest failures
+    ///    which are closest to the root cause.
     pub fn store_terminated_snapshot(&self, payload: crate::introspect::NodePayload) {
         let snapshots = &self.inner.proc.inner.terminated_snapshots;
         snapshots.insert(self.actor_id().clone(), payload);
         let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
         let excess = snapshots.len().saturating_sub(max);
         if excess > 0 {
-            // Collect keys to evict — arbitrary order (DashMap is
-            // unordered). We grab just the ones we need to remove.
-            let to_remove: Vec<ActorId> = snapshots
+            // Build entries for the eviction selector.
+            let entries: Vec<_> = snapshots
                 .iter()
-                .take(excess)
-                .map(|e| e.key().clone())
+                .map(|entry| {
+                    let occurred_at = match &entry.value().properties {
+                        crate::introspect::NodeProperties::Actor {
+                            failure_info: Some(fi),
+                            ..
+                        } => Some(fi.occurred_at.clone()),
+                        _ => None,
+                    };
+                    (entry.key().clone(), occurred_at)
+                })
                 .collect();
-            for key in to_remove {
+
+            for key in select_eviction_candidates(&entries, excess) {
                 snapshots.remove(&key);
             }
         }
@@ -3491,6 +3574,87 @@ mod tests {
         );
     }
 
+    // Invariant FI-1/FI-2: supervision_event is stored on the
+    // InstanceCell when an actor fails and is readable after
+    // termination.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_event_stored_on_failure() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+        let cell = handle.cell().clone();
+
+        handle
+            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")))
+            .unwrap();
+        handle.await;
+
+        let event = cell.supervision_event();
+        assert!(event.is_some(), "failed actor must have supervision_event");
+        let event = event.unwrap();
+        assert_eq!(event.actor_id, actor_id);
+        assert!(event.actor_status.is_failed());
+        // Originated here, not propagated.
+        assert_eq!(event.actually_failing_actor().actor_id, actor_id);
+    }
+
+    // Invariant FI-2/INV-6: clean stop produces no supervision_event.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_event_none_on_clean_stop() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let cell = handle.cell().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        assert!(
+            cell.supervision_event().is_none(),
+            "cleanly stopped actor must have no supervision_event"
+        );
+    }
+
+    // Invariant: propagated failures carry the originating actor's
+    // identity through actually_failing_actor().
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_event_on_propagated_failure() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent_cell = parent.cell().clone();
+        // Spawn child under parent.
+        let (tx, rx) = oneshot::channel();
+        parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
+        let child = rx.await.unwrap();
+        let child_id = child.actor_id().clone();
+
+        // Fail the child — parent doesn't handle supervision, so it
+        // propagates and terminates too.
+        child
+            .send(
+                &client,
+                TestActorMessage::Fail(anyhow::anyhow!("child boom")),
+            )
+            .unwrap();
+        parent.await;
+
+        let event = parent_cell.supervision_event();
+        assert!(
+            event.is_some(),
+            "parent must have supervision_event from propagated failure"
+        );
+        let event = event.unwrap();
+        // Root cause is the child, not the parent.
+        assert_eq!(event.actually_failing_actor().actor_id, child_id);
+    }
+
     // Invariant: resolve_actor_ref returns None for terminal actors.
     //
     // A live actor is resolvable. After drain_and_stop + await, the
@@ -3522,5 +3686,105 @@ mod tests {
             proc.resolve_actor_ref(&actor_ref).is_none(),
             "terminal actor must not be resolvable"
         );
+    }
+
+    // INV-3: terminated snapshot for a failed actor has failure_info.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminated_snapshot_has_failure_info() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        handle
+            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")))
+            .unwrap();
+        handle.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        match &snapshot.properties {
+            crate::introspect::NodeProperties::Actor {
+                actor_status,
+                failure_info,
+                ..
+            } => {
+                assert!(actor_status.starts_with("failed:"));
+                let info = failure_info
+                    .as_ref()
+                    .expect("failed actor snapshot must have failure_info");
+                assert!(!info.error_message.is_empty());
+                assert_eq!(info.root_cause_actor, actor_id.to_string());
+                assert!(!info.is_propagated);
+                assert!(!info.occurred_at.is_empty());
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+    }
+
+    // INV-4: propagated failure has root_cause pointing to child.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_propagated_failure_info() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent_id = parent.actor_id().clone();
+
+        let (tx, rx) = oneshot::channel();
+        parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
+        let child = rx.await.unwrap();
+        let child_id = child.actor_id().clone();
+
+        child
+            .send(
+                &client,
+                TestActorMessage::Fail(anyhow::anyhow!("child fail")),
+            )
+            .unwrap();
+        parent.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &parent_id).await;
+        match &snapshot.properties {
+            crate::introspect::NodeProperties::Actor { failure_info, .. } => {
+                let info = failure_info
+                    .as_ref()
+                    .expect("propagated failure must have failure_info");
+                assert_eq!(info.root_cause_actor, child_id.to_string());
+                assert!(info.is_propagated);
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+    }
+
+    // INV-6: cleanly stopped actor has no failure_info.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_stopped_snapshot_has_no_failure_info() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        match &snapshot.properties {
+            crate::introspect::NodeProperties::Actor {
+                actor_status,
+                failure_info,
+                ..
+            } => {
+                assert!(actor_status.starts_with("stopped:"));
+                assert!(
+                    failure_info.is_none(),
+                    "stopped actor must not have failure_info"
+                );
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
     }
 }
