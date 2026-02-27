@@ -544,15 +544,18 @@ pub(crate) mod tcp {
         super::dial(TcpLink(addr))
     }
 
-    /// Serve the given address. Supports both v4 and v6 address. If port 0 is provided as
-    /// dynamic port will be resolved and is available on the returned ServerHandle.
+    /// Serve the given address, optionally using a pre-opened listener.
+    /// Supports both v4 and v6 address. If port 0 is provided, a dynamic
+    /// port will be resolved and is available on the returned ServerHandle.
     pub fn serve<M: RemoteMessage>(
         addr: SocketAddr,
+        listener: Option<std::net::TcpListener>,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        // Construct our own std TcpListener to avoid having to await, making this function
-        // non-async.
-        let std_listener = std::net::TcpListener::bind(addr)
-            .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(addr), err))?;
+        let std_listener = match listener {
+            Some(l) => l,
+            None => std::net::TcpListener::bind(addr)
+                .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(addr), err))?,
+        };
         std_listener
             .set_nonblocking(true)
             .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
@@ -672,11 +675,12 @@ pub(crate) mod meta {
         tls::dial_with_connector(addr, connector, tls::TlsAddrType::MetaTls)
     }
 
-    /// Serve the given address. If port 0 is provided in a Host address,
-    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
-    /// For Host addresses, binds to all resolved socket addresses.
-    pub fn serve<M: RemoteMessage>(addr: TlsAddr) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        tls::serve_with_acceptor(addr, tls::TlsAddrType::MetaTls)
+    /// Serve the given address, optionally using a pre-opened listener.
+    pub fn serve<M: RemoteMessage>(
+        addr: TlsAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+        tls::serve_with_acceptor(addr, tls::TlsAddrType::MetaTls, listener)
     }
 }
 
@@ -918,36 +922,41 @@ pub(crate) mod tls {
         )))
     }
 
-    /// Shared serve helper for TLS transports.
+    /// Shared serve helper for TLS transports, optionally using a pre-opened listener.
     pub(super) fn serve_with_acceptor<M: RemoteMessage>(
         addr: TlsAddr,
         addr_type: TlsAddrType,
+        listener: Option<std::net::TcpListener>,
     ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
         let TlsAddr { hostname, port } = addr;
 
-        // Resolve all addresses for the hostname
         let make_channel_addr = |h: &str, p: Port| match addr_type {
             TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::new(h, p)),
             TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::new(h, p)),
         };
 
-        let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
-            .to_socket_addrs()
-            .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
-            .collect();
-
-        if addrs.is_empty() {
-            return Err(ServerError::Resolve(
-                make_channel_addr(&hostname, port),
-                io::Error::other("no available socket addr"),
-            ));
-        }
-
         let channel_addr = make_channel_addr(&hostname, port);
 
-        // Bind to all resolved addresses
-        let std_listener = std::net::TcpListener::bind(&addrs[..])
-            .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
+        let std_listener = match listener {
+            Some(l) => l,
+            None => {
+                let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
+                    .to_socket_addrs()
+                    .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
+                    .collect();
+
+                if addrs.is_empty() {
+                    return Err(ServerError::Resolve(
+                        make_channel_addr(&hostname, port),
+                        io::Error::other("no available socket addr"),
+                    ));
+                }
+
+                std::net::TcpListener::bind(&addrs[..])
+                    .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?
+            }
+        };
+
         std_listener
             .set_nonblocking(true)
             .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
@@ -975,11 +984,12 @@ pub(crate) mod tls {
         dial_with_connector(addr, connector, TlsAddrType::Tls)
     }
 
-    /// Serve the given address. If port 0 is provided in a Host address,
-    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
-    /// For Host addresses, binds to all resolved socket addresses.
-    pub fn serve<M: RemoteMessage>(addr: TlsAddr) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        serve_with_acceptor(addr, TlsAddrType::Tls)
+    /// Serve the given address, optionally using a pre-opened listener.
+    pub fn serve<M: RemoteMessage>(
+        addr: TlsAddr,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+        serve_with_acceptor(addr, TlsAddrType::Tls, listener)
     }
 
     #[cfg(test)]
@@ -1087,7 +1097,7 @@ u19txmtkiMEH+aNmekk=
             // Create a TLS server bound to localhost with dynamic port
             let addr = TlsAddr::new("localhost", 0);
 
-            let (local_addr, mut rx) = serve::<u64>(addr).expect("failed to serve");
+            let (local_addr, mut rx) = serve::<u64>(addr, None).expect("failed to serve");
 
             // Dial the server
             let tx = dial::<u64>(match &local_addr {
@@ -1119,7 +1129,7 @@ u19txmtkiMEH+aNmekk=
 
             let addr = TlsAddr::new("localhost", 0);
 
-            let (local_addr, mut rx) = serve::<String>(addr).expect("failed to serve");
+            let (local_addr, mut rx) = serve::<String>(addr, None).expect("failed to serve");
             let tx = dial::<String>(match &local_addr {
                 ChannelAddr::Tls(addr) => addr.clone(),
                 _ => panic!("unexpected address type"),
@@ -1350,7 +1360,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap(), None).unwrap();
         {
             let tx = channel::dial::<u64>(addr.clone()).unwrap();
             tx.post(123);
@@ -1396,7 +1406,7 @@ mod tests {
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
-        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap(), None).unwrap();
 
         let tx = channel::dial::<String>(addr.clone()).unwrap();
         // Default size is okay
@@ -1428,7 +1438,7 @@ mod tests {
         let _guard_delivery_timeout =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
-        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap(), None).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx);
@@ -1450,7 +1460,7 @@ mod tests {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
             _ => panic!("expected MetaTls address"),
         };
-        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
+        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr, None).unwrap();
         {
             let tx = channel::dial::<u64>(local_addr.clone()).unwrap();
             tx.post(123);
@@ -2675,7 +2685,7 @@ mod tests {
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).unwrap();
+        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr, None).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;
@@ -2780,7 +2790,7 @@ mod tests {
 
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap(), None).unwrap();
         let socket_addr = match addr {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),

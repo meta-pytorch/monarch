@@ -8,10 +8,11 @@
 
 use futures::future::try_join_all;
 use hyperactor::channel::ChannelAddr;
-use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
+use hyperactor_mesh::bootstrap::halt;
+use hyperactor_mesh::bootstrap::host;
 use hyperactor_mesh::bootstrap_or_die;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_types::MapPyErr;
@@ -51,7 +52,7 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 
 #[pyfunction]
 pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
-    let addr = ChannelAddr::from_zmq_url(address)?;
+    let (addr, listener) = ChannelAddr::from_zmq_url_with_listener(address)?;
 
     // Check if we're running in a PAR/XAR build by looking for FB_XAR_INVOKED_NAME environment variable
     let invoked_name = std::env::var("FB_XAR_INVOKED_NAME");
@@ -93,18 +94,11 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
         }
     });
 
-    let boot = Bootstrap::Host {
-        addr,
-        config: None,
-        command,
-        // This function is the entry point of the program, and no one else
-        // will terminate this process. So it needs to exit on its own.
-        exit_on_shutdown: true,
-    };
-
-    PyPythonTask::new(async {
-        let err = boot.bootstrap().await;
-        Err(err).map_pyerr()?;
+    PyPythonTask::new(async move {
+        host(addr, command, None, true, listener)
+            .await
+            .map_pyerr()?;
+        halt::<()>().await;
         Ok(())
     })
 }

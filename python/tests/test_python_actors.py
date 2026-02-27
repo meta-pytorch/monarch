@@ -1405,6 +1405,55 @@ def test_simple_bootstrap():
             proc.wait()
 
 
+@isolate_in_subprocess
+def test_fd_bootstrap():
+    """Test that a worker can be started using a pre-opened fd for its listening socket."""
+    import socket
+
+    procs = []
+    workers = []
+
+    for _i in range(2):
+        # Create a TCP socket bound to an ephemeral port.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        fd = sock.fileno()
+
+        env = {**os.environ}
+        if "FB_XAR_INVOKED_NAME" in os.environ:
+            env["PYTHONPATH"] = ":".join(sys.path)
+
+        # Spawn the worker, passing the fd. The worker will adopt the fd
+        # via the tcp://host:fdNNN syntax and serve on it.
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                f"import sys; from monarch.actor import run_worker_loop_forever; "
+                f'run_worker_loop_forever(address="tcp://127.0.0.1:fd{fd}", ca="trust_all_connections")',
+            ],
+            env=env,
+            pass_fds=(fd,),
+        )
+        # Close our copy of the fd — the child owns it now.
+        sock.close()
+        procs.append(proc)
+        # The client connects to the real port, not the fd syntax.
+        workers.append(f"tcp://127.0.0.1:{port}")
+
+    hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+    hello = hosts.spawn_procs().spawn("hello", Hello)
+
+    r = hello.doit.call().get()
+    for _, v in r.items():
+        assert v == "hello!"
+    hosts.shutdown().get()
+    for proc in procs:
+        proc.wait()
+
+
 class HostMeshActor(Actor):
     @endpoint
     async def this_host(self) -> HostMesh:
