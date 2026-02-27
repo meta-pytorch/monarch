@@ -676,3 +676,247 @@ body::after {
 button:focus:not(:focus-visible) {
   outline: none;
 }
+
+/* ============================================================
+   DAG View
+   ============================================================ */
+
+.dag-container {
+  display: flex;
+  gap: 0;
+  height: calc(100vh - 56px - var(--space-lg) * 2);
+  animation: fadeSlideIn 0.25s ease-out;
+}
+
+.dag-canvas-wrapper {
+  flex: 1;
+  position: relative;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.dag-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+.dag-svg:active {
+  cursor: grabbing;
+}
+
+/* ---- DAG Node ---- */
+
+.dag-node-group {
+  transition: transform 0.1s ease;
+}
+
+.dag-node-circle {
+  transition: stroke-width 0.2s ease, filter 0.2s ease;
+}
+
+.dag-node-group:hover .dag-node-circle {
+  stroke-width: 3;
+  filter: url(#glow);
+}
+
+.dag-node-glow {
+  animation: dagGlowPulse 2s ease-in-out infinite;
+}
+
+@keyframes dagGlowPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+.dag-status-dot-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ---- DAG Message Edges ---- */
+
+.dag-message-edge {
+  animation: dashFlow 1.5s linear infinite;
+}
+
+@keyframes dashFlow {
+  to { stroke-dashoffset: -18; }
+}
+
+/* ---- DAG Tooltip ---- */
+
+.dag-tooltip {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  white-space: nowrap;
+  z-index: 20;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.dag-tooltip-name {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dag-tooltip-info {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ---- DAG Legend ---- */
+
+.dag-legend {
+  position: absolute;
+  top: var(--space-md);
+  right: var(--space-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-display);
+  font-size: 11px;
+  z-index: 10;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  max-width: 180px;
+}
+
+.dag-legend-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.dag-legend-section {
+  margin-bottom: var(--space-sm);
+}
+
+.dag-legend-section:last-child {
+  margin-bottom: 0;
+}
+
+.dag-legend-heading {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-xs);
+}
+
+.dag-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--text-secondary);
+}
+
+.dag-legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dag-legend-label {
+  font-size: 11px;
+}
+
+/* ---- DAG Detail Panel ---- */
+
+.dag-detail-panel {
+  width: 360px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  animation: slideInRight 0.2s ease-out;
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.dag-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: var(--space-lg);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+}
+
+.dag-detail-title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.dag-detail-subtitle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.dag-detail-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.dag-detail-close:hover {
+  color: var(--text-primary);
+}
+
+.dag-detail-body {
+  padding: var(--space-md) var(--space-lg);
+}
+
+.dag-detail-meta {
+  margin-bottom: var(--space-md);
+}
+
+.dag-detail-section {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dag-detail-section-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}

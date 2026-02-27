@@ -19,6 +19,8 @@ const MOCK_HOST_MESHES = [
   },
 ];
 
+const MOCK_ALL_MESHES = [...MOCK_HOST_MESHES];
+
 const MOCK_CHILDREN: any[] = [];
 const MOCK_ACTORS = [
   {
@@ -32,6 +34,8 @@ const MOCK_ACTOR_DETAIL = {
   latest_status: "idle",
   latest_status_timestamp_us: 1700000015000000,
 };
+
+const MOCK_MESSAGES: any[] = [];
 
 beforeEach(() => {
   jest.spyOn(global, "fetch").mockImplementation((url: any) => {
@@ -49,6 +53,18 @@ beforeEach(() => {
         json: async () => MOCK_CHILDREN,
       } as Response);
     }
+    if (path.match(/\/meshes\/\d+$/)) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => MOCK_HOST_MESHES[0],
+      } as Response);
+    }
+    if (path.match(/\/meshes$/)) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => MOCK_ALL_MESHES,
+      } as Response);
+    }
     if (path.match(/\/actors\/\d+$/)) {
       return Promise.resolve({
         ok: true,
@@ -59,6 +75,12 @@ beforeEach(() => {
       return Promise.resolve({
         ok: true,
         json: async () => MOCK_ACTORS,
+      } as Response);
+    }
+    if (path.includes("/messages")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => MOCK_MESSAGES,
       } as Response);
     }
     return Promise.resolve({
@@ -97,12 +119,12 @@ describe("App", () => {
     });
   });
 
-  test("switching to DAG tab shows placeholder", () => {
+  test("switching to DAG tab shows DAG view", async () => {
     render(<App />);
     fireEvent.click(screen.getByText("DAG"));
-    expect(
-      screen.getByText("DAG view will be implemented in Milestone 4")
-    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("dag-container")).toBeInTheDocument();
+    });
   });
 
   test("switching back to Hierarchy resets breadcrumb", () => {
