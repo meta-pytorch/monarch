@@ -24,6 +24,9 @@ use crate::supervision::MeshFailure;
 pub mod host_agent;
 
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -240,6 +243,25 @@ enum HostMeshAllocation {
 }
 
 impl HostMesh {
+    /// Emit a telemetry event for this host mesh creation.
+    fn notify_created(&self) {
+        let name_str = self.name.to_string();
+        let mut mesh_hasher = DefaultHasher::new();
+        name_str.hash(&mut mesh_hasher);
+        let mesh_id_hash = mesh_hasher.finish();
+
+        hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+            id: mesh_id_hash,
+            timestamp: RealClock.system_time_now(),
+            class: "Host".to_string(),
+            given_name: self.name.name().to_string(),
+            full_name: name_str,
+            shape_json: serde_json::to_string(&self.extent).unwrap_or_default(),
+            parent_mesh_id: None,
+            parent_view_json: None,
+        });
+    }
+
     /// Bring up a local single-host mesh and, in the launcher
     /// process, return a `HostMesh` handle for it.
     ///
@@ -535,6 +557,9 @@ impl HostMesh {
         let _: hyperactor::ActorRef<HostMeshController> = controller_handle.bind();
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
+
+        mesh.notify_created();
+
         Ok(mesh)
     }
 
@@ -551,12 +576,14 @@ impl HostMesh {
         let current_ref = HostMeshRef::new(mesh.name.clone(), region.clone(), hosts.clone())
             .expect("region/hosts cardinality must match");
 
-        Self {
+        let result = Self {
             name: mesh.name,
             extent: region.extent().clone(),
             allocation: HostMeshAllocation::Owned { hosts },
             current_ref,
-        }
+        };
+        result.notify_created();
+        result
     }
 
     /// Request a clean shutdown of all hosts owned by this
