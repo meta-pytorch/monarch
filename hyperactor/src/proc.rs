@@ -78,6 +78,9 @@ use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
 use crate::introspect::IntrospectMessage;
+use crate::introspect::NodePayload;
+use crate::introspect::PublishedProperties;
+use crate::introspect::PublishedPropertiesKind;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -1091,6 +1094,44 @@ impl<A: Actor> Instance<A> {
         crate::introspect::default_actor_payload(&self.inner.cell)
     }
 
+    /// Publish domain-specific properties for introspection.
+    ///
+    /// Infrastructure actors call this to make their managed-entity
+    /// metadata (host address, proc count, custom children) visible
+    /// to admin tooling without going through the actor's message
+    /// handler. The timestamp is set automatically.
+    ///
+    /// Values may be arbitrarily stale for stuck actors — they
+    /// reflect the last time this method was called.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// cx.publish_properties(PublishedPropertiesKind::Host {
+    ///     addr: "127.0.0.1:8080".into(),
+    ///     num_procs: 2,
+    ///     children: vec!["proc_a".into(), "proc_b".into()],
+    /// });
+    /// ```
+    pub fn publish_properties(&self, kind: PublishedPropertiesKind) {
+        self.inner.cell.set_published_properties(kind);
+    }
+
+    /// Register a callback for resolving non-addressable children.
+    ///
+    /// The callback runs on the actor's introspect task (not the
+    /// actor loop), so it must be `Send + Sync` and must not access
+    /// actor-mutable state. Capture cloned `Proc` references.
+    ///
+    /// Only `HostMeshAgent` uses this today — for resolving system
+    /// procs that have no independent `ProcMeshAgent`.
+    pub fn set_query_child_handler(
+        &self,
+        handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
+    ) {
+        self.inner.cell.set_query_child_handler(handler);
+    }
+
     /// Signal the actor to stop.
     pub fn stop(&self, reason: &str) -> Result<(), ActorError> {
         tracing::info!(
@@ -1840,6 +1881,22 @@ struct InstanceCellState {
     /// store a 'flight record' of events while the actor is running.
     recording: Recording,
 
+    /// Domain-specific properties published by the actor for
+    /// introspection. Written by the actor via
+    /// `Instance::publish_properties()`; read by the introspection
+    /// runtime handler. `None` means the actor has not published
+    /// custom properties — the runtime handler falls back to
+    /// `NodeProperties::Actor`.
+    published_properties: RwLock<Option<crate::introspect::PublishedProperties>>,
+
+    /// Optional callback for resolving non-addressable children
+    /// (e.g., system procs). Registered by infrastructure actors
+    /// like `HostMeshAgent` in `Actor::init`. Invoked by the
+    /// introspection runtime handler for `QueryChild` messages.
+    /// `None` means `QueryChild` returns a "not_found" error.
+    query_child_handler:
+        RwLock<Option<Box<dyn (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync>>>,
+
     /// A type-erased reference to Ports<A>, which allows us to recover
     /// an ActorHandle<A> by downcasting.
     ports: Arc<dyn Any + Send + Sync>,
@@ -1892,6 +1949,8 @@ impl InstanceCell {
                 pre_dispatch_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
+                published_properties: RwLock::new(None),
+                query_child_handler: RwLock::new(None),
                 ports,
             }),
         };
@@ -2096,6 +2155,45 @@ impl InstanceCell {
     /// The actor's type name.
     pub fn actor_type_name(&self) -> &str {
         self.inner.actor_type.type_name()
+    }
+
+    /// Set the domain-specific properties published by this actor for
+    /// introspection. The `published_at` timestamp is set
+    /// automatically to `RealClock.system_time_now()`.
+    ///
+    /// Infrastructure actors (HostMeshAgent, ProcMeshAgent) call this
+    /// to make their managed-entity metadata available without going
+    /// through the actor's message handler.
+    pub fn set_published_properties(&self, kind: PublishedPropertiesKind) {
+        *self.inner.published_properties.write().unwrap() = Some(PublishedProperties {
+            published_at: RealClock.system_time_now(),
+            kind,
+        });
+    }
+
+    /// Read the last-published domain-specific properties, if any.
+    pub fn published_properties(&self) -> Option<PublishedProperties> {
+        self.inner.published_properties.read().unwrap().clone()
+    }
+
+    /// Register a callback for resolving non-addressable children
+    /// via `IntrospectMessage::QueryChild`.
+    ///
+    /// The callback runs on the actor's introspect task (a separate
+    /// tokio task, not the actor's message loop), so it must be
+    /// `Send + Sync` and must not access actor-mutable state.
+    /// Capture cloned `Proc` references, not `&mut self`.
+    pub fn set_query_child_handler(
+        &self,
+        handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
+    ) {
+        *self.inner.query_child_handler.write().unwrap() = Some(Box::new(handler));
+    }
+
+    /// Invoke the registered QueryChild handler, if any.
+    pub fn query_child(&self, child_ref: &crate::reference::Reference) -> Option<NodePayload> {
+        let guard = self.inner.query_child_handler.read().unwrap();
+        guard.as_ref().map(|handler| handler(child_ref))
     }
 
     /// This is temporary so that we can share binding code between handle and instance.
