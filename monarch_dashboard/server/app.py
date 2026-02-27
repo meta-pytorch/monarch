@@ -6,13 +6,14 @@
 
 """Flask application factory for the Monarch Dashboard.
 
-Creates and configures the Flask app, registers the API blueprint, and
-initialises the database layer pointing at the fake data SQLite file.
+Creates and configures the Flask app, registers the API blueprint,
+initialises the database layer pointing at the fake data SQLite file,
+and serves the React frontend build as static files.
 """
 
 import os
 
-from flask import Flask
+from flask import Flask, send_from_directory
 
 from . import db
 from .routes import api
@@ -26,7 +27,15 @@ def create_app(db_path: str | None = None) -> Flask:
             ``MONARCH_DB_PATH`` environment variable, or
             ``fake_data/fake_data.db`` relative to the package root.
     """
-    app = Flask(__name__)
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    build_dir = os.path.join(base, "frontend", "build")
+
+    app = Flask(
+        __name__,
+        static_folder=os.path.join(build_dir, "static")
+        if os.path.isdir(build_dir)
+        else None,
+    )
 
     if db_path is None:
         db_path = os.environ.get(
@@ -41,6 +50,14 @@ def create_app(db_path: str | None = None) -> Flask:
 
     db.init(db_path)
     app.register_blueprint(api)
+
+    # Serve the React frontend at / (catch-all for client-side routing).
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def serve_frontend(path):
+        if path and os.path.isfile(os.path.join(build_dir, path)):
+            return send_from_directory(build_dir, path)
+        return send_from_directory(build_dir, "index.html")
 
     return app
 
