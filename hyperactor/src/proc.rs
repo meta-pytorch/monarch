@@ -14,8 +14,11 @@
 use std::any::Any;
 use std::any::TypeId;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::future::Future;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic;
 use std::panic::AssertUnwindSafe;
@@ -391,10 +394,8 @@ impl Proc {
         let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, parent);
 
         // Notify telemetry sinks of actor creation
-        {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::Hash;
-            use std::hash::Hasher;
+        // ProcAent and HostAgent are notified separately.
+        if actor_id.name() != "host_agent" && actor_id.name() != "proc_agent" {
             let mut actor_hasher = DefaultHasher::new();
             actor_id.hash(&mut actor_hasher);
             let actor_id_hash = actor_hasher.finish();
