@@ -53,6 +53,24 @@
 //!   through the event loop; in-flight requests are not explicitly
 //!   cancelled or serialized, so slow responses may overlap. Join
 //!   semantics handle retries and reordering.
+//! - **Stopped detection is actor-only and prefix-based**:
+//!   `is_stopped_node` matches `Actor` variants whose `actor_status`
+//!   starts with `"stopped:"` or `"failed:"`. All other variants
+//!   return false.
+//! - **Stopped filtering is dual-source (OR)**: `TreeNode.stopped`
+//!   is true if the cached payload is stopped OR the child ref
+//!   appears in the parent proc's `stopped_children` list. Either
+//!   source alone is sufficient.
+//! - **Filter order: system before stopped**: when both filters are
+//!   off, system membership is checked first. A node that is both
+//!   system and stopped is eliminated by the system check.
+//! - **Placeholder structural equivalence**: `placeholder_stopped`
+//!   is identical to `placeholder` except `stopped: true`. Stopped
+//!   is a rendering hint, not an expansion barrier.
+//! - **Proc actor accounting**: displayed total is `num_actors +
+//!   stopped_children.len()`. `num_actors` counts only live actors.
+//!   `"(max retained)"` appears iff `stopped_retention_cap > 0` and
+//!   `stopped_children.len() >= stopped_retention_cap`.
 //!
 //! Laziness + recursion benefits:
 //! - **Lazy expansion**: proc/actor children are placeholders until
@@ -362,6 +380,9 @@ struct Labels {
     system: &'static str,
     sys_on: &'static str,
     sys_off: &'static str,
+    stopped: &'static str,
+    stopped_on: &'static str,
+    stopped_off: &'static str,
 
     // Detail pane labels
     hosts: &'static str,
@@ -395,6 +416,9 @@ impl Labels {
             system: "sys:",
             sys_on: "on",
             sys_off: "off",
+            stopped: "stopped:",
+            stopped_on: "on",
+            stopped_off: "off",
             hosts: "Hosts: ",
             started_by: "Started by: ",
             uptime_detail: "Uptime: ",
@@ -602,6 +626,8 @@ struct TreeNode {
     /// Whether the backing payload reports any children (controls
     /// fold arrow rendering).
     has_children: bool,
+    /// Whether this actor is stopped/failed (rendered in gray).
+    stopped: bool,
     /// Direct children of this node in the tree.
     children: Vec<TreeNode>,
 }
@@ -620,6 +646,24 @@ impl TreeNode {
             expanded: false,
             fetched: false,
             has_children: true,
+            stopped: false,
+            children: Vec::new(),
+        }
+    }
+
+    /// Create a placeholder for a known-stopped actor.
+    ///
+    /// Like `placeholder` but with `stopped: true` so the node
+    /// renders gray and can be filtered without a child fetch.
+    fn placeholder_stopped(reference: String) -> Self {
+        Self {
+            label: derive_label_from_ref(&reference),
+            reference,
+            node_type: NodeType::Actor,
+            expanded: false,
+            fetched: false,
+            has_children: true,
+            stopped: true,
             children: Vec::new(),
         }
     }
@@ -635,6 +679,7 @@ impl TreeNode {
             expanded: false,
             fetched: true,
             has_children: !payload.children.is_empty(),
+            stopped: is_stopped_node(&payload.properties),
             children: Vec::new(),
             reference,
         }
@@ -739,6 +784,10 @@ struct App {
     /// (toggled via `s`).
     show_system: bool,
 
+    /// Whether to show stopped/failed actors (toggled via `h`).
+    /// Hidden by default so the tree focuses on live actors.
+    show_stopped: bool,
+
     /// Fetch cache with generation-based staleness.
     fetch_cache: HashMap<String, FetchState<NodePayload>>,
     /// Current refresh generation for cache invalidation.
@@ -785,6 +834,7 @@ impl App {
             refresh_interval_label: String::new(),
             error: None,
             show_system: false,
+            show_stopped: false,
             fetch_cache: HashMap::new(),
             refresh_gen: 0,
             seq_counter: 0,
@@ -932,6 +982,7 @@ impl App {
                 &self.client,
                 &self.base_url,
                 self.show_system,
+                self.show_stopped,
                 &mut self.fetch_cache,
                 &mut path,
                 child_ref,
@@ -954,6 +1005,7 @@ impl App {
             expanded: true,
             fetched: true,
             has_children: !root_children.is_empty(),
+            stopped: false,
             children: root_children,
         }));
 
@@ -1039,17 +1091,41 @@ impl App {
             _ => HashSet::new(),
         };
 
+        // Extract stopped_children from proc payloads for lazy
+        // filtering/graying without per-child fetches.
+        let stopped_children: HashSet<&str> = match &payload.properties {
+            NodeProperties::Proc {
+                stopped_children, ..
+            } => stopped_children.iter().map(|s| s.as_str()).collect(),
+            _ => HashSet::new(),
+        };
+
         let mut child_nodes = Vec::new();
         for child_ref in &children {
-            // Skip system children when filtering is active.
+            // Filter order: system first, then stopped.
             if !self.show_system && system_children.contains(child_ref.as_str()) {
                 continue;
             }
 
+            let child_is_stopped = stopped_children.contains(child_ref.as_str());
+
+            if !self.show_stopped && child_is_stopped {
+                continue;
+            }
+
             if is_proc_or_actor {
-                // Lazy: use placeholder.
+                // Lazy: use placeholder or cached payload.
                 if let Some(cached) = self.get_cached_payload(child_ref.as_str()) {
-                    child_nodes.push(TreeNode::from_payload(child_ref.clone(), cached));
+                    // Fallback: also check cached payload in case proc
+                    // payload is stale.
+                    if !self.show_stopped && is_stopped_node(&cached.properties) {
+                        continue;
+                    }
+                    let mut node = TreeNode::from_payload(child_ref.clone(), cached);
+                    node.stopped = node.stopped || child_is_stopped;
+                    child_nodes.push(node);
+                } else if child_is_stopped {
+                    child_nodes.push(TreeNode::placeholder_stopped(child_ref.clone()));
                 } else {
                     child_nodes.push(TreeNode::placeholder(child_ref.clone()));
                 }
@@ -1070,6 +1146,10 @@ impl App {
                     if !self.show_system && is_system_node(&cp.properties) {
                         continue;
                     }
+                    // Apply stopped/failed filtering.
+                    if !self.show_stopped && is_stopped_node(&cp.properties) {
+                        continue;
+                    }
                     child_nodes.push(TreeNode::from_payload(child_ref.clone(), &cp));
                 }
             }
@@ -1088,6 +1168,7 @@ impl App {
             node.has_children = !payload.children.is_empty();
             node.fetched = true;
             node.node_type = NodeType::from_properties(&payload.properties);
+            node.stopped = is_stopped_node(&payload.properties);
             node.children = child_nodes;
             node.expanded = true;
             // Keep scroll offset stable during expansion - the cursor
@@ -1264,6 +1345,11 @@ impl App {
                 self.show_system = !self.show_system;
                 KeyResult::NeedsRefresh
             }
+            KeyCode::Char('h') => {
+                // Toggle stopped/failed actor visibility
+                self.show_stopped = !self.show_stopped;
+                KeyResult::NeedsRefresh
+            }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Scroll selected item to top of visible area
                 self.tree_scroll_offset = self.cursor.pos();
@@ -1313,7 +1399,7 @@ impl App {
 // Tree-building infrastructure (free functions)
 //
 // Extracted from `App` methods so that `refresh()` can pass disjoint
-// Borrows of `App` fields (client, base_url, show_system) to
+// Borrows of `App` fields (client, base_url, show_system, show_stopped) to
 // The tree builder without complex borrowing.
 
 /// Unified fetch+join path for all cache writes.
@@ -1412,6 +1498,15 @@ fn get_cached_payload<'a>(
         FetchState::Ready { value, .. } => Some(value),
         _ => None,
     })
+}
+
+/// Returns true if the node's actor status indicates it has stopped or failed.
+fn is_stopped_node(properties: &NodeProperties) -> bool {
+    matches!(
+        properties,
+        NodeProperties::Actor { actor_status, .. }
+            if actor_status.starts_with("stopped:") || actor_status.starts_with("failed:")
+    )
 }
 
 /// Returns true if the node properties indicate a system actor or proc.
@@ -1676,6 +1771,7 @@ fn build_tree_node<'a>(
     client: &'a reqwest::Client,
     base_url: &'a str,
     show_system: bool,
+    show_stopped: bool,
     cache: &'a mut HashMap<String, FetchState<NodePayload>>,
     path: &'a mut Vec<String>,
     reference: &'a str,
@@ -1723,6 +1819,12 @@ fn build_tree_node<'a>(
             return None;
         }
 
+        // Filter stopped/failed actors.
+        if !show_stopped && is_stopped_node(&payload.properties) {
+            path.pop();
+            return None;
+        }
+
         let label = derive_label(&payload);
         let node_type = NodeType::from_properties(&payload.properties);
         let has_children = !payload.children.is_empty();
@@ -1751,11 +1853,26 @@ fn build_tree_node<'a>(
                 _ => HashSet::new(),
             };
 
+            // Extract stopped_children from proc payloads for lazy
+            // filtering/graying without per-child fetches.
+            let stopped_children: HashSet<&str> = match &payload.properties {
+                NodeProperties::Proc {
+                    stopped_children, ..
+                } => stopped_children.iter().map(|s| s.as_str()).collect(),
+                _ => HashSet::new(),
+            };
+
             let sorted = sorted_children(&payload);
 
             for child_ref in &sorted {
-                // Skip system children when filtering is active.
+                // Filter order: system first, then stopped.
                 if !show_system && system_children.contains(child_ref.as_str()) {
+                    continue;
+                }
+
+                let child_is_stopped = stopped_children.contains(child_ref.as_str());
+
+                if !show_stopped && child_is_stopped {
                     continue;
                 }
 
@@ -1770,6 +1887,7 @@ fn build_tree_node<'a>(
                             client,
                             base_url,
                             show_system,
+                            show_stopped,
                             cache,
                             path,
                             child_ref,
@@ -1784,7 +1902,15 @@ fn build_tree_node<'a>(
                         } else {
                             // Recursive build failed - fall back to placeholder.
                             if let Some(cached) = get_cached_payload(cache, child_ref) {
-                                children.push(TreeNode::from_payload(child_ref.clone(), cached));
+                                // Fallback: also check cached payload.
+                                if !show_stopped && is_stopped_node(&cached.properties) {
+                                    continue;
+                                }
+                                let mut node = TreeNode::from_payload(child_ref.clone(), cached);
+                                node.stopped = node.stopped || child_is_stopped;
+                                children.push(node);
+                            } else if child_is_stopped {
+                                children.push(TreeNode::placeholder_stopped(child_ref.clone()));
                             } else {
                                 children.push(TreeNode::placeholder(child_ref.clone()));
                             }
@@ -1792,7 +1918,15 @@ fn build_tree_node<'a>(
                     } else {
                         // Child is not expanded - use placeholder or cached data.
                         if let Some(cached) = get_cached_payload(cache, child_ref) {
-                            children.push(TreeNode::from_payload(child_ref.clone(), cached));
+                            // Fallback: also check cached payload.
+                            if !show_stopped && is_stopped_node(&cached.properties) {
+                                continue;
+                            }
+                            let mut node = TreeNode::from_payload(child_ref.clone(), cached);
+                            node.stopped = node.stopped || child_is_stopped;
+                            children.push(node);
+                        } else if child_is_stopped {
+                            children.push(TreeNode::placeholder_stopped(child_ref.clone()));
                         } else {
                             children.push(TreeNode::placeholder(child_ref.clone()));
                         }
@@ -1803,6 +1937,7 @@ fn build_tree_node<'a>(
                         client,
                         base_url,
                         show_system,
+                        show_stopped,
                         cache,
                         path,
                         child_ref,
@@ -1826,6 +1961,7 @@ fn build_tree_node<'a>(
             expanded: is_expanded,
             fetched: true,
             has_children,
+            stopped: is_stopped_node(&payload.properties),
             children,
         };
 
@@ -1854,18 +1990,61 @@ fn derive_label(payload: &NodePayload) -> String {
     match &payload.properties {
         NodeProperties::Root { num_hosts, .. } => format!("Mesh Root ({} hosts)", num_hosts),
         NodeProperties::Host {
-            addr, num_procs, ..
-        } => format!("{}  ({} procs)", addr, num_procs),
+            addr,
+            num_procs,
+            system_children,
+            ..
+        } => {
+            let num_system = system_children.len();
+            let num_user = num_procs.saturating_sub(num_system);
+            let mut parts = Vec::new();
+            if num_user > 0 {
+                parts.push(format!("{} user", num_user));
+            }
+            if num_system > 0 {
+                parts.push(format!("{} system", num_system));
+            }
+            if parts.is_empty() {
+                format!("{}  ({} procs)", addr, num_procs)
+            } else {
+                format!("{}  ({} procs: {})", addr, num_procs, parts.join(", "))
+            }
+        }
         NodeProperties::Proc {
             proc_name,
             num_actors,
+            system_children,
+            stopped_children,
+            stopped_retention_cap,
             ..
         } => {
             let short = ProcId::from_str(proc_name)
                 .ok()
                 .and_then(|pid| pid.name().cloned())
                 .unwrap_or_else(|| proc_name.clone());
-            format!("{}  ({} actors)", short, num_actors)
+            let num_system = system_children.len();
+            let num_stopped = stopped_children.len();
+            let num_live = num_actors.saturating_sub(num_system);
+            let total = num_actors + num_stopped;
+            let mut parts = Vec::new();
+            if num_system > 0 {
+                parts.push(format!("{} system", num_system));
+            }
+            if num_live > 0 {
+                parts.push(format!("{} live", num_live));
+            }
+            if num_stopped > 0 {
+                if num_stopped >= *stopped_retention_cap && *stopped_retention_cap > 0 {
+                    parts.push(format!("{} stopped (max retained)", num_stopped));
+                } else {
+                    parts.push(format!("{} stopped", num_stopped));
+                }
+            }
+            if parts.is_empty() {
+                format!("{}  ({} actors)", short, total)
+            } else {
+                format!("{}  ({} actors: {})", short, total, parts.join(", "))
+            }
         }
         NodeProperties::Actor { .. } => match ActorId::from_str(&payload.identity) {
             Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
@@ -2219,6 +2398,11 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     // Gather stats
     let selection = app.current_selection();
     let sys_state = if app.show_system { l.sys_on } else { l.sys_off };
+    let stopped_state = if app.show_stopped {
+        l.stopped_on
+    } else {
+        l.stopped_off
+    };
 
     // Extract uptime and username from root node
     let (uptime_str, username) = if let Some(root_payload) = app.get_cached_payload("root") {
@@ -2264,6 +2448,12 @@ fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         Span::styled(l.separator, app.theme.scheme.stat_label),
         Span::styled(l.system, app.theme.scheme.stat_label),
         Span::styled(sys_state, app.theme.scheme.stat_system),
+    ]);
+
+    line1_spans.extend(vec![
+        Span::styled(l.separator, app.theme.scheme.stat_label),
+        Span::styled(l.stopped, app.theme.scheme.stat_label),
+        Span::styled(stopped_state, app.theme.scheme.stat_system),
     ]);
 
     if !app.refresh_interval_label.is_empty() {
@@ -2348,6 +2538,8 @@ fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
             let style = if vis_idx == app.cursor.pos() {
                 app.theme.scheme.stat_selection.add_modifier(Modifier::BOLD)
+            } else if node.stopped {
+                Style::default().fg(Color::DarkGray)
             } else {
                 app.theme.scheme.node_style(node.node_type)
             };
@@ -2735,7 +2927,7 @@ fn render_actor_detail(
 /// UI with a top border so it reads like a persistent status/help
 /// footer.
 fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect) {
-    let help = "q: quit | j/k: navigate | g/G: top/bottom | Tab/Shift-Tab: expand/collapse | c: collapse all | s: system procs";
+    let help = "q: quit | j/k: navigate | g/G: top/bottom | Tab/Shift-Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors";
     let footer = Paragraph::new(help)
         .style(Style::default().fg(Color::DarkGray))
         .block(Block::default().borders(Borders::TOP));
@@ -2811,6 +3003,25 @@ mod tests {
     //    - stamp_orders_by_timestamp_first: Primary ordering
     //    - stamp_orders_by_seq_when_timestamp_equal: Tie-breaker
     //    - stamp_equality_works: Equivalence relation
+    //
+    // ## 9. Stopped/Failed Actor Filtering
+    //    - is_stopped_node_true_for_stopped_prefix: "stopped:" prefix matches
+    //    - is_stopped_node_true_for_failed_prefix: "failed:" prefix matches
+    //    - is_stopped_node_false_for_running: Running status does not match
+    //    - is_stopped_node_false_without_colon: bare "stopped"/"failed" rejected
+    //    - is_stopped_node_false_for_non_actor_variants: Root/Host/Proc always false
+    //    - placeholder_stopped_differs_only_in_stopped_field: structural equivalence
+    //    - from_payload_sets_stopped_for_stopped_actor: stopped payload → stopped node
+    //    - from_payload_not_stopped_for_running_actor: running payload → not stopped
+    //    - from_payload_proc_is_never_stopped: Proc is never stopped (actor-only)
+    //    - from_payload_or_logic_both_sources_agree: payload ∧ proc list agree
+    //    - from_payload_or_logic_only_proc_list: proc list alone promotes to stopped
+    //    - from_payload_or_logic_only_cached_payload: cached payload alone is sufficient
+    //    - derive_label_host_*: host label user/system breakdown
+    //    - derive_label_proc_*: proc label live/stopped/system breakdown
+    //    - stopped_nodes_visible_in_flatten: stopped nodes survive flatten
+    //    - stopped_node_stopped_field_survives_flatten: field propagates through flatten
+    //    - placeholder_stopped_visible_in_flatten: stopped is visual hint, not barrier
 
     // Helper to find a node by reference using algebraic fold.
     fn find_node_by_ref<'a>(node: &'a TreeNode, reference: &str) -> Option<&'a TreeNode> {
@@ -3403,6 +3614,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "host1".into(),
                 label: "Host 1".into(),
@@ -3410,6 +3622,7 @@ mod tests {
                 expanded: false, // Collapsed
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "proc1".into(),
                     label: "Proc 1".into(),
@@ -3417,6 +3630,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -3439,6 +3653,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "host1".into(),
                 label: "Host 1".into(),
@@ -3446,6 +3661,7 @@ mod tests {
                 expanded: true, // Expanded
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "proc1".into(),
                     label: "Proc 1".into(),
@@ -3453,6 +3669,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -3475,6 +3692,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "child1".into(),
                 label: "Child 1".into(),
@@ -3482,6 +3700,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -3500,6 +3719,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "child1".into(),
                 label: "Child 1".into(),
@@ -3507,6 +3727,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -3527,6 +3748,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "host1".into(),
                 label: "Host 1".into(),
@@ -3534,6 +3756,7 @@ mod tests {
                 expanded: false, // Collapsed, but collect_refs should still visit children
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "proc1".into(),
                     label: "Proc 1".into(),
@@ -3541,6 +3764,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -3567,6 +3791,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "proc1".into(),
@@ -3575,6 +3800,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "actor1".into(),
                         label: "Actor 1".into(),
@@ -3582,6 +3808,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -3593,6 +3820,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -3621,6 +3849,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "proc1".into(),
@@ -3629,6 +3858,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "actor1".into(),
                         label: "Actor 1".into(),
@@ -3636,6 +3866,7 @@ mod tests {
                         expanded: true, // Expanded at depth 1
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -3647,6 +3878,7 @@ mod tests {
                     expanded: false, // Collapsed at depth 0
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -3676,6 +3908,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "proc1".into(),
@@ -3684,6 +3917,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "actor1".into(),
                         label: "Actor 1 in supervision".into(),
@@ -3691,6 +3925,7 @@ mod tests {
                         expanded: true,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -3701,6 +3936,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -3737,6 +3973,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "proc1".into(),
                 label: "Proc 1".into(),
@@ -3744,6 +3981,7 @@ mod tests {
                 expanded: false, // Collapsed
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "actor1".into(),
                     label: "Actor 1".into(),
@@ -3751,6 +3989,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -3778,6 +4017,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "host1".into(),
@@ -3786,6 +4026,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "proc1".into(),
                         label: "Proc 1".into(),
@@ -3793,6 +4034,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: true,
+                        stopped: false,
                         children: vec![TreeNode {
                             reference: "actor1".into(),
                             label: "Actor 1".into(),
@@ -3800,6 +4042,7 @@ mod tests {
                             expanded: false,
                             fetched: true,
                             has_children: false,
+                            stopped: false,
                             children: vec![],
                         }],
                     }],
@@ -3811,6 +4054,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -3844,6 +4088,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -3852,6 +4097,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "target".into(),
                         label: "Target".into(),
@@ -3859,6 +4105,7 @@ mod tests {
                         expanded: true,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -3869,6 +4116,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "should_not_visit".into(),
                         label: "Should Not Visit".into(),
@@ -3876,6 +4124,7 @@ mod tests {
                         expanded: true,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -3912,6 +4161,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "duplicate".into(),
                 label: "Duplicate at depth 0".into(),
@@ -3919,6 +4169,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "duplicate".into(),
                     label: "Duplicate at depth 1".into(),
@@ -3926,6 +4177,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -4006,6 +4258,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "host1".into(),
@@ -4014,6 +4267,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "proc1".into(),
                         label: "Proc 1".into(),
@@ -4021,6 +4275,7 @@ mod tests {
                         expanded: true,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -4031,6 +4286,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -4059,6 +4315,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "child".into(),
                 label: "Child".into(),
@@ -4066,6 +4323,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -4098,6 +4356,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "placeholder".into(),
                 label: "Loading...".into(),
@@ -4105,6 +4364,7 @@ mod tests {
                 expanded: false,
                 fetched: false, // Not yet fetched
                 has_children: true,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -4122,6 +4382,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }];
                 ControlFlow::Break(())
@@ -4199,6 +4460,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "root".into(), // Cycle!
                 label: "Self-reference".into(),
@@ -4206,6 +4468,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -4313,6 +4576,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -4321,6 +4585,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "grandchild1".into(),
                         label: "Grandchild 1".into(),
@@ -4328,6 +4593,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -4338,6 +4604,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -4374,6 +4641,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "duplicate".into(),
                 label: "Duplicate at 0".into(),
@@ -4381,6 +4649,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "duplicate".into(),
                     label: "Duplicate at 1".into(),
@@ -4388,6 +4657,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -4441,6 +4711,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "leaf".into(),
                 label: "Leaf Node".into(),
@@ -4448,6 +4719,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false, // No children
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -4486,6 +4758,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "a".into(),
@@ -4494,6 +4767,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "a1".into(),
                         label: "A1".into(),
@@ -4501,6 +4775,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -4511,6 +4786,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -4559,6 +4835,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "branch_a".into(),
@@ -4567,6 +4844,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "duplicate".into(),
                         label: "Duplicate in A".into(),
@@ -4574,6 +4852,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -4584,6 +4863,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "duplicate".into(),
                         label: "Duplicate in B".into(),
@@ -4591,6 +4871,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -4705,6 +4986,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "only_child".into(),
                 label: "Only Child".into(),
@@ -4712,6 +4994,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -4747,6 +5030,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "placeholder".into(),
                 label: "Loading...".into(),
@@ -4754,6 +5038,7 @@ mod tests {
                 expanded: false,
                 fetched: false,
                 has_children: true, // Indicates children exist but not fetched
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -4796,6 +5081,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "user_proc".into(),
@@ -4804,6 +5090,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -4813,6 +5100,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -4845,6 +5133,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -4853,6 +5142,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -4862,6 +5152,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -4871,6 +5162,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -4892,6 +5184,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -4900,6 +5193,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -4909,6 +5203,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -4935,6 +5230,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "duplicate".into(),
@@ -4943,6 +5239,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "child_of_first".into(),
                         label: "Child of First".into(),
@@ -4950,6 +5247,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -4960,6 +5258,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "child_of_second".into(),
                         label: "Child of Second".into(),
@@ -4967,6 +5266,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -5005,6 +5305,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "empty_parent".into(),
                 label: "Empty Parent".into(),
@@ -5012,6 +5313,7 @@ mod tests {
                 expanded: true, // Expanded but has no children
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5079,6 +5381,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "child".into(),
                 label: "Child".into(),
@@ -5086,6 +5389,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5106,6 +5410,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: false,
+            stopped: false,
             children: vec![],
         };
 
@@ -5130,6 +5435,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "parent".into(),
                 label: "Parent".into(),
@@ -5137,6 +5443,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "target".into(),
                     label: "Target at depth 1".into(),
@@ -5144,6 +5451,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             }],
@@ -5166,6 +5474,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "target".into(),
                 label: "Target at depth 0".into(),
@@ -5173,6 +5482,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5207,6 +5517,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "success".into(),
@@ -5215,6 +5526,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5224,6 +5536,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5233,6 +5546,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5266,6 +5580,7 @@ mod tests {
                 expanded: false,
                 fetched: false, // Placeholder, not fetched yet
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -5277,6 +5592,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "high_fanout_proc".into(),
                 label: "High Fanout Proc".into(),
@@ -5284,6 +5600,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children,
             }],
         };
@@ -5317,6 +5634,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -5325,6 +5643,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "grandchild".into(),
                         label: "Grandchild".into(),
@@ -5332,6 +5651,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -5342,6 +5662,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5422,6 +5743,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "stable".into(),
@@ -5430,6 +5752,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5439,6 +5762,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5462,6 +5786,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "stable".into(),
                 label: "Stable Node (refreshed)".into(),
@@ -5469,6 +5794,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5496,6 +5822,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "actor_with_empty_data".into(),
                 label: "Actor (no flight recorder)".into(),
@@ -5503,6 +5830,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5525,6 +5853,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "a".into(),
@@ -5533,6 +5862,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "a1".into(),
                         label: "A1".into(),
@@ -5540,6 +5870,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -5550,6 +5881,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "b1".into(),
                         label: "B1".into(),
@@ -5557,6 +5889,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -5598,6 +5931,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -5606,6 +5940,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5615,6 +5950,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5633,6 +5969,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "child1".into(),
@@ -5641,6 +5978,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5650,6 +5988,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5676,6 +6015,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "a".into(),
@@ -5684,6 +6024,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5693,6 +6034,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5702,6 +6044,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5711,6 +6054,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5720,6 +6064,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5739,6 +6084,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "a".into(),
@@ -5747,6 +6093,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5756,6 +6103,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5782,6 +6130,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "empty_proc".into(),
                 label: "Proc (0 actors)".into(),
@@ -5789,6 +6138,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false, // No children
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5815,6 +6165,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: long_ref.clone(),
                 label: long_label.clone(),
@@ -5822,6 +6173,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -5853,6 +6205,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "branch_a".into(),
@@ -5861,6 +6214,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![TreeNode {
                         reference: "dup".into(),
                         label: "Dup at depth 1".into(),
@@ -5868,6 +6222,7 @@ mod tests {
                         expanded: false,
                         fetched: true,
                         has_children: false,
+                        stopped: false,
                         children: vec![],
                     }],
                 },
@@ -5878,6 +6233,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5924,6 +6280,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "incomplete".into(),
@@ -5932,6 +6289,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5941,6 +6299,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -5971,6 +6330,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "user_proc".into(),
@@ -5979,6 +6339,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5988,6 +6349,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -5997,6 +6359,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -6015,6 +6378,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "user_proc".into(),
                 label: "User Proc".into(),
@@ -6022,6 +6386,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -6036,6 +6401,7 @@ mod tests {
     // These tests validate behavior under corrupt data, extreme inputs,
     // and adversarial conditions.
 
+    // Corrupted cached state recovers via join.
     #[test]
     fn corrupted_cached_state_recovery() {
         // Inject bad FetchState, ensure next refresh repairs via join.
@@ -6138,6 +6504,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: identity.clone(),
                     label: format!("Label: {}", identity),
@@ -6145,6 +6512,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             };
@@ -6172,6 +6540,7 @@ mod tests {
                 expanded: false,
                 fetched: false,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -6183,6 +6552,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "mega_proc".into(),
                 label: "Mega Proc".into(),
@@ -6190,6 +6560,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children,
             }],
         };
@@ -6222,6 +6593,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![
                 TreeNode {
                     reference: "a".into(),
@@ -6230,6 +6602,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
                 TreeNode {
@@ -6239,6 +6612,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 },
             ],
@@ -6272,6 +6646,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "host1".into(),
                 label: "Host 1".into(),
@@ -6279,6 +6654,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: "proc1".into(),
                     label: "Proc 1".into(),
@@ -6286,6 +6662,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![
                         TreeNode {
                             reference: "actor1".into(),
@@ -6294,6 +6671,7 @@ mod tests {
                             expanded: false,
                             fetched: true,
                             has_children: false,
+                            stopped: false,
                             children: vec![],
                         },
                         TreeNode {
@@ -6303,6 +6681,7 @@ mod tests {
                             expanded: false,
                             fetched: true,
                             has_children: false,
+                            stopped: false,
                             children: vec![],
                         },
                     ],
@@ -6373,6 +6752,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![TreeNode {
                     reference: test_str.to_string(),
                     label: test_str.to_string(),
@@ -6380,6 +6760,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 }],
             };
@@ -6395,6 +6776,7 @@ mod tests {
     // These tests validate algorithmic complexity, prove optimizations work,
     // and test pathological tree shapes at scale.
 
+    // Flatten is O(visible) not O(total).
     #[test]
     fn flatten_scales_linearly_with_visible_nodes() {
         // Prove flatten is O(visible) not O(total).
@@ -6409,6 +6791,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 });
             }
@@ -6420,6 +6803,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children,
             };
 
@@ -6434,6 +6818,7 @@ mod tests {
         }
     }
 
+    // Deep chain and wide fanout both fold and flatten without overflow.
     #[test]
     fn deep_chain_vs_wide_fanout_performance() {
         // Compare deep chain (depth=500, breadth=1) vs
@@ -6447,6 +6832,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![],
         };
 
@@ -6459,6 +6845,7 @@ mod tests {
                 expanded: true,
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: vec![],
             });
             current = &mut current.children[0];
@@ -6474,6 +6861,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -6485,6 +6873,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: wide_children,
         };
 
@@ -6500,6 +6889,7 @@ mod tests {
         assert_eq!(wide_count, 501);
     }
 
+    // ControlFlow::Break short-circuits traversal.
     #[test]
     fn early_exit_avoids_full_traversal() {
         // Prove ControlFlow::Break actually short-circuits.
@@ -6514,6 +6904,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -6525,6 +6916,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children,
         };
 
@@ -6544,6 +6936,7 @@ mod tests {
         assert_eq!(visited, 10);
     }
 
+    // Cursor operations on very large flattened list.
     #[test]
     fn cursor_navigation_large_list() {
         // Test cursor operations on very large flattened list.
@@ -6566,6 +6959,7 @@ mod tests {
         assert!(cursor.pos() < cursor.len());
     }
 
+    // Flatten only traverses visible (expanded) nodes.
     #[test]
     fn flatten_ignores_collapsed_subtrees() {
         // Prove flatten only traverses visible nodes.
@@ -6584,6 +6978,7 @@ mod tests {
                     expanded: false,
                     fetched: true,
                     has_children: false,
+                    stopped: false,
                     children: vec![],
                 });
             }
@@ -6595,6 +6990,7 @@ mod tests {
                 expanded: false, // Collapsed!
                 fetched: true,
                 has_children: true,
+                stopped: false,
                 children: grandchildren,
             });
         }
@@ -6606,6 +7002,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children,
         };
 
@@ -6614,6 +7011,7 @@ mod tests {
         assert_eq!(rows.len(), 100);
     }
 
+    // (reference, depth) tracking with many duplicates.
     #[test]
     fn many_nodes_same_reference_depth_tracking() {
         // Test (reference, depth) tracking with many duplicates.
@@ -6629,6 +7027,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             };
 
@@ -6641,6 +7040,7 @@ mod tests {
                     expanded: true,
                     fetched: true,
                     has_children: true,
+                    stopped: false,
                     children: vec![node],
                 };
             }
@@ -6655,6 +7055,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children,
         };
 
@@ -6665,6 +7066,7 @@ mod tests {
         assert_eq!(rows.len(), expected);
     }
 
+    // No growth proportional to operation count.
     #[test]
     fn memory_stable_across_repeated_operations() {
         // Verify no growth proportional to operation count.
@@ -6675,6 +7077,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: vec![TreeNode {
                 reference: "child".into(),
                 label: "Child".into(),
@@ -6682,6 +7085,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             }],
         };
@@ -6697,6 +7101,7 @@ mod tests {
         assert_eq!(node_count, 2); // root + child only
     }
 
+    // Fold is as efficient as manual recursion.
     #[test]
     fn fold_performance_parity_with_manual_recursion() {
         // Prove fold is as efficient as manual recursion.
@@ -6709,6 +7114,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -6720,6 +7126,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children,
         };
 
@@ -6736,6 +7143,7 @@ mod tests {
         assert_eq!(fold_result, 1001);
     }
 
+    // Maximal churn: tree changes from 1000 to 100 nodes.
     #[test]
     fn refresh_churn_large_differential() {
         // Test maximal churn: tree changes from 1000 to 100 nodes.
@@ -6748,6 +7156,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -6759,6 +7168,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: tree_before_children,
         };
 
@@ -6775,6 +7185,7 @@ mod tests {
                 expanded: false,
                 fetched: true,
                 has_children: false,
+                stopped: false,
                 children: vec![],
             });
         }
@@ -6786,6 +7197,7 @@ mod tests {
             expanded: true,
             fetched: true,
             has_children: true,
+            stopped: false,
             children: tree_after_children,
         };
 
@@ -6793,5 +7205,567 @@ mod tests {
         assert_eq!(rows_after.len(), 100);
 
         // Should handle massive churn efficiently
+    }
+
+    // Test fixtures: Stopped/failed actor filtering
+
+    // Stopped prefix matches.
+    #[test]
+    fn is_stopped_node_true_for_stopped_prefix() {
+        let props = NodeProperties::Actor {
+            actor_status: "stopped:sleep completed (2.3s)".to_string(),
+            actor_type: "test".to_string(),
+            messages_processed: 0,
+            created_at: "".to_string(),
+            last_message_handler: None,
+            total_processing_time_us: 0,
+            flight_recorder: None,
+            is_system: false,
+        };
+        assert!(is_stopped_node(&props));
+    }
+
+    // Failed prefix matches.
+    #[test]
+    fn is_stopped_node_true_for_failed_prefix() {
+        let props = NodeProperties::Actor {
+            actor_status: "failed:panic in handler".to_string(),
+            actor_type: "test".to_string(),
+            messages_processed: 0,
+            created_at: "".to_string(),
+            last_message_handler: None,
+            total_processing_time_us: 0,
+            flight_recorder: None,
+            is_system: false,
+        };
+        assert!(is_stopped_node(&props));
+    }
+
+    // Running status does not match.
+    #[test]
+    fn is_stopped_node_false_for_running() {
+        let props = NodeProperties::Actor {
+            actor_status: "Running".to_string(),
+            actor_type: "test".to_string(),
+            messages_processed: 0,
+            created_at: "".to_string(),
+            last_message_handler: None,
+            total_processing_time_us: 0,
+            flight_recorder: None,
+            is_system: false,
+        };
+        assert!(!is_stopped_node(&props));
+    }
+
+    // "stopped" without trailing colon must NOT match.
+    #[test]
+    fn is_stopped_node_false_without_colon() {
+        let props = NodeProperties::Actor {
+            actor_status: "stopped".to_string(),
+            actor_type: "test".to_string(),
+            messages_processed: 0,
+            created_at: "".to_string(),
+            last_message_handler: None,
+            total_processing_time_us: 0,
+            flight_recorder: None,
+            is_system: false,
+        };
+        assert!(!is_stopped_node(&props));
+
+        let props2 = NodeProperties::Actor {
+            actor_status: "failed".to_string(),
+            actor_type: "test".to_string(),
+            messages_processed: 0,
+            created_at: "".to_string(),
+            last_message_handler: None,
+            total_processing_time_us: 0,
+            flight_recorder: None,
+            is_system: false,
+        };
+        assert!(!is_stopped_node(&props2));
+    }
+
+    // Non-Actor variants always return false.
+    #[test]
+    fn is_stopped_node_false_for_non_actor_variants() {
+        let root = NodeProperties::Root {
+            num_hosts: 1,
+            started_at: "".to_string(),
+            started_by: "".to_string(),
+            system_children: vec![],
+        };
+        assert!(!is_stopped_node(&root));
+
+        let host = NodeProperties::Host {
+            addr: "127.0.0.1:1234".to_string(),
+            num_procs: 1,
+            system_children: vec![],
+        };
+        assert!(!is_stopped_node(&host));
+
+        let proc_props = NodeProperties::Proc {
+            proc_name: "proc".to_string(),
+            num_actors: 0,
+            is_system: false,
+            system_children: vec![],
+            stopped_children: vec![],
+            stopped_retention_cap: 0,
+        };
+        assert!(!is_stopped_node(&proc_props));
+    }
+
+    // placeholder_stopped is structurally identical to placeholder except stopped.
+    #[test]
+    fn placeholder_stopped_differs_only_in_stopped_field() {
+        let normal = TreeNode::placeholder("actor1".to_string());
+        let stopped = TreeNode::placeholder_stopped("actor1".to_string());
+
+        // Structural equivalence except stopped.
+        assert_eq!(normal.reference, stopped.reference);
+        assert_eq!(normal.label, stopped.label);
+        assert!(matches!(normal.node_type, NodeType::Actor));
+        assert!(matches!(stopped.node_type, NodeType::Actor));
+        assert_eq!(normal.expanded, stopped.expanded);
+        assert_eq!(normal.fetched, stopped.fetched);
+        assert_eq!(normal.has_children, stopped.has_children);
+        assert_eq!(normal.children.len(), stopped.children.len());
+
+        assert!(!normal.stopped);
+        assert!(stopped.stopped);
+        assert!(!stopped.fetched); // still unfetched
+        assert!(stopped.has_children); // expandable
+    }
+
+    // from_payload sets stopped when payload has stopped actor_status.
+    #[test]
+    fn from_payload_sets_stopped_for_stopped_actor() {
+        let payload = NodePayload {
+            identity: "actor1".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "stopped:done".to_string(),
+                actor_type: "test".to_string(),
+                messages_processed: 5,
+                created_at: "".to_string(),
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                is_system: false,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let node = TreeNode::from_payload("actor1".to_string(), &payload);
+        assert!(node.stopped);
+    }
+
+    // from_payload does not set stopped for a running actor.
+    #[test]
+    fn from_payload_not_stopped_for_running_actor() {
+        let payload = mock_payload("actor1");
+        let node = TreeNode::from_payload("actor1".to_string(), &payload);
+        assert!(!node.stopped);
+    }
+
+    // Proc payloads never set stopped (is_stopped_node is actor-only).
+    #[test]
+    fn from_payload_proc_is_never_stopped() {
+        let payload = NodePayload {
+            identity: "proc1".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "proc1".to_string(),
+                num_actors: 0,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["x".to_string()],
+                stopped_retention_cap: 10,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let node = TreeNode::from_payload("proc1".to_string(), &payload);
+        assert!(!node.stopped);
+    }
+
+    // Host label with no system children shows user count only.
+    #[test]
+    fn derive_label_host_no_system_children() {
+        let payload = NodePayload {
+            identity: "host:h1".to_string(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8000".to_string(),
+                num_procs: 3,
+                system_children: vec![],
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "10.0.0.1:8000  (3 procs: 3 user)");
+    }
+
+    // Host label breaks down user vs system procs.
+    #[test]
+    fn derive_label_host_with_system_children() {
+        let payload = NodePayload {
+            identity: "host:h1".to_string(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8000".to_string(),
+                num_procs: 5,
+                system_children: vec!["sys1".into(), "sys2".into()],
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(
+            derive_label(&payload),
+            "10.0.0.1:8000  (5 procs: 3 user, 2 system)"
+        );
+    }
+
+    // Host label omits "0 user" when all procs are system.
+    #[test]
+    fn derive_label_host_all_system() {
+        let payload = NodePayload {
+            identity: "host:h1".to_string(),
+            properties: NodeProperties::Host {
+                addr: "10.0.0.1:8000".to_string(),
+                num_procs: 2,
+                system_children: vec!["s1".into(), "s2".into()],
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // num_user = 2 - 2 = 0, so no "0 user" part.
+        assert_eq!(derive_label(&payload), "10.0.0.1:8000  (2 procs: 2 system)");
+    }
+
+    // Proc label with no system or stopped children shows live count.
+    #[test]
+    fn derive_label_proc_no_system_no_stopped() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 4,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        assert_eq!(derive_label(&payload), "myproc  (4 actors: 4 live)");
+    }
+
+    // Proc label shows live and stopped counts.
+    #[test]
+    fn derive_label_proc_with_stopped() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 3,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["s1".into(), "s2".into()],
+                stopped_retention_cap: 100,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // total = 3 + 2 = 5. num_live = 3 - 0 = 3.
+        assert_eq!(
+            derive_label(&payload),
+            "myproc  (5 actors: 3 live, 2 stopped)"
+        );
+    }
+
+    // Proc label annotates "(max retained)" when at retention cap.
+    #[test]
+    fn derive_label_proc_stopped_at_retention_cap() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 1,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["s1".into(), "s2".into(), "s3".into()],
+                stopped_retention_cap: 3,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // len(3) >= cap(3), cap > 0 → "(max retained)".
+        assert!(derive_label(&payload).contains("3 stopped (max retained)"));
+    }
+
+    // Cap of 0 means retention disabled; never show "max retained".
+    #[test]
+    fn derive_label_proc_stopped_retention_cap_zero_never_annotates() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 0,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["s1".into()],
+                stopped_retention_cap: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // cap == 0 → never show "max retained" even though len >= cap.
+        let label = derive_label(&payload);
+        assert!(label.contains("1 stopped"));
+        assert!(!label.contains("max retained"));
+    }
+
+    // Proc label shows all three parts when system, live, and stopped coexist.
+    #[test]
+    fn derive_label_proc_system_and_stopped_and_live() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 5,
+                is_system: false,
+                system_children: vec!["sys1".into()],
+                stopped_children: vec!["dead1".into(), "dead2".into()],
+                stopped_retention_cap: 100,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // num_system=1, num_live=5-1=4, num_stopped=2, total=5+2=7.
+        assert_eq!(
+            derive_label(&payload),
+            "myproc  (7 actors: 1 system, 4 live, 2 stopped)"
+        );
+    }
+
+    // Proc label omits "0 live" when no live actors remain.
+    #[test]
+    fn derive_label_proc_all_stopped_none_live() {
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 0,
+                is_system: false,
+                system_children: vec![],
+                stopped_children: vec!["d1".into(), "d2".into()],
+                stopped_retention_cap: 100,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // num_live=0, no "0 live" part. total=0+2=2.
+        assert_eq!(derive_label(&payload), "myproc  (2 actors: 2 stopped)");
+    }
+
+    // saturating_sub prevents underflow when num_system > num_actors (race).
+    #[test]
+    fn derive_label_proc_saturating_sub_prevents_underflow() {
+        // Edge case: num_system > num_actors (race condition).
+        let payload = NodePayload {
+            identity: "myproc".to_string(),
+            properties: NodeProperties::Proc {
+                proc_name: "myproc".to_string(),
+                num_actors: 1,
+                is_system: false,
+                system_children: vec!["s1".into(), "s2".into(), "s3".into()],
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        // num_live = 1.saturating_sub(3) = 0. No "0 live" part.
+        let label = derive_label(&payload);
+        assert!(label.contains("3 system"));
+        assert!(!label.contains("live"));
+    }
+
+    // Helper: proc node with 2 live + 1 stopped actor for filtering tests.
+    fn make_proc_with_stopped_children() -> TreeNode {
+        // Simulate a proc with 2 live + 1 stopped actor.
+        TreeNode {
+            reference: "root".into(),
+            label: "Root".into(),
+            node_type: NodeType::Root,
+            expanded: true,
+            fetched: true,
+            has_children: true,
+            stopped: false,
+            children: vec![TreeNode {
+                reference: "proc1".into(),
+                label: "proc1".into(),
+                node_type: NodeType::Proc,
+                expanded: true,
+                fetched: true,
+                has_children: true,
+                stopped: false,
+                children: vec![
+                    TreeNode {
+                        reference: "live_actor_1".into(),
+                        label: "live_actor_1".into(),
+                        node_type: NodeType::Actor,
+                        expanded: false,
+                        fetched: true,
+                        has_children: false,
+                        stopped: false,
+                        children: vec![],
+                    },
+                    TreeNode {
+                        reference: "live_actor_2".into(),
+                        label: "live_actor_2".into(),
+                        node_type: NodeType::Actor,
+                        expanded: false,
+                        fetched: true,
+                        has_children: false,
+                        stopped: false,
+                        children: vec![],
+                    },
+                    TreeNode {
+                        reference: "dead_actor".into(),
+                        label: "dead_actor".into(),
+                        node_type: NodeType::Actor,
+                        expanded: false,
+                        fetched: true,
+                        has_children: false,
+                        stopped: true,
+                        children: vec![],
+                    },
+                ],
+            }],
+        }
+    }
+
+    // Stopped nodes are visible in flatten (not filtered by tree structure).
+    #[test]
+    fn stopped_nodes_visible_in_flatten() {
+        let tree = make_proc_with_stopped_children();
+        let rows = flatten_tree(&tree);
+        // proc1 + 2 live + 1 stopped = 4 visible rows.
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().any(|r| r.node.reference == "dead_actor"));
+    }
+
+    // Stopped field propagates through flatten_tree.
+    #[test]
+    fn stopped_node_stopped_field_survives_flatten() {
+        let tree = make_proc_with_stopped_children();
+        let rows = flatten_tree(&tree);
+        let dead = rows
+            .iter()
+            .find(|r| r.node.reference == "dead_actor")
+            .unwrap();
+        assert!(dead.node.stopped);
+        let live = rows
+            .iter()
+            .find(|r| r.node.reference == "live_actor_1")
+            .unwrap();
+        assert!(!live.node.stopped);
+    }
+
+    // Stopped placeholder is visible in flatten (visual hint, not barrier).
+    #[test]
+    fn placeholder_stopped_visible_in_flatten() {
+        let tree = TreeNode {
+            reference: "root".into(),
+            label: "Root".into(),
+            node_type: NodeType::Root,
+            expanded: true,
+            fetched: true,
+            has_children: true,
+            stopped: false,
+            children: vec![TreeNode::placeholder_stopped("dead1".to_string())],
+        };
+        let rows = flatten_tree(&tree);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].node.stopped);
+        assert!(!rows[0].node.fetched);
+    }
+
+    // Dual-source OR: both payload and proc list agree on stopped.
+    #[test]
+    fn from_payload_or_logic_both_sources_agree() {
+        // Payload says stopped, proc list also says stopped.
+        let payload = NodePayload {
+            identity: "actor1".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "stopped:done".to_string(),
+                actor_type: "test".to_string(),
+                messages_processed: 0,
+                created_at: "".to_string(),
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                is_system: false,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let mut node = TreeNode::from_payload("actor1".to_string(), &payload);
+        // Simulate the OR assignment from update_node_children:
+        // node.stopped = node.stopped || child_is_stopped;
+        let child_is_stopped = true; // from proc's stopped_children
+        node.stopped = node.stopped || child_is_stopped;
+        assert!(node.stopped);
+    }
+
+    // Dual-source OR: proc list alone promotes to stopped.
+    #[test]
+    fn from_payload_or_logic_only_proc_list() {
+        // Payload says Running (stale), but proc list says stopped.
+        let payload = mock_payload("actor1"); // Running
+        let mut node = TreeNode::from_payload("actor1".to_string(), &payload);
+        assert!(!node.stopped); // payload alone says not stopped
+        let child_is_stopped = true; // proc list disagrees
+        node.stopped = node.stopped || child_is_stopped;
+        assert!(node.stopped); // OR promotes to stopped
+    }
+
+    // Dual-source OR: cached payload alone is sufficient.
+    #[test]
+    fn from_payload_or_logic_only_cached_payload() {
+        // Payload says stopped, but proc list doesn't include it
+        // (proc list stale).
+        let payload = NodePayload {
+            identity: "actor1".to_string(),
+            properties: NodeProperties::Actor {
+                actor_status: "failed:panic".to_string(),
+                actor_type: "test".to_string(),
+                messages_processed: 0,
+                created_at: "".to_string(),
+                last_message_handler: None,
+                total_processing_time_us: 0,
+                flight_recorder: None,
+                is_system: false,
+            },
+            children: vec![],
+            parent: None,
+            as_of: "".to_string(),
+        };
+        let mut node = TreeNode::from_payload("actor1".to_string(), &payload);
+        assert!(node.stopped); // payload alone is sufficient
+        let child_is_stopped = false; // proc list hasn't caught up
+        node.stopped = node.stopped || child_is_stopped;
+        assert!(node.stopped); // still stopped
     }
 }

@@ -501,10 +501,22 @@ impl Proc {
 
     /// Returns the ActorIds of all live actors in this proc, including
     /// dynamically spawned children.
+    ///
+    /// An actor is considered live if its weak reference is
+    /// upgradeable and its status is not terminal. This excludes
+    /// actors whose `InstanceCell` has been dropped and actors that
+    /// have stopped or failed but whose Arc is still held (e.g. by
+    /// the introspect task during teardown).
     pub fn all_actor_ids(&self) -> Vec<ActorId> {
         self.state()
             .instances
             .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .upgrade()
+                    .is_some_and(|cell| !cell.status().borrow().is_terminal())
+            })
             .map(|entry| entry.key().clone())
             .collect()
     }
@@ -3392,13 +3404,18 @@ mod tests {
         proc: &Proc,
         actor_id: &ActorId,
     ) -> crate::introspect::NodePayload {
-        // The introspect task runs in a separate tokio task; give it
-        // ample time under load (10 s total).
-        for _ in 0..500 {
+        // Yield to let the introspect task run, then poll. Use a
+        // combination of yields (for fast paths) and sleeps (to
+        // avoid busy-spinning if the scheduler is loaded).
+        for i in 0..1000 {
             if let Some(snapshot) = proc.terminated_snapshot(actor_id) {
                 return snapshot;
             }
-            RealClock.sleep(Duration::from_millis(20)).await;
+            if i < 50 {
+                tokio::task::yield_now().await;
+            } else {
+                RealClock.sleep(Duration::from_millis(50)).await;
+            }
         }
         panic!("timed out waiting for terminated snapshot for {}", actor_id);
     }
