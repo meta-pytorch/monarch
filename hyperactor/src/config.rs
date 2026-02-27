@@ -115,6 +115,15 @@ declare_attrs! {
     ))
     pub attr MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// Maximum number of terminated actor snapshots retained per
+    /// proc for post-mortem introspection. When the limit is
+    /// exceeded, the oldest entries are evicted.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_TERMINATED_SNAPSHOT_RETENTION".to_string()),
+        Some("terminated_snapshot_retention".to_string()),
+    ))
+    pub attr TERMINATED_SNAPSHOT_RETENTION: usize = 100;
+
     /// Timeout used by allocator for stopping a proc.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_PROCESS_EXIT_TIMEOUT".to_string()),
