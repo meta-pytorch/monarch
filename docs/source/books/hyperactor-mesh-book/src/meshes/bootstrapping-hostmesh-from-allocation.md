@@ -150,7 +150,7 @@ The long doc comment above `HostMesh::allocate()` in `hyperactor_mesh/src/v1/hos
 2. we ask **every proc in the proc-mesh** to spawn `HostMeshAgentProcMeshTrampoline`;
 3. that trampoline (running *in the remote proc*) does:
    - `Host::serve(...)` in that process, using a `BootstrapProcManager`, so this host can later spawn procs as new OS children,
-   - `host.system_proc().spawn::<HostMeshAgent>(...)` to put a `HostMeshAgent` on the host's service proc,
+   - `host.system_proc().spawn::<HostAgent>(...)` to put a `HostAgent` on the host's service proc,
    - and finally `send(mesh_agents_port, that_host_agent_ref)` back to us.
 
 The ASCII diagram from the source shows exactly that flow:
@@ -233,7 +233,7 @@ And this line:
 if host_ref.mesh_agent() != mesh_agent { ... }
 ```
 
-isn't decorative — it's proving that the agent we just got back is actually "the host-mesh agent that lives on the service proc at this address." We already know the service address (`addr`), so we can construct the actor id we expect for that host: `HostRef(addr).mesh_agent()`. The trampoline just sent us a real `ActorRef<HostMeshAgent>` from the child. We compare the expected id to the actual one; if they don't match, we bail, because that would mean we're about to assemble a host mesh with an agent that isn't actually running on that host's proc.
+isn't decorative — it's proving that the agent we just got back is actually "the host-mesh agent that lives on the service proc at this address." We already know the service address (`addr`), so we can construct the actor id we expect for that host: `HostRef(addr).mesh_agent()`. The trampoline just sent us a real `ActorRef<HostAgent>` from the child. We compare the expected id to the actual one; if they don't match, we bail, because that would mean we're about to assemble a host mesh with an agent that isn't actually running on that host's proc.
 
 - and it turns that into a `HostRef` it can store
 
@@ -264,8 +264,8 @@ We've already said "we spawn a trampoline on every allocated proc," but here's w
    At this point the remote OS process is only running a proc (the thing the allocator told it to start). That proc is reachable and can run actors, but it is not yet a *host* in the v1 sense. The trampoline actor's whole purpose is:
    - call `Host::serve(...)` **inside that remote process**
    - give it a `BootstrapProcManager` so it can later spawn *more* OS processes for procs
-   - spawn the real `HostMeshAgent` on the host's service proc
-   - report back to the parent with an `ActorRef<HostMeshAgent>`
+   - spawn the real `HostAgent` on the host's service proc
+   - report back to the parent with an `ActorRef<HostAgent>`
 
 3. **It reports back using the port we passed down**
    We gave it `mesh_agents.bind()` in the spawn args. That means the trampoline can do:
@@ -292,7 +292,7 @@ At this point in `hyperactor_mesh/src/v1/host_mesh.rs` (inside `HostMesh::alloca
 
 - turned the `Alloc` into a `ProcMesh` (one proc per rank, running in the OS processes the allocator started),
 - spawned a `HostMeshAgentProcMeshTrampoline` on each of those procs,
-- received exactly one `ActorRef<HostMeshAgent>` back per rank over the port,
+- received exactly one `ActorRef<HostAgent>` back per rank over the port,
 - verified that each agent really lives on the direct-addressed "service" proc for that host, and
 - converted those into a `Vec<HostRef>`.
 
@@ -344,5 +344,5 @@ So now the flow looks like:
 1. parent has a proc + instance (can send/receive)
 2. parent allocates OS processes via `ProcessAllocator` (child runs v0 bootstrap)
 3. `ProcMesh::allocate(...)` tells those children "start a proc" → we now have N procs
-4. `HostMesh::allocate(...)` logs into each of those procs, has each one stand up a Host, and collects the `HostMeshAgent` refs
+4. `HostMesh::allocate(...)` logs into each of those procs, has each one stand up a Host, and collects the `HostAgent` refs
 5. we now have an actual `HostMesh`

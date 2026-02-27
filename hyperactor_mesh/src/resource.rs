@@ -45,7 +45,7 @@ use typeuri::Named;
 use crate::Name;
 use crate::StatusOverlay;
 use crate::bootstrap;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::host_agent::ProcState;
 use crate::proc_agent::ActorSpec;
 use crate::proc_agent::ActorState;
 

@@ -475,7 +475,7 @@ impl ProcessAlloc {
         // (c.f. `enable_forwarding`), we do not do log forwarding on
         // these procs. This is because, now that we are on the v1
         // path, the only procs we spawn via this code path are those
-        // to support `HostMeshAgent`s.
+        // to support `HostAgent`s.
         let log_channel: Option<ChannelAddr> = None;
 
         let index = self.created.len();
