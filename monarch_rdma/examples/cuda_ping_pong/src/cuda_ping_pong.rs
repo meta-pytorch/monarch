@@ -9,7 +9,7 @@
 //! # CUDA RDMA Ping-Pong Example
 //!
 //! This example demonstrates how to use RDMA to perform a ping-pong data transfer between two CUDA devices.
-//! It shows a pattern for using RdmaBuffer with CUDA memory for efficient zero-copy
+//! It shows a pattern for using RdmaRemoteBuffer with CUDA memory for efficient zero-copy
 //! bidirectional data transfer between GPUs.
 //!
 //! ## Architecture
@@ -32,7 +32,7 @@
 //! ## Key Components
 //!
 //! - `CudaRdmaActor`: Manages CUDA memory and RDMA operations for a single device
-//! - `RdmaBuffer`: Provides zero-copy memory access between actors
+//! - `RdmaRemoteBuffer`: Provides zero-copy memory access between actors
 //! - `RdmaManagerActor`: Handles the underlying RDMA connections and operations
 //!
 //! ## To run this
@@ -54,6 +54,7 @@
 // Import the cuda-sys and rdmaxcel-sys crates
 // FFI bindings to CUDA RDMA kernels - merged inline
 use std::os::raw::c_int;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use clap::Arg;
@@ -77,10 +78,13 @@ use hyperactor_mesh::Name;
 use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::global_root_client;
 use hyperactor_mesh::host_mesh::HostMesh;
-use monarch_rdma::IbverbsConfig;
-use monarch_rdma::RdmaBuffer;
+use monarch_rdma::IbvConfig;
+use monarch_rdma::RawLocalMemory;
+use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
+use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use monarch_rdma::cu_check;
 use ndslice::Extent;
 use ndslice::ViewExt;
@@ -259,7 +263,7 @@ pub struct CudaRdmaActor {
     cpu_buffer: Box<[u8]>,
     cu_ptr: usize,
     // RDMA buffer handle for the CUDA memory
-    rdma_buffer_handle: Option<RdmaBuffer>,
+    rdma_buffer_handle: Option<RdmaRemoteBuffer>,
     // Reference to the RDMA manager actor
     rdma_manager: ActorRef<RdmaManagerActor>,
 }
@@ -385,7 +389,7 @@ struct InitializeBuffer(pub u8, pub OncePortRef<bool>);
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PerformPingPong(
     pub ActorRef<CudaRdmaActor>,
-    pub RdmaBuffer,
+    pub RdmaRemoteBuffer,
     pub i32,
     pub i32,
     pub OncePortRef<bool>,
@@ -425,7 +429,12 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         if self.rdma_buffer_handle.is_none() {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
-            let buffer_handle = self.rdma_manager.request_buffer(cx, addr, size).await?;
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let handle = self
+                .rdma_manager
+                .downcast_handle(cx)
+                .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
+            let buffer_handle = handle.request_buffer(cx, local_memory).await?;
             self.rdma_buffer_handle = Some(buffer_handle);
         }
 
@@ -489,13 +498,23 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             ));
             cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(context));
         }
-        let qp = self
-            .rdma_manager
+
+        // Resolve IbvManagerActor refs and IbvBuffers from backends
+        let (local_ibv_manager, local_ibv) = local_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))??;
+        let (remote_ibv_manager, remote_ibv) = remote_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))??;
+
+        let qp = local_ibv_manager
             .request_queue_pair(
                 cx,
-                remote_buffer.owner.clone(),
-                local_buffer.device_name.clone(),
-                remote_buffer.device_name.clone(),
+                remote_ibv_manager.clone(),
+                local_ibv.device_name.clone(),
+                remote_ibv.device_name.clone(),
             )
             .await?;
 
@@ -506,12 +525,12 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
             let dv_recv_cq = qp.dv_recv_cq as *mut rdmaxcel_sys::mlx5dv_cq;
             let mut params = rdma_params_t {
                 cu_ptr: self.cu_ptr,
-                laddr: local_buffer.addr,
-                lsize: local_buffer.size,
-                lkey: local_buffer.lkey,
-                raddr: remote_buffer.addr,
-                rsize: remote_buffer.size,
-                rkey: remote_buffer.rkey,
+                laddr: local_ibv.addr,
+                lsize: local_ibv.size,
+                lkey: local_ibv.lkey,
+                raddr: remote_ibv.addr,
+                rsize: remote_ibv.size,
+                rkey: remote_ibv.rkey,
                 qp_num: (*ibv_qp).qp_num,
                 rq_buf: (*dv_qp).rq.buf as *mut u8,
                 rq_cnt: (*dv_qp).rq.wqe_cnt,
@@ -635,7 +654,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 
 // Message to get the buffer handle from an actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaBuffer>);
+struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {
@@ -682,26 +701,26 @@ pub async fn run() -> Result<(), anyhow::Error> {
     let devices = monarch_rdma::get_all_devices();
     // Configure RDMA for the two actors
     // For H100 machines, we use different devices for better performance
-    let device_1_ibv_config: IbverbsConfig;
-    let device_2_ibv_config: IbverbsConfig;
+    let device_1_ibv_config: IbvConfig;
+    let device_2_ibv_config: IbvConfig;
 
     // Check if we have enough devices for optimal configuration
     if devices.len() > 4 {
         // Use separate backend devices for H100 configuration
-        device_1_ibv_config = IbverbsConfig {
+        device_1_ibv_config = IbvConfig {
             device: devices.clone().into_iter().next().unwrap(),
             ..Default::default()
         };
         // The second device used is the 3rd. Main reason is because 0 and 3 are both backend
         // devices on gtn H100 devices.
-        device_2_ibv_config = IbverbsConfig {
+        device_2_ibv_config = IbvConfig {
             device: devices.clone().into_iter().nth(3).unwrap(),
             ..Default::default()
         };
     } else {
         // For other configurations, use default settings
-        device_1_ibv_config = IbverbsConfig::default();
-        device_2_ibv_config = IbverbsConfig::default();
+        device_1_ibv_config = IbvConfig::default();
+        device_2_ibv_config = IbvConfig::default();
     }
 
     let instance = global_root_client();
@@ -745,20 +764,12 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create RDMA manager for the first device
     let device_1_rdma_manager: ActorMesh<RdmaManagerActor> = device_1_proc_mesh
-        .spawn(
-            instance,
-            "device_1_rdma_manager",
-            &Some(device_1_ibv_config),
-        )
+        .spawn_service(instance, "rdma_manager", &Some(device_1_ibv_config))
         .await?;
 
     // Create RDMA manager for the second device
     let device_2_rdma_manager: ActorMesh<RdmaManagerActor> = device_2_proc_mesh
-        .spawn(
-            instance,
-            "device_2_rdma_manager",
-            &Some(device_2_ibv_config),
-        )
+        .spawn_service(instance, "rdma_manager", &Some(device_2_ibv_config))
         .await?;
 
     // Get the RDMA manager actor references
@@ -803,11 +814,11 @@ pub async fn run() -> Result<(), anyhow::Error> {
     receiver_2.recv().await?;
 
     // Get the remote buffer handle from device 1
-    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
+    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaRemoteBuffer>();
     device_1_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_1 = receiver_remote.recv().await?;
 
-    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaBuffer>();
+    let (handle_remote, receiver_remote) = instance.open_once_port::<RdmaRemoteBuffer>();
     device_2_actor.send(&instance, GetBufferHandle(handle_remote.bind()))?;
     let buffer_2 = receiver_remote.recv().await?;
     let (handle_1, receiver_1) = instance.open_once_port::<bool>();

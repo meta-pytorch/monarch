@@ -79,6 +79,8 @@ def configure(
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
     actor_queue_dispatch: bool = ...,
+    rdma_allow_tcp_fallback: bool = ...,
+    rdma_max_chunk_size_mb: int = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -166,6 +168,13 @@ def configure(
             (humantime)
         get_proc_state_max_idle: Maximum idle time for proc state queries
             (humantime)
+        rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
+            hardware is unavailable. When True (default), RDMA operations
+            fall back to chunked hyperactor messaging over the default
+            channel transport. When False, operations fail if no ibverbs
+            backend is available.
+        rdma_max_chunk_size_mb: Maximum chunk size in MiB for
+            TCP-based RDMA transfers (default: 64)
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;

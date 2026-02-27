@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import pytest
 import torch
 from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.rdma import get_rdma_backend, is_rdma_available, RDMAAction, RDMABuffer
+from monarch.rdma import get_rdma_backend, is_ibverbs_available, RDMAAction, RDMABuffer
 
 
 needs_cuda = pytest.mark.skipif(
@@ -21,7 +21,7 @@ needs_cuda = pytest.mark.skipif(
     reason="CUDA not available",
 )
 needs_rdma = pytest.mark.skipif(
-    not is_rdma_available(),
+    not is_ibverbs_available(),
     reason="RDMA not available",
 )
 
@@ -32,12 +32,12 @@ needs_rdma = pytest.mark.skipif(
 
 
 def test_rdma_api_basics():
-    """is_rdma_available() and get_rdma_backend() return sane values."""
-    result = is_rdma_available()
+    """is_ibverbs_available() and get_rdma_backend() return sane values."""
+    result = is_ibverbs_available()
     assert isinstance(result, bool)
 
     backend = get_rdma_backend()
-    assert backend in ("ibverbs", "none")
+    assert backend in ("ibverbs", "tcp", "none")
 
 
 def test_memoryview_addr_and_contiguity():
@@ -569,6 +569,31 @@ class ClientActor(Actor):
             "data_c_sum": torch.sum(self.data_c).item(),
         }
 
+    @endpoint
+    async def check_buffer_retains_tensor(self) -> None:
+        """Bug: RDMABuffer does not store a reference to its backing tensor.
+        After the tensor is deleted, the buffer holds a dangling address."""
+        import gc
+        import weakref
+
+        tensor = torch.full((100,), 42.0, dtype=torch.float32)
+        weak_storage = weakref.ref(tensor.untyped_storage())
+        byte_view = tensor.view(torch.uint8).flatten()
+        buffer = RDMABuffer(byte_view)
+
+        # Delete all Python references to the tensor and its view
+        del byte_view
+        del tensor
+        gc.collect()
+
+        # If RDMABuffer retained a reference, the storage would still be alive
+        assert weak_storage() is not None, (
+            "Backing storage was garbage collected while RDMABuffer "
+            "still holds its raw memory address"
+        )
+        # prevent buffer from being optimized away
+        _ = buffer.size()
+
 
 @needs_rdma
 async def test_rdma_action_concurrent_execution():
@@ -769,3 +794,15 @@ async def test_rdma_action_slicing():
     assert (
         operation_results["data_a_sum"] == sum_a_initial * 2.5
     )  # multi-filled from 100 to 250
+
+
+@needs_rdma
+async def test_rdma_buffer_retains_tensor_reference():
+    """RDMABuffer must retain a reference to its backing tensor so it cannot
+    be garbage collected while the buffer holds its raw memory address.
+    Verified deterministically with weakref.
+    """
+    client_proc = this_host().spawn_procs(per_host={"processes": 1})
+    client = client_proc.spawn("client", ClientActor)
+
+    await client.check_buffer_retains_tensor.call_one()

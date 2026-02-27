@@ -14,6 +14,15 @@ class _RdmaMemoryRegionView:
     def __init__(self, addr: int, size_in_bytes: int) -> None: ...
 
 @final
+class _LocalMemoryHandle:
+    def __init__(self, obj: Any, addr: int, size: int) -> None: ...
+    @property
+    def addr(self) -> int: ...
+    @property
+    def size(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+@final
 class _RdmaManager:
     device: str
     def __repr__(self) -> str: ...
@@ -30,26 +39,22 @@ class _RdmaBuffer:
 
     @classmethod
     def create_rdma_buffer_blocking(
-        cls, addr: int, size: int, proc_id: str, client: Any
+        cls, local: _LocalMemoryHandle, client: Any
     ) -> _RdmaBuffer: ...
     @classmethod
     def create_rdma_buffer_nonblocking(
-        cls, addr: int, size: int, proc_id: str, client: Any
+        cls, local: _LocalMemoryHandle, client: Any
     ) -> PythonTask[Any]: ...
-    def drop(self, local_proc_id: str, client: Any) -> PythonTask[None]: ...
+    def drop(self, client: Any) -> PythonTask[None]: ...
     def read_into(
         self,
-        addr: int,
-        size: int,
-        local_proc_id: str,
+        dst: _LocalMemoryHandle,
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...
     def write_from(
         self,
-        addr: int,
-        size: int,
-        local_proc_id: str,
+        src: _LocalMemoryHandle,
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...
@@ -59,5 +64,6 @@ class _RdmaBuffer:
     def __repr__(self) -> str: ...
     @staticmethod
     def new_from_json(json: str) -> _RdmaBuffer: ...
-    @classmethod
-    def rdma_supported(cls) -> bool: ...
+
+def is_ibverbs_available() -> bool: ...
+def rdma_supported() -> bool: ...

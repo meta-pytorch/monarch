@@ -85,7 +85,7 @@ import numpy as np
 import pytest
 import torch
 from monarch.actor import Actor, endpoint, this_host
-from monarch.rdma import is_rdma_available, RDMABuffer
+from monarch.rdma import is_ibverbs_available, RDMABuffer
 
 
 TIMEOUT = 60  # 60 seconds
@@ -109,7 +109,7 @@ needs_cuda = pytest.mark.skipif(
     reason="CUDA not available",
 )
 needs_rdma = pytest.mark.skipif(
-    not is_rdma_available(),
+    not is_ibverbs_available(),
     reason="RDMA not available",
 )
 

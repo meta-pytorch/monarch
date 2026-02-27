@@ -14,17 +14,17 @@
 //! This file contains primitive data structures for interacting with ibverbs.
 //!
 //! Primitives:
-//! - `IbverbsConfig`: Represents ibverbs specific configurations, holding parameters required to establish and
+//! - `IbvConfig`: Represents ibverbs specific configurations, holding parameters required to establish and
 //!   manage an RDMA connection, including settings for the RDMA device, queue pair attributes, and other
 //!   connection-specific parameters.
-//! - `RdmaDevice`: Represents an RDMA device, i.e. 'mlx5_0'. Contains information about the device, such as:
+//! - `IbvDevice`: Represents an RDMA device, i.e. 'mlx5_0'. Contains information about the device, such as:
 //!   its name, vendor ID, vendor part ID, hardware version, firmware version, node GUID, and capabilities.
-//! - `RdmaPort`: Represents information about the port of an RDMA device, including state, physical state,
+//! - `IbvPort`: Represents information about the port of an RDMA device, including state, physical state,
 //!   LID (Local Identifier), and GID (Global Identifier) information.
-//! - `RdmaMemoryRegionView`: Represents a memory region that can be registered with an RDMA device for direct
+//! - `IbvMemoryRegionView`: Represents a memory region that can be registered with an RDMA device for direct
 //!   memory access operations.
-//! - `RdmaOperation`: Represents the type of RDMA operation to perform (Read or Write).
-//! - `RdmaQpInfo`: Contains connection information needed to establish an RDMA connection with a remote endpoint.
+//! - `IbvOperation`: Represents the type of RDMA operation to perform (Read or Write).
+//! - `IbvQpInfo`: Contains connection information needed to establish an RDMA connection with a remote endpoint.
 //! - `IbvWc`: Wrapper around ibverbs work completion structure, used to track the status of RDMA operations.
 use std::ffi::CStr;
 use std::fmt;
@@ -92,7 +92,7 @@ impl AsMut<rdmaxcel_sys::ibv_gid> for Gid {
 /// Controls whether to use standard ibverbs queue pairs, mlx5dv extended queue pairs,
 /// or EFA SRD queue pairs. Auto mode automatically selects based on device capabilities.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum RdmaQpType {
+pub enum IbvQpType {
     /// Auto-detect based on device capabilities
     Auto,
     /// Force standard ibverbs queue pair
@@ -103,10 +103,10 @@ pub enum RdmaQpType {
     Efa,
 }
 
-/// Converts `RdmaQpType` to the corresponding integer enum value in rdmaxcel_sys.
-pub fn resolve_qp_type(qp_type: RdmaQpType) -> u32 {
+/// Converts `IbvQpType` to the corresponding integer enum value in rdmaxcel_sys.
+pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
     match qp_type {
-        RdmaQpType::Auto => {
+        IbvQpType::Auto => {
             if crate::efa::is_efa_device() {
                 rdmaxcel_sys::RDMA_QP_TYPE_EFA
             } else if mlx5dv_supported() {
@@ -115,9 +115,9 @@ pub fn resolve_qp_type(qp_type: RdmaQpType) -> u32 {
                 rdmaxcel_sys::RDMA_QP_TYPE_STANDARD
             }
         }
-        RdmaQpType::Standard => rdmaxcel_sys::RDMA_QP_TYPE_STANDARD,
-        RdmaQpType::Mlx5dv => rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV,
-        RdmaQpType::Efa => rdmaxcel_sys::RDMA_QP_TYPE_EFA,
+        IbvQpType::Standard => rdmaxcel_sys::RDMA_QP_TYPE_STANDARD,
+        IbvQpType::Mlx5dv => rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV,
+        IbvQpType::Efa => rdmaxcel_sys::RDMA_QP_TYPE_EFA,
     }
 }
 
@@ -127,9 +127,9 @@ pub fn resolve_qp_type(qp_type: RdmaQpType) -> u32 {
 /// It includes settings for the RDMA device, queue pair attributes, and other connection-specific
 /// parameters.
 #[derive(Debug, Named, Clone, Serialize, Deserialize)]
-pub struct IbverbsConfig {
+pub struct IbvConfig {
     /// `device` - The RDMA device to use for the connection.
-    pub device: RdmaDevice,
+    pub device: IbvDevice,
     /// `cq_entries` - The number of completion queue entries.
     pub cq_entries: i32,
     /// `port_num` - The physical port number on the device.
@@ -168,17 +168,17 @@ pub struct IbverbsConfig {
     /// This is used to allow the hardware to settle before starting the first transmission.
     pub hw_init_delay_ms: u64,
     /// `qp_type` - The type of queue pair to create (Auto, Standard, or Mlx5dv).
-    pub qp_type: RdmaQpType,
+    pub qp_type: IbvQpType,
 }
-wirevalue::register_type!(IbverbsConfig);
+wirevalue::register_type!(IbvConfig);
 
 /// Default RDMA parameters below are based on common values from rdma-core examples
 /// For high-performance or production use, consider tuning
 /// based on ibv_query_device() results and workload characteristics
-impl Default for IbverbsConfig {
+impl Default for IbvConfig {
     fn default() -> Self {
         let mut config = Self {
-            device: RdmaDevice::default(),
+            device: IbvDevice::default(),
             cq_entries: 1024,
             port_num: 1,
             gid_index: 3,
@@ -197,7 +197,7 @@ impl Default for IbverbsConfig {
             psn: rand::random::<u32>() & 0xffffff,
             use_gpu_direct: false, // nv_peermem enabled for cuda
             hw_init_delay_ms: 2,
-            qp_type: RdmaQpType::Auto,
+            qp_type: IbvQpType::Auto,
         };
         if crate::efa::is_efa_device() {
             crate::efa::apply_efa_defaults(&mut config);
@@ -206,8 +206,8 @@ impl Default for IbverbsConfig {
     }
 }
 
-impl IbverbsConfig {
-    /// Create a new IbverbsConfig targeting a specific device
+impl IbvConfig {
+    /// Create a new IbvConfig targeting a specific device
     ///
     /// Device targets use a unified "type:id" format:
     /// - "cpu:N" -> finds RDMA device closest to NUMA node N
@@ -224,7 +224,7 @@ impl IbverbsConfig {
     ///
     /// # Returns
     ///
-    /// * `IbverbsConfig` with resolved device, or default device if resolution fails
+    /// * `IbvConfig` with resolved device, or default device if resolution fails
     pub fn targeting(target: &str) -> Self {
         // Normalize shortcuts
         let normalized_target = match target {
@@ -233,8 +233,8 @@ impl IbverbsConfig {
             _ => target,
         };
 
-        let device = crate::device_selection::select_optimal_rdma_device(Some(normalized_target))
-            .unwrap_or_else(RdmaDevice::default);
+        let device = super::device_selection::select_optimal_ibv_device(Some(normalized_target))
+            .unwrap_or_else(IbvDevice::default);
 
         Self {
             device,
@@ -243,11 +243,11 @@ impl IbverbsConfig {
     }
 }
 
-impl std::fmt::Display for IbverbsConfig {
+impl std::fmt::Display for IbvConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "IbverbsConfig {{ device: {}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
+            "IbvConfig {{ device: {}, port_num: {}, gid_index: {}, max_send_wr: {}, max_recv_wr: {}, max_send_sge: {}, max_recv_sge: {}, path_mtu: {:?}, retry_cnt: {}, rnr_retry: {}, qp_timeout: {}, min_rnr_timer: {}, max_dest_rd_atomic: {}, max_rd_atomic: {}, pkey_index: {}, psn: 0x{:x} }}",
             self.device.name(),
             self.port_num,
             self.gid_index,
@@ -287,7 +287,7 @@ impl std::fmt::Display for IbverbsConfig {
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RdmaDevice {
+pub struct IbvDevice {
     /// `name` - The name of the RDMA device (e.g., "mlx5_0").
     pub name: String,
     /// `vendor_id` - The vendor ID of the device.
@@ -301,7 +301,7 @@ pub struct RdmaDevice {
     /// `node_guid` - Node GUID (Globally Unique Identifier) of the device.
     node_guid: u64,
     /// `ports` - Vector of ports available on this device.
-    ports: Vec<RdmaPort>,
+    ports: Vec<IbvPort>,
     /// `max_qp` - Maximum number of queue pairs supported.
     max_qp: i32,
     /// `max_cq` - Maximum number of completion queues supported.
@@ -316,14 +316,14 @@ pub struct RdmaDevice {
     max_sge: i32,
 }
 
-impl RdmaDevice {
+impl IbvDevice {
     /// Returns the name of the RDMA device.
     pub fn name(&self) -> &String {
         &self.name
     }
 
     /// Returns the first available RDMA device, if any.
-    pub fn first_available() -> Option<RdmaDevice> {
+    pub fn first_available() -> Option<IbvDevice> {
         let devices = get_all_devices();
         if devices.is_empty() {
             None
@@ -358,7 +358,7 @@ impl RdmaDevice {
     }
 
     /// Returns a reference to the vector of ports available on the RDMA device.
-    pub fn ports(&self) -> &Vec<RdmaPort> {
+    pub fn ports(&self) -> &Vec<IbvPort> {
         &self.ports
     }
 
@@ -393,10 +393,10 @@ impl RdmaDevice {
     }
 }
 
-impl Default for RdmaDevice {
+impl Default for IbvDevice {
     fn default() -> Self {
         // Try to get a smart default using device selection logic (defaults to cpu:0)
-        if let Some(device) = crate::device_selection::select_optimal_rdma_device(Some("cpu:0")) {
+        if let Some(device) = super::device_selection::select_optimal_ibv_device(Some("cpu:0")) {
             device
         } else {
             // Fallback to first available device
@@ -409,7 +409,7 @@ impl Default for RdmaDevice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RdmaPort {
+pub struct IbvPort {
     /// `port_num` - The physical port number on the device.
     port_num: u8,
     /// `state` - The current state of the port.
@@ -432,7 +432,7 @@ pub struct RdmaPort {
     gid_tbl_len: i32,
 }
 
-impl fmt::Display for RdmaDevice {
+impl fmt::Display for IbvDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.name)?;
         writeln!(f, "\tNumber of ports: {}", self.ports.len())?;
@@ -456,7 +456,7 @@ impl fmt::Display for RdmaDevice {
     }
 }
 
-impl fmt::Display for RdmaPort {
+impl fmt::Display for IbvPort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "\tPort {}:", self.port_num)?;
         writeln!(f, "\t\tState: {}", self.state)?;
@@ -570,10 +570,10 @@ pub fn format_gid(gid: &[u8; 16]) -> String {
 ///
 /// # Returns
 ///
-/// A vector of `RdmaDevice` structures, each representing an RDMA device in the system.
+/// A vector of `IbvDevice` structures, each representing an RDMA device in the system.
 /// Returns an empty vector if no devices are found or if there was an error querying
 /// the devices.
-pub fn get_all_devices() -> Vec<RdmaDevice> {
+pub fn get_all_devices() -> Vec<IbvDevice> {
     let mut devices = Vec::new();
 
     // SAFETY: We are calling several C functions from libibverbs.
@@ -609,7 +609,7 @@ pub fn get_all_devices() -> Vec<RdmaDevice> {
                 .to_string_lossy()
                 .into_owned();
 
-            let mut rdma_device = RdmaDevice {
+            let mut rdma_device = IbvDevice {
                 name: device_name,
                 vendor_id: device_attr.vendor_id,
                 vendor_part_id: device_attr.vendor_part_id,
@@ -647,7 +647,7 @@ pub fn get_all_devices() -> Vec<RdmaDevice> {
                     "N/A".to_string()
                 };
 
-                let rdma_port = RdmaPort {
+                let rdma_port = IbvPort {
                     port_num,
                     state,
                     physical_state,
@@ -738,13 +738,6 @@ fn ibverbs_supported_impl() -> bool {
     }
 }
 
-/// Checks if RDMA is fully supported on this system.
-///
-/// This is the canonical function to check if RDMA can be used.
-pub fn rdma_supported() -> bool {
-    ibverbs_supported()
-}
-
 /// Represents a view of a memory region that can be registered with an RDMA device.
 ///
 /// This is a 'view' of a registered Memory Region, allowing multiple views into a single
@@ -770,7 +763,7 @@ pub fn rdma_supported() -> bool {
     Clone,
     Copy
 )]
-pub struct RdmaMemoryRegionView {
+pub struct IbvMemoryRegionView {
     // id should be unique with a given rdmam manager
     pub id: usize,
     /// Virtual address in the process address space.
@@ -784,25 +777,25 @@ pub struct RdmaMemoryRegionView {
     pub rkey: u32,
 }
 
-// SAFETY: RdmaMemoryRegionView can be safely sent between threads because it only
+// SAFETY: IbvMemoryRegionView can be safely sent between threads because it only
 // contains address and size information without any thread-local state. However,
 // this DOES NOT provide any protection against data races in the underlying memory.
 // If one thread initiates an RDMA operation while another thread modifies the same
 // memory region, undefined behavior will occur. The caller is responsible for proper
 // synchronization of access to the underlying memory.
-unsafe impl Send for RdmaMemoryRegionView {}
+unsafe impl Send for IbvMemoryRegionView {}
 
-// SAFETY: RdmaMemoryRegionView is safe for concurrent access by multiple threads
+// SAFETY: IbvMemoryRegionView is safe for concurrent access by multiple threads
 // as it only provides a view into memory without modifying its own state. However,
 // it provides NO PROTECTION against concurrent access to the underlying memory region.
 // The caller must ensure proper synchronization when:
 // 1. Initiating RDMA operations while local code reads/writes the same memory
 // 2. Performing multiple overlapping RDMA operations on the same memory region
 // 3. Freeing or reallocating memory that has in-flight RDMA operations
-unsafe impl Sync for RdmaMemoryRegionView {}
+unsafe impl Sync for IbvMemoryRegionView {}
 
-impl RdmaMemoryRegionView {
-    /// Creates a new `RdmaMemoryRegionView` with the given address and size.
+impl IbvMemoryRegionView {
+    /// Creates a new `IbvMemoryRegionView` with the given address and size.
     pub fn new(
         id: usize,
         virtual_addr: usize,
@@ -835,7 +828,7 @@ impl RdmaMemoryRegionView {
 /// * `Read` - Represents an RDMA read operation where data is read from a remote memory
 ///   region into the local memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RdmaOperation {
+pub enum IbvOperation {
     /// RDMA write operations
     Write,
     WriteWithImm,
@@ -845,22 +838,22 @@ pub enum RdmaOperation {
     Recv,
 }
 
-impl From<RdmaOperation> for rdmaxcel_sys::ibv_wr_opcode::Type {
-    fn from(op: RdmaOperation) -> Self {
+impl From<IbvOperation> for rdmaxcel_sys::ibv_wr_opcode::Type {
+    fn from(op: IbvOperation) -> Self {
         match op {
-            RdmaOperation::Write => rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_WRITE,
-            RdmaOperation::WriteWithImm => rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_WRITE_WITH_IMM,
-            RdmaOperation::Read => rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_READ,
-            RdmaOperation::Recv => panic!("Invalid wr opcode"),
+            IbvOperation::Write => rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_WRITE,
+            IbvOperation::WriteWithImm => rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_WRITE_WITH_IMM,
+            IbvOperation::Read => rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_READ,
+            IbvOperation::Recv => panic!("Invalid wr opcode"),
         }
     }
 }
 
-impl From<rdmaxcel_sys::ibv_wc_opcode::Type> for RdmaOperation {
+impl From<rdmaxcel_sys::ibv_wc_opcode::Type> for IbvOperation {
     fn from(op: rdmaxcel_sys::ibv_wc_opcode::Type) -> Self {
         match op {
-            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE => RdmaOperation::Write,
-            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_READ => RdmaOperation::Read,
+            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE => IbvOperation::Write,
+            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_READ => IbvOperation::Read,
             _ => panic!("Unsupported operation type"),
         }
     }
@@ -868,11 +861,11 @@ impl From<rdmaxcel_sys::ibv_wc_opcode::Type> for RdmaOperation {
 
 /// Contains information needed to establish an RDMA queue pair with a remote endpoint.
 ///
-/// `RdmaQpInfo` encapsulates all the necessary information to establish a queue pair
+/// `IbvQpInfo` encapsulates all the necessary information to establish a queue pair
 /// with a remote RDMA device. This includes queue pair number, LID (Local Identifier),
 /// GID (Global Identifier), remote memory address, remote key, and packet sequence number.
 #[derive(Default, Named, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RdmaQpInfo {
+pub struct IbvQpInfo {
     /// `qp_num` - Queue Pair Number, uniquely identifies a queue pair on the remote device
     pub qp_num: u32,
     /// `lid` - Local Identifier, used for addressing in InfiniBand subnet
@@ -882,13 +875,13 @@ pub struct RdmaQpInfo {
     /// `psn` - Packet Sequence Number, used for ordering packets
     pub psn: u32,
 }
-wirevalue::register_type!(RdmaQpInfo);
+wirevalue::register_type!(IbvQpInfo);
 
-impl std::fmt::Debug for RdmaQpInfo {
+impl std::fmt::Debug for IbvQpInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RdmaQpInfo {{ qp_num: {}, lid: {}, gid: {:?}, psn: 0x{:x} }}",
+            "IbvQpInfo {{ qp_num: {}, lid: {}, gid: {:?}, psn: 0x{:x} }}",
             self.qp_num, self.lid, self.gid, self.psn
         )
     }
@@ -1015,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_device_display() {
-        if let Some(device) = RdmaDevice::first_available() {
+        if let Some(device) = IbvDevice::first_available() {
             let display_output = format!("{}", device);
             assert!(
                 display_output.contains(&device.name),
@@ -1030,7 +1023,7 @@ mod tests {
 
     #[test]
     fn test_port_display() {
-        if let Some(device) = RdmaDevice::first_available() {
+        if let Some(device) = IbvDevice::first_available() {
             if !device.ports().is_empty() {
                 let port = &device.ports()[0];
                 let display_output = format!("{}", port);
@@ -1050,26 +1043,26 @@ mod tests {
     fn test_rdma_operation_conversion() {
         assert_eq!(
             rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_WRITE,
-            rdmaxcel_sys::ibv_wr_opcode::Type::from(RdmaOperation::Write)
+            rdmaxcel_sys::ibv_wr_opcode::Type::from(IbvOperation::Write)
         );
         assert_eq!(
             rdmaxcel_sys::ibv_wr_opcode::IBV_WR_RDMA_READ,
-            rdmaxcel_sys::ibv_wr_opcode::Type::from(RdmaOperation::Read)
+            rdmaxcel_sys::ibv_wr_opcode::Type::from(IbvOperation::Read)
         );
 
         assert_eq!(
-            RdmaOperation::Write,
-            RdmaOperation::from(rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE)
+            IbvOperation::Write,
+            IbvOperation::from(rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_WRITE)
         );
         assert_eq!(
-            RdmaOperation::Read,
-            RdmaOperation::from(rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_READ)
+            IbvOperation::Read,
+            IbvOperation::from(rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RDMA_READ)
         );
     }
 
     #[test]
     fn test_rdma_endpoint() {
-        let endpoint = RdmaQpInfo {
+        let endpoint = IbvQpInfo {
             qp_num: 42,
             lid: 123,
             gid: None,
