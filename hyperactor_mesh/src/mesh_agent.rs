@@ -283,93 +283,30 @@ impl ProcMeshAgent {
             .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
     }
+
+    /// Publish the current proc properties and children list for
+    /// introspection.
+    fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
+        use hyperactor::introspect::PublishedPropertiesKind;
+
+        let all_actors = self.proc.all_actor_ids();
+        let children: Vec<String> = all_actors.into_iter().map(|id| id.to_string()).collect();
+
+        cx.instance()
+            .publish_properties(PublishedPropertiesKind::Proc {
+                proc_name: self.proc.proc_id().to_string(),
+                num_actors: children.len(),
+                is_system: false,
+                children,
+            });
+    }
 }
 
 #[async_trait]
 impl Actor for ProcMeshAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         self.proc.set_supervision_coordinator(this.port())?;
-        Ok(())
-    }
-
-    /// Proc-level introspection override.
-    ///
-    /// `ProcMeshAgent` describes the proc it manages: on `Query` it
-    /// returns `NodeProperties::Proc` and enumerates all actor ids in
-    /// the proc as `children` (excluding the `ProcMeshAgent` itself,
-    /// which is just the infrastructure wrapper).
-    ///
-    /// `QueryChild` is unsupported because proc "children" are always
-    /// independently addressable actors; callers should introspect
-    /// them by sending `IntrospectMessage::Query` directly to the
-    /// child actor id.
-    async fn handle_introspect(
-        &mut self,
-        cx: &Instance<Self>,
-        msg: hyperactor::introspect::IntrospectMessage,
-    ) -> Result<(), anyhow::Error> {
-        use hyperactor::introspect::IntrospectMessage;
-        use hyperactor::introspect::IntrospectView;
-        use hyperactor::introspect::NodePayload;
-        use hyperactor::introspect::NodeProperties;
-
-        match msg {
-            IntrospectMessage::Query { view, reply } => {
-                let payload = match view {
-                    IntrospectView::Entity => {
-                        // Return Proc properties.
-                        let all_actors = self.proc.all_actor_ids();
-                        // Include all actors in the proc, including
-                        // ProcMeshAgent itself (consistent with
-                        // HostMeshAgent behavior).
-                        let children: Vec<String> =
-                            all_actors.into_iter().map(|id| id.to_string()).collect();
-
-                        NodePayload {
-                            identity: cx.self_id().to_string(),
-                            properties: NodeProperties::Proc {
-                                proc_name: self.proc.proc_id().to_string(),
-                                num_actors: children.len(),
-                                is_system: false,
-                            },
-                            children,
-                            parent: None,
-                        }
-                    }
-                    IntrospectView::Actor => {
-                        // Return Actor properties using default.
-                        cx.introspect_payload()
-                    }
-                };
-
-                if let Err(e) = reply.send(cx, payload) {
-                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
-                }
-            }
-            IntrospectMessage::QueryChild { child_ref, reply } => {
-                // All children are independently addressable
-                // actors.
-                if let Err(e) = reply.send(
-                    cx,
-                    NodePayload {
-                        identity: String::new(),
-                        properties: NodeProperties::Error {
-                            code: "not_found".into(),
-                            message: format!(
-                                "proc {} does not handle QueryChild \
-                                 for {}; query the actor directly",
-                                self.proc.proc_id(),
-                                child_ref,
-                            ),
-                        },
-                        children: vec![],
-                        parent: None,
-                    },
-                ) {
-                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
-                }
-            }
-        }
+        self.publish_introspect_properties(this);
         Ok(())
     }
 }
@@ -463,12 +400,13 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
                 actor_id,
             },
         )?;
+        self.publish_introspect_properties(cx);
         Ok(())
     }
 
     async fn stop_actor(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         actor_id: ActorId,
         timeout_ms: u64,
         reason: String,
@@ -479,7 +417,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             actor_name = actor_id.name(),
         );
 
-        if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
+        let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
@@ -492,7 +430,9 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             }
         } else {
             Ok(StopActorResult::NotFound)
-        }
+        };
+        self.publish_introspect_properties(cx);
+        result
     }
 
     async fn status(
@@ -648,6 +588,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
             },
         );
 
+        self.publish_introspect_properties(cx);
         Ok(())
     }
 }

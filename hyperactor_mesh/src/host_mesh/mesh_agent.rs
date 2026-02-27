@@ -36,6 +36,8 @@ use hyperactor::Proc;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::context::Mailbox as _;
 use hyperactor::host::Host;
@@ -218,6 +220,39 @@ impl HostMeshAgent {
             local_mesh_agent: OnceLock::new(),
         }
     }
+
+    /// Publish the current host properties and children list for
+    /// introspection. Called from init and after each state change
+    /// (proc created/stopped).
+    fn publish_introspect_properties(&self, cx: &Instance<Self>) {
+        use hyperactor::introspect::PublishedPropertiesKind;
+
+        let host = match self.host.as_ref() {
+            Some(h) => h,
+            None => return, // host shut down
+        };
+
+        let addr = host.addr().to_string();
+        let mut children = Vec::new();
+
+        // System procs.
+        children.push(system_proc_ref(&host.system_proc().proc_id().to_string()));
+        children.push(system_proc_ref(&host.local_proc().proc_id().to_string()));
+
+        // User procs.
+        for state in self.created.values() {
+            if let Ok((proc_id, _agent_ref)) = &state.created {
+                children.push(proc_id.to_string());
+            }
+        }
+
+        let num_procs = children.len();
+        cx.publish_properties(PublishedPropertiesKind::Host {
+            addr,
+            num_procs,
+            children,
+        });
+    }
 }
 
 #[async_trait]
@@ -245,126 +280,66 @@ impl Actor for HostMeshAgent {
                 host.serve();
             }
         };
-        Ok(())
-    }
+        self.publish_introspect_properties(this);
 
-    /// Host-level introspection override.
-    ///
-    /// `HostMeshAgent` is the "host node" in the introspection graph:
-    /// on `Query` it returns `NodeProperties::Host` and lists its
-    /// immediate children as: (1) two non-addressable system procs
-    /// (system + local), and (2) one addressable `ProcMeshAgent`
-    /// actor per successfully created user proc.
-    ///
-    /// System procs are emitted as synthetic child references
-    /// prefixed with `"[system] "` because they are not actors and
-    /// cannot receive `IntrospectMessage` directly. When the caller
-    /// follows one of these references, it sends
-    /// `IntrospectMessage::QueryChild` back to this `HostMeshAgent`,
-    /// which resolves the proc locally and replies with a
-    /// `NodeProperties::Proc` payload whose `children` are the proc's
-    /// actor ids.
-    async fn handle_introspect(
-        &mut self,
-        cx: &Instance<Self>,
-        msg: hyperactor::introspect::IntrospectMessage,
-    ) -> Result<(), anyhow::Error> {
-        use hyperactor::introspect::IntrospectMessage;
-        use hyperactor::introspect::IntrospectView;
-        use hyperactor::introspect::NodePayload;
-        use hyperactor::introspect::NodeProperties;
+        // Register callback for QueryChild — resolves system procs
+        // that are not independently addressable actors.
+        let host = self.host.as_ref().expect("host present");
+        let system_proc = host.system_proc().clone();
+        let local_proc = host.local_proc().clone();
+        let self_id = this.self_id().clone();
+        this.set_query_child_handler(move |child_ref| {
+            use hyperactor::introspect::NodePayload;
+            use hyperactor::introspect::NodeProperties;
+            use hyperactor::reference::Reference;
 
-        match msg {
-            IntrospectMessage::Query { view, reply } => {
-                let payload = match view {
-                    IntrospectView::Entity => {
-                        // Return Host properties.
-                        let host = self.host.as_ref().expect("host present");
-                        let addr = host.addr().to_string();
-
-                        // Children: system procs + user proc mesh agents.
-                        let mut children = Vec::new();
-
-                        // System procs are prefixed with "[system] " so the
-                        // resolver can distinguish them.
-                        let system_proc_id = host.system_proc().proc_id().to_string();
-                        children.push(system_proc_ref(&system_proc_id));
-                        let local_proc_id = host.local_proc().proc_id().to_string();
-                        children.push(system_proc_ref(&local_proc_id));
-
-                        // User procs: ProcIds from successful creations.
-                        for state in self.created.values() {
-                            if let Ok((proc_id, _agent_ref)) = &state.created {
-                                children.push(proc_id.to_string());
-                            }
-                        }
-
-                        let num_procs = children.len();
-                        NodePayload {
-                            identity: cx.self_id().to_string(),
-                            properties: NodeProperties::Host { addr, num_procs },
-                            children,
-                            parent: None,
-                        }
+            let proc = match child_ref {
+                Reference::Proc(proc_id) => {
+                    if *proc_id == *system_proc.proc_id() {
+                        Some((&system_proc, "service"))
+                    } else if *proc_id == *local_proc.proc_id() {
+                        Some((&local_proc, "local"))
+                    } else {
+                        None
                     }
-                    IntrospectView::Actor => {
-                        // Return Actor properties using default.
-                        cx.introspect_payload()
-                    }
-                };
-
-                if let Err(e) = reply.send(cx, payload) {
-                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
                 }
-            }
-            IntrospectMessage::QueryChild { child_ref, reply } => {
-                use hyperactor::reference::Reference;
+                _ => None,
+            };
 
-                let proc = match &child_ref {
-                    Reference::Proc(proc_id) => {
-                        let host = self.host.as_ref().expect("host present");
-                        if *proc_id == *host.system_proc().proc_id() {
-                            Some(host.system_proc())
-                        } else if *proc_id == *host.local_proc().proc_id() {
-                            Some(host.local_proc())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-
-                let payload = match proc {
-                    Some(proc) => {
-                        let actors = proc.all_actor_ids();
-                        let children: Vec<String> =
-                            actors.iter().map(|id| id.to_string()).collect();
-                        NodePayload {
-                            identity: child_ref.to_string(),
-                            properties: NodeProperties::Proc {
-                                proc_name: proc.proc_id().to_string(),
-                                num_actors: actors.len(),
-                                is_system: true,
-                            },
-                            children,
-                            parent: Some(cx.self_id().to_string()),
-                        }
-                    }
-                    None => NodePayload {
-                        identity: String::new(),
-                        properties: NodeProperties::Error {
-                            code: "not_found".into(),
-                            message: format!("unknown child reference: {}", child_ref,),
+            match proc {
+                Some((proc, label)) => {
+                    let actors: Vec<String> = proc
+                        .all_actor_ids()
+                        .into_iter()
+                        .map(|id| id.to_string())
+                        .collect();
+                    NodePayload {
+                        identity: system_proc_ref(&proc.proc_id().to_string()),
+                        properties: NodeProperties::Proc {
+                            proc_name: label.to_string(),
+                            num_actors: actors.len(),
+                            is_system: true,
                         },
-                        children: vec![],
-                        parent: None,
-                    },
-                };
-                if let Err(e) = reply.send(cx, payload) {
-                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
+                        children: actors,
+                        parent: Some(HostId(self_id.clone()).to_string()),
+                        as_of: humantime::format_rfc3339_millis(RealClock.system_time_now())
+                            .to_string(),
+                    }
                 }
+                None => NodePayload {
+                    identity: String::new(),
+                    properties: NodeProperties::Error {
+                        code: "not_found".into(),
+                        message: format!("child {} not found", child_ref),
+                    },
+                    children: Vec::new(),
+                    parent: None,
+                    as_of: humantime::format_rfc3339_millis(RealClock.system_time_now())
+                        .to_string(),
+                },
             }
-        }
+        });
+
         Ok(())
     }
 }
@@ -383,7 +358,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
     #[tracing::instrument("HostMeshAgent::CreateOrUpdate", level = "info", skip_all, fields(name=%create_or_update.name))]
     async fn handle(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         create_or_update: resource::CreateOrUpdate<ProcSpec>,
     ) -> anyhow::Result<()> {
         if self.created.contains_key(&create_or_update.name) {
@@ -424,6 +399,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
             },
         );
 
+        self.publish_introspect_properties(cx);
         Ok(())
     }
 }
@@ -471,6 +447,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
             }
         }
 
+        self.publish_introspect_properties(cx);
         Ok(())
     }
 }
