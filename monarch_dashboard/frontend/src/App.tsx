@@ -13,10 +13,12 @@ import { MeshTable } from "./components/MeshTable";
 import { ActorTable } from "./components/ActorTable";
 import { ActorDetail } from "./components/ActorDetail";
 import { DagView } from "./components/DagView";
+import { SummaryView } from "./components/SummaryView";
 import { NavItem, Mesh, Actor } from "./types";
 import "./App.css";
 
 const TABS = [
+  { id: "summary", label: "Summary" },
   { id: "hierarchy", label: "Hierarchy" },
   { id: "dag", label: "DAG" },
 ];
@@ -39,7 +41,7 @@ const CHILD_MESH_COLUMNS = [
 ];
 
 function App() {
-  const [activeTab, setActiveTab] = useState("hierarchy");
+  const [activeTab, setActiveTab] = useState("summary");
   const [navStack, setNavStack] = useState<NavItem[]>([
     { label: "Host Meshes", level: "hosts" },
   ]);
@@ -152,6 +154,11 @@ function App() {
     <div className="app">
       <Header tabs={TABS} activeTab={activeTab} onTabChange={handleTabChange} />
       <main className="main-content">
+        {activeTab === "summary" && (
+          <div className="view-container fade-in">
+            <SummaryView />
+          </div>
+        )}
         {activeTab === "hierarchy" && (
           <>
             <Breadcrumb items={navStack} onNavigate={navigateTo} />

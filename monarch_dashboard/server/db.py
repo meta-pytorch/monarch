@@ -193,3 +193,179 @@ def list_sent_messages(
             (sender_actor_id,),
         )
     return _query("SELECT * FROM sent_messages ORDER BY timestamp_us")
+
+
+# ---------------------------------------------------------------------------
+# Summary / aggregate queries
+# ---------------------------------------------------------------------------
+
+
+def get_summary() -> dict[str, Any]:
+    """Return aggregate metrics for the summary dashboard.
+
+    Performs multiple aggregate queries in a single connection for efficiency.
+    """
+    conn = _connect()
+    try:
+        # -- Mesh counts --
+        total_meshes = conn.execute("SELECT COUNT(*) FROM meshes").fetchone()[0]
+        by_class_rows = conn.execute(
+            "SELECT class, COUNT(*) AS cnt FROM meshes GROUP BY class ORDER BY class"
+        ).fetchall()
+        mesh_by_class = {row["class"]: row["cnt"] for row in by_class_rows}
+
+        # -- Actor counts --
+        total_actors = conn.execute("SELECT COUNT(*) FROM actors").fetchone()[0]
+
+        # Latest status per actor (subquery picks the most recent event).
+        actor_status_rows = conn.execute(
+            "SELECT sub.new_status, COUNT(*) AS cnt FROM ("
+            "  SELECT ase.actor_id, ase.new_status"
+            "  FROM actor_status_events ase"
+            "  INNER JOIN ("
+            "    SELECT actor_id, MAX(timestamp_us) AS max_ts"
+            "    FROM actor_status_events GROUP BY actor_id"
+            "  ) latest ON ase.actor_id = latest.actor_id"
+            "    AND ase.timestamp_us = latest.max_ts"
+            ") sub GROUP BY sub.new_status ORDER BY sub.new_status"
+        ).fetchall()
+        actor_by_status = {row["new_status"]: row["cnt"] for row in actor_status_rows}
+
+        # -- Message counts --
+        total_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+        msg_status_rows = conn.execute(
+            "SELECT status, COUNT(*) AS cnt FROM messages GROUP BY status ORDER BY status"
+        ).fetchall()
+        msg_by_status = {row["status"]: row["cnt"] for row in msg_status_rows}
+
+        msg_endpoint_rows = conn.execute(
+            "SELECT endpoint, COUNT(*) AS cnt FROM messages "
+            "GROUP BY endpoint ORDER BY endpoint"
+        ).fetchall()
+        msg_by_endpoint = {row["endpoint"]: row["cnt"] for row in msg_endpoint_rows}
+
+        delivered = msg_by_status.get("delivered", 0)
+        delivery_rate = (
+            round(delivered / total_messages, 3) if total_messages > 0 else 0.0
+        )
+
+        # -- Error details --
+        failed_actors = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
+                "FROM actor_status_events ase "
+                "JOIN actors a ON ase.actor_id = a.id "
+                "INNER JOIN ("
+                "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
+                "  FROM actor_status_events GROUP BY actor_id"
+                ") latest ON ase.actor_id = latest.actor_id "
+                "  AND ase.timestamp_us = latest.max_ts "
+                "WHERE ase.new_status = 'failed' "
+                "ORDER BY ase.timestamp_us"
+            ).fetchall()
+        ]
+
+        stopped_actors = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
+                "FROM actor_status_events ase "
+                "JOIN actors a ON ase.actor_id = a.id "
+                "INNER JOIN ("
+                "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
+                "  FROM actor_status_events GROUP BY actor_id"
+                ") latest ON ase.actor_id = latest.actor_id "
+                "  AND ase.timestamp_us = latest.max_ts "
+                "WHERE ase.new_status = 'stopped' "
+                "ORDER BY ase.timestamp_us"
+            ).fetchall()
+        ]
+
+        failed_messages = msg_by_status.get("failed", 0)
+
+        # -- Timeline --
+        time_range = conn.execute(
+            "SELECT MIN(timestamp_us) AS start_us, MAX(timestamp_us) AS end_us "
+            "FROM actor_status_events"
+        ).fetchone()
+        start_us = time_range["start_us"] if time_range else 0
+        end_us = time_range["end_us"] if time_range else 0
+
+        failure_onset_row = conn.execute(
+            "SELECT MIN(timestamp_us) AS ts FROM actor_status_events "
+            "WHERE new_status = 'failed'"
+        ).fetchone()
+        failure_onset_us = (
+            failure_onset_row["ts"]
+            if failure_onset_row and failure_onset_row["ts"]
+            else None
+        )
+
+        total_status_events = conn.execute(
+            "SELECT COUNT(*) FROM actor_status_events"
+        ).fetchone()[0]
+        total_message_events = conn.execute(
+            "SELECT COUNT(*) FROM message_status_events"
+        ).fetchone()[0]
+
+        # -- Health score (0-100) --
+        # Weighted by status: idle=100, processing=80, unknown/client=50,
+        # transitional=30, stopped=20, failed=0
+        weights = {
+            "idle": 100,
+            "processing": 80,
+            "client": 50,
+            "unknown": 50,
+            "created": 30,
+            "initializing": 30,
+            "saving": 30,
+            "loading": 30,
+            "stopping": 30,
+            "stopped": 20,
+            "failed": 0,
+        }
+        total_weight = 0
+        actor_count_with_status = 0
+        for status, count in actor_by_status.items():
+            w = weights.get(status, 50)
+            total_weight += w * count
+            actor_count_with_status += count
+        health_score = (
+            round(total_weight / actor_count_with_status)
+            if actor_count_with_status > 0
+            else 100
+        )
+
+        return {
+            "mesh_counts": {
+                "total": total_meshes,
+                "by_class": mesh_by_class,
+            },
+            "actor_counts": {
+                "total": total_actors,
+                "by_status": actor_by_status,
+            },
+            "message_counts": {
+                "total": total_messages,
+                "by_status": msg_by_status,
+                "by_endpoint": msg_by_endpoint,
+                "delivery_rate": delivery_rate,
+            },
+            "errors": {
+                "failed_actors": failed_actors,
+                "stopped_actors": stopped_actors,
+                "failed_messages": failed_messages,
+            },
+            "timeline": {
+                "start_us": start_us,
+                "end_us": end_us,
+                "failure_onset_us": failure_onset_us,
+                "total_status_events": total_status_events,
+                "total_message_events": total_message_events,
+            },
+            "health_score": health_score,
+        }
+    finally:
+        conn.close()
