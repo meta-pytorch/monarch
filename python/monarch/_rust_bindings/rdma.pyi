@@ -14,6 +14,15 @@ class _RdmaMemoryRegionView:
     def __init__(self, addr: int, size_in_bytes: int) -> None: ...
 
 @final
+class _LocalMemoryHandle:
+    def __init__(self, obj: Any, addr: int, size: int) -> None: ...
+    @property
+    def addr(self) -> int: ...
+    @property
+    def size(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+@final
 class _RdmaManager:
     device: str
     def __repr__(self) -> str: ...
@@ -30,24 +39,22 @@ class _RdmaBuffer:
 
     @classmethod
     def create_rdma_buffer_blocking(
-        cls, addr: int, size: int, client: Any
+        cls, local: _LocalMemoryHandle, client: Any
     ) -> _RdmaBuffer: ...
     @classmethod
     def create_rdma_buffer_nonblocking(
-        cls, addr: int, size: int, client: Any
+        cls, local: _LocalMemoryHandle, client: Any
     ) -> PythonTask[Any]: ...
     def drop(self, client: Any) -> PythonTask[None]: ...
     def read_into(
         self,
-        addr: int,
-        size: int,
+        dst: _LocalMemoryHandle,
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...
     def write_from(
         self,
-        addr: int,
-        size: int,
+        src: _LocalMemoryHandle,
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...

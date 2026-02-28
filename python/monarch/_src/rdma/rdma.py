@@ -18,7 +18,11 @@ from monarch._src.actor.proc_mesh import ProcMesh
 from typing_extensions import Self
 
 try:
-    from monarch._rust_bindings.rdma import _RdmaBuffer, _RdmaManager
+    from monarch._rust_bindings.rdma import (
+        _LocalMemoryHandle,
+        _RdmaBuffer,
+        _RdmaManager,
+    )
 except ImportError as e:
     logging.error("RDMA is not available: {}".format(e))
     raise e
@@ -132,6 +136,13 @@ def _get_addr_and_size(buf: torch.Tensor | memoryview) -> tuple[int, int]:
             type(buf)
         )
     )
+
+
+def _make_local_memory_handle(
+    data: torch.Tensor | memoryview,
+) -> _LocalMemoryHandle:
+    addr, size = _get_addr_and_size(data)
+    return _LocalMemoryHandle(obj=data, addr=addr, size=size)
 
 
 class RdmaController(Actor):
@@ -255,15 +266,14 @@ class RDMABuffer:
         # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case.
         _ensure_init_rdma_manager().block_on()
 
-        addr, size = _get_addr_and_size(data)
+        handle = _make_local_memory_handle(data)
 
         try:
-            if size == 0:
+            if handle.size == 0:
                 raise ValueError("Cannot create RDMABuffer with size 0.")
             ctx = context()
             self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking(
-                addr=addr,
-                size=size,
+                local=handle,
                 client=ctx.actor_instance,
             )
         # TODO - specific exception
@@ -303,11 +313,11 @@ class RDMABuffer:
             Currently only CPU tensors are fully supported. GPU tensors will be temporarily
             copied to CPU, which may impact performance.
         """
-        dst_addr, dst_size = _get_addr_and_size(dst)
+        handle = _make_local_memory_handle(dst)
 
-        if self.size() > dst_size:
+        if self.size() > handle.size:
             raise ValueError(
-                f"Destination tensor size ({dst_size}) must be >= RDMA buffer size ({self.size()})"
+                f"Destination tensor size ({handle.size}) must be >= RDMA buffer size ({self.size()})"
             )
 
         client = context().actor_instance
@@ -316,8 +326,7 @@ class RDMABuffer:
             await _ensure_init_rdma_manager()
 
             res = await self._buffer.read_into(
-                addr=dst_addr,
-                size=dst_size,
+                dst=handle,
                 client=client,
                 timeout=timeout,
             )
@@ -353,11 +362,11 @@ class RDMABuffer:
             copied to CPU, which may impact performance.
         """
 
-        src_addr, src_size = _get_addr_and_size(src)
+        handle = _make_local_memory_handle(src)
 
-        if src_size > self.size():
+        if handle.size > self.size():
             raise ValueError(
-                f"Source tensor size ({src_size}) must be <= RDMA buffer size ({self.size()})"
+                f"Source tensor size ({handle.size}) must be <= RDMA buffer size ({self.size()})"
             )
         client = context().actor_instance
 
@@ -365,8 +374,7 @@ class RDMABuffer:
             await _ensure_init_rdma_manager()
 
             res = await self._buffer.write_from(
-                addr=src_addr,
-                size=src_size,
+                src=handle,
                 client=client,
                 timeout=timeout,
             )
