@@ -81,6 +81,8 @@ pub enum Status {
     /// The resource has been declared failed after a timeout.
     #[strum(to_string = "Timeout({0:?})")]
     Timeout(Duration),
+    /// The resource exists but its status is not known.
+    Unknown,
 }
 
 impl Status {
