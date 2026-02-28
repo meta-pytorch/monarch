@@ -1837,6 +1837,17 @@ impl<A: Actor> Instance<A> {
     pub fn instance_id(&self) -> Uuid {
         self.inner.id
     }
+
+    /// Return a handle to this instance's parent actor, if it has one.
+    pub fn parent_handle<P: Actor>(&self) -> Option<ActorHandle<P>> {
+        let parent_cell = self.inner.cell.inner.parent.upgrade()?;
+        let ports = if let Ok(ports) = parent_cell.inner.ports.clone().downcast() {
+            ports
+        } else {
+            return None;
+        };
+        Some(ActorHandle::new(parent_cell, ports))
+    }
 }
 
 impl<A: Actor> context::Mailbox for Instance<A> {

@@ -19,17 +19,22 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::lock::Mutex;
+use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Instance;
+use hyperactor::OncePortHandle;
 use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::clock::Clock;
@@ -38,6 +43,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
+use super::IbvBuffer;
+use super::IbvOp;
 use super::domain::IbvDomain;
 use super::primitives::IbvConfig;
 use super::primitives::IbvDevice;
@@ -47,62 +54,61 @@ use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
-use crate::rdma_components::RdmaRemoteBuffer;
+use super::queue_pair::PollTarget;
+use crate::GetIbvActorRefClient;
+use crate::RdmaOpType;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::RdmaManagerActor;
-use crate::rdma_manager_actor::RdmaManagerMessageClient;
 use crate::rdma_manager_actor::get_rdmaxcel_error_message;
 use crate::validate_execution_context;
 
 /// Messages handled by [`IbvManagerActor`].
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
-pub(crate) enum IbvManagerMessage {
+pub enum IbvManagerMessage {
     RequestBuffer {
-        owner: ActorRef<RdmaManagerActor>,
         addr: usize,
         size: usize,
         #[reply]
-        reply: OncePortRef<RdmaRemoteBuffer>,
+        reply: OncePortRef<IbvBuffer>,
     },
     ReleaseBuffer {
-        buffer: RdmaRemoteBuffer,
+        buffer: IbvBuffer,
     },
     RequestQueuePair {
-        self_ref: ActorRef<RdmaManagerActor>,
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
         reply: OncePortRef<IbvQueuePair>,
     },
     Connect {
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
     },
     InitializeQP {
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
         reply: OncePortRef<bool>,
     },
     ConnectionInfo {
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
         reply: OncePortRef<IbvQpInfo>,
     },
     ReleaseQueuePair {
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         qp: IbvQueuePair,
     },
     GetQpState {
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
@@ -110,6 +116,19 @@ pub(crate) enum IbvManagerMessage {
     },
 }
 wirevalue::register_type!(IbvManagerMessage);
+
+/// Submit message for the [`IbvManagerActor`].
+///
+/// Kept as a separate struct (rather than a variant in [`IbvManagerMessage`])
+/// so it can evolve independently. Not serializable — only sent locally
+/// via [`ActorHandle`].
+#[derive(Handler, HandleClient, Debug)]
+pub struct IbvSubmit {
+    pub op: IbvOp,
+    pub timeout: Duration,
+    #[reply]
+    pub reply: OncePortHandle<Result<(), String>>,
+}
 
 /// Manages all ibverbs-specific RDMA resources and operations.
 ///
@@ -121,7 +140,9 @@ wirevalue::register_type!(IbvManagerMessage);
         IbvManagerMessage,
     ],
 )]
-pub(crate) struct IbvManagerActor {
+pub struct IbvManagerActor {
+    owner: OnceLock<ActorHandle<RdmaManagerActor>>,
+
     // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
     device_qps: HashMap<String, HashMap<(ActorId, String), IbvQueuePair>>,
 
@@ -147,6 +168,21 @@ pub(crate) struct IbvManagerActor {
     // Map of PCI addresses to their optimal RDMA devices
     // This is populated during actor initialization using the device selection algorithm
     pci_to_device: HashMap<String, IbvDevice>,
+}
+
+#[async_trait]
+impl Actor for IbvManagerActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        let owner = if let Some(owner) = this.parent_handle() {
+            owner
+        } else {
+            anyhow::bail!("RdmaManagerActor not found as parent of IbvManagerActor");
+        };
+        self.owner
+            .set(owner)
+            .expect("owner should only be set once during init");
+        Ok(())
+    }
 }
 
 impl Drop for IbvManagerActor {
@@ -215,6 +251,21 @@ impl Drop for IbvManagerActor {
 }
 
 impl IbvManagerActor {
+    /// Construct an [`ActorHandle`] for the [`IbvManagerActor`] co-located
+    /// with the caller by querying the local [`RdmaManagerActor`].
+    pub async fn local_handle(
+        client: &(impl hyperactor::context::Actor + Send + Sync),
+    ) -> Result<ActorHandle<Self>, anyhow::Error> {
+        let rdma_handle = RdmaManagerActor::local_handle(client);
+        let ibv_ref = rdma_handle
+            .get_ibv_actor_ref(client)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("local RdmaManagerActor has no ibverbs backend"))?;
+        ibv_ref
+            .downcast_handle(client)
+            .ok_or_else(|| anyhow::anyhow!("IbvManagerActor is not in the local process"))
+    }
+
     /// Create a new IbvManagerActor with the given configuration.
     pub async fn new(params: Option<IbvConfig>) -> Result<Self, anyhow::Error> {
         if !ibverbs_supported() {
@@ -253,6 +304,7 @@ impl IbvManagerActor {
         );
 
         Ok(Self {
+            owner: OnceLock::new(),
             device_qps: HashMap::new(),
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
             device_domains: HashMap::new(),
@@ -270,7 +322,6 @@ impl IbvManagerActor {
         device_name: &str,
         rdma_device: &IbvDevice,
     ) -> Result<(IbvDomain, Option<IbvQueuePair>), anyhow::Error> {
-        // Check if we already have a domain for this device
         if let Some((domain, qp)) = self.device_domains.get(device_name) {
             return Ok((domain.clone(), qp.clone()));
         }
@@ -505,10 +556,95 @@ impl IbvManagerActor {
         }
         Ok(())
     }
-}
 
-#[async_trait]
-impl hyperactor::Actor for IbvManagerActor {}
+    /// Waits for the completion of RDMA operations.
+    ///
+    /// Polls the completion queue until all specified work requests complete
+    /// or until the timeout is reached.
+    ///
+    /// # Arguments
+    /// * `local_buf` - The ibv buffer describing the local side of the RDMA ops
+    /// * `qp` - The RDMA Queue Pair to poll for completion
+    /// * `poll_target` - Which CQ to poll (Send or Recv)
+    /// * `expected_wr_ids` - The work request IDs to wait for
+    /// * `timeout` - Timeout for the RDMA operation to complete.
+    async fn wait_for_completion(
+        &self,
+        local_buf: &IbvBuffer,
+        qp: &mut IbvQueuePair,
+        poll_target: PollTarget,
+        expected_wr_ids: &[u64],
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        let start_time = std::time::Instant::now();
+
+        let mut remaining: std::collections::HashSet<u64> =
+            expected_wr_ids.iter().copied().collect();
+
+        while start_time.elapsed() < timeout {
+            if remaining.is_empty() {
+                return Ok(());
+            }
+
+            let wr_ids_to_poll: Vec<u64> = remaining.iter().copied().collect();
+            match qp.poll_completion(poll_target, &wr_ids_to_poll) {
+                Ok(completions) => {
+                    for (wr_id, _wc) in completions {
+                        remaining.remove(&wr_id);
+                    }
+                    if remaining.is_empty() {
+                        return Ok(());
+                    }
+                    RealClock.sleep(Duration::from_millis(1)).await;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "RDMA polling completion failed: {} [lkey={}, rkey={}, addr=0x{:x}, size={}]",
+                        e,
+                        local_buf.lkey,
+                        local_buf.rkey,
+                        local_buf.addr,
+                        local_buf.size
+                    ));
+                }
+            }
+        }
+        tracing::error!(
+            "timed out while waiting on request completion for wr_ids={:?}",
+            remaining
+        );
+        Err(anyhow::anyhow!(
+            "[ibv_buffer({:?})] rdma operation did not complete in time (expected wr_ids={:?})",
+            local_buf,
+            expected_wr_ids
+        ))
+    }
+
+    /// Core submit logic used by the [`IbvSubmit`] handler.
+    async fn execute_op(
+        &mut self,
+        cx: &Context<'_, Self>,
+        op: IbvOp,
+        timeout: Duration,
+    ) -> Result<(), anyhow::Error> {
+        let mut qp = self
+            .request_queue_pair(
+                cx,
+                op.remote_manager,
+                op.local_buffer.device_name.clone(),
+                op.remote_buffer.device_name.clone(),
+            )
+            .await?;
+
+        let wr_id = match op.op_type {
+            RdmaOpType::WriteFromLocal => qp.put(op.local_buffer.clone(), op.remote_buffer)?,
+            RdmaOpType::ReadIntoLocal => qp.get(op.local_buffer.clone(), op.remote_buffer)?,
+        };
+
+        self.wait_for_completion(&op.local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
+            .await
+    }
+}
 
 #[async_trait]
 #[hyperactor::handle(IbvManagerMessage)]
@@ -516,19 +652,17 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn request_buffer(
         &mut self,
         _cx: &Context<Self>,
-        owner: ActorRef<RdmaManagerActor>,
         addr: usize,
         size: usize,
-    ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
+    ) -> Result<IbvBuffer, anyhow::Error> {
         let (mrv, device_name) = self.register_mr(addr, size)?;
 
-        Ok(RdmaRemoteBuffer {
-            owner,
+        Ok(IbvBuffer {
             mr_id: mrv.id,
+            lkey: mrv.lkey,
+            rkey: mrv.rkey,
             addr: mrv.rdma_addr,
             size: mrv.size,
-            rkey: mrv.rkey,
-            lkey: mrv.lkey,
             device_name,
         })
     }
@@ -536,7 +670,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn release_buffer(
         &mut self,
         _cx: &Context<Self>,
-        buffer: RdmaRemoteBuffer,
+        buffer: IbvBuffer,
     ) -> Result<(), anyhow::Error> {
         self.deregister_mr(buffer.mr_id)
             .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
@@ -546,11 +680,11 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn request_queue_pair(
         &mut self,
         cx: &Context<Self>,
-        self_ref: ActorRef<RdmaManagerActor>,
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
+        let self_ref: ActorRef<IbvManagerActor> = cx.bind();
         let other_id = other.actor_id().clone();
 
         // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
@@ -606,8 +740,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
 
         // Queue pair doesn't exist - need to create connection
         let result = async {
-            let is_loopback =
-                other_id == self_ref.actor_id().clone() && self_device == other_device;
+            let is_loopback = other_id == *self_ref.actor_id() && self_device == other_device;
 
             if is_loopback {
                 // Loopback connection setup
@@ -717,7 +850,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connect(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
@@ -751,7 +884,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn initialize_qp(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
@@ -806,7 +939,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connection_info(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
@@ -837,7 +970,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn release_queue_pair(
         &mut self,
         _cx: &Context<Self>,
-        _other: ActorRef<RdmaManagerActor>,
+        _other: ActorRef<IbvManagerActor>,
         _self_device: String,
         _other_device: String,
         _qp: IbvQueuePair,
@@ -848,7 +981,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn get_qp_state(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<RdmaManagerActor>,
+        other: ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
@@ -870,5 +1003,21 @@ impl IbvManagerMessageHandler for IbvManagerActor {
                 self_device
             ))
         }
+    }
+}
+
+#[async_trait]
+#[hyperactor::handle(IbvSubmit)]
+impl IbvSubmitHandler for IbvManagerActor {
+    async fn ibv_submit(
+        &mut self,
+        cx: &Context<Self>,
+        op: IbvOp,
+        timeout: Duration,
+    ) -> Result<Result<(), String>, anyhow::Error> {
+        Ok(self
+            .execute_op(cx, op, timeout)
+            .await
+            .map_err(|e| e.to_string()))
     }
 }
