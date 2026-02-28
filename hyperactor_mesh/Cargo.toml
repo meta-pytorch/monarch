@@ -61,7 +61,7 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
-indicatif = { version = "0.18.3", features = ["futures", "improved_unicode", "rayon", "tokio"] }
+indicatif = { version = "0.18.4", features = ["futures", "improved_unicode", "rayon", "tokio"] }
 libc = "0.2.139"
 mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
