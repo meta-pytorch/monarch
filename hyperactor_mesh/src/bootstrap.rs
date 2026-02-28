@@ -1195,6 +1195,34 @@ impl BootstrapProcHandle {
         (out, err)
     }
 
+    /// Wait for the proc to exit, escalating to launcher terminate/kill
+    /// if it doesn't exit within `timeout`.
+    ///
+    /// This is a fire-and-forget helper: it assumes a stop signal has
+    /// already been sent. It waits for exit, then escalates through
+    /// terminate and kill if needed.
+    pub(crate) async fn wait_or_brutally_kill(&self, timeout: Duration) {
+        match RealClock.timeout(timeout, self.wait_inner()).await {
+            Ok(st) if st.is_exit() => return,
+            _ => {}
+        }
+
+        let _ = self.mark_stopping();
+
+        if let Some(launcher) = self.launcher.upgrade() {
+            if let Err(e) = launcher.terminate(&self.proc_id, timeout).await {
+                tracing::warn!(
+                    proc_id = %self.proc_id,
+                    error = %e,
+                    "wait_or_brutally_kill: launcher terminate failed, trying kill"
+                );
+                let _ = launcher.kill(&self.proc_id).await;
+            }
+        }
+
+        let _ = self.wait_inner().await;
+    }
+
     /// Sends a StopAll message to the ProcAgent, which should exit the process.
     /// Waits for the successful state change of the process. If the process
     /// doesn't reach a terminal state, returns Err.
@@ -1694,6 +1722,48 @@ impl BootstrapProcManager {
     /// never spawned here, or entry already removed).
     pub async fn status(&self, proc_id: &ProcId) -> Option<ProcStatus> {
         self.children.lock().await.get(proc_id).map(|h| h.status())
+    }
+
+    /// Non-blocking stop: send `StopAll`, then spawn a background task
+    /// that waits for exit and escalates if needed.
+    ///
+    /// The handle stays in `children` so that [`status()`] continues
+    /// to reflect the live lifecycle (Stopping -> Stopped/Killed/Failed).
+    /// Idempotent: no-ops if the proc is already stopping or exited.
+    pub(crate) async fn request_stop(
+        &self,
+        cx: &impl context::Actor,
+        proc: &ProcId,
+        timeout: Duration,
+        reason: &str,
+    ) {
+        let handle = {
+            let guard = self.children.lock().await;
+            guard.get(proc).cloned()
+        };
+
+        let Some(handle) = handle else { return };
+
+        let status = handle.status();
+        if status.is_exit() || matches!(status, ProcStatus::Stopping { .. }) {
+            return;
+        }
+
+        if let Some(agent) = handle.agent_ref() {
+            let mut agent_port = agent.port();
+            agent_port.return_undeliverable(false);
+            let _ = agent_port.send(
+                cx,
+                resource::StopAll {
+                    reason: reason.to_string(),
+                },
+            );
+        }
+
+        let _ = handle.mark_stopping();
+        tokio::spawn(async move {
+            handle.wait_or_brutally_kill(timeout).await;
+        });
     }
 
     fn spawn_exit_monitor(
