@@ -47,7 +47,7 @@ use super::primitives::ibverbs_supported;
 use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
-use crate::rdma_components::RdmaBuffer;
+use crate::rdma_components::RdmaRemoteBuffer;
 use crate::rdma_components::get_registered_cuda_segments;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::rdma_manager_actor::RdmaManagerMessageClient;
@@ -62,10 +62,10 @@ pub(crate) enum IbvManagerMessage {
         addr: usize,
         size: usize,
         #[reply]
-        reply: OncePortRef<RdmaBuffer>,
+        reply: OncePortRef<RdmaRemoteBuffer>,
     },
     ReleaseBuffer {
-        buffer: RdmaBuffer,
+        buffer: RdmaRemoteBuffer,
     },
     RequestQueuePair {
         self_ref: ActorRef<RdmaManagerActor>,
@@ -519,10 +519,10 @@ impl IbvManagerMessageHandler for IbvManagerActor {
         owner: ActorRef<RdmaManagerActor>,
         addr: usize,
         size: usize,
-    ) -> Result<RdmaBuffer, anyhow::Error> {
+    ) -> Result<RdmaRemoteBuffer, anyhow::Error> {
         let (mrv, device_name) = self.register_mr(addr, size)?;
 
-        Ok(RdmaBuffer {
+        Ok(RdmaRemoteBuffer {
             owner,
             mr_id: mrv.id,
             addr: mrv.rdma_addr,
@@ -536,7 +536,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn release_buffer(
         &mut self,
         _cx: &Context<Self>,
-        buffer: RdmaBuffer,
+        buffer: RdmaRemoteBuffer,
     ) -> Result<(), anyhow::Error> {
         self.deregister_mr(buffer.mr_id)
             .map_err(|e| anyhow::anyhow!("could not deregister buffer: {}", e))?;
