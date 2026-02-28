@@ -105,12 +105,18 @@ def main() -> None:
     nested_results = workers.nested_work.call(3).get()
     print(f"Nested work results: {list(nested_results)}")
 
+    # Spawn actors on a sliced proc mesh to demonstrate non-full views.
+    # Slicing workers 1..3 out of 3 produces a parent_view_json with offset=1.
+    print("Spawning actors on a sliced proc mesh (workers 1..3)...")
+    sliced_procs = worker_procs.slice(workers=slice(1, 3))
+    sliced_actors = sliced_procs.spawn("sliced_compute", ComputeActor)
+    sliced_actors.initialized.get()
+
     # Spawn a child process and do work
     print("Spawning a child process...")
     child_procs = hosts.spawn_procs(name="child_worker")
     child_actors = child_procs.spawn("child_compute", ComputeActor)
-    # pyre-ignore[29]: child_actors is an ActorMesh
-    child_actors.compute.call(100).get()
+    child_actors.initialized.get()
 
     # Give a moment for all trace events to be flushed
     print("Waiting for trace events to flush...")
