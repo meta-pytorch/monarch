@@ -34,6 +34,7 @@ from typing import (
     Literal,
     Optional,
     overload,
+    override,
     ParamSpec,
     Tuple,
     Type,
@@ -1466,11 +1467,35 @@ class Actor(MeshTrait):
             "actor implementations are not meshes, but we can't convince the typechecker of it..."
         )
 
+    # Methods to be (optionally) overridden by user code
     def _handle_undeliverable_message(
         self, message: UndeliverableMessageEnvelope
     ) -> bool:
+        """If a message sent by this actor cannot be delivered to its destination, this
+        method is called. The default implementation returns False, indicating that the
+        undeliverable message was not handled. Returning True indicates that the message
+        was handled in some way and does not need to be escalated as an error."""
         # Return False to indicate that the undeliverable message was not handled.
         return False
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        """Called when the actor is stopped due to a failure in a resource that it
+        owns. A resource is a host, proc, actor, or meshes of these.
+        If a truthy value is returned, the failure is considered handled and will not
+        propagate any further. If a falsey value is returned, the failure will be
+        further sent to the owner of this Actor.
+        Note that this is *not* called for errors within this Actor.
+        """
+        return False
+
+    # This method can be sync or async, and thus there is no way to have a common
+    # super implementation.
+    # def __cleanup__(self, exc: str | Exception | None) -> None:
+    #     """Runs any cleanup of resources that should happen when the Actor is stopped or fails.
+    #     This is called even if there is an error.
+    #     It is *not* called in cases of fatal errors, which include (but are not limited to):
+    #     OOMs, panics, signals like SIGSEGV, etc."""
+    #     pass
 
 
 class ActorMesh(MeshTrait, Generic[T]):
@@ -1603,6 +1628,10 @@ class ActorMesh(MeshTrait, Generic[T]):
     def initialized(self) -> Future[None]:
         return Future(coro=self._inner.initialized())
 
+    @property
+    def name(self) -> Future[str]:
+        return Future(coro=self._inner.name())
+
 
 class ActorError(Exception):
     """
@@ -1654,7 +1683,8 @@ def current_size() -> Dict[str, int]:
 class RootClientActor(Actor):
     name: str = "client"
 
-    def __supervise__(self, failure: MeshFailure) -> object:
+    @override
+    def __supervise__(self, failure: MeshFailure) -> bool:
         from monarch.actor import unhandled_fault_hook  # pyre-ignore
 
         unhandled_fault_hook(failure)  # pyre-ignore

@@ -28,7 +28,13 @@ from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionErr
 from monarch._src.actor.actor_mesh import ActorMesh, context
 from monarch._src.actor.host_mesh import fake_in_process_host, this_host
 from monarch._src.actor.proc_mesh import ProcMesh
-from monarch.actor import Actor, ActorError, endpoint, MeshFailure
+from monarch.actor import (
+    Actor,
+    ActorError,
+    endpoint,
+    get_or_spawn_controller,
+    MeshFailure,
+)
 from monarch.config import configured, parametrize_config
 
 
@@ -1470,3 +1476,29 @@ async def test_gil_stall():
         f"[{timestamp()}] all requests completed, gathering took {gather_end - gather_start:.3f} seconds",
         file=sys.stderr,
     )
+
+
+@pytest.mark.timeout(60)
+def test_controller_controller_error():
+    """Tests that errors on actors spawned from the ControllerController don't
+    make it unavailable"""
+    actor_1 = get_or_spawn_controller("actor_1", ErrorActor).get()
+    actor_1.check.call_one().get()
+    actor_2 = get_or_spawn_controller("actor_2", ErrorActor).get()
+    actor_2.check.call_one().get()
+    # Trigger a supervision error that will propagate to the owner (the controller-controller).
+    # We get an exception here too as a subscriber, which we will ignore.
+    with pytest.raises(SupervisionError):
+        actor_1.fail_with_supervision_error.call_one().get()
+
+    # Make sure the error message includes what originally happened.
+    with pytest.raises(
+        ActorError,
+        match="Actor call actor_1.fail_with_supervision_error failed with BaseException",
+    ):
+        get_or_spawn_controller("actor_1", ErrorActor).get()
+
+    # Verify that the other actor is still reachable.
+    # Note that we cannot spawn new actors on a proc mesh that has prior supervision
+    # events at the moment, so we have to use a pre-existing one.
+    actor_2.check.call_one().get()
