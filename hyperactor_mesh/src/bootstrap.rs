@@ -68,8 +68,8 @@ use tracing::Level;
 use typeuri::Named;
 
 use crate::config::MESH_PROC_LAUNCHER_KIND;
-use crate::host_mesh::mesh_agent::HostAgentMode;
-use crate::host_mesh::mesh_agent::HostMeshAgent;
+use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostAgentMode;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::proc_agent::ProcAgent;
@@ -295,7 +295,7 @@ pub async fn host(
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
     exit_on_shutdown: bool,
-) -> anyhow::Result<ActorHandle<HostMeshAgent>> {
+) -> anyhow::Result<ActorHandle<HostAgent>> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
         tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
@@ -314,9 +314,9 @@ pub async fn host(
         .await?;
     let addr = host.addr().clone();
     let system_proc = host.system_proc().clone();
-    let host_mesh_agent = system_proc.spawn::<HostMeshAgent>(
-        "agent",
-        HostMeshAgent::new(HostAgentMode::Process {
+    let host_mesh_agent = system_proc.spawn::<HostAgent>(
+        "host_agent",
+        HostAgent::new(HostAgentMode::Process {
             host,
             exit_on_shutdown,
         }),
@@ -325,7 +325,7 @@ pub async fn host(
     tracing::info!(
         "serving host at {}, agent: {}",
         addr,
-        host_mesh_agent.bind::<HostMeshAgent>()
+        host_mesh_agent.bind::<HostAgent>()
     );
 
     Ok(host_mesh_agent)
@@ -362,7 +362,7 @@ pub enum Bootstrap {
     },
 
     /// Bootstrap as a "v1" host bootstrap. This sets up a new `Host`,
-    /// managed by a [`crate::host_mesh::mesh_agent::HostMeshAgent`].
+    /// managed by a [`crate::host_mesh::mesh_agent::HostAgent`].
     Host {
         /// The address on which to serve the host.
         addr: ChannelAddr,
@@ -3235,13 +3235,13 @@ mod tests {
         //     an in-process service proc (`Proc::new(..)`), and
         //     stores the `BootstrapProcManager` for later spawns.
         //
-        // (3) Install HostMeshAgent (still no new OS process).
-        //     `host.system_proc().spawn::<HostMeshAgent>("agent",
-        //     host).await?` creates the HostMeshAgent actor in that
+        // (3) Install HostAgent (still no new OS process).
+        //     `host.system_proc().spawn::<HostAgent>("host_agent",
+        //     host).await?` creates the HostAgent actor in that
         //     service proc.
         //
         // (4) Collect & assemble. The trampoline returns a
-        //     direct-addressed `ActorRef<HostMeshAgent>`; we collect
+        //     direct-addressed `ActorRef<HostAgent>`; we collect
         //     one per rank and assemble a `HostMesh`.
         //
         // Note: When the Host is later asked to start a proc
@@ -3255,7 +3255,7 @@ mod tests {
 
         // Spawn a ProcMesh named "p0" on the host mesh:
         //
-        // (1) Each HostMeshAgent (running inside its host's service
+        // (1) Each HostAgent (running inside its host's service
         // proc) receives the request.
         //
         // (2) The Host calls into its `BootstrapProcManager::spawn`,
@@ -3434,7 +3434,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_host_bootstrap() {
-        use crate::host_mesh::mesh_agent::GetLocalProcClient;
+        use crate::host_mesh::host_agent::GetLocalProcClient;
         use crate::proc_agent::NewClientInstanceClient;
 
         // Create a local instance just to call the local bootstrap actor.

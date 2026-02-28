@@ -97,7 +97,7 @@ fn fmt_status<'a>(
 
     match status {
         ActorStatus::Stopped(_)
-            if actor_id.name() == "agent" || actor_id.name() == "proc_agent" =>
+            if actor_id.name() == "host_agent" || actor_id.name() == "proc_agent" =>
         {
             // Host agent stopped - use simplified message from D86984496
             let name = match actor_id.proc_id() {

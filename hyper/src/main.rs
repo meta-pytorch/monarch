@@ -56,7 +56,7 @@ async fn run() -> Result<(), anyhow::Error> {
     // Allow the channel layer to flush pending acks before exit.
     // Without this, the remote host's MailboxClient observes a
     // broken link (30 s ack timeout) and the resulting undeliverable
-    // message crashes the HostMeshAgent, tearing down the entire
+    // message crashes the HostAgent, tearing down the entire
     // mesh.  The ack interval is 500 ms, so 1 s is sufficient.
     RealClock.sleep(std::time::Duration::from_secs(1)).await;
 
