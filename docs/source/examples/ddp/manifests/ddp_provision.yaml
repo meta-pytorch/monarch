@@ -14,21 +14,14 @@
 # - GPU nodes with nvidia.com/gpu resources available
 ---
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: monarch-tests
----
-apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -41,11 +34,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 subjects:
   - kind: ServiceAccount
     name: ddp-controller
-    namespace: monarch-tests
+    namespace: default
 roleRef:
   kind: Role
   name: ddp-controller
@@ -55,7 +47,6 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 spec:
   containers:
     - name: controller

@@ -11,25 +11,17 @@
 # - Kubernetes cluster with Monarch operator installed
 # - GPU nodes with nvidia.com/gpu resources available
 ---
-# Namespace for the DDP example
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: monarch-tests
----
 # ServiceAccount for the controller pod
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 ---
 # Role granting permission to list and get pods
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -40,11 +32,10 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 subjects:
   - kind: ServiceAccount
     name: ddp-controller
-    namespace: monarch-tests
+    namespace: default
 roleRef:
   kind: Role
   name: ddp-controller
@@ -54,7 +45,6 @@ apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
 metadata:
   name: ddpmesh
-  namespace: monarch-tests
 spec:
   # Number of worker pods (hosts) in the mesh
   replicas: 2
@@ -113,7 +103,6 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: ddp-controller
-  namespace: monarch-tests
 spec:
   containers:
     - name: controller
