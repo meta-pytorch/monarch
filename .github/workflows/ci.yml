@@ -19,10 +19,9 @@ jobs:
     name: Build CUDA
     uses: ./.github/workflows/build-cuda.yml
 
-  # NOTE: ROCm build is temporarily disabled.
-  # build-rocm:
-  #   name: Build ROCm
-  #   uses: ./.github/workflows/build-rocm.yml
+  build-rocm:
+    name: Build ROCm
+    uses: ./.github/workflows/build-rocm.yml
 
   build-cpu:
     name: Build CPU
