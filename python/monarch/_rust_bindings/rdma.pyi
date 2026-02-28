@@ -30,18 +30,17 @@ class _RdmaBuffer:
 
     @classmethod
     def create_rdma_buffer_blocking(
-        cls, addr: int, size: int, proc_id: str, client: Any
+        cls, addr: int, size: int, client: Any
     ) -> _RdmaBuffer: ...
     @classmethod
     def create_rdma_buffer_nonblocking(
-        cls, addr: int, size: int, proc_id: str, client: Any
+        cls, addr: int, size: int, client: Any
     ) -> PythonTask[Any]: ...
-    def drop(self, local_proc_id: str, client: Any) -> PythonTask[None]: ...
+    def drop(self, client: Any) -> PythonTask[None]: ...
     def read_into(
         self,
         addr: int,
         size: int,
-        local_proc_id: str,
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...
@@ -49,7 +48,6 @@ class _RdmaBuffer:
         self,
         addr: int,
         size: int,
-        local_proc_id: str,
         client: Any,
         timeout: int,
     ) -> PythonTask[Any]: ...

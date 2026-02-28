@@ -43,11 +43,7 @@ impl Serialize for RdmaBackendContext {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             RdmaBackendContext::Ibverbs(actor_ref, _) => {
-                use serde::ser::SerializeTupleVariant;
-                let mut tv =
-                    serializer.serialize_tuple_variant("RdmaBackendContext", 0, "Ibverbs", 1)?;
-                tv.serialize_field(actor_ref)?;
-                tv.end()
+                serializer.serialize_newtype_variant("RdmaBackendContext", 0, "Ibverbs", actor_ref)
             }
         }
     }

@@ -265,8 +265,8 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 2)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -286,8 +286,8 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
-        env.rdma_handle_1
-            .write_from(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -529,10 +529,8 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cpu:0").await?;
 
-        // Pre-initialize comms, and wait for hardware to transition to send state
-
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -556,8 +554,8 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cpu:0", "cuda:1").await?;
 
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -581,8 +579,8 @@ mod tests {
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -605,9 +603,8 @@ mod tests {
             return Ok(());
         }
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
-        // Pre-initialize comms, and wait for hardware to transition to send state
-        env.rdma_handle_1
-            .write_from(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -629,23 +626,26 @@ mod tests {
         let rdma_handle_2 = env.rdma_handle_2.clone();
         let rdma_handle_4 = env.rdma_handle_2.clone();
         let rdma_handle_6 = env.rdma_handle_2.clone();
+        let local_memory_1 = env.local_memory_1.clone();
+        let local_memory_3 = env.local_memory_1.clone();
+        let local_memory_5 = env.local_memory_1.clone();
         let client = &env.client_1;
 
         let task1 = async {
-            env.rdma_handle_1
-                .write_from(client, rdma_handle_2.clone(), 2)
+            rdma_handle_2
+                .read_into_local(client, local_memory_1.clone(), 2)
                 .await
         };
 
         let task2 = async {
-            env.rdma_handle_1
-                .write_from(client, rdma_handle_4.clone(), 2)
+            rdma_handle_4
+                .read_into_local(client, local_memory_3.clone(), 2)
                 .await
         };
 
         let task3 = async {
-            env.rdma_handle_1
-                .write_from(client, rdma_handle_6.clone(), 2)
+            rdma_handle_6
+                .read_into_local(client, local_memory_5.clone(), 2)
                 .await
         };
         let (_result1, _result2, _result3) = tokio::join!(task1, task2, task3);
@@ -673,8 +673,8 @@ mod tests {
         )
         .await?;
 
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 2)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -700,8 +700,8 @@ mod tests {
         )
         .await?;
 
-        env.rdma_handle_1
-            .write_from(&env.client_1, env.rdma_handle_2.clone(), 2)
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 2)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -731,8 +731,8 @@ mod tests {
         )
         .await?;
 
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -762,8 +762,8 @@ mod tests {
         )
         .await?;
 
-        env.rdma_handle_1
-            .write_from(&env.client_1, env.rdma_handle_2.clone(), 5)
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
             .await?;
 
         env.verify_buffers(BSIZE, 0).await?;
@@ -793,8 +793,8 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         println!("Performing RDMA read operation on 2GB tensor...");
-        env.rdma_handle_1
-            .read_into(&env.client_1, env.rdma_handle_2.clone(), 30)
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 30)
             .await?;
 
         println!("Verifying first 2MB...");
@@ -832,8 +832,8 @@ mod tests {
         let env = RdmaManagerTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
 
         println!("Performing RDMA write operation on 2GB tensor...");
-        env.rdma_handle_1
-            .write_from(&env.client_1, env.rdma_handle_2.clone(), 30)
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 30)
             .await?;
 
         println!("Verifying first 2MB...");

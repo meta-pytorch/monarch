@@ -8,6 +8,8 @@
 
 //! ibverbs backend implementation for RDMA operations.
 
+use std::sync::Arc;
+
 use hyperactor::ActorRef;
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,6 +24,7 @@ use manager_actor::IbvManagerActor;
 pub use queue_pair::IbvQueuePair;
 pub use queue_pair::PollTarget;
 
+use crate::RdmaLocalMemory;
 use crate::RdmaOpType;
 
 /// Lazily-initialized ibverbs transport details for a registered memory
@@ -39,12 +42,11 @@ pub struct IbvBuffer {
     pub device_name: String,
 }
 
-/// A single RDMA op in serializable form for the [`IbvSubmit`] message.
-#[derive(Debug, Clone, Serialize, Deserialize, Named)]
+/// A single RDMA op for the [`IbvSubmit`] message.
+#[derive(Debug, Clone, Named)]
 pub struct IbvOp {
     pub op_type: RdmaOpType,
-    pub local_buffer: IbvBuffer,
+    pub local_memory: Arc<dyn RdmaLocalMemory>,
     pub remote_buffer: IbvBuffer,
     pub remote_manager: ActorRef<IbvManagerActor>,
 }
-wirevalue::register_type!(IbvOp);
