@@ -233,7 +233,7 @@ impl IbvConfig {
             _ => target,
         };
 
-        let device = crate::device_selection::select_optimal_rdma_device(Some(normalized_target))
+        let device = super::device_selection::select_optimal_ibv_device(Some(normalized_target))
             .unwrap_or_else(IbvDevice::default);
 
         Self {
@@ -396,7 +396,7 @@ impl IbvDevice {
 impl Default for IbvDevice {
     fn default() -> Self {
         // Try to get a smart default using device selection logic (defaults to cpu:0)
-        if let Some(device) = crate::device_selection::select_optimal_rdma_device(Some("cpu:0")) {
+        if let Some(device) = super::device_selection::select_optimal_ibv_device(Some("cpu:0")) {
             device
         } else {
             // Fallback to first available device
