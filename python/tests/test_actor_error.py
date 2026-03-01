@@ -26,7 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import ActorMesh, context
-from monarch._src.actor.host_mesh import fake_in_process_host, this_host
+from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import Actor, ActorError, endpoint, MeshFailure
 from monarch.config import configured, parametrize_config
@@ -121,7 +121,7 @@ class BrokenPickleClass:
 
 
 def spawn_procs_on_fake_host(per_host: dict[str, int]) -> ProcMesh:
-    return fake_in_process_host().spawn_procs(per_host)
+    return this_host().spawn_procs(per_host)
 
 
 def spawn_procs_on_this_host(per_host: dict[str, int]) -> ProcMesh:
