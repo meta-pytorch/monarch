@@ -673,10 +673,9 @@ pub struct SpawnMeshAdmin {
     /// client is available.
     pub root_client_actor_id: Option<ActorId>,
 
-    /// Fixed port for the admin HTTP server. When `Some`, the server
-    /// binds to `[::]:<port>`; when `None`, an ephemeral port is
-    /// chosen.
-    pub admin_port: Option<u16>,
+    /// Explicit bind address for the admin HTTP server. When `None`,
+    /// the server reads `MESH_ADMIN_ADDR` from config.
+    pub admin_addr: Option<std::net::SocketAddr>,
 
     /// Reply port for the admin HTTP address string (e.g.
     /// `"myhost.facebook.com:8080"`).
@@ -702,7 +701,7 @@ impl Handler<SpawnMeshAdmin> for HostMeshAgent {
             crate::mesh_admin::MeshAdminAgent::new(
                 msg.hosts,
                 msg.root_client_actor_id,
-                msg.admin_port,
+                msg.admin_addr,
             ),
         )?;
         let response = agent_handle.get_admin_addr(cx).await?;

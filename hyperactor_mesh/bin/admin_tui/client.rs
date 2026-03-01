@@ -34,6 +34,46 @@ use std::time::Duration;
 
 use crate::theme::Args;
 
+/// Resolve a `mast_conda:///<job-name>` handle to an `https://fqdn:port` URL.
+///
+/// Queries the MAST HPC scheduler API for the job's head node hostname,
+/// qualifies it to an FQDN, and combines it with the admin port. When
+/// `admin_port` is `None`, the port is read from `MESH_ADMIN_ADDR` config.
+#[cfg(fbcode_build)]
+pub(crate) async fn resolve_mast_addr(addr: &str, admin_port: Option<u16>) -> String {
+    let port = admin_port.unwrap_or_else(|| {
+        let config_addr =
+            hyperactor_config::global::get_cloned(hyperactor_mesh::config::MESH_ADMIN_ADDR);
+        config_addr
+            .parse_socket_addr()
+            .unwrap_or_else(|e| {
+                eprintln!("invalid MESH_ADMIN_ADDR config: {}", e);
+                std::process::exit(1);
+            })
+            .port()
+    });
+    let job_name = addr.strip_prefix("mast_conda:///").unwrap_or_else(|| {
+        eprintln!("expected mast_conda:/// prefix, got '{}'", addr);
+        std::process::exit(1);
+    });
+    // SAFETY: This code path is gated by #[cfg(fbcode_build)] and
+    // only reachable from main(), which is annotated #[fbinit::main]
+    // — guaranteeing that FacebookInit has been performed.
+    let fb = unsafe { fbinit::assume_init() };
+    let hostnames = hyperactor_meta_lib::mast::resolve_hostnames(fb, job_name)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to resolve MAST job '{}': {:#}", job_name, e);
+            std::process::exit(1);
+        });
+    let head = hostnames.first().unwrap_or_else(|| {
+        eprintln!("MAST job '{}' returned no hostnames", job_name);
+        std::process::exit(1);
+    });
+    let fqdn: hostname_utils::Fqdn = hostname_utils::Hostname::from(head.clone()).into();
+    format!("https://{}:{}", fqdn, port)
+}
+
 /// Read all bytes from a [`Pem`](hyperactor::config::Pem), returning
 /// `None` if it can't be opened/read or if the result is empty.
 fn read_pem(pem: &hyperactor::config::Pem) -> Option<Vec<u8>> {
@@ -206,12 +246,6 @@ pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
             builder = b;
             use_tls = ok;
         }
-    }
-
-    if use_tls {
-        eprintln!("TLS: enabled, using HTTPS");
-    } else {
-        eprintln!("TLS: no certs found, using plain HTTP");
     }
 
     let scheme = if use_tls { "https" } else { "http" };
