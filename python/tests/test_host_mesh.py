@@ -17,21 +17,10 @@ from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import _client_context, Actor, context
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import fake_in_process_host, HostMesh, this_host
+from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.job.process import ProcessJob
-
-
-@pytest.mark.timeout(60)
-def test_fake_in_process_host() -> None:
-    host = fake_in_process_host()
-    assert host.extent.labels == []
-    assert host.extent.sizes == []
-    assert not host.stream_logs
-    hy_host = host._hy_host_mesh.block_on()
-    assert hy_host.region.labels == host.region.labels
-    assert hy_host.region.slice() == host.region.slice()
 
 
 @pytest.mark.timeout(60)
