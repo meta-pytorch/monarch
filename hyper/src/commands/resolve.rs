@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use crate::MastResolver;
+
 /// CLI arguments for resolving a `mast_conda:///` job handle into a
 /// mesh admin base URL.
 ///
@@ -23,21 +25,21 @@ pub struct ResolveCommand {
 }
 
 impl ResolveCommand {
-    /// Execute the resolve command.
+    /// Execute the resolve command (INV-DISPATCH).
     ///
-    /// Resolves the provided `mast_conda:///` handle into an HTTPS
-    /// mesh admin base URL using MAST hostname resolution and prints
-    /// the result to stdout. The port is taken from `--admin-port`
-    /// when provided, otherwise from `MESH_ADMIN_ADDR` configuration.
-    pub async fn run(self) -> anyhow::Result<()> {
-        // SAFETY: Only reachable from main(), which is annotated
-        // #[fbinit::main] — guaranteeing FacebookInit has been
-        // performed.
-        let fb = unsafe { fbinit::assume_init() };
-
-        let url = hyperactor_meta_lib::mesh_admin::resolve_mast_handle(fb, &self.handle, self.port)
-            .await?;
-
+    /// See the module-level comment on `MastResolver` in `main.rs`
+    /// for why the dispatch is local to each binary.
+    pub async fn run(self, resolver: &MastResolver) -> anyhow::Result<()> {
+        let url = match resolver {
+            MastResolver::Cli => {
+                hyperactor_mesh::mesh_admin::resolve_mast_handle(&self.handle, self.port).await?
+            }
+            #[cfg(fbcode_build)]
+            MastResolver::Thrift(fb) => {
+                hyperactor_meta_lib::mesh_admin::resolve_mast_handle(*fb, &self.handle, self.port)
+                    .await?
+            }
+        };
         println!("{}", url);
         Ok(())
     }

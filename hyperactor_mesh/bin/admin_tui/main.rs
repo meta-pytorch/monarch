@@ -185,18 +185,17 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 
 #[cfg(fbcode_build)]
 #[fbinit::main]
-async fn main(_fb: fbinit::FacebookInit) -> io::Result<()> {
-    run().await
+async fn main(fb: fbinit::FacebookInit) -> io::Result<()> {
+    run(Some(fb)).await
 }
 
 #[cfg(not(fbcode_build))]
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    run().await
+    run(None).await
 }
 
-async fn run() -> io::Result<()> {
-    #[allow(unused_mut)] // mut needed only in fbcode_build for mast:// resolution
+async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
     let mut args = Args::parse();
 
     if !io::stdout().is_terminal() {
@@ -205,18 +204,10 @@ async fn run() -> io::Result<()> {
     }
 
     // Resolve mast_conda:/// handles to https://fqdn:port before
-    // building the HTTP client. This is Meta-internal only; the OSS
-    // build rejects it with an error message.
+    // building the HTTP client (INV-DISPATCH).
     if args.addr.starts_with("mast_conda:///") {
-        #[cfg(fbcode_build)]
-        {
-            args.addr = client::resolve_mast_addr(&args.addr, args.admin_port).await;
-        }
-        #[cfg(not(fbcode_build))]
-        {
-            eprintln!("mast_conda:/// resolution requires the Meta-internal build");
-            std::process::exit(1);
-        }
+        let resolver = client::MastResolver::new(fb, args.mast_resolver.as_deref());
+        args.addr = client::resolve_mast_addr(&resolver, &args.addr, args.admin_port).await;
     }
 
     // Build the HTTP client and base URL, configuring TLS when

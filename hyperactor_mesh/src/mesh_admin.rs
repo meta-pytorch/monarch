@@ -1463,6 +1463,244 @@ fn derive_actor_label(reference: &str) -> String {
     }
 }
 
+// -- CLI-based mast_conda:/// resolution (INV-CLI-CONTRACT) --
+//
+// This is the OSS-compatible fallback for resolving `mast_conda:///`
+// handles. It shells out to `mast get-status --json <job>` and parses
+// the response. The thrift-based equivalent lives in
+// `hyperactor_meta::mesh_admin::resolve_mast_handle`.
+//
+// Invariants:
+//
+// - **INV-CLI-CONTRACT**: `mast get-status --json <job>` must exit 0
+//   and produce valid JSON. Missing binary → distinct error. Non-zero
+//   exit → includes exit code and stderr. Malformed JSON → parse
+//   error.
+//
+// - **INV-HEAD-HOSTNAME**: `head_hostname` extracts the first
+//   hostname by ascending task index from the last attempt of each
+//   task group.
+//
+// - **INV-FQDN-IDEMPOTENT**: `qualify_fqdn` passes through hostnames
+//   containing a dot. Short hostnames are qualified via
+//   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
+//   hostname.
+//
+// - **INV-FQDN-NONBLOCKING**: `qualify_fqdn` runs the blocking
+//   `getaddrinfo` syscall via `spawn_blocking`.
+//
+// - **INV-ADMIN-PORT**: `resolve_admin_port` uses the explicit
+//   override when provided, otherwise reads the port from
+//   `MESH_ADMIN_ADDR` config.
+
+/// Top-level response from `mast get-status --json`.
+#[derive(serde::Deserialize)]
+struct MastStatusResponse {
+    #[serde(rename = "latestAttempt")]
+    latest_attempt: MastAttempt,
+}
+
+/// A single execution attempt containing task groups.
+#[derive(serde::Deserialize)]
+struct MastAttempt {
+    #[serde(rename = "taskGroupExecutionAttempts")]
+    task_groups: std::collections::HashMap<String, Vec<MastTaskGroup>>,
+}
+
+/// A task group execution attempt containing per-task attempts.
+#[derive(serde::Deserialize)]
+struct MastTaskGroup {
+    #[serde(rename = "taskExecutionAttempts")]
+    tasks: std::collections::HashMap<String, Vec<MastTaskAttempt>>,
+}
+
+/// A single task execution attempt with an optional hostname.
+#[derive(serde::Deserialize)]
+struct MastTaskAttempt {
+    hostname: Option<String>,
+}
+
+/// Extract the head node hostname from a parsed MAST status response
+/// (INV-HEAD-HOSTNAME).
+///
+/// For each task group, the last attempt is selected. Within that
+/// attempt, each task's last execution attempt provides the hostname.
+/// Task indices (the map keys) are parsed as integers and sorted
+/// ascending; the first hostname is the head node.
+fn head_hostname(response: &MastStatusResponse) -> Result<String, String> {
+    let mut hosts: Vec<(i64, String)> = Vec::new();
+    for attempts in response.latest_attempt.task_groups.values() {
+        let group = match attempts.last() {
+            Some(g) => g,
+            None => continue,
+        };
+        for (index_str, task_attempts) in &group.tasks {
+            let attempt = match task_attempts.last() {
+                Some(a) => a,
+                None => continue,
+            };
+            if let Some(ref hostname) = attempt.hostname {
+                let index = index_str.parse::<i64>().unwrap_or(i64::MAX);
+                hosts.push((index, hostname.clone()));
+            }
+        }
+    }
+    hosts.sort_by_key(|(idx, _)| *idx);
+    hosts
+        .into_iter()
+        .next()
+        .map(|(_, h)| h)
+        .ok_or_else(|| "no hostnames found in MAST response".to_string())
+}
+
+/// Qualify a short hostname to an FQDN via
+/// `getaddrinfo(AI_CANONNAME)` (INV-FQDN-IDEMPOTENT,
+/// INV-FQDN-NONBLOCKING).
+///
+/// Called via `spawn_blocking` to avoid blocking tokio workers. Falls
+/// back to the raw hostname on any failure.
+async fn qualify_fqdn(hostname: &str) -> String {
+    if hostname.contains('.') {
+        return hostname.to_string();
+    }
+    let owned = hostname.to_string();
+    let fallback = owned.clone();
+    tokio::task::spawn_blocking(move || qualify_fqdn_blocking(&owned))
+        .await
+        .unwrap_or(fallback)
+}
+
+fn qualify_fqdn_blocking(hostname: &str) -> String {
+    use std::ffi::CStr;
+    use std::ffi::CString;
+    use std::ptr;
+
+    let c_host = match CString::new(hostname) {
+        Ok(c) => c,
+        Err(_) => return hostname.to_string(),
+    };
+    // SAFETY: zeroed addrinfo is a valid hints struct (all-zero is
+    // AF_UNSPEC with no flags, which we then override).
+    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+    hints.ai_flags = libc::AI_CANONNAME;
+    hints.ai_family = libc::AF_UNSPEC;
+
+    let mut result: *mut libc::addrinfo = ptr::null_mut();
+    // SAFETY: c_host is a valid NUL-terminated string, hints is
+    // initialized, and result is a valid out-pointer.
+    let rc = unsafe { libc::getaddrinfo(c_host.as_ptr(), ptr::null(), &hints, &mut result) };
+    if rc != 0 || result.is_null() {
+        return hostname.to_string();
+    }
+
+    // RAII guard ensures freeaddrinfo is called.
+    struct AddrInfoGuard(*mut libc::addrinfo);
+    impl Drop for AddrInfoGuard {
+        fn drop(&mut self) {
+            // SAFETY: self.0 was returned by a successful getaddrinfo.
+            unsafe { libc::freeaddrinfo(self.0) }
+        }
+    }
+    let _guard = AddrInfoGuard(result);
+
+    // SAFETY: result is non-null and was returned by getaddrinfo.
+    let canon = unsafe { (*result).ai_canonname };
+    if canon.is_null() {
+        return hostname.to_string();
+    }
+    // SAFETY: canon is non-null and NUL-terminated per getaddrinfo
+    // contract.
+    unsafe { CStr::from_ptr(canon) }
+        .to_str()
+        .unwrap_or(hostname)
+        .to_string()
+}
+
+/// Resolve admin port from an explicit override or `MESH_ADMIN_ADDR`
+/// config (INV-ADMIN-PORT).
+///
+/// When `port_override` is `Some`, that port is used directly. When
+/// `None`, the port is read from the `MESH_ADMIN_ADDR` configuration
+/// attribute (parsed as a `SocketAddr`).
+fn resolve_admin_port(port_override: Option<u16>) -> Result<u16, anyhow::Error> {
+    match port_override {
+        Some(p) => Ok(p),
+        None => {
+            let config_addr = hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_ADDR);
+            Ok(config_addr
+                .parse_socket_addr()
+                .map_err(|e| anyhow::anyhow!("invalid MESH_ADMIN_ADDR config: {}", e))?
+                .port())
+        }
+    }
+}
+
+/// Resolve a `mast_conda:///<job-name>` handle into an
+/// `https://<fqdn>:<port>` base URL by shelling out to the `mast` CLI
+/// (INV-CLI-CONTRACT).
+///
+/// This is the OSS-compatible counterpart to
+/// `hyperactor_meta::mesh_admin::resolve_mast_handle`. The `cmd`
+/// parameter names the CLI binary; production passes `"mast"`, tests
+/// substitute a synthetic command.
+async fn try_resolve_mast_handle(
+    handle: &str,
+    port_override: Option<u16>,
+    cmd: &str,
+) -> anyhow::Result<String> {
+    let port = resolve_admin_port(port_override)?;
+    let job_name = handle
+        .strip_prefix("mast_conda:///")
+        .ok_or_else(|| anyhow::anyhow!("expected mast_conda:/// prefix, got '{}'", handle))?;
+
+    let output = match tokio::process::Command::new(cmd)
+        .args(["get-status", "--json", job_name])
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "MAST CLI not found; install via `sudo feature install --persist mast_cli`"
+            );
+        }
+        Err(e) => {
+            anyhow::bail!("failed to run '{}': {}", cmd, e);
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "'mast get-status' exited with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let response: MastStatusResponse = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse mast JSON output: {}", e))?;
+
+    let hostname =
+        head_hostname(&response).map_err(|e| anyhow::anyhow!("MAST job '{}': {}", job_name, e))?;
+
+    let fqdn = qualify_fqdn(&hostname).await;
+    Ok(format!("https://{}:{}", fqdn, port))
+}
+
+/// Resolve a `mast_conda:///<job-name>` handle into an
+/// `https://<fqdn>:<port>` base URL using the `mast` CLI.
+///
+/// This is the CLI/OSS path. The thrift-based equivalent lives in
+/// `hyperactor_meta::mesh_admin::resolve_mast_handle`. Binaries
+/// match on `MastResolver` to select which to call.
+pub async fn resolve_mast_handle(
+    handle: &str,
+    port_override: Option<u16>,
+) -> anyhow::Result<String> {
+    try_resolve_mast_handle(handle, port_override, "mast").await
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -2300,5 +2538,311 @@ mod tests {
                 child_ref
             );
         }
+    }
+
+    // -- MAST CLI resolver tests --
+    //
+    // These tests exercise the invariants introduced by the CLI-based
+    // MAST handle resolution. Each test names the invariant it
+    // establishes.
+
+    /// Helper: build a `MastStatusResponse` from a list of
+    /// `(task_index, hostname)` pairs in one task group.
+    fn mast_response_from_hosts(hosts: &[(i64, &str)]) -> super::MastStatusResponse {
+        let mut tasks = std::collections::HashMap::new();
+        for (idx, host) in hosts {
+            tasks.insert(
+                idx.to_string(),
+                vec![super::MastTaskAttempt {
+                    hostname: Some(host.to_string()),
+                }],
+            );
+        }
+        super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        }
+    }
+
+    // INV-HEAD-HOSTNAME: single group, tasks sorted by ascending index.
+    #[test]
+    fn test_head_hostname_single_group() {
+        let response = mast_response_from_hosts(&[(2, "host2"), (0, "host0"), (1, "host1")]);
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "host0");
+    }
+
+    // INV-HEAD-HOSTNAME: last attempt selected per task.
+    #[test]
+    fn test_head_hostname_last_attempt_wins() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "0".to_string(),
+            vec![
+                super::MastTaskAttempt {
+                    hostname: Some("old_host".to_string()),
+                },
+                super::MastTaskAttempt {
+                    hostname: Some("new_host".to_string()),
+                },
+            ],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "new_host");
+    }
+
+    // INV-HEAD-HOSTNAME: multiple groups merged and sorted.
+    #[test]
+    fn test_head_hostname_multiple_groups() {
+        let mut tasks_a = std::collections::HashMap::new();
+        tasks_a.insert(
+            "1".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_a1".to_string()),
+            }],
+        );
+        let mut tasks_b = std::collections::HashMap::new();
+        tasks_b.insert(
+            "0".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_b0".to_string()),
+            }],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([
+                    (
+                        "group_a".to_string(),
+                        vec![super::MastTaskGroup { tasks: tasks_a }],
+                    ),
+                    (
+                        "group_b".to_string(),
+                        vec![super::MastTaskGroup { tasks: tasks_b }],
+                    ),
+                ]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "host_b0");
+    }
+
+    // INV-HEAD-HOSTNAME: no hostnames → error.
+    #[test]
+    fn test_head_hostname_empty() {
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::new(),
+            },
+        };
+        assert!(super::head_hostname(&response).is_err());
+    }
+
+    // INV-HEAD-HOSTNAME: hostname field is None (task not yet
+    // allocated) → skipped.
+    #[test]
+    fn test_head_hostname_skips_unallocated() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "0".to_string(),
+            vec![super::MastTaskAttempt { hostname: None }],
+        );
+        tasks.insert(
+            "1".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("allocated_host".to_string()),
+            }],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "allocated_host");
+    }
+
+    // INV-FQDN-IDEMPOTENT: hostname with dot passes through
+    // unchanged (no DNS lookup).
+    #[tokio::test]
+    async fn test_qualify_fqdn_already_qualified() {
+        let fqdn = super::qualify_fqdn("fake.nonexistent.tld").await;
+        assert_eq!(fqdn, "fake.nonexistent.tld");
+    }
+
+    // INV-FQDN-IDEMPOTENT, INV-FQDN-NONBLOCKING: short hostname
+    // goes through getaddrinfo via spawn_blocking. The result is
+    // environment-dependent, but must be non-empty and the call
+    // must complete without hanging.
+    #[tokio::test]
+    async fn test_qualify_fqdn_short_hostname() {
+        let fqdn = super::qualify_fqdn("localhost").await;
+        assert!(!fqdn.is_empty(), "qualify_fqdn returned empty string");
+    }
+
+    // INV-FQDN-IDEMPOTENT: nonexistent short hostname falls back
+    // to the raw input.
+    #[tokio::test]
+    async fn test_qualify_fqdn_nonexistent_fallback() {
+        let input = "__nonexistent_host_for_test";
+        let fqdn = super::qualify_fqdn(input).await;
+        assert_eq!(fqdn, input);
+    }
+
+    // INV-ADMIN-PORT: explicit override is used directly.
+    #[test]
+    fn test_resolve_admin_port_override() {
+        assert_eq!(super::resolve_admin_port(Some(8080)).unwrap(), 8080);
+    }
+
+    // INV-ADMIN-PORT: falls back to MESH_ADMIN_ADDR config
+    // (default [::]:1729).
+    #[test]
+    fn test_resolve_admin_port_from_config() {
+        let port = super::resolve_admin_port(None).unwrap();
+        assert_eq!(port, 1729);
+    }
+
+    // INV-CLI-CONTRACT: missing binary produces a "not found" error.
+    #[tokio::test]
+    async fn test_cli_missing_binary() {
+        let result = super::try_resolve_mast_handle(
+            "mast_conda:///test-job",
+            Some(1729),
+            "__nonexistent_mast_test_bin",
+        )
+        .await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("not found"),
+            "expected 'not found' in error, got: {}",
+            err
+        );
+    }
+
+    /// Write a shell script to a temp directory and return the
+    /// directory guard and script path.
+    fn write_test_script(content: &str) -> (tempfile::TempDir, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("mast_stub.sh");
+        std::fs::write(&script_path, content).unwrap();
+        std::fs::set_permissions(&script_path, PermissionsExt::from_mode(0o755)).unwrap();
+        let path_str = script_path.to_str().unwrap().to_string();
+        (dir, path_str)
+    }
+
+    // INV-CLI-CONTRACT: valid JSON, happy path end-to-end.
+    #[tokio::test]
+    async fn test_cli_happy_path() {
+        let json = r#"{"latestAttempt":{"taskGroupExecutionAttempts":{"trainers":[{"taskExecutionAttempts":{"0":[{"hostname":"devgpu042"}]}}]}}}"#;
+        let (_dir, script_path) = write_test_script(&format!("#!/bin/sh\necho '{}'\n", json));
+        let url =
+            super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
+                .await
+                .unwrap();
+        assert!(url.starts_with("https://"), "url: {}", url);
+        assert!(url.ends_with(":1729"), "url: {}", url);
+    }
+
+    // INV-CLI-CONTRACT: malformed JSON produces a parse error.
+    #[tokio::test]
+    async fn test_cli_malformed_json() {
+        let (_dir, script_path) = write_test_script("#!/bin/sh\necho 'not json'\n");
+        let result =
+            super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
+                .await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("failed to parse"),
+            "expected parse error, got: {}",
+            err
+        );
+    }
+
+    // INV-CLI-CONTRACT: non-zero exit includes code + stderr.
+    #[tokio::test]
+    async fn test_cli_nonzero_exit() {
+        let (_dir, script_path) =
+            write_test_script("#!/bin/sh\necho >&2 'job not found'\nexit 42\n");
+        let result =
+            super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
+                .await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("job not found"),
+            "expected stderr in error, got: {}",
+            err
+        );
+    }
+
+    // INV-CLI-CONTRACT: handle without mast_conda:/// prefix is
+    // rejected with a clear error.
+    #[tokio::test]
+    async fn test_cli_missing_prefix() {
+        let result = super::try_resolve_mast_handle("bad_handle", Some(1729), "mast").await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("expected mast_conda:/// prefix"),
+            "expected prefix error, got: {}",
+            err
+        );
+    }
+
+    // INV-HEAD-HOSTNAME: a task group with zero attempts is skipped.
+    #[test]
+    fn test_head_hostname_empty_attempts_vec() {
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![], // no attempts in this group
+                )]),
+            },
+        };
+        assert!(super::head_hostname(&response).is_err());
+    }
+
+    // INV-HEAD-HOSTNAME: non-numeric task index keys sort last
+    // (i64::MAX fallback).
+    #[test]
+    fn test_head_hostname_non_numeric_index() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "abc".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_abc".to_string()),
+            }],
+        );
+        tasks.insert(
+            "0".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_0".to_string()),
+            }],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "host_0");
     }
 }

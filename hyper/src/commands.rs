@@ -7,6 +7,5 @@
  */
 
 pub mod list;
-#[cfg(fbcode_build)]
 pub mod resolve;
 pub mod show;
