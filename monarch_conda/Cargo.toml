@@ -24,7 +24,7 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 globset = { version = "0.4.13", features = ["serde1"] }
 ignore = "0.4"
 itertools = "0.14.0"
-memmap2 = "0.9.5"
+memmap2 = "0.9.10"
 rattler_conda_types = "0.28.3"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
