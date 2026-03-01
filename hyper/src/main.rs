@@ -14,6 +14,8 @@ use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 
 use crate::commands::list::ListCommand;
+#[cfg(fbcode_build)]
+use crate::commands::resolve::ResolveCommand;
 use crate::commands::show::ShowCommand;
 
 #[derive(Parser)]
@@ -30,6 +32,10 @@ enum Command {
 
     #[clap(about = r#"List available resources"#)]
     List(ListCommand),
+
+    #[cfg(fbcode_build)]
+    #[clap(about = "Resolve a MAST job handle to a mesh admin URL")]
+    Resolve(ResolveCommand),
 }
 
 #[cfg(fbcode_build)]
@@ -51,6 +57,8 @@ async fn run() -> Result<(), anyhow::Error> {
     let result = match args.command {
         Command::Show(command) => command.run().await,
         Command::List(command) => command.run().await,
+        #[cfg(fbcode_build)]
+        Command::Resolve(command) => command.run().await,
     };
 
     // Allow the channel layer to flush pending acks before exit.

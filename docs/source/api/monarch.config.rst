@@ -461,6 +461,38 @@ Mesh Configuration
     - **Environment**: ``HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE``
 
 
+Mesh Admin
+----------
+
+``mesh_admin_addr``
+    Default socket address for the mesh admin HTTP server.
+
+    - **Type**: ``str``
+    - **Default**: ``"[::]:1729"``
+    - **Environment**: ``HYPERACTOR_MESH_ADMIN_ADDR``
+
+    Parsed as a ``SocketAddr`` (e.g. ``"[::]:1729"``, ``"0.0.0.0:8080"``).
+    Used as the bind address when no explicit address is provided to
+    ``MeshAdminAgent``, and as the default address assumed by admin
+    clients connecting via ``mast_conda:///``.
+
+
+Mesh Attach
+-----------
+
+``mesh_attach_config_timeout``
+    Timeout for the config-push barrier during ``attach_to_workers()``.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"10s"``
+    - **Environment**: ``HYPERACTOR_MESH_ATTACH_CONFIG_TIMEOUT``
+
+    When attaching to pre-existing workers (simple bootstrap), the client
+    pushes its propagatable config to each host agent and waits for
+    confirmation. If the barrier does not complete within this duration,
+    a warning is logged and attach continues without blocking.
+
+
 Remote Allocation
 -----------------
 

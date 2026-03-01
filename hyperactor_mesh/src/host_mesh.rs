@@ -57,6 +57,7 @@ pub use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
 use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
 use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::mesh_agent::SetClientConfigClient;
 use crate::host_mesh::mesh_agent::ShutdownHostClient;
 use crate::host_mesh::mesh_agent::SpawnMeshAdminClient;
 use crate::mesh_controller::HostMeshController;
@@ -106,7 +107,10 @@ wirevalue::register_type!(HostRef);
 impl HostRef {
     /// The host mesh agent associated with this host.
     fn mesh_agent(&self) -> ActorRef<HostMeshAgent> {
-        ActorRef::attest(self.service_proc().actor_id("agent", 0))
+        ActorRef::attest(
+            self.service_proc()
+                .actor_id(mesh_agent::HOST_MESH_AGENT_ACTOR_NAME, 0),
+        )
     }
 
     /// The ProcId for the proc with name `name` on this host.
@@ -351,7 +355,10 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostMeshAgent::new(HostAgentMode::Local(host)),
+            )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
         Ok(HostRef(addr))
@@ -557,6 +564,29 @@ impl HostMesh {
             allocation: HostMeshAllocation::Owned { hosts },
             current_ref,
         }
+    }
+
+    /// Attach to pre-existing workers and push client config.
+    ///
+    /// This is the "simple bootstrap" attach protocol:
+    /// 1. Wraps the provided addresses into a `HostMeshRef`.
+    /// 2. Snapshots `propagatable_attrs()` from the client's global config.
+    /// 3. Pushes the config to each host agent as `Source::ClientOverride`,
+    ///    with a barrier to confirm installation.
+    /// 4. Returns the owned `HostMesh`.
+    ///
+    /// After this returns, host agents have the client's config and any
+    /// subsequent operations on the host's system proc (e.g.
+    /// SpawnMeshAdmin) will see it.
+    pub async fn attach(
+        cx: &impl context::Actor,
+        name: Name,
+        addresses: Vec<ChannelAddr>,
+    ) -> crate::Result<Self> {
+        let mesh_ref = HostMeshRef::from_hosts(name, addresses);
+        let config = hyperactor_config::global::propagatable_attrs();
+        mesh_ref.push_config(cx, config).await;
+        Ok(Self::take(mesh_ref))
     }
 
     /// Request a clean shutdown of all hosts owned by this
@@ -845,6 +875,66 @@ impl HostMeshRef {
         })
     }
 
+    /// Push client config to all host agents in this mesh, in parallel.
+    ///
+    /// Each host installs the attrs as `Source::ClientOverride`.
+    /// Idempotent: sending the same attrs twice replaces the layer.
+    ///
+    /// Sends request-reply to each host and barriers on all replies.
+    /// Best-effort: on timeout or error, logs a warning and continues.
+    /// Timeout controlled by `MESH_ATTACH_CONFIG_TIMEOUT` (default 10s).
+    pub(crate) async fn push_config(
+        &self,
+        cx: &impl context::Actor,
+        attrs: hyperactor_config::attrs::Attrs,
+    ) {
+        let timeout = hyperactor_config::global::get(crate::config::MESH_ATTACH_CONFIG_TIMEOUT);
+        let hosts: Vec<_> = self.values().collect();
+        let num_hosts = hosts.len();
+
+        let barrier = futures::future::join_all(hosts.into_iter().map(|host| {
+            let attrs = attrs.clone();
+            let agent_id = host.mesh_agent().actor_id().clone();
+            async move {
+                match host.mesh_agent().set_client_config(cx, attrs).await {
+                    Ok(()) => {
+                        tracing::debug!(host = %agent_id, "host agent config installed");
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            host = %agent_id,
+                            error = %e,
+                            "failed to push client config to host agent, \
+                             continuing without it",
+                        );
+                        false
+                    }
+                }
+            }
+        }));
+
+        match RealClock.timeout(timeout, barrier).await {
+            Ok(results) => {
+                let success = results.iter().filter(|&&r| r).count();
+                let failed = num_hosts - success;
+                tracing::info!(
+                    success = success,
+                    failed = failed,
+                    "push_config barrier complete",
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    num_hosts = num_hosts,
+                    timeout_secs = timeout.as_secs(),
+                    "push_config barrier timed out, some hosts may not \
+                     have received client config",
+                );
+            }
+        }
+    }
+
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
     /// of the procs to spawn on each host.
     ///
@@ -988,7 +1078,10 @@ impl HostMeshRef {
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    ActorRef::attest(host.named_proc(&proc_name).actor_id("proc_agent", 0)),
+                    ActorRef::attest(
+                        host.named_proc(&proc_name)
+                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                    ),
                 ));
             }
         }
@@ -1115,12 +1208,13 @@ impl HostMeshRef {
     ///
     /// Sends a `SpawnMeshAdmin` message to `ranks[0]`'s
     /// `HostMeshAgent`, which spawns the admin agent on that host's
-    /// system proc. When `admin_port` is `Some`, the HTTP server
-    /// binds to that fixed port; otherwise it picks an ephemeral one.
+    /// system proc. When `admin_addr` is `Some`, the HTTP server
+    /// binds to that address; otherwise it reads `MESH_ADMIN_ADDR`
+    /// from config.
     pub async fn spawn_admin(
         &self,
         cx: &impl hyperactor::context::Actor,
-        admin_port: Option<u16>,
+        admin_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<String> {
         let hosts: Vec<(String, ActorRef<HostMeshAgent>)> = self
             .ranks
@@ -1131,7 +1225,7 @@ impl HostMeshRef {
 
         let head_agent = self.ranks[0].mesh_agent();
         let addr = head_agent
-            .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_port)
+            .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_addr)
             .await?;
 
         Ok(addr)
