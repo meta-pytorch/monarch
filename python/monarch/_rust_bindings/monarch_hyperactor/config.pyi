@@ -79,6 +79,7 @@ def configure(
     proc_stop_max_idle: str = ...,
     get_proc_state_max_idle: str = ...,
     actor_queue_dispatch: bool = ...,
+    mesh_admin_addr: str = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -166,6 +167,8 @@ def configure(
             (humantime)
         get_proc_state_max_idle: Maximum idle time for proc state queries
             (humantime)
+        mesh_admin_addr: Default socket address for the mesh admin
+            HTTP server (e.g. "[::]:1729", "0.0.0.0:8080")
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;

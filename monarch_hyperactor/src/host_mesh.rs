@@ -185,21 +185,25 @@ impl PyHostMesh {
     /// Spawn a MeshAdminAgent on the head host's system proc and
     /// return its HTTP address as a string.
     ///
-    /// When `admin_port` is provided, the HTTP server binds to that
-    /// fixed port; otherwise an ephemeral port is chosen.
+    /// When `admin_addr` is provided (as a `"host:port"` string), the
+    /// HTTP server binds to that address; otherwise it reads
+    /// `MESH_ADMIN_ADDR` from config.
     fn _spawn_admin(
         &self,
         instance: &PyInstance,
-        admin_port: Option<u16>,
+        admin_addr: Option<String>,
     ) -> PyResult<PyPythonTask> {
+        let admin_addr = admin_addr
+            .map(|s| {
+                s.parse::<std::net::SocketAddr>()
+                    .map_err(|e| PyException::new_err(format!("invalid admin_addr '{}': {}", s, e)))
+            })
+            .transpose()?;
         let host_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         PyPythonTask::new(async move {
-            // Sends a SpawnMeshAdmin message to ranks[0]'s
-            // HostMeshAgent, which spawns the admin on that host's
-            // system proc.
             let addr = host_mesh
-                .spawn_admin(instance.deref(), admin_port)
+                .spawn_admin(instance.deref(), admin_addr)
                 .await
                 .map_err(|e| PyException::new_err(e.to_string()))?;
             Ok(addr)
