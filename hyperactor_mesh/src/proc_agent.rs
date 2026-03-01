@@ -60,6 +60,9 @@ use typeuri::Named;
 use crate::Name;
 use crate::resource;
 
+/// Actor name used when spawning the proc agent on user procs.
+pub const PROC_AGENT_ACTOR_NAME: &str = "proc_agent";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
     Success { rank: usize, actor_id: ActorId },
@@ -270,7 +273,7 @@ impl ProcAgent {
             supervision_events: HashMap::new(),
             shutdown_tx,
         };
-        proc.spawn::<Self>("proc_agent", agent)
+        proc.spawn::<Self>(PROC_AGENT_ACTOR_NAME, agent)
     }
 
     async fn destroy_and_wait_except_current<'a>(

@@ -201,7 +201,10 @@ pub(crate) struct ProcCreationState {
     pub(crate) created: Result<(ProcId, ActorRef<ProcAgent>), HostError>,
 }
 
-/// A mesh agent is responsible for managing a host iny a [`HostMesh`],
+/// Actor name used when spawning the host mesh agent on the system proc.
+pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "agent";
+
+/// A mesh agent is responsible for managing a host in a [`HostMesh`],
 /// through the resource behaviors defined in [`crate::resource`].
 #[hyperactor::export(
     handlers=[
@@ -670,10 +673,9 @@ pub struct SpawnMeshAdmin {
     /// client is available.
     pub root_client_actor_id: Option<ActorId>,
 
-    /// Fixed port for the admin HTTP server. When `Some`, the server
-    /// binds to `[::]:<port>`; when `None`, an ephemeral port is
-    /// chosen.
-    pub admin_port: Option<u16>,
+    /// Explicit bind address for the admin HTTP server. When `None`,
+    /// the server reads `MESH_ADMIN_ADDR` from config.
+    pub admin_addr: Option<std::net::SocketAddr>,
 
     /// Reply port for the admin HTTP address string (e.g.
     /// `"myhost.facebook.com:8080"`).
@@ -699,7 +701,7 @@ impl Handler<SpawnMeshAdmin> for HostMeshAgent {
             crate::mesh_admin::MeshAdminAgent::new(
                 msg.hosts,
                 msg.root_client_actor_id,
-                msg.admin_port,
+                msg.admin_addr,
             ),
         )?;
         let response = agent_handle.get_admin_addr(cx).await?;
@@ -797,7 +799,8 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         };
 
         let system_proc = host.system_proc().clone();
-        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
+        let host_mesh_agent =
+            system_proc.spawn(HOST_MESH_AGENT_ACTOR_NAME, HostMeshAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
@@ -853,7 +856,7 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
             .spawn(
-                "agent",
+                HOST_MESH_AGENT_ACTOR_NAME,
                 HostMeshAgent::new(HostAgentMode::Process {
                     host,
                     exit_on_shutdown: false,
@@ -894,7 +897,7 @@ mod tests {
                 }),
             } if name == resource_name
               && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("proc_agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

@@ -58,10 +58,16 @@ impl std::fmt::Display for LangName {
 pub(crate) struct Args {
     /// Admin server address.
     ///
-    /// Accepts `host:port` (scheme auto-detected), or an explicit URL
-    /// like `https://host:port` or `http://host:port`.
+    /// Accepts `host:port` (scheme auto-detected), an explicit URL
+    /// like `https://host:port`, or a MAST job handle like
+    /// `mast_conda:///<job-name>` (Meta-internal only).
     #[arg(long, short)]
     pub(crate) addr: String,
+
+    /// Admin port override for MAST job resolution. When not set,
+    /// reads from `MESH_ADMIN_ADDR` config.
+    #[arg(long)]
+    pub(crate) admin_port: Option<u16>,
 
     /// Refresh interval in milliseconds
     #[arg(long, default_value_t = 1000)]
