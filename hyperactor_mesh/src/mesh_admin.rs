@@ -351,18 +351,31 @@ pub struct MeshAdminAgent {
     /// introspect it").
     self_actor_id: Option<ActorId>,
 
-    /// Bound address of the admin HTTP server once started in `init`.
+    // -- HTTP server address fields --
+    //
+    // The admin HTTP server has three address representations:
+    //
+    //   1. `admin_addr_override` — caller-supplied bind address
+    //      (constructor param). When `None`, `init` reads
+    //      `MESH_ADMIN_ADDR` from config instead.
+    //
+    //   2. `admin_addr` — the actual `SocketAddr` the OS assigned
+    //      after `TcpListener::bind`. Populated during `init`.
+    //
+    //   3. `admin_host` — human-friendly URL with the machine
+    //      hostname (not the raw IP) so it works with DNS and TLS
+    //      certificate validation. Returned via `GetAdminAddr`.
+    /// Caller-supplied bind address. When `None`, `init` reads
+    /// `MESH_ADMIN_ADDR` from config.
+    admin_addr_override: Option<std::net::SocketAddr>,
+
+    /// Actual bound address after `TcpListener::bind`, populated
+    /// during `init`.
     admin_addr: Option<std::net::SocketAddr>,
 
-    /// Hostname-based address string (e.g.
-    /// ``"myhost.facebook.com:8080"``) for the admin HTTP server.
-    /// Uses the machine's hostname rather than a raw IP so it works
-    /// with DNS and TLS certificate validation in Tupperware/MAST.
+    /// Hostname-based URL (e.g. `"https://myhost.facebook.com:1729"`)
+    /// for the admin HTTP server. Returned via `GetAdminAddr`.
     admin_host: Option<String>,
-
-    /// Optional fixed port for the admin HTTP server. When `Some`,
-    /// `init` binds to ``[::]:<port>`` instead of an ephemeral port.
-    admin_port: Option<u16>,
 
     /// When the mesh was started (ISO-8601 timestamp).
     started_at: String,
@@ -392,7 +405,7 @@ impl MeshAdminAgent {
     pub fn new(
         hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
         root_client_actor_id: Option<ActorId>,
-        admin_port: Option<u16>,
+        admin_addr: Option<std::net::SocketAddr>,
     ) -> Self {
         let host_agents_by_actor_id: HashMap<ActorId, String> = hosts
             .iter()
@@ -410,9 +423,9 @@ impl MeshAdminAgent {
             host_agents_by_actor_id,
             root_client_actor_id,
             self_actor_id: None,
+            admin_addr_override: admin_addr,
             admin_addr: None,
             admin_host: None,
-            admin_port,
             started_at,
             started_by,
         }
@@ -525,11 +538,13 @@ impl Actor for MeshAdminAgent {
         this.bind::<Self>();
         self.self_actor_id = Some(this.self_id().clone());
 
-        let port = self.admin_port.unwrap_or(0);
-        // Bind dual-stack (IPv6 + IPv4) so the server is reachable
-        // regardless of which address family the hostname resolves
-        // to.
-        let listener = TcpListener::bind(format!("[::]:{}", port)).await?;
+        let bind_addr = match self.admin_addr_override {
+            Some(addr) => addr,
+            None => hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_ADDR)
+                .parse_socket_addr()
+                .map_err(|e| anyhow::anyhow!("invalid MESH_ADMIN_ADDR config: {}", e))?,
+        };
+        let listener = TcpListener::bind(bind_addr).await?;
         let bound_addr = listener.local_addr()?;
         // Report the hostname (e.g. Tupperware container name) + port
         // rather than a raw IP, so the address works with DNS and TLS
@@ -1456,6 +1471,12 @@ mod tests {
 
     use super::*;
 
+    // Integration tests that spawn MeshAdminAgent must pass
+    // `Some("[::]:0".parse().unwrap())` as the admin_addr to get an
+    // ephemeral port. The default (`None`) reads MESH_ADMIN_ADDR
+    // config which is `[::]:1729` — a fixed port that causes bind
+    // conflicts when tests run concurrently.
+
     /// Minimal introspectable actor for tests. The `#[export]`
     /// attribute generates `Named + Referable + Binds` so that
     /// `handle.bind()` registers the `IntrospectMessage` port for
@@ -1559,7 +1580,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();
@@ -1893,7 +1914,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     Some(root_client_actor_id.clone()),
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();
@@ -2035,7 +2056,11 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None, None),
+                MeshAdminAgent::new(
+                    vec![(host_addr_str, host_agent_ref)],
+                    None,
+                    Some("[::]:0".parse().unwrap()),
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -2140,7 +2165,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();

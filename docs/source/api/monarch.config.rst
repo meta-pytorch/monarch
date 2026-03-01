@@ -461,6 +461,22 @@ Mesh Configuration
     - **Environment**: ``HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE``
 
 
+Mesh Admin
+----------
+
+``mesh_admin_addr``
+    Default socket address for the mesh admin HTTP server.
+
+    - **Type**: ``str``
+    - **Default**: ``"[::]:1729"``
+    - **Environment**: ``HYPERACTOR_MESH_ADMIN_ADDR``
+
+    Parsed as a ``SocketAddr`` (e.g. ``"[::]:1729"``, ``"0.0.0.0:8080"``).
+    Used as the bind address when no explicit address is provided to
+    ``MeshAdminAgent``, and as the default address assumed by admin
+    clients connecting via ``mast_conda:///``.
+
+
 Remote Allocation
 -----------------
 

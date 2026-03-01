@@ -1124,12 +1124,13 @@ impl HostMeshRef {
     ///
     /// Sends a `SpawnMeshAdmin` message to `ranks[0]`'s
     /// `HostMeshAgent`, which spawns the admin agent on that host's
-    /// system proc. When `admin_port` is `Some`, the HTTP server
-    /// binds to that fixed port; otherwise it picks an ephemeral one.
+    /// system proc. When `admin_addr` is `Some`, the HTTP server
+    /// binds to that address; otherwise it reads `MESH_ADMIN_ADDR`
+    /// from config.
     pub async fn spawn_admin(
         &self,
         cx: &impl hyperactor::context::Actor,
-        admin_port: Option<u16>,
+        admin_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<String> {
         let hosts: Vec<(String, ActorRef<HostMeshAgent>)> = self
             .ranks
@@ -1140,7 +1141,7 @@ impl HostMeshRef {
 
         let head_agent = self.ranks[0].mesh_agent();
         let addr = head_agent
-            .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_port)
+            .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_addr)
             .await?;
 
         Ok(addr)
