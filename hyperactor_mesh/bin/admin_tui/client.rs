@@ -34,6 +34,27 @@ use std::time::Duration;
 
 use crate::theme::Args;
 
+/// Resolve a `mast_conda:///<job-name>` handle to an
+/// `https://fqdn:port` URL.
+///
+/// Thin wrapper around
+/// [`hyperactor_meta_lib::mesh_admin::resolve_mast_handle`] that
+/// converts errors into `eprintln!` + `exit(1)` for the TUI.
+#[cfg(fbcode_build)]
+pub(crate) async fn resolve_mast_addr(addr: &str, admin_port: Option<u16>) -> String {
+    // SAFETY: This code path is gated by #[cfg(fbcode_build)] and
+    // only reachable from main(), which is annotated #[fbinit::main]
+    // — guaranteeing that FacebookInit has been performed.
+    let fb = unsafe { fbinit::assume_init() };
+
+    hyperactor_meta_lib::mesh_admin::resolve_mast_handle(fb, addr, admin_port)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("{:#}", e);
+            std::process::exit(1);
+        })
+}
+
 /// Read all bytes from a [`Pem`](hyperactor::config::Pem), returning
 /// `None` if it can't be opened/read or if the result is empty.
 fn read_pem(pem: &hyperactor::config::Pem) -> Option<Vec<u8>> {
@@ -206,12 +227,6 @@ pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
             builder = b;
             use_tls = ok;
         }
-    }
-
-    if use_tls {
-        eprintln!("TLS: enabled, using HTTPS");
-    } else {
-        eprintln!("TLS: no certs found, using plain HTTP");
     }
 
     let scheme = if use_tls { "https" } else { "http" };

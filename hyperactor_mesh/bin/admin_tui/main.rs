@@ -183,13 +183,40 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 
 // Main loop
 
+#[cfg(fbcode_build)]
+#[fbinit::main]
+async fn main(_fb: fbinit::FacebookInit) -> io::Result<()> {
+    run().await
+}
+
+#[cfg(not(fbcode_build))]
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let args = Args::parse();
+    run().await
+}
+
+async fn run() -> io::Result<()> {
+    #[allow(unused_mut)] // mut needed only in fbcode_build for mast:// resolution
+    let mut args = Args::parse();
 
     if !io::stdout().is_terminal() {
         eprintln!("This TUI requires a real terminal.");
         return Ok(());
+    }
+
+    // Resolve mast_conda:/// handles to https://fqdn:port before
+    // building the HTTP client. This is Meta-internal only; the OSS
+    // build rejects it with an error message.
+    if args.addr.starts_with("mast_conda:///") {
+        #[cfg(fbcode_build)]
+        {
+            args.addr = client::resolve_mast_addr(&args.addr, args.admin_port).await;
+        }
+        #[cfg(not(fbcode_build))]
+        {
+            eprintln!("mast_conda:/// resolution requires the Meta-internal build");
+            std::process::exit(1);
+        }
     }
 
     // Build the HTTP client and base URL, configuring TLS when
