@@ -34,44 +34,25 @@ use std::time::Duration;
 
 use crate::theme::Args;
 
-/// Resolve a `mast_conda:///<job-name>` handle to an `https://fqdn:port` URL.
+/// Resolve a `mast_conda:///<job-name>` handle to an
+/// `https://fqdn:port` URL.
 ///
-/// Queries the MAST HPC scheduler API for the job's head node hostname,
-/// qualifies it to an FQDN, and combines it with the admin port. When
-/// `admin_port` is `None`, the port is read from `MESH_ADMIN_ADDR` config.
+/// Thin wrapper around
+/// [`hyperactor_meta_lib::mesh_admin::resolve_mast_handle`] that
+/// converts errors into `eprintln!` + `exit(1)` for the TUI.
 #[cfg(fbcode_build)]
 pub(crate) async fn resolve_mast_addr(addr: &str, admin_port: Option<u16>) -> String {
-    let port = admin_port.unwrap_or_else(|| {
-        let config_addr =
-            hyperactor_config::global::get_cloned(hyperactor_mesh::config::MESH_ADMIN_ADDR);
-        config_addr
-            .parse_socket_addr()
-            .unwrap_or_else(|e| {
-                eprintln!("invalid MESH_ADMIN_ADDR config: {}", e);
-                std::process::exit(1);
-            })
-            .port()
-    });
-    let job_name = addr.strip_prefix("mast_conda:///").unwrap_or_else(|| {
-        eprintln!("expected mast_conda:/// prefix, got '{}'", addr);
-        std::process::exit(1);
-    });
     // SAFETY: This code path is gated by #[cfg(fbcode_build)] and
     // only reachable from main(), which is annotated #[fbinit::main]
     // — guaranteeing that FacebookInit has been performed.
     let fb = unsafe { fbinit::assume_init() };
-    let hostnames = hyperactor_meta_lib::mast::resolve_hostnames(fb, job_name)
+
+    hyperactor_meta_lib::mesh_admin::resolve_mast_handle(fb, addr, admin_port)
         .await
         .unwrap_or_else(|e| {
-            eprintln!("Failed to resolve MAST job '{}': {:#}", job_name, e);
+            eprintln!("{:#}", e);
             std::process::exit(1);
-        });
-    let head = hostnames.first().unwrap_or_else(|| {
-        eprintln!("MAST job '{}' returned no hostnames", job_name);
-        std::process::exit(1);
-    });
-    let fqdn: hostname_utils::Fqdn = hostname_utils::Hostname::from(head.clone()).into();
-    format!("https://{}:{}", fqdn, port)
+        })
 }
 
 /// Read all bytes from a [`Pem`](hyperactor::config::Pem), returning
