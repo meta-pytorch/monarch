@@ -477,6 +477,22 @@ Mesh Admin
     clients connecting via ``mast_conda:///``.
 
 
+Mesh Attach
+-----------
+
+``mesh_attach_config_timeout``
+    Timeout for the config-push barrier during ``attach_to_workers()``.
+
+    - **Type**: ``str`` (duration format)
+    - **Default**: ``"10s"``
+    - **Environment**: ``HYPERACTOR_MESH_ATTACH_CONFIG_TIMEOUT``
+
+    When attaching to pre-existing workers (simple bootstrap), the client
+    pushes its propagatable config to each host agent and waits for
+    confirmation. If the barrier does not complete within this duration,
+    a warning is logged and attach continues without blocking.
+
+
 Remote Allocation
 -----------------
 

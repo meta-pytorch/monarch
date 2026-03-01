@@ -45,6 +45,7 @@ use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
 use hyperactor::mailbox::PortSender as _;
 use hyperactor_config::Flattrs;
+use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -215,6 +216,7 @@ pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "agent";
         resource::List,
         ShutdownHost,
         SpawnMeshAdmin,
+        SetClientConfig,
     ]
 )]
 pub struct HostMeshAgent {
@@ -710,6 +712,40 @@ impl Handler<SpawnMeshAdmin> for HostMeshAgent {
             .ok_or_else(|| anyhow::anyhow!("mesh admin agent did not report an address"))?;
 
         msg.addr.send(cx, addr_str)?;
+        Ok(())
+    }
+}
+
+/// Push client configuration overrides to this host agent's process.
+///
+/// The attrs are installed as `Source::ClientOverride` (lowest explicit
+/// priority), so the host's own env vars and file config take precedence.
+/// This message is idempotent — sending the same attrs twice replaces
+/// the layer wholesale.
+///
+/// Request-reply: the reply acts as a barrier confirming the config
+/// is installed. The caller should await with a timeout and treat
+/// timeout as best-effort (log warning, continue).
+#[derive(Debug, Named, Handler, RefClient, HandleClient, Serialize, Deserialize)]
+pub struct SetClientConfig {
+    pub attrs: Attrs,
+    #[reply]
+    pub done: PortRef<()>,
+}
+wirevalue::register_type!(SetClientConfig);
+
+#[async_trait]
+impl Handler<SetClientConfig> for HostMeshAgent {
+    async fn handle(&mut self, cx: &Context<Self>, msg: SetClientConfig) -> anyhow::Result<()> {
+        // Use `set` (not `create_or_merge`) because `push_config` always
+        // sends a complete `propagatable_attrs()` snapshot. Replacing the
+        // layer wholesale is intentional and idempotent.
+        hyperactor_config::global::set(
+            hyperactor_config::global::Source::ClientOverride,
+            msg.attrs,
+        );
+        tracing::debug!("installed client config override on host agent");
+        msg.done.send(cx, ())?;
         Ok(())
     }
 }

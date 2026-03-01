@@ -9,7 +9,6 @@
 use futures::future::try_join_all;
 use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::Bootstrap;
-use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap_or_die;
@@ -111,6 +110,7 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
 
 #[pyfunction]
 pub fn attach_to_workers<'py>(
+    instance: &crate::context::PyInstance,
     workers: Vec<Bound<'py, PyPythonTask>>,
     name: Option<&str>,
 ) -> PyResult<PyPythonTask> {
@@ -121,6 +121,7 @@ pub fn attach_to_workers<'py>(
 
     let name =
         Name::new(name.unwrap_or("hosts")).map_err(|err| PyException::new_err(err.to_string()))?;
+    let instance = instance.clone();
     PyPythonTask::new(async move {
         let results = try_join_all(tasks).await?;
 
@@ -136,7 +137,9 @@ pub fn attach_to_workers<'py>(
         .await;
         let addresses = addresses?;
 
-        let host_mesh = HostMesh::take(HostMeshRef::from_hosts(name, addresses));
+        let host_mesh = HostMesh::attach(&*instance, name, addresses)
+            .await
+            .map_err(|e| anyhow::anyhow!("attach failed: {}", e))?;
         Ok(PyHostMesh::new_owned(host_mesh))
     })
 }
