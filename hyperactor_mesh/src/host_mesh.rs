@@ -57,6 +57,7 @@ pub use crate::host_mesh::mesh_agent::HostMeshAgent;
 use crate::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
 use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
 use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::mesh_agent::SetClientConfigClient;
 use crate::host_mesh::mesh_agent::ShutdownHostClient;
 use crate::host_mesh::mesh_agent::SpawnMeshAdminClient;
 use crate::mesh_controller::HostMeshController;
@@ -565,6 +566,29 @@ impl HostMesh {
         }
     }
 
+    /// Attach to pre-existing workers and push client config.
+    ///
+    /// This is the "simple bootstrap" attach protocol:
+    /// 1. Wraps the provided addresses into a `HostMeshRef`.
+    /// 2. Snapshots `propagatable_attrs()` from the client's global config.
+    /// 3. Pushes the config to each host agent as `Source::ClientOverride`,
+    ///    with a barrier to confirm installation.
+    /// 4. Returns the owned `HostMesh`.
+    ///
+    /// After this returns, host agents have the client's config and any
+    /// subsequent operations on the host's system proc (e.g.
+    /// SpawnMeshAdmin) will see it.
+    pub async fn attach(
+        cx: &impl context::Actor,
+        name: Name,
+        addresses: Vec<ChannelAddr>,
+    ) -> crate::Result<Self> {
+        let mesh_ref = HostMeshRef::from_hosts(name, addresses);
+        let config = hyperactor_config::global::propagatable_attrs();
+        mesh_ref.push_config(cx, config).await;
+        Ok(Self::take(mesh_ref))
+    }
+
     /// Request a clean shutdown of all hosts owned by this
     /// `HostMesh`.
     ///
@@ -849,6 +873,66 @@ impl HostMeshRef {
             region: Extent::unity().into(),
             ranks: Arc::new(vec![HostRef::try_from(agent)?]),
         })
+    }
+
+    /// Push client config to all host agents in this mesh, in parallel.
+    ///
+    /// Each host installs the attrs as `Source::ClientOverride`.
+    /// Idempotent: sending the same attrs twice replaces the layer.
+    ///
+    /// Sends request-reply to each host and barriers on all replies.
+    /// Best-effort: on timeout or error, logs a warning and continues.
+    /// Timeout controlled by `MESH_ATTACH_CONFIG_TIMEOUT` (default 10s).
+    pub(crate) async fn push_config(
+        &self,
+        cx: &impl context::Actor,
+        attrs: hyperactor_config::attrs::Attrs,
+    ) {
+        let timeout = hyperactor_config::global::get(crate::config::MESH_ATTACH_CONFIG_TIMEOUT);
+        let hosts: Vec<_> = self.values().collect();
+        let num_hosts = hosts.len();
+
+        let barrier = futures::future::join_all(hosts.into_iter().map(|host| {
+            let attrs = attrs.clone();
+            let agent_id = host.mesh_agent().actor_id().clone();
+            async move {
+                match host.mesh_agent().set_client_config(cx, attrs).await {
+                    Ok(()) => {
+                        tracing::debug!(host = %agent_id, "host agent config installed");
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            host = %agent_id,
+                            error = %e,
+                            "failed to push client config to host agent, \
+                             continuing without it",
+                        );
+                        false
+                    }
+                }
+            }
+        }));
+
+        match RealClock.timeout(timeout, barrier).await {
+            Ok(results) => {
+                let success = results.iter().filter(|&&r| r).count();
+                let failed = num_hosts - success;
+                tracing::info!(
+                    success = success,
+                    failed = failed,
+                    "push_config barrier complete",
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    num_hosts = num_hosts,
+                    timeout_secs = timeout.as_secs(),
+                    "push_config barrier timed out, some hosts may not \
+                     have received client config",
+                );
+            }
+        }
     }
 
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape

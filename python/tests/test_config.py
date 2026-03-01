@@ -261,6 +261,8 @@ def test_duration_config_multiple() -> None:
         # Host mesh timeouts
         ("proc_stop_max_idle", "45s", "45s", "30s"),
         ("get_proc_state_max_idle", "90s", "1m 30s", "1m"),
+        # Mesh attach
+        ("mesh_attach_config_timeout", "20s", "20s", "10s"),
     ],
 )
 def test_duration_params(param_name, test_value, expected_value, default_value):
@@ -432,6 +434,10 @@ def test_all_params_together():
         get_proc_state_max_idle="90s",
         # Actor queue dispatch
         actor_queue_dispatch=True,
+        # Mesh attach
+        mesh_attach_config_timeout="20s",
+        # Mesh admin
+        mesh_admin_addr="[::]:8080",
     ) as config:
         # Verify all values are set correctly
         assert config["process_exit_timeout"] == "20s"
@@ -462,6 +468,8 @@ def test_all_params_together():
         assert config["proc_stop_max_idle"] == "45s"
         assert config["get_proc_state_max_idle"] == "1m 30s"
         assert config["actor_queue_dispatch"] is True
+        assert config["mesh_attach_config_timeout"] == "20s"
+        assert config["mesh_admin_addr"] == "[::]:8080"
 
     # Verify all values are restored to defaults
     config = get_global_config()
@@ -493,6 +501,8 @@ def test_all_params_together():
     assert config["proc_stop_max_idle"] == "30s"
     assert config["get_proc_state_max_idle"] == "1m"
     assert config["actor_queue_dispatch"] is False
+    assert config["mesh_attach_config_timeout"] == "10s"
+    assert config["mesh_admin_addr"] == "[::]:1729"
 
 
 def test_channel_transport_pickle() -> None:

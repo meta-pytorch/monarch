@@ -12,6 +12,7 @@
 //! the base hyperactor configuration system.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use hyperactor_config::AttrValue;
 use hyperactor_config::CONFIG;
@@ -49,6 +50,18 @@ impl<'de> Deserialize<'de> for SocketAddrStr {
         match Helper::deserialize(deserializer)? {
             Helper::Static(s) | Helper::Value(s) => Ok(SocketAddrStr::Value(s)),
         }
+    }
+}
+
+impl From<String> for SocketAddrStr {
+    fn from(s: String) -> Self {
+        SocketAddrStr::Value(s)
+    }
+}
+
+impl From<SocketAddrStr> for String {
+    fn from(s: SocketAddrStr) -> Self {
+        s.as_ref().to_owned()
     }
 }
 
@@ -119,4 +132,17 @@ declare_attrs! {
         Some("mesh_admin_addr".to_string()),
     ))
     pub attr MESH_ADMIN_ADDR: SocketAddrStr = SocketAddrStr::Static("[::]:1729");
+
+    /// Timeout for the config-push barrier during `HostMesh::attach()`.
+    ///
+    /// When attaching to pre-existing workers (simple bootstrap), the
+    /// client pushes its propagatable config to each host agent and
+    /// waits for confirmation. If the barrier does not complete within
+    /// this duration, a warning is logged and attach continues without
+    /// blocking — config push is best-effort.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ATTACH_CONFIG_TIMEOUT".to_string()),
+        Some("mesh_attach_config_timeout".to_string()),
+    ))
+    pub attr MESH_ATTACH_CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
 }
