@@ -3012,8 +3012,10 @@ mod tests {
     fn display_ready_includes_addr() {
         let started_at = RealClock.system_time_now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
-        let agent =
-            ActorRef::attest(ProcId::Direct(addr.clone(), "proc".into()).actor_id("proc_agent", 0));
+        let agent = ActorRef::attest(
+            ProcId::Direct(addr.clone(), "proc".into())
+                .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+        );
 
         let st = ProcStatus::Ready {
             started_at,
@@ -3049,7 +3051,7 @@ mod tests {
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: ActorRef::attest(
                     ProcId::Direct(ChannelAddr::any(ChannelTransport::Unix), "x".into())
-                        .actor_id("proc_agent", 0),
+                        .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
                 ),
             },
             ProcStatus::Killed {

@@ -106,7 +106,10 @@ wirevalue::register_type!(HostRef);
 impl HostRef {
     /// The host mesh agent associated with this host.
     fn mesh_agent(&self) -> ActorRef<HostMeshAgent> {
-        ActorRef::attest(self.service_proc().actor_id("agent", 0))
+        ActorRef::attest(
+            self.service_proc()
+                .actor_id(mesh_agent::HOST_MESH_AGENT_ACTOR_NAME, 0),
+        )
     }
 
     /// The ProcId for the proc with name `name` on this host.
@@ -351,7 +354,10 @@ impl HostMesh {
         let addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostMeshAgent::new(HostAgentMode::Local(host)),
+            )
             .map_err(crate::Error::SingletonActorSpawnError)?;
         host_mesh_agent.bind::<HostMeshAgent>();
         Ok(HostRef(addr))
@@ -988,7 +994,10 @@ impl HostMeshRef {
                     proc_id,
                     create_rank,
                     // TODO: specify or retrieve from state instead, to avoid attestation.
-                    ActorRef::attest(host.named_proc(&proc_name).actor_id("proc_agent", 0)),
+                    ActorRef::attest(
+                        host.named_proc(&proc_name)
+                            .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
+                    ),
                 ));
             }
         }
