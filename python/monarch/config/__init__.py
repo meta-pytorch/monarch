@@ -81,6 +81,8 @@ if TYPE_CHECKING:
             proc_stop_max_idle: NotRequired[str]
             get_proc_state_max_idle: NotRequired[str]
             actor_queue_dispatch: NotRequired[bool]
+            mesh_admin_addr: NotRequired[str]
+            mesh_attach_config_timeout: NotRequired[str]
 
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
@@ -160,6 +162,15 @@ def configure(**kwargs: "ConfigureKwargsType") -> None:
         Host mesh timeouts:
             proc_stop_max_idle: Maximum idle time while stopping procs (humantime).
             get_proc_state_max_idle: Maximum idle time for proc state queries (humantime).
+
+        Mesh admin:
+            mesh_admin_addr: Default socket address for the mesh admin HTTP server
+                (e.g. ``"[::]:1729"``, ``"0.0.0.0:8080"``).
+
+        Mesh attach:
+            mesh_attach_config_timeout: Timeout for the config-push barrier
+                during ``attach_to_workers()`` (humantime, default ``"10s"``).
+                Best-effort: if exceeded, a warning is logged and attach continues.
 
         **kwargs: Reserved for future configuration keys exposed by Rust bindings.
     """

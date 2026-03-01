@@ -110,7 +110,15 @@ def attach_to_workers(
         raise NotImplementedError("TLS security plumbing")
 
     workers_tasks = [_as_python_task(w) for w in workers]
-    host_mesh: PythonTask[HyHostMesh] = _attach_to_workers(workers_tasks, name=name)
+
+    # Pass the ambient actor instance so the Rust side can push
+    # client config to host agents during attach.
+    from monarch._src.actor.actor_mesh import context
+
+    instance = context().actor_instance._as_rust()
+    host_mesh: PythonTask[HyHostMesh] = _attach_to_workers(
+        instance, workers_tasks, name=name
+    )
     extent = Extent(["hosts"], [len(workers)])
     hm = HostMesh(
         host_mesh.spawn(),

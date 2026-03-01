@@ -137,30 +137,30 @@ class HostMesh(MeshTrait):
             True,
         )
 
-    def _spawn_admin(self, admin_port: Optional[int] = None) -> "Future[str]":
+    def _spawn_admin(self, admin_addr: Optional[str] = None) -> "Future[str]":
         """
         Spawn a MeshAdminAgent on the head host's system proc and
         return its HTTP address.
 
         The admin agent aggregates topology across all hosts and serves
-        an HTTP API. Use the returned address to connect the admin TUI::
+        an HTTP API. Use the returned address to connect an admin client::
 
             head = host_mesh.slice(hosts=0)
-            addr = head._spawn_admin(admin_port=8080).get()
+            addr = head._spawn_admin(admin_addr="[::]:1729").get()
 
         Args:
-            admin_port: Optional fixed port for the admin HTTP server.
-                When provided, the server binds to ``[::]:<port>``.
-                When ``None``, an ephemeral port is chosen.
+            admin_addr: Optional socket address for the admin HTTP server
+                (e.g. ``"[::]:1729"``). When ``None``, reads
+                ``MESH_ADMIN_ADDR`` from config.
 
         Returns:
-            Future[str]: The admin HTTP URL (e.g. ``"http://myhost.facebook.com:8080"``).
+            Future[str]: The admin HTTP URL (e.g. ``"https://myhost.facebook.com:1729"``).
         """
 
         async def task() -> str:
             hy_mesh = await self._hy_host_mesh
             return await hy_mesh._spawn_admin(
-                context().actor_instance._as_rust(), admin_port
+                context().actor_instance._as_rust(), admin_addr
             )
 
         return Future(coro=task())

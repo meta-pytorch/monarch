@@ -6,18 +6,56 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! TLS-aware `reqwest` client construction for the admin TUI.
+//! TLS-aware `reqwest` client construction and MAST address
+//! resolution for the admin TUI.
 //!
 //! This module builds `(base_url, reqwest::Client)` from CLI
 //! arguments, choosing HTTP vs HTTPS and configuring certificate
-//! verification when TLS material is available.
+//! verification when TLS material is available. It also resolves
+//! `mast_conda:///<job-name>` handles to concrete `https://fqdn:port`
+//! URLs using either the MAST Thrift API (Meta-internal) or the
+//! `mast` CLI (OSS / testing).
 //!
-//! Address handling:
+//! # MAST resolution invariants
+//!
+//! - **INV-DISPATCH**: In fbcode builds, the `--mast-resolver` CLI
+//!   arg selects the strategy via [`MastResolver`]. Default is
+//!   thrift; `"cli"` selects CLI. In OSS builds, CLI always.
+//!
+//! - **INV-CLI-CONTRACT**: The CLI resolver requires `mast
+//!   get-status --json <job>` to exit 0 and produce valid JSON. A
+//!   missing binary produces a distinct "not found" error. Non-zero
+//!   exit includes the exit code and stderr. Malformed JSON produces
+//!   a parse error with context.
+//!
+//! - **INV-HEAD-HOSTNAME**: [`head_hostname`] extracts the first
+//!   hostname by ascending task index. For each task group, the last
+//!   attempt is selected. For each task, the last execution attempt
+//!   is selected. Task indices are parsed from map keys as integers
+//!   and sorted ascending. Empty result is a fatal error.
+//!
+//! - **INV-FQDN-IDEMPOTENT**: [`qualify_fqdn`] is idempotent. A
+//!   hostname containing a dot passes through (or resolves to
+//!   itself). A short hostname is qualified via
+//!   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
+//!   hostname.
+//!
+//! - **INV-FQDN-NONBLOCKING**: [`qualify_fqdn`] runs the blocking
+//!   `getaddrinfo` syscall via `spawn_blocking`, never on a tokio
+//!   worker thread.
+//!
+//! - **INV-ADMIN-PORT**: [`resolve_admin_port`] uses the explicit
+//!   override when provided, otherwise reads the port from
+//!   `MESH_ADMIN_ADDR` config.
+//!
+//! # Address handling
+//!
 //! - `--addr` may be `host:port` (no scheme) or an explicit
 //!   `http://...` / `https://...`.
 //! - If a scheme is provided, it is treated as authoritative.
 //!
-//! TLS configuration (highest priority first):
+//! # TLS configuration (highest priority first)
+//!
 //! 1. Explicit CLI paths: `--tls-ca` (required to enable TLS), with
 //!    optional `--tls-cert` + `--tls-key` for mutual TLS.
 //! 2. Auto-detection via [`hyperactor::channel::try_tls_pem_bundle`],
@@ -33,6 +71,87 @@
 use std::time::Duration;
 
 use crate::theme::Args;
+
+// -- MAST resolution dispatch (INV-DISPATCH) --
+//
+// `MastResolver` is defined locally in each binary (here and in
+// `hyper`) rather than in `hyperactor_mesh`, to avoid pulling
+// `fbinit` into the shared library's dependency graph. The CLI
+// implementation lives in `hyperactor_mesh::mesh_admin`; the thrift
+// implementation lives in `hyperactor_meta::mesh_admin`. Each binary
+// owns the dispatch.
+//
+// TODO: a dedicated `hyperactor_mast` bridge crate could unify the
+// enum and dispatch if more binaries need this pattern.
+
+/// Resolution strategy for `mast_conda:///` handles.
+pub(crate) enum MastResolver {
+    /// Shell out to the `mast` CLI. Works in both Meta and OSS.
+    Cli,
+    /// Use the MAST Thrift API. Only available in Meta builds where
+    /// `fbinit` and `hyperactor_meta_lib` are present.
+    #[cfg(fbcode_build)]
+    Thrift(fbinit::FacebookInit),
+}
+
+impl MastResolver {
+    /// Construct from an optional `FacebookInit` and `--mast-resolver`
+    /// CLI arg. In fbcode builds, defaults to `Thrift` when `fb` is
+    /// available and `choice` is not `"cli"`. Otherwise `Cli`.
+    pub(crate) fn new(
+        #[allow(unused_variables)] fb: Option<fbinit::FacebookInit>,
+        choice: Option<&str>,
+    ) -> Self {
+        #[cfg(fbcode_build)]
+        if choice != Some("cli") {
+            if let Some(fb) = fb {
+                return MastResolver::Thrift(fb);
+            }
+        }
+        MastResolver::Cli
+    }
+}
+
+/// Resolve a `mast_conda:///<job-name>` handle to an
+/// `https://fqdn:port` URL (INV-DISPATCH).
+///
+/// Two resolution strategies exist, selected by `MastResolver`:
+///
+/// - `Cli`: shells out to `mast get-status --json`
+///   (`hyperactor_mesh::mesh_admin::resolve_mast_handle`). Implements
+///   INV-CLI-CONTRACT, INV-HEAD-HOSTNAME, INV-FQDN-IDEMPOTENT,
+///   INV-FQDN-NONBLOCKING.
+///
+/// - `Thrift` (fbcode only): queries the MAST HPC scheduler via
+///   Thrift (`hyperactor_meta::mesh_admin::resolve_mast_handle`).
+///   Requires `FacebookInit`.
+///
+/// The dispatch is duplicated here and in `hyper resolve` because
+/// `hyperactor_mesh` cannot depend on `hyperactor_meta` (it would
+/// create a cycle) and we avoid pulling `fbinit` into the shared
+/// library. See the module-level TODO.
+///
+/// On error, prints the message to stderr and calls
+/// `process::exit(1)` — this function never returns `Err`.
+pub(crate) async fn resolve_mast_addr(
+    resolver: &MastResolver,
+    addr: &str,
+    admin_port: Option<u16>,
+) -> String {
+    let result = match resolver {
+        MastResolver::Cli => {
+            hyperactor_mesh::mesh_admin::resolve_mast_handle(addr, admin_port).await
+        }
+        #[cfg(fbcode_build)]
+        MastResolver::Thrift(fb) => {
+            hyperactor_meta_lib::mesh_admin::resolve_mast_handle(*fb, addr, admin_port).await
+        }
+    };
+    result.unwrap_or_else(|e| {
+        eprintln!("{:#}", e);
+        std::process::exit(1);
+    })
+}
 
 /// Read all bytes from a [`Pem`](hyperactor::config::Pem), returning
 /// `None` if it can't be opened/read or if the result is empty.
@@ -206,12 +325,6 @@ pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
             builder = b;
             use_tls = ok;
         }
-    }
-
-    if use_tls {
-        eprintln!("TLS: enabled, using HTTPS");
-    } else {
-        eprintln!("TLS: no certs found, using plain HTTP");
     }
 
     let scheme = if use_tls { "https" } else { "http" };
