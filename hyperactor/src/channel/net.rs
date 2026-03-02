@@ -74,6 +74,7 @@ use crate::clock::RealClock;
 // the suppression must be at module scope.
 #[allow(unused_assignments)]
 mod client;
+pub(crate) mod duplex;
 mod framed;
 use client::dial;
 mod server;
@@ -181,13 +182,13 @@ pub(crate) trait Listener: Send + Unpin + 'static {
 
 /// Frames are the messages sent between clients and servers over sessions.
 #[derive(Debug, Serialize, Deserialize, EnumAsInner, PartialEq)]
-enum Frame<M> {
+pub(super) enum Frame<M> {
     /// Send a message with the provided sequence number.
     Message(u64, M),
 }
 
 #[derive(Debug, Serialize, Deserialize, EnumAsInner)]
-enum NetRxResponse {
+pub(super) enum NetRxResponse {
     Ack(u64),
     /// This session is rejected with the given reason. NetTx should stop reconnecting.
     Reject(String),
@@ -195,11 +196,11 @@ enum NetRxResponse {
     Closed,
 }
 
-fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
+pub(super) fn serialize_response(response: NetRxResponse) -> Result<Bytes, bincode::Error> {
     bincode::serialize(&response).map(|bytes| bytes.into())
 }
 
-fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
+pub(super) fn deserialize_response(data: Bytes) -> Result<NetRxResponse, bincode::Error> {
     bincode::deserialize(&data)
 }
 
@@ -306,6 +307,44 @@ pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
     }
 }
 
+/// Establish a raw transport connection without writing any
+/// protocol-level init header. Used by duplex to separate
+/// transport from protocol.
+pub(crate) async fn connect_raw(addr: &ChannelAddr) -> Result<Box<dyn Stream>, ClientError> {
+    match addr {
+        ChannelAddr::Tcp(socket_addr) => {
+            let stream = tokio::net::TcpStream::connect(socket_addr)
+                .await
+                .map_err(|err| ClientError::Connect(addr.clone(), err, "TCP connect".into()))?;
+            stream
+                .set_nodelay(true)
+                .map_err(|err| ClientError::Connect(addr.clone(), err, "set_nodelay".into()))?;
+            Ok(Box::new(stream))
+        }
+        ChannelAddr::Unix(unix_addr) => {
+            let stream = match unix_addr {
+                unix::SocketAddr::Bound(sock_addr) => {
+                    let std_stream = std::os::unix::net::UnixStream::connect_addr(sock_addr)
+                        .map_err(|err| {
+                            ClientError::Connect(addr.clone(), err, "Unix connect".into())
+                        })?;
+                    std_stream
+                        .set_nonblocking(true)
+                        .map_err(|err| ClientError::Io(addr.clone(), err))?;
+                    tokio::net::UnixStream::from_std(std_stream)
+                        .map_err(|err| ClientError::Io(addr.clone(), err))?
+                }
+                unix::SocketAddr::Unbound => return Err(ClientError::Resolve(addr.clone())),
+            };
+            Ok(Box::new(stream))
+        }
+        _ => Err(ClientError::InvalidAddress(format!(
+            "duplex not supported for transport: {}",
+            addr
+        ))),
+    }
+}
+
 pub(crate) mod unix {
 
     use core::str;
@@ -371,8 +410,8 @@ pub(crate) mod unix {
     /// Server-side listener for Unix domain sockets.
     #[derive(Debug)]
     pub(crate) struct UnixSocketListener {
-        inner: UnixListener,
-        addr: SocketAddr,
+        pub(super) inner: UnixListener,
+        pub(super) addr: SocketAddr,
     }
 
     #[async_trait]
@@ -1990,7 +2029,7 @@ mod tests {
                     tokio::select! {
                         read_res = reader.next() => {
                             match read_res {
-                                Ok(Some(data)) => {
+                                Ok(Some((_, data))) => {
                                     queue.push_back((data, RealClock.now()));
                                 }
                                 Ok(None) | Err(_) => {
@@ -2031,7 +2070,7 @@ mod tests {
                                     }
                                 }
                             }
-                            let mut fw  = FrameWrite::new(writer, data, hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH)).unwrap();
+                            let mut fw  = FrameWrite::new(writer, data, hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH), 0).unwrap();
                             if fw.send().await.is_err() {
                                 break;
                             }
@@ -2181,6 +2220,7 @@ mod tests {
                 writer,
                 message.framed(),
                 hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                0,
             )
             .map_err(|(_w, e)| e)
             .unwrap();
@@ -2199,7 +2239,7 @@ mod tests {
         async fn verify_ack(reader: &mut FrameReader<ReadHalf<DuplexStream>>, expected_last: u64) {
             let mut last_acked: i128 = -1;
             loop {
-                let bytes = reader.next().await.unwrap().unwrap();
+                let (_, bytes) = reader.next().await.unwrap().unwrap();
                 let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
                 assert!(
                     acked as i128 > last_acked,
@@ -2315,7 +2355,7 @@ mod tests {
             drop(tx);
             assert!(rx.recv().await.is_none());
             // Should send NetRxResponse::Closed before stopping.
-            let bytes = reader2.next().await.unwrap().unwrap();
+            let (_, bytes) = reader2.next().await.unwrap().unwrap();
             assert!(deserialize_response(bytes).unwrap().is_closed());
             assert!(reader2.next().await.unwrap().is_none());
         }
@@ -2338,7 +2378,7 @@ mod tests {
             )
             .await;
             assert_eq!(rx.recv().await, Some(100u64 + i));
-            let bytes = reader.next().await.unwrap().unwrap();
+            let (_, bytes) = reader.next().await.unwrap().unwrap();
             let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
             assert_eq!(acked, i);
         }
@@ -2351,7 +2391,7 @@ mod tests {
         // mpsc is closed too and there should be no unread message left.
         assert!(rx.recv().await.is_none());
         // should send NetRxResponse::Closed before stopping server.
-        let bytes = reader.next().await.unwrap().unwrap();
+        let (_, bytes) = reader.next().await.unwrap().unwrap();
         assert!(deserialize_response(bytes).unwrap().is_closed());
         // No more acks from server.
         assert!(reader.next().await.unwrap().is_none());
@@ -2416,7 +2456,7 @@ mod tests {
         loc: u32,
     ) {
         let expected = Frame::Message(expect.0, expect.1);
-        let bytes = reader.next().await.unwrap().expect("unexpected EOF");
+        let (_, bytes) = reader.next().await.unwrap().expect("unexpected EOF");
         let message = serde_multipart::Message::from_framed(bytes).unwrap();
         let frame: Frame<M> = serde_multipart::deserialize_bincode(message).unwrap();
 
@@ -2470,6 +2510,7 @@ mod tests {
                     writer,
                     serialize_response(NetRxResponse::Ack(i)).unwrap(),
                     1024,
+                    0,
                 )
                 .await
                 .map_err(|(_, e)| e)
@@ -2531,6 +2572,7 @@ mod tests {
                         writer,
                         serialize_response(NetRxResponse::Ack(1)).unwrap(),
                         1024,
+                        0,
                     )
                     .await
                     .map_err(|(_, e)| e)
@@ -2594,6 +2636,7 @@ mod tests {
                         writer,
                         serialize_response(NetRxResponse::Ack(1)).unwrap(),
                         1024,
+                        0,
                     )
                     .await
                     .map_err(|(_, e)| e)
@@ -2602,6 +2645,7 @@ mod tests {
                         writer,
                         serialize_response(NetRxResponse::Ack(2)).unwrap(),
                         1024,
+                        0,
                     )
                     .await
                     .map_err(|(_, e)| e)
@@ -2610,6 +2654,7 @@ mod tests {
                         writer,
                         serialize_response(NetRxResponse::Ack(3)).unwrap(),
                         1024,
+                        0,
                     )
                     .await
                     .map_err(|(_, e)| e)
@@ -2649,6 +2694,7 @@ mod tests {
                         writer,
                         serialize_response(NetRxResponse::Ack(7)).unwrap(),
                         1024,
+                        0,
                     )
                     .await
                     .map_err(|(_, e)| e)
@@ -2700,6 +2746,7 @@ mod tests {
             writer,
             serialize_response(NetRxResponse::Ack(0)).unwrap(),
             1024,
+            0,
         )
         .await
         .map_err(|(_, e)| e)
@@ -2718,6 +2765,7 @@ mod tests {
             writer,
             serialize_response(NetRxResponse::Ack(1)).unwrap(),
             1024,
+            0,
         )
         .await
         .map_err(|(_, e)| e)
@@ -2757,6 +2805,7 @@ mod tests {
             writer,
             serialize_response(NetRxResponse::Ack(0)).unwrap(),
             hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+            0,
         )
         .await
         .map_err(|(_, e)| e)
@@ -3023,6 +3072,7 @@ mod tests {
                 writer,
                 serialize_response(NetRxResponse::Reject("testing".to_string())).unwrap(),
                 1024,
+                0,
             )
             .await
             .map_err(|(_, e)| e);
@@ -3052,13 +3102,13 @@ mod tests {
         .await;
         assert_eq!(rx.recv().await, Some(100u64));
         assert_eq!(rx.recv().await, Some(101u64));
-        let bytes = reader.next().await.unwrap().unwrap();
+        let (_, bytes) = reader.next().await.unwrap().unwrap();
         let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
         assert_eq!(acked, 0);
-        let bytes = reader.next().await.unwrap().unwrap();
+        let (_, bytes) = reader.next().await.unwrap().unwrap();
         let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
         assert_eq!(acked, 1);
-        let bytes = reader.next().await.unwrap().unwrap();
+        let (_, bytes) = reader.next().await.unwrap().unwrap();
         assert!(deserialize_response(bytes).unwrap().is_reject());
     }
 
