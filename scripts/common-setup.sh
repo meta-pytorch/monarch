@@ -172,8 +172,8 @@ run_test_groups() {
   export RUST_BACKTRACE=1
   local FAILED_GROUPS=()
   local TEST_EXIT_CODE=0
-  for GROUP in $(seq 1 10); do
-    echo "Running test group $GROUP of 10..."
+  for GROUP in $(seq 1 1); do
+    echo "Running test group $GROUP of 1..."
     # Kill any existing Python processes to ensure clean state
     echo "Cleaning up Python processes before group $GROUP..."
     pkill -9 python || true
@@ -184,7 +184,7 @@ run_test_groups() {
         --dist=no \
         --group="$GROUP" \
         --junit-xml="$test_results_dir/test-results-$GROUP.xml" \
-        --splits=10
+        --splits=1
     TEST_EXIT_CODE=$?
     # Check result and record failures
     if [[ $TEST_EXIT_CODE -eq 0 ]]; then
