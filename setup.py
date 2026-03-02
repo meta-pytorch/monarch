@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.extension import Extension
-from setuptools_rust import Binding, RustBin, RustExtension
+from setuptools_rust import Binding, RustExtension
 
 
 # Helper functions for finding paths on installed packages
@@ -248,19 +248,7 @@ if build_tensor_engine:
 # Rust extensions
 rust_extensions = []
 
-# Legacy process_allocator binary (optional)
-skip_legacy_builds = os.environ.get("MONARCH_BUILD_MESH_ONLY", "1") == "1"
-if not skip_legacy_builds:
-    rust_extensions.append(
-        RustBin(
-            target="process_allocator",
-            path="monarch_extension/Cargo.toml",
-            debug=False,
-            args=["--bin", "process_allocator", "--no-default-features"],
-        )
-    )
-
-# Main Python extension (always built)
+# Main Python extension
 rust_features = ["extension-module", "distributed_sql_telemetry"]
 if build_tensor_engine:
     rust_features.append("tensor_engine")

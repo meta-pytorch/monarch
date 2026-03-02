@@ -66,8 +66,6 @@ jobs:
         else
           export MONARCH_VERSION=0.4.0.dev$(date +'%Y%m%d')
         fi
-        export MONARCH_BUILD_MESH_ONLY=0
-
         python setup.py bdist_wheel
 
         echo "=== sccache stats ==="

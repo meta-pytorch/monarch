@@ -43,7 +43,6 @@ jobs:
         setup_tensor_engine
 
         # Build monarch (CUDA version)
-        export MONARCH_BUILD_MESH_ONLY=0
         python setup.py bdist_wheel
 
         echo "=== sccache stats ==="
