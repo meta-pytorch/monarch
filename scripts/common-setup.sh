@@ -38,7 +38,7 @@ setup_rust_toolchain() {
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
-    cargo install cargo-nextest --locked
+    cargo binstall cargo-nextest --secure -y
 
     # Setup sccache for distributed Rust compilation caching via S3.
     setup_sccache
@@ -53,7 +53,7 @@ setup_rust_toolchain() {
 # Uses the pytorch ossci-compiler-cache S3 bucket if available.
 setup_sccache() {
     echo "Setting up sccache..."
-    cargo install sccache --locked
+    dnf install -y sccache
 
     export RUSTC_WRAPPER=sccache
     export SCCACHE_BUCKET=ossci-compiler-cache
