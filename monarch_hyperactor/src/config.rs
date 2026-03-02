@@ -428,6 +428,12 @@ inventory::collect!(PythonConfigTypeInfo);
 /// converted to/from a rust python wrapper (e.g., keys with type
 /// `BindSpec` must use `PyBindSpec` as an intermediate step), the
 /// usage is `declare_py_config_type!(PyBindSpec as BindSpec)`.
+///
+/// For `Option<T>` keys where `T` requires a Python wrapper, use
+/// `declare_py_config_type!(Option<PyWrapper> as Option<RustType>)`.
+/// Python passes `None` for `Rust None` and the wrapper's representation
+/// for `Some`. The non-Option `declare_py_config_type!(PyWrapper as
+/// RustType)` must also be registered.
 macro_rules! declare_py_config_type {
     ($($ty:ty),+ $(,)?) => {
         hyperactor::internal_macro_support::paste! {
@@ -451,6 +457,47 @@ macro_rules! declare_py_config_type {
                     }
                 }
             )+
+        }
+    };
+    (Option<$py_ty:ty> as Option<$ty:ty>) => {
+        hyperactor::internal_macro_support::inventory::submit! {
+            PythonConfigTypeInfo {
+                typehash: <Option<$ty> as Named>::typehash,
+                set_runtime_config: |py, key, val| {
+                    let val: Option<$ty> = val.extract::<Option<$py_ty>>(py)
+                        .map_err(|err| PyTypeError::new_err(format!(
+                            "invalid value `{}` for configuration key `{}` ({})",
+                            val, key.name(), err
+                        )))?
+                        .map(Into::into);
+                    set_runtime_config_py(key, val)
+                },
+                get_global_config: |py, key| {
+                    let key = key.downcast_ref::<Option<$ty>>().ok_or_else(|| {
+                        PyTypeError::new_err(format!(
+                            "internal config type mismatch for key `{}`",
+                            key.name(),
+                        ))
+                    })?;
+                    match hyperactor_config::global::try_get_cloned(key.clone()) {
+                        None => Ok(None),
+                        Some(opt_val) => opt_val.map(<$py_ty>::from).into_py_any(py).map(Some),
+                    }
+                },
+                get_runtime_config: |py, key| {
+                    let key = key.downcast_ref::<Option<$ty>>().ok_or_else(|| {
+                        PyTypeError::new_err(format!(
+                            "internal config type mismatch for key `{}`",
+                            key.name(),
+                        ))
+                    })?;
+                    let runtime = hyperactor_config::global::runtime_attrs();
+                    match runtime.get(key.clone()).cloned() {
+                        None => Ok(None),
+                        Some(opt_val) => opt_val.map(<$py_ty>::from).into_py_any(py).map(Some),
+                    }
+                }
+            }
         }
     };
     ($py_ty:ty as $ty:ty) => {
@@ -479,10 +526,25 @@ macro_rules! declare_py_config_type {
 
 declare_py_config_type!(PyBindSpec as BindSpec);
 declare_py_config_type!(PyDuration as Duration);
+declare_py_config_type!(Option<PyDuration> as Option<Duration>);
 declare_py_config_type!(PyEncoding as wirevalue::Encoding);
 declare_py_config_type!(PyPortRange as std::ops::Range::<u16>);
 declare_py_config_type!(
     i8, i16, i32, i64, u8, u16, u32, u64, usize, f32, f64, bool, String
+);
+declare_py_config_type!(
+    Option::<i8>,
+    Option::<i16>,
+    Option::<i32>,
+    Option::<i64>,
+    Option::<u8>,
+    Option::<u16>,
+    Option::<u32>,
+    Option::<u64>,
+    Option::<usize>,
+    Option::<f32>,
+    Option::<f64>,
+    Option::<bool>,
 );
 
 /// Python entrypoint for `monarch_hyperactor.config.configure(...)`.

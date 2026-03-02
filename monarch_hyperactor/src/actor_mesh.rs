@@ -772,19 +772,18 @@ mod tests {
     fn init_test_instance() -> &'static Instance<TestClient> {
         static INSTANCE: OnceLock<Instance<TestClient>> = OnceLock::new();
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
-        let (actor, _handle, supervision_rx, signal_rx, work_rx) =
-            proc.actor_instance("test_client").unwrap();
+        let ai = proc.actor_instance("test_client").unwrap();
 
         INSTANCE
-            .set(actor)
+            .set(ai.instance)
             .map_err(|_| "already initialized")
             .unwrap();
         let instance = INSTANCE.get().unwrap();
 
         TestClient {
-            signal_rx,
-            supervision_rx,
-            work_rx,
+            signal_rx: ai.signal,
+            supervision_rx: ai.supervision,
+            work_rx: ai.work,
         }
         .run(instance);
 
@@ -865,10 +864,11 @@ mod tests {
         // Instance<PythonActor> required by the Supervisable trait
         // signature. Only used for subscription routing inside
         // next_supervision_event.
-        let (py_instance, ..) = Proc::direct(ChannelTransport::Unix.any(), "py_proc".to_string())
+        let py_ai = Proc::direct(ChannelTransport::Unix.any(), "py_proc".to_string())
             .unwrap()
             .actor_instance::<PythonActor>("py_client")
             .unwrap();
+        let py_instance = py_ai.instance;
 
         // Query the subscriber count from the controller.
         let (port, mut rx) = mailbox::open_port::<usize>(instance);
@@ -891,7 +891,7 @@ mod tests {
                 _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
                     panic!("unexpected supervision event on healthy mesh");
                 }
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                _ = RealClock.sleep(Duration::from_millis(200)) => {}
             }
         }
 
@@ -917,7 +917,7 @@ mod tests {
                 _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
                     panic!("unexpected supervision event on healthy mesh");
                 }
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+                _ = RealClock.sleep(Duration::from_millis(200)) => {}
             }
         }
 

@@ -89,12 +89,18 @@ impl PyInstance {
     }
 
     #[pyo3(signature = (reason = None))]
-    fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
+    fn stop(&self, reason: Option<&str>) -> PyResult<()> {
         tracing::info!(actor_id = %self.inner.self_id(), "stopping PyInstance");
         let reason = reason.unwrap_or("(no reason provided)");
         self.inner
             .stop(reason)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Deprecated alias for `stop`.
+    #[pyo3(signature = (reason = None))]
+    fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
+        self.stop(reason)
     }
 }
 

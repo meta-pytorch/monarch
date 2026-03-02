@@ -30,8 +30,9 @@ import time
 os.environ["USE_UNIFIED_LAYER"] = "true"
 
 import pyarrow as pa
-from monarch.actor import Actor, endpoint, this_host
+from monarch.actor import Actor, endpoint
 from monarch.distributed_telemetry import start_telemetry
+from monarch.job import ProcessJob
 
 
 NUM_WORKERS = 3
@@ -60,16 +61,8 @@ class ComputeActor(Actor):
         """Do nested work to generate hierarchical spans."""
         return self._do_nested_work(depth)
 
-    @endpoint
-    def spawn_child_work(self) -> None:
-        """Spawn a child process to do work."""
-        child_procs = this_host().spawn_procs(name="child_worker")
-        child_actors = child_procs.spawn("child_compute", ComputeActor)
-        # pyre-ignore[29]: child_actors is an ActorMesh
-        child_actors.compute.call(100).get()
 
-
-def print_table(table: pa.Table, max_rows: int = 20) -> None:
+def print_table(table: pa.Table, max_rows: int = 50) -> None:
     """Pretty print a PyArrow table."""
     if table.num_rows == 0:
         print("(empty result)")
@@ -93,7 +86,8 @@ def main() -> None:
 
     # Spawn worker processes - telemetry automatically tracks them
     print(f"Spawning {NUM_WORKERS} worker processes...")
-    worker_procs = this_host().spawn_procs(per_host={"workers": NUM_WORKERS})
+    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS}, name="workers")
 
     # Spawn compute actors
     print("Spawning compute actors...")
@@ -110,9 +104,12 @@ def main() -> None:
     nested_results = workers.nested_work.call(3).get()
     print(f"Nested work results: {list(nested_results)}")
 
-    # Have worker 0 spawn a child and do work
-    print("Having worker 0 spawn a child process...")
-    workers.slice(workers=0).spawn_child_work.call_one().get()
+    # Spawn a child process and do work
+    print("Spawning a child process...")
+    child_procs = hosts.spawn_procs(name="child_worker")
+    child_actors = child_procs.spawn("child_compute", ComputeActor)
+    # pyre-ignore[29]: child_actors is an ActorMesh
+    child_actors.compute.call(100).get()
 
     # Give a moment for all trace events to be flushed
     print("Waiting for trace events to flush...")
@@ -155,10 +152,10 @@ def main() -> None:
                ORDER BY ordinal_position""",
         ),
         (
-            "Schema of 'actor_meshes' table",
+            "Schema of 'meshes' table",
             """SELECT column_name, data_type, is_nullable
                FROM information_schema.columns
-               WHERE table_name = 'actor_meshes'
+               WHERE table_name = 'meshes'
                ORDER BY ordinal_position""",
         ),
         # Show available spans
@@ -170,8 +167,8 @@ def main() -> None:
         ("Count of events", "SELECT COUNT(*) as total_events FROM events"),
         ("Count of actors", "SELECT COUNT(*) as total_actors FROM actors"),
         (
-            "Count of actor meshes",
-            "SELECT COUNT(*) as total_actor_meshes FROM actor_meshes",
+            "Count of meshes",
+            "SELECT COUNT(*) as total_meshes FROM meshes",
         ),
         # Show span details
         (
@@ -238,20 +235,34 @@ def main() -> None:
                FROM actors
                ORDER BY full_name""",
         ),
-        # Sample of actor meshes
+        # Sample of meshes
         (
-            "Sample actor meshes",
+            "Sample meshes",
             """SELECT id, class, given_name, full_name, shape_json, parent_view_json, timestamp_us
-               FROM actor_meshes
+               FROM meshes
                ORDER BY timestamp_us DESC
                LIMIT 10""",
         ),
-        # Actor meshes by name pattern
+        # Meshes by name pattern
         (
-            "Actor meshes by name",
+            "meshes by name",
             """SELECT given_name, class, shape_json, parent_view_json
-               FROM actor_meshes
+               FROM meshes
                ORDER BY given_name""",
+        ),
+        # Find all actors in a proc mesh by joining through the actor mesh
+        # actors -> actor mesh (via mesh_id) -> proc mesh (via parent_mesh_id)
+        (
+            "Actors in each proc mesh",
+            """SELECT pm.given_name AS proc_mesh_name,
+                      am.given_name AS actor_mesh_name,
+                      a.full_name AS actor_name,
+                      a.rank
+               FROM actors a
+               INNER JOIN meshes am ON a.mesh_id = am.id
+               INNER JOIN meshes pm ON am.parent_mesh_id = pm.id
+               WHERE pm.class = 'Proc'
+               ORDER BY pm.given_name, am.given_name, a.rank""",
         ),
         # Actor status events schema
         (

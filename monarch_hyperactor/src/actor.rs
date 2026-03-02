@@ -531,7 +531,7 @@ impl PythonActor {
         )
         .expect("create client PythonActor");
 
-        let (client, handle, supervision_rx, signal_rx, work_rx) = client_proc
+        let ai = client_proc
             .actor_instance(
                 root_client_class
                     .getattr("name")
@@ -541,8 +541,13 @@ impl PythonActor {
             )
             .expect("root instance create");
 
+        let handle = ai.handle;
+        let signal_rx = ai.signal;
+        let supervision_rx = ai.supervision;
+        let work_rx = ai.work;
+
         root_client_instance
-            .set(client)
+            .set(ai.instance)
             .map_err(|_| "already initialized root client instance")
             .unwrap();
         let instance = root_client_instance.get().unwrap();
@@ -626,9 +631,9 @@ impl PythonActor {
             }
             if let Some(err) = err {
                 let event = actor_error_to_event(instance, &actor, err);
-                // The proc supervision handler will send to ProcMeshAgent, which
+                // The proc supervision handler will send to ProcAgent, which
                 // just records it in v1. We want to crash instead, as nothing will
-                // monitor the client ProcMeshAgent for now.
+                // monitor the client ProcAgent for now.
                 tracing::error!(
                     actor_id = %instance.self_id(),
                     "could not propagate supervision event {} because it reached the global client: exiting the process with code 1",

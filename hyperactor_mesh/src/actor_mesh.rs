@@ -55,11 +55,11 @@ use crate::casting;
 use crate::comm::multicast;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
-use crate::mesh_agent::ActorState;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
+use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::reference::ActorMeshId;
 use crate::resource;
@@ -95,7 +95,7 @@ pub struct ActorMesh<A: Referable> {
     /// the mesh is stopped when the actor owning it is stopped, and can provide
     /// supervision events via subscribing.
     /// It may not be present for some types of actors, typically system actors
-    /// such as ProcMeshAgent or CommActor.
+    /// such as ProcAgent or CommActor.
     controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 

@@ -186,7 +186,7 @@ struct ActorInstanceState {
 ///
 /// ## Supervision event ingestion (remote)
 ///
-/// `ProcMeshAgent` is the *process/rank-local* sink for
+/// `ProcAgent` is the *process/rank-local* sink for
 /// `ActorSupervisionEvent`s produced by the runtime (actor failures,
 /// routing failures, undeliverables, etc.).
 ///
@@ -214,7 +214,7 @@ struct ActorInstanceState {
         resource::GetRankStatus { cast = true },
     ]
 )]
-pub struct ProcMeshAgent {
+pub struct ProcAgent {
     proc: Proc,
     remote: Remote,
     state: State,
@@ -232,7 +232,7 @@ pub struct ProcMeshAgent {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
 }
 
-impl ProcMeshAgent {
+impl ProcAgent {
     #[hyperactor::observe_result("MeshAgent")]
     pub(crate) async fn bootstrap(
         proc_id: ProcId,
@@ -244,7 +244,7 @@ impl ProcMeshAgent {
         // this process can reach actors in this proc.
         crate::router::global().bind(proc_id.into(), proc.clone());
 
-        let agent = ProcMeshAgent {
+        let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
             state: State::UnconfiguredV0 { sender },
@@ -261,7 +261,7 @@ impl ProcMeshAgent {
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
-        let agent = ProcMeshAgent {
+        let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
             state: State::V1,
@@ -270,7 +270,7 @@ impl ProcMeshAgent {
             supervision_events: HashMap::new(),
             shutdown_tx,
         };
-        proc.spawn::<Self>("agent", agent)
+        proc.spawn::<Self>("proc_agent", agent)
     }
 
     async fn destroy_and_wait_except_current<'a>(
@@ -283,100 +283,117 @@ impl ProcMeshAgent {
             .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
     }
+
+    /// Publish the current proc properties and children list for
+    /// introspection.
+    fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
+        use hyperactor::introspect::PublishedPropertiesKind;
+
+        // Live actors.
+        let live_ids = self.proc.all_actor_ids();
+        let num_live = live_ids.len();
+        let mut children = Vec::with_capacity(num_live);
+        let mut system_children = Vec::new();
+        for id in live_ids {
+            let ref_str = id.to_string();
+            if self
+                .proc
+                .get_instance(&id)
+                .is_some_and(|cell| cell.is_system())
+            {
+                system_children.push(ref_str.clone());
+            }
+            children.push(ref_str);
+        }
+
+        // Terminated actors appear as children but don't inflate
+        // the actor count. Track them in stopped_children so the
+        // TUI can filter/gray without per-child fetches.
+        let mut stopped_children: Vec<String> = Vec::new();
+        for id in self.proc.all_terminated_actor_ids() {
+            let ref_str = id.to_string();
+            stopped_children.push(ref_str.clone());
+            // Terminated system actors must also appear in
+            // system_children for correct filtering.
+            if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
+                if matches!(
+                    snapshot.properties,
+                    hyperactor::introspect::NodeProperties::Actor {
+                        is_system: true,
+                        ..
+                    }
+                ) {
+                    system_children.push(ref_str.clone());
+                }
+            }
+            if !children.contains(&ref_str) {
+                children.push(ref_str);
+            }
+        }
+
+        let stopped_retention_cap =
+            hyperactor_config::global::get(hyperactor::config::TERMINATED_SNAPSHOT_RETENTION);
+
+        // FI-5: is_poisoned iff failed_actor_count > 0.
+        let failed_actor_count = self.supervision_events.len();
+        cx.instance()
+            .publish_properties(PublishedPropertiesKind::Proc {
+                proc_name: self.proc.proc_id().to_string(),
+                num_actors: num_live,
+                is_system: false,
+                children,
+                system_children,
+                stopped_children,
+                stopped_retention_cap,
+                is_poisoned: failed_actor_count > 0,
+                failed_actor_count,
+            });
+    }
 }
 
 #[async_trait]
-impl Actor for ProcMeshAgent {
+impl Actor for ProcAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         self.proc.set_supervision_coordinator(this.port())?;
-        Ok(())
-    }
+        self.publish_introspect_properties(this);
 
-    /// Proc-level introspection override.
-    ///
-    /// `ProcMeshAgent` describes the proc it manages: on `Query` it
-    /// returns `NodeProperties::Proc` and enumerates all actor ids in
-    /// the proc as `children` (excluding the `ProcMeshAgent` itself,
-    /// which is just the infrastructure wrapper).
-    ///
-    /// `QueryChild` is unsupported because proc "children" are always
-    /// independently addressable actors; callers should introspect
-    /// them by sending `IntrospectMessage::Query` directly to the
-    /// child actor id.
-    async fn handle_introspect(
-        &mut self,
-        cx: &Instance<Self>,
-        msg: hyperactor::introspect::IntrospectMessage,
-    ) -> Result<(), anyhow::Error> {
-        use hyperactor::introspect::IntrospectMessage;
-        use hyperactor::introspect::IntrospectView;
-        use hyperactor::introspect::NodePayload;
-        use hyperactor::introspect::NodeProperties;
+        // Resolve terminated actor snapshots via QueryChild so that
+        // dead actors remain directly queryable by reference.
+        let proc = self.proc.clone();
+        this.set_query_child_handler(move |child_ref| {
+            use hyperactor::introspect::NodePayload;
+            use hyperactor::introspect::NodeProperties;
+            use hyperactor::reference::Reference;
 
-        match msg {
-            IntrospectMessage::Query { view, reply } => {
-                let payload = match view {
-                    IntrospectView::Entity => {
-                        // Return Proc properties.
-                        let all_actors = self.proc.all_actor_ids();
-                        // Include all actors in the proc, including
-                        // ProcMeshAgent itself (consistent with
-                        // HostMeshAgent behavior).
-                        let children: Vec<String> =
-                            all_actors.into_iter().map(|id| id.to_string()).collect();
-
-                        NodePayload {
-                            identity: cx.self_id().to_string(),
-                            properties: NodeProperties::Proc {
-                                proc_name: self.proc.proc_id().to_string(),
-                                num_actors: children.len(),
-                                is_system: false,
-                            },
-                            children,
-                            parent: None,
-                        }
-                    }
-                    IntrospectView::Actor => {
-                        // Return Actor properties using default.
-                        cx.introspect_payload()
-                    }
-                };
-
-                if let Err(e) = reply.send(cx, payload) {
-                    tracing::debug!("introspect Query reply failed (querier gone?): {e}");
+            if let Reference::Actor(id) = child_ref {
+                if let Some(snapshot) = proc.terminated_snapshot(id) {
+                    return snapshot;
                 }
             }
-            IntrospectMessage::QueryChild { child_ref, reply } => {
-                // All children are independently addressable
-                // actors.
-                if let Err(e) = reply.send(
-                    cx,
-                    NodePayload {
-                        identity: String::new(),
-                        properties: NodeProperties::Error {
-                            code: "not_found".into(),
-                            message: format!(
-                                "proc {} does not handle QueryChild \
-                                 for {}; query the actor directly",
-                                self.proc.proc_id(),
-                                child_ref,
-                            ),
-                        },
-                        children: vec![],
-                        parent: None,
-                    },
-                ) {
-                    tracing::debug!("introspect QueryChild reply failed (querier gone?): {e}");
-                }
+
+            NodePayload {
+                identity: String::new(),
+                properties: NodeProperties::Error {
+                    code: "not_found".into(),
+                    message: format!("child {} not found", child_ref),
+                },
+                children: Vec::new(),
+                parent: None,
+                as_of: humantime::format_rfc3339_millis(
+                    hyperactor::clock::RealClock.system_time_now(),
+                )
+                .to_string(),
             }
-        }
+        });
+
         Ok(())
     }
 }
 
 #[async_trait]
 #[hyperactor::handle(MeshAgentMessage)]
-impl MeshAgentMessageHandler for ProcMeshAgent {
+impl MeshAgentMessageHandler for ProcAgent {
     async fn configure(
         &mut self,
         cx: &Context<Self>,
@@ -463,12 +480,13 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
                 actor_id,
             },
         )?;
+        self.publish_introspect_properties(cx);
         Ok(())
     }
 
     async fn stop_actor(
         &mut self,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
         actor_id: ActorId,
         timeout_ms: u64,
         reason: String,
@@ -479,7 +497,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             actor_name = actor_id.name(),
         );
 
-        if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
+        let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
@@ -492,7 +510,9 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
             }
         } else {
             Ok(StopActorResult::NotFound)
-        }
+        };
+        self.publish_introspect_properties(cx);
+        result
     }
 
     async fn status(
@@ -526,7 +546,7 @@ impl MeshAgentMessageHandler for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
+impl Handler<ActorSupervisionEvent> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -552,6 +572,8 @@ impl Handler<ActorSupervisionEvent> for ProcMeshAgent {
                 .entry(event.actor_id.clone())
                 .or_default()
                 .push(event.clone());
+            // Republish so introspection picks up is_poisoned / failed_actor_count.
+            self.publish_introspect_properties(cx);
         }
         if let Some(supervisor) = self.state.supervisor() {
             supervisor.send(cx, event)?;
@@ -598,7 +620,7 @@ pub struct ActorState {
 wirevalue::register_type!(ActorState);
 
 #[async_trait]
-impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
+impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -648,12 +670,13 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcMeshAgent {
             },
         );
 
+        self.publish_introspect_properties(cx);
         Ok(())
     }
 }
 
 #[async_trait]
-impl Handler<resource::Stop> for ProcMeshAgent {
+impl Handler<resource::Stop> for ProcAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         // We don't remove the actor from the state map, instead we just store
         // its state as Stopped.
@@ -697,7 +720,7 @@ impl Handler<resource::Stop> for ProcMeshAgent {
 /// `std::process::exit(0/1)` after shutdown. Any sender must *not* expect a
 /// reply or send any further message, and should watch `ProcStatus` instead.
 #[async_trait]
-impl Handler<resource::StopAll> for ProcMeshAgent {
+impl Handler<resource::StopAll> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -710,7 +733,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
             .destroy_and_wait_except_current(cx, timeout, &message.reason)
             .await;
         // Exit here to cleanup all remaining resources held by the process.
-        // This means ProcMeshAgent will never run cleanup or any other code
+        // This means ProcAgent will never run cleanup or any other code
         // from exiting its root actor. Senders of this message should never
         // send any further messages or expect a reply.
         match stop_result {
@@ -718,7 +741,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
                 // No need to clean up any state, the process is exiting.
                 tracing::info!(
                     actor = %cx.self_id(),
-                    "exiting process after receiving StopAll message on ProcMeshAgent. \
+                    "exiting process after receiving StopAll message on ProcAgent. \
                     stopped actors = {:?}, aborted actors = {:?}",
                     stopped_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                     aborted_actors.into_iter().map(|a| a.to_string()).collect::<Vec<_>>(),
@@ -730,7 +753,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
                 std::process::exit(0);
             }
             Err(e) => {
-                tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcMeshAgent: {:?}", e);
+                tracing::error!(actor = %cx.self_id(), "failed to stop all actors on ProcAgent: {:?}", e);
                 if let Some(tx) = self.shutdown_tx.take() {
                     let _ = tx.send(1);
                     return Ok(());
@@ -742,7 +765,7 @@ impl Handler<resource::StopAll> for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::GetRankStatus> for ProcMeshAgent {
+impl Handler<resource::GetRankStatus> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -795,7 +818,7 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
                 .expect("valid single-run overlay")
         };
         let result = get_rank_status.reply.send(cx, overlay);
-        // Ignore errors, because returning Err from here would cause the ProcMeshAgent
+        // Ignore errors, because returning Err from here would cause the ProcAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.
         if let Err(e) = result {
@@ -811,7 +834,7 @@ impl Handler<resource::GetRankStatus> for ProcMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
+impl Handler<resource::GetState<ActorState>> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -860,7 +883,7 @@ impl Handler<resource::GetState<ActorState>> for ProcMeshAgent {
         };
 
         let result = get_state.reply.send(cx, state);
-        // Ignore errors, because returning Err from here would cause the ProcMeshAgent
+        // Ignore errors, because returning Err from here would cause the ProcAgent
         // to be stopped, which would prevent querying and spawning other actors.
         // This only means some actor that requested the state of an actor failed to receive it.
         if let Err(e) = result {
@@ -884,7 +907,7 @@ pub struct NewClientInstance {
 }
 
 #[async_trait]
-impl Handler<NewClientInstance> for ProcMeshAgent {
+impl Handler<NewClientInstance> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -905,7 +928,7 @@ pub struct GetProc {
 }
 
 #[async_trait]
-impl Handler<GetProc> for ProcMeshAgent {
+impl Handler<GetProc> for ProcAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,

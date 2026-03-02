@@ -47,7 +47,7 @@ use typeuri::Named;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::assign::Ranks;
-use crate::mesh_agent::ProcMeshAgent;
+use crate::proc_agent::ProcAgent;
 use crate::shortuuid::ShortUuid;
 
 /// Errors that occur during allocation operations.
@@ -163,7 +163,7 @@ pub enum ProcState {
         proc_id: ProcId,
         /// Reference to this proc's mesh agent. In the future, we'll reserve a
         /// 'well known' PID (0) for this purpose.
-        mesh_agent: ActorRef<ProcMeshAgent>,
+        mesh_agent: ActorRef<ProcAgent>,
         /// The address of this proc. The endpoint of this address is
         /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
         addr: ChannelAddr,
@@ -331,7 +331,7 @@ pub(crate) struct AllocatedProc {
     pub create_key: ShortUuid,
     pub proc_id: ProcId,
     pub addr: ChannelAddr,
-    pub mesh_agent: ActorRef<ProcMeshAgent>,
+    pub mesh_agent: ActorRef<ProcAgent>,
 }
 
 impl fmt::Display for AllocatedProc {
@@ -633,8 +633,8 @@ pub(crate) mod testing {
     use super::*;
     use crate::alloc::test_utils::TestActor;
     use crate::alloc::test_utils::Wait;
-    use crate::mesh_agent::GspawnResult;
-    use crate::mesh_agent::MeshAgentMessageClient;
+    use crate::proc_agent::GspawnResult;
+    use crate::proc_agent::MeshAgentMessageClient;
     use crate::transport::default_transport;
 
     #[macro_export]
@@ -739,7 +739,7 @@ pub(crate) mod testing {
         client_proc: &Proc,
         cx: &impl context::Actor,
         router_channel_addr: ChannelAddr,
-        mesh_agent: ActorRef<ProcMeshAgent>,
+        mesh_agent: ActorRef<ProcAgent>,
     ) -> ActorRef<TestActor> {
         let (supervisor, _supervisor_handle) = client_proc.instance("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();

@@ -46,9 +46,16 @@ fi
 
 echo "Admin server at: $ADMIN_ADDR"
 
+# For HTTPS, skip certificate verification — the server's x509 identity
+# may not match the hostname in CI environments (Sandcastle).
+CURL_FLAGS=(-sf)
+if [[ "$ADMIN_ADDR" == https://* ]]; then
+    CURL_FLAGS+=(--insecure)
+fi
+
 # --- Test /v1/root ---
 echo "Testing GET /v1/root..."
-if ! ROOT_RESP=$(curl -sf "$ADMIN_ADDR/v1/root"); then
+if ! ROOT_RESP=$(curl "${CURL_FLAGS[@]}" "$ADMIN_ADDR/v1/root"); then
     echo "FAIL: GET /v1/root failed"
     exit 1
 fi
@@ -69,7 +76,7 @@ fi
 
 # --- Test /v1/tree ---
 echo "Testing GET /v1/tree..."
-if ! TREE_RESP=$(curl -sf "$ADMIN_ADDR/v1/tree"); then
+if ! TREE_RESP=$(curl "${CURL_FLAGS[@]}" "$ADMIN_ADDR/v1/tree"); then
     echo "FAIL: GET /v1/tree failed"
     exit 1
 fi
@@ -81,7 +88,7 @@ if ! echo "$TREE_RESP" | grep -q "├── \|└── "; then
     exit 1
 fi
 
-if ! echo "$TREE_RESP" | grep -q " ->  http://"; then
+if ! echo "$TREE_RESP" | grep -qE " ->  https?://"; then
     echo "FAIL: /v1/tree missing clickable URLs"
     echo "$TREE_RESP"
     exit 1

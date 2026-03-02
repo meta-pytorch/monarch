@@ -80,7 +80,7 @@ use crate::transport::default_bind_spec;
 /// agent. Newer meshes override older ones ("last sink wins").
 ///
 /// Uses `PortRef` (not `PortHandle`) because the sink target
-/// (`ProcMeshAgent`) runs in a remote worker process.
+/// (`ProcAgent`) runs in a remote worker process.
 static GLOBAL_SUPERVISION_SINK: OnceLock<RwLock<Option<PortRef<ActorSupervisionEvent>>>> =
     OnceLock::new();
 
@@ -103,7 +103,7 @@ fn sink_cell() -> &'static RwLock<Option<PortRef<ActorSupervisionEvent>>> {
 /// log/inspect overrides.
 ///
 /// Note: the sink is a [`PortRef`] (not a `PortHandle`) because the
-/// destination [`ProcMeshAgent`] may live in a different
+/// destination [`ProcAgent`] may live in a different
 /// process/rank.
 pub(crate) fn set_global_supervision_sink(
     sink: PortRef<ActorSupervisionEvent>,
@@ -345,9 +345,18 @@ fn fresh_instance() -> (
     // `Instance::handle_supervision_event`. The global root client is
     // a monitor and must not crash due to routing / delivery failures
     // it observes; undeliverables are handled non-fatally.
-    let (client, handle, supervision_rx, signal_rx, work_rx) = client_proc
+    let ai = client_proc
         .actor_instance::<GlobalClientActor>("client")
         .expect("root instance create");
+
+    // Destructure eagerly to avoid partial-move issues.
+    let hyperactor::proc::ActorInstance {
+        instance: client_instance,
+        handle,
+        supervision,
+        signal,
+        work,
+    } = ai;
 
     // Bind the actor's well-known ports (Signal,
     // Undeliverable<MessageEnvelope>, IntrospectMessage, and the
@@ -359,14 +368,14 @@ fn fresh_instance() -> (
 
     // Use the OnceLock to get a 'static lifetime for the instance.
     INSTANCE
-        .set((client, handle))
+        .set((client_instance, handle))
         .map_err(|_| "already initialized root client instance")
         .unwrap();
     let (instance, handle) = INSTANCE.get().unwrap();
     let client = GlobalClientActor {
-        signal_rx,
-        supervision_rx,
-        work_rx,
+        signal_rx: signal,
+        supervision_rx: supervision,
+        work_rx: work,
     };
     client.run(instance);
     (instance, handle)

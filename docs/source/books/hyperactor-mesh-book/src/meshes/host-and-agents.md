@@ -128,7 +128,7 @@ The agent is exported with exactly these handlers:
 pub struct HostMeshAgent {
     host: Option<HostAgentMode>,
     created: HashMap<Name, ProcCreationState>,
-    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
+    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcAgent>>>,
 }
 ```
 
@@ -157,7 +157,7 @@ So everything it does is one of those 6 messages.
 - Same lookup, but return the richer state:
   - the proc's direct id at the host,
   - the rank we used,
-  - the proc's own `ProcMeshAgent` ref,
+  - the proc's own `ProcAgent` ref,
   - and any bootstrap/process status the host's manager could provide.
 
 ### 5. List
