@@ -30,7 +30,6 @@ use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 use tokio::time::Duration;
 use tokio::time::Interval;
-use tokio_util::net::Listener;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::Span;
@@ -658,7 +657,7 @@ impl SessionManager {
 
 /// Main listen loop that actually runs the server. The loop will exit when `parent_cancel_token` is
 /// canceled.
-async fn listen<M: RemoteMessage, L: Listener>(
+async fn listen<M: RemoteMessage, L: super::Listener>(
     mut listener: L,
     listener_channel_addr: ChannelAddr,
     tx: mpsc::Sender<M>,
@@ -666,8 +665,7 @@ async fn listen<M: RemoteMessage, L: Listener>(
     is_tls: bool,
 ) -> Result<(), ServerError>
 where
-    L::Addr: Send + Sync + fmt::Debug + 'static + Into<ChannelAddr>,
-    L::Io: Send + Unpin + fmt::Debug + 'static,
+    L::Stream: Unpin + fmt::Debug + 'static,
 {
     let mut connections: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
 
@@ -685,8 +683,7 @@ where
         tokio::select! {
             result = listener.accept() => {
                 match result {
-                    Ok((stream, addr)) => {
-                        let source : ChannelAddr = addr.into();
+                    Ok((stream, source)) => {
                         tracing::debug!(
                             source = %source,
                             dest = %listener_channel_addr,
@@ -864,14 +861,13 @@ impl Future for ServerHandle {
 }
 
 /// serve new connections that are accepted from the given listener.
-pub(super) fn serve<M: RemoteMessage, L: Listener + Send + Unpin + 'static>(
+pub(super) fn serve<M: RemoteMessage, L: super::Listener>(
     listener: L,
     channel_addr: ChannelAddr,
     is_tls: bool,
 ) -> Result<(ChannelAddr, NetRx<M>), ServerError>
 where
-    L::Addr: Sync + Send + fmt::Debug + Into<ChannelAddr>,
-    L::Io: Sync + Send + Unpin + fmt::Debug,
+    L::Stream: Unpin + fmt::Debug + 'static,
 {
     metrics::CHANNEL_CONNECTIONS.add(
         1,
