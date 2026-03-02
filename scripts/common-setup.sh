@@ -53,7 +53,7 @@ setup_rust_toolchain() {
 # Uses the pytorch ossci-compiler-cache S3 bucket if available.
 setup_sccache() {
     echo "Setting up sccache..."
-    dnf install -y sccache
+    pip install sccache
 
     export RUSTC_WRAPPER=sccache
     export SCCACHE_BUCKET=ossci-compiler-cache

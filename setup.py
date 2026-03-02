@@ -254,7 +254,7 @@ if not skip_legacy_builds:
     rust_extensions.append(
         RustBin(
             target="process_allocator",
-            path="monarch_hyperactor/Cargo.toml",
+            path="monarch_extension/Cargo.toml",
             debug=False,
             args=["--bin", "process_allocator", "--no-default-features"],
         )
