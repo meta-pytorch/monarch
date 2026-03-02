@@ -14,6 +14,7 @@ use hyperactor::ActorRef;
 use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Referable;
+use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
 use hyperactor::context;
 use hyperactor::mailbox;
 use hyperactor::mailbox::MailboxSenderError;
@@ -36,6 +37,8 @@ use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifySlice;
 use ndslice::selection::normal;
 
+use crate::comm::ENABLE_NATIVE_V1_CASTING;
+
 use crate::CommActor;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastMessage;
@@ -44,6 +47,19 @@ use crate::comm::multicast::Uslice;
 use crate::config::MAX_CAST_DIMENSION_SIZE;
 use crate::metrics;
 use crate::reference::ActorMeshId;
+
+/// Returns true if native V1 casting is enabled. Panics if V1 casting
+/// is on but the required dest actor reordering buffer is not.
+pub fn v1_casting_enabled() -> bool {
+    let enabled = hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING);
+    if enabled {
+        assert!(
+            hyperactor_config::global::get(ENABLE_DEST_ACTOR_REORDERING_BUFFER),
+            "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
+        );
+    }
+    enabled
+}
 
 declare_attrs! {
     /// Which mesh this message was cast to. Used for undeliverable message
