@@ -152,6 +152,8 @@ async def test_actor_exception(mesh, actor_class, num_procs) -> None:
         else:
             await exception_actor.raise_exception.call()
 
+    await proc.stop()
+
 
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
@@ -176,6 +178,8 @@ def test_actor_exception_sync(mesh, actor_class, num_procs) -> None:
             exception_actor.raise_exception.call_one().get()
         else:
             exception_actor.raise_exception.call().get()
+
+    proc.stop().get()
 
 
 @pytest.mark.timeout(60)
@@ -217,6 +221,8 @@ async def test_actor_init_exception(mesh, actor_class, num_procs) -> None:
         fault_str = str(fault)
         assert "exception_actor" in fault_str
         assert "This is an exception from __init__" in fault_str
+
+    await proc.stop()
 
 
 @pytest.mark.timeout(60)
@@ -261,6 +267,8 @@ def test_actor_init_exception_sync(mesh, actor_class, num_procs) -> None:
         assert "exception_actor" in fault_str
         assert "This is an exception from __init__" in fault_str
 
+    proc.stop().get()
+
 
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
@@ -296,6 +304,8 @@ async def test_actor_error_message(mesh) -> None:
     assert "During handling of the above exception, another exception occurred" in str(
         exc_info.value
     )
+
+    await proc.stop()
 
 
 '''
@@ -410,6 +420,8 @@ async def test_broken_pickle_class(
             await exception_actor.print_value.call_one(broken_obj)
         else:
             await exception_actor.print_value.call(broken_obj)
+
+    await proc.stop()
 
 
 """
@@ -608,6 +620,7 @@ class Manager(Actor):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_errors_propagated() -> None:
     p_mesh = spawn_procs_on_this_host({"gpus": 1})
     mesh = p_mesh.spawn("manager", Manager)
@@ -617,6 +630,12 @@ async def test_errors_propagated() -> None:
     with pytest.raises(ActorError) as err_info:
         await mesh.route.call_one()
     assert "value error" in str(err_info.value)
+
+    # TODO: p_mesh.stop() non-deterministically crashes with exit(1).
+    # During shutdown, an undeliverable message bounces back to the
+    # HostMeshAgent on the service proc. The service proc has no supervision
+    # coordinator, so handle_unhandled_supervision_event calls exit(1).
+    # await p_mesh.stop()
 
 
 @pytest.mark.oss_skip
@@ -661,6 +680,8 @@ async def test_actor_mesh_supervision_handling() -> None:
 
     with pytest.raises(RuntimeError, match="error spawning actor mesh"):
         await proc.spawn("ex", ExceptionActorSync).initialized
+
+    await proc.stop()
 
 
 class HealthyActor(Actor):
@@ -707,6 +728,7 @@ class Intermediate(Actor):
 
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
     proc = spawn_procs_on_this_host({"gpus": 1})
 
@@ -735,6 +757,8 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
 
     # healthy actor should still be working
     await intermediate_actor.forward_healthy_check.call()
+
+    await proc.stop()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -783,6 +807,8 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     # later on. We need to wait for it to be processed.
     await asyncio.sleep(5)
 
+    await proc.stop()
+
 
 @parametrize_config(actor_queue_dispatch={True, False})
 @pytest.mark.parametrize(
@@ -821,6 +847,8 @@ async def test_process_exit_handling(error_actor_cls) -> None:
         "Actor.*error.*exited because of the following reason",
     ):
         await error_actor.check.call()
+
+    await proc.stop()
 
 
 class FaultActor(Actor):
@@ -991,6 +1019,8 @@ async def test_supervision_with_sending_error() -> None:
         with pytest.raises(SupervisionError, match=error_msg):
             await actor_mesh.check_with_payload.call(payload="a" * 55000000)
 
+        await proc.stop()
+
     # The global python actor __supervise__ hook should be called with the
     # failure containing the send error.
     assert len(errors) >= 1
@@ -1068,6 +1098,8 @@ async def test_slice_supervision() -> None:
     check = await healthy_mesh.check.call()
     for _, item in check.items():
         assert item == "this is a healthy check"
+
+    await pm.stop()
 
 
 @pytest.mark.timeout(30)
@@ -1218,6 +1250,7 @@ async def test_supervise_callback_handled():
         check_message(i)
 
     await pm.stop()
+    await second_mesh.stop()
 
 
 @pytest.mark.timeout(120)
@@ -1249,6 +1282,7 @@ async def test_supervise_callback_without_await_handled():
         check_message(i)
 
     await pm.stop()
+    await second_mesh.stop()
 
 
 @pytest.mark.timeout(30)
@@ -1293,6 +1327,7 @@ async def test_supervise_callback_with_mesh_ref():
         check_message(i)
 
     await pm.stop()
+    await second_mesh.stop()
 
 
 @pytest.mark.timeout(60)
@@ -1321,6 +1356,7 @@ async def test_supervise_callback_when_procs_killed():
         check_message(i)
 
     await pm.stop()
+    await second_mesh.stop()
 
 
 @pytest.mark.timeout(30)
@@ -1352,6 +1388,7 @@ async def test_supervise_callback_unhandled():
         await supervisor.subworker_fail.call(sleep=15)
 
     await pm.stop()
+    await second_mesh.stop()
 
 
 # This test takes up to 3 minutes to run because the timeout on controller
@@ -1387,6 +1424,7 @@ async def test_actor_mesh_supervision_controller_dead() -> None:
         await inner_mesh.check.call()
 
     await pm.stop()
+    await second_mesh.stop()
 
 
 class AbortActor(Actor):
@@ -1422,6 +1460,8 @@ async def test_actor_abort(reason) -> None:
         assert "no reason provided" in await fut
     else:
         assert reason in await fut
+
+    await pm.stop()
 
 
 @pytest.mark.timeout(500)
@@ -1470,3 +1510,5 @@ async def test_gil_stall():
         f"[{timestamp()}] all requests completed, gathering took {gather_end - gather_start:.3f} seconds",
         file=sys.stderr,
     )
+
+    await pm.stop()
