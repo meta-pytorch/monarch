@@ -9,7 +9,6 @@
 //! Simplex client: dial + SimplexConnector implementation.
 
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
 use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
 use tokio::sync::mpsc;
@@ -18,13 +17,11 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::framed::FrameReader;
 use super::session;
 use super::session::Deliveries;
-use super::session::MuxWriter;
+use super::session::Mux;
 use super::session::SendLoopResult;
 use super::session::SessionConnector;
-use super::session::SimplexFrameStream;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::SendError;
@@ -36,8 +33,7 @@ use crate::channel::net::Stream;
 use crate::config;
 
 pub(super) struct SimplexConnection<S: Stream> {
-    reader: SimplexFrameStream<ReadHalf<S>>,
-    writer: MuxWriter<WriteHalf<S>>,
+    mux: Mux<ReadHalf<S>, WriteHalf<S>>,
 }
 
 pub(super) struct SimplexConnector<L: Link>(pub L);
@@ -59,8 +55,7 @@ impl<L: Link + 'static, M: RemoteMessage> SessionConnector<M> for SimplexConnect
         let (r, w) = tokio::io::split(stream);
         let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
         Ok(SimplexConnection {
-            reader: SimplexFrameStream::new(FrameReader::new(r, max)),
-            writer: MuxWriter::new(w, max),
+            mux: Mux::new(r, w, max),
         })
     }
 
@@ -71,21 +66,12 @@ impl<L: Link + 'static, M: RemoteMessage> SessionConnector<M> for SimplexConnect
         receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
         cancel: CancellationToken,
     ) -> SendLoopResult {
-        session::send_loop(
-            &connected.reader,
-            &connected.writer,
-            0,
-            deliveries,
-            receiver,
-            cancel,
-        )
-        .await
+        let stream = connected.mux.stream(0);
+        session::send_loop(&stream, deliveries, receiver, cancel).await
     }
 
     async fn shutdown(connected: Self::Connected) {
-        let inner = connected.writer.into_inner();
-        let mut w = inner.lock().await;
-        let _ = w.shutdown().await;
+        connected.mux.shutdown().await;
     }
 }
 

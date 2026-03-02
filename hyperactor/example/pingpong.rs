@@ -11,10 +11,12 @@
 //! Ping-pong latency benchmark using hyperactor channels.
 //!
 //! Equivalent to the ZMQ-based Python ping-pong benchmark, but uses hyperactor
-//! channels directly. Supports TCP, Unix, and Local transports.
+//! channels directly. Supports TCP, Unix, and Local transports, as well as
+//! duplex mode (single connection, both directions).
 //!
 //! Usage:
 //!   (no args)                        run locally (subprocesses for TCP, in-process otherwise)
+//!   --duplex                         run using duplex channels (in-process)
 //!   --server [--transport tcp]       run as echo server
 //!   --client <ADDR>                  run as client connecting to ADDR (e.g. tcp:[::1]:5555)
 
@@ -36,6 +38,7 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
+use hyperactor::channel::duplex;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -83,6 +86,10 @@ struct Cli {
     /// Payload size in bytes.
     #[arg(long, default_value_t = 100)]
     message_size: usize,
+
+    /// Use duplex channels (single connection, both directions).
+    #[arg(long)]
+    duplex: bool,
 
     /// Run a full benchmark suite; write CSV to the given path.
     #[arg(long)]
@@ -268,6 +275,126 @@ async fn run_server_loop(mut rx: ChannelRx<Message>) -> anyhow::Result<()> {
     }
 }
 
+/// Run a duplex benchmark in-process.
+async fn run_local_duplex(
+    transport: ChannelTransport,
+    iterations: usize,
+    message_size: usize,
+) -> anyhow::Result<()> {
+    println!("Running duplex benchmark (in-process, {transport})...");
+
+    let mut server = duplex::serve::<Message, Message>(ChannelAddr::any(transport))?;
+    let server_addr = server.addr().clone();
+
+    // Server task: accept one link, echo back.
+    let server_handle = tokio::spawn(async move {
+        let (mut rx, tx) = server.accept().await.unwrap();
+        while let Ok(msg) = rx.recv().await {
+            tx.post(msg);
+        }
+    });
+
+    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr.clone()).await?;
+
+    println!("Client connected to {server_addr} (duplex)");
+
+    let message = Message::Echo(serde_multipart::Part::from(vec![0u8; message_size]));
+    let message_bytes = message.payload_len();
+
+    // Warmup.
+    for _ in 0..10 {
+        client_tx.post(message.clone());
+        client_rx.recv().await?;
+    }
+
+    println!("Payload size: {message_size} bytes");
+    println!("Starting {iterations} ping-pong iterations...");
+
+    let mut latencies = Vec::with_capacity(iterations);
+    let mut total_bytes_sent = 0usize;
+    let mut total_bytes_received = 0usize;
+
+    let total_start = Instant::now();
+
+    for i in 0..iterations {
+        let start = Instant::now();
+        client_tx.post(message.clone());
+        total_bytes_sent += message_bytes;
+
+        let response = client_rx.recv().await?;
+        total_bytes_received += response.payload_len();
+
+        latencies.push(start.elapsed());
+
+        if (i + 1) % 100 == 0 {
+            println!("Completed {}/{iterations} iterations", i + 1);
+        }
+    }
+
+    let total_elapsed = total_start.elapsed();
+
+    let avg_ms = latencies.iter().sum::<Duration>().as_secs_f64() * 1000.0 / latencies.len() as f64;
+    let min_ms = latencies.iter().min().unwrap().as_secs_f64() * 1000.0;
+    let max_ms = latencies.iter().max().unwrap().as_secs_f64() * 1000.0;
+
+    let total_bytes = total_bytes_sent + total_bytes_received;
+    let total_secs = total_elapsed.as_secs_f64();
+    let bw_bps = total_bytes as f64 / total_secs;
+    let bw_mbps = bw_bps * 8.0 / (1024.0 * 1024.0);
+
+    println!();
+    println!("Results:");
+    println!("Average latency: {avg_ms:.3} ms");
+    println!("Min latency: {min_ms:.3} ms");
+    println!("Max latency: {max_ms:.3} ms");
+    println!("Total iterations: {}", latencies.len());
+    println!("Total time: {total_secs:.3} seconds");
+    println!("Bytes sent: {total_bytes_sent} bytes");
+    println!("Bytes received: {total_bytes_received} bytes");
+    println!("Total bytes transferred: {total_bytes} bytes");
+    println!("Bandwidth: {bw_bps:.0} bytes/sec ({bw_mbps:.2} Mbps)");
+
+    server_handle.abort();
+    Ok(())
+}
+
+/// Quiet duplex ping-pong benchmark for suite mode, returning total elapsed time.
+async fn bench_ping_pong_duplex(
+    transport: ChannelTransport,
+    num_iterations: usize,
+    message_size: usize,
+) -> anyhow::Result<Duration> {
+    let mut server = duplex::serve::<Message, Message>(ChannelAddr::any(transport))?;
+    let server_addr = server.addr().clone();
+
+    let server_handle = tokio::spawn(async move {
+        let (mut rx, tx) = server.accept().await.unwrap();
+        while let Ok(msg) = rx.recv().await {
+            tx.post(msg);
+        }
+    });
+
+    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr).await?;
+
+    let message = Message::Echo(serde_multipart::Part::from(vec![0u8; message_size]));
+
+    // Warmup.
+    for _ in 0..10 {
+        client_tx.post(message.clone());
+        client_rx.recv().await?;
+    }
+
+    let start = Instant::now();
+    for _ in 0..num_iterations {
+        client_tx.post(message.clone());
+        client_rx.recv().await?;
+    }
+    let elapsed = start.elapsed();
+
+    server_handle.abort();
+    Ok(elapsed)
+}
+
 const SUITE_SIZES: &[usize] = &[100, 1_000, 10_000, 100_000, 1_000_000];
 
 /// Run a single in-process ping-pong benchmark, returning total elapsed time.
@@ -305,12 +432,41 @@ async fn bench_ping_pong(
     Ok(elapsed)
 }
 
+/// Benchmark entry: name, transport, and whether to use duplex.
+struct BenchEntry {
+    name: &'static str,
+    transport: ChannelTransport,
+    use_duplex: bool,
+}
+
 /// Run a benchmark suite across transports and message sizes, writing CSV output.
 async fn run_suite(output: &std::path::Path, iterations: usize) -> anyhow::Result<()> {
-    let transports: Vec<(&str, ChannelTransport)> = vec![
-        ("local", ChannelTransport::Local),
-        ("unix", ChannelTransport::Unix),
-        ("tcp", ChannelTransport::Tcp(TcpMode::Hostname)),
+    let entries = vec![
+        BenchEntry {
+            name: "local",
+            transport: ChannelTransport::Local,
+            use_duplex: false,
+        },
+        BenchEntry {
+            name: "unix",
+            transport: ChannelTransport::Unix,
+            use_duplex: false,
+        },
+        BenchEntry {
+            name: "tcp",
+            transport: ChannelTransport::Tcp(TcpMode::Hostname),
+            use_duplex: false,
+        },
+        BenchEntry {
+            name: "duplex-unix",
+            transport: ChannelTransport::Unix,
+            use_duplex: true,
+        },
+        BenchEntry {
+            name: "duplex-tcp",
+            transport: ChannelTransport::Tcp(TcpMode::Hostname),
+            use_duplex: true,
+        },
     ];
 
     let mut file = std::fs::File::create(output)?;
@@ -320,17 +476,21 @@ async fn run_suite(output: &std::path::Path, iterations: usize) -> anyhow::Resul
     writeln!(file, "transport,{}", headers.join(","))?;
 
     // Table header to stdout.
-    print!("{:<12}", "transport");
+    print!("{:<14}", "transport");
     for size in SUITE_SIZES {
         print!("{:>14}", size);
     }
     println!();
 
-    for (name, transport) in &transports {
-        print!("{:<12}", name);
+    for entry in &entries {
+        print!("{:<14}", entry.name);
         let mut times_ms = Vec::new();
         for &size in SUITE_SIZES {
-            let dur = bench_ping_pong(transport.clone(), iterations, size).await?;
+            let dur = if entry.use_duplex {
+                bench_ping_pong_duplex(entry.transport.clone(), iterations, size).await?
+            } else {
+                bench_ping_pong(entry.transport.clone(), iterations, size).await?
+            };
             let ms = dur.as_secs_f64() * 1000.0;
             times_ms.push(ms);
             print!("{:>12.3}ms", ms);
@@ -338,7 +498,7 @@ async fn run_suite(output: &std::path::Path, iterations: usize) -> anyhow::Resul
         println!();
 
         let values: Vec<String> = times_ms.iter().map(|t| format!("{t:.3}")).collect();
-        writeln!(file, "{name},{}", values.join(","))?;
+        writeln!(file, "{},{}", entry.name, values.join(","))?;
     }
 
     eprintln!("\nResults written to {}", output.display());
@@ -448,6 +608,8 @@ async fn main() -> anyhow::Result<()> {
         run_server(addr).await
     } else if let Some(addr) = args.client {
         run_client(addr, args.iterations, args.message_size).await
+    } else if args.duplex {
+        run_local_duplex(args.transport, args.iterations, args.message_size).await
     } else {
         match &args.transport {
             ChannelTransport::Tcp(_) => {

@@ -39,20 +39,23 @@ use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::LinkId;
 use super::ServerError;
-use super::framed::FrameReader;
 use super::session;
 use super::session::Next;
 use super::session::SessionConnector;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::Rx;
 use crate::channel::SendError;
+use crate::channel::Tx;
+use crate::channel::TxStatus;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
@@ -113,71 +116,82 @@ struct DuplexServerLink<M1: RemoteMessage, M2: RemoteMessage> {
     outbound_rx: MVar<mpsc::UnboundedReceiver<(M2, oneshot::Sender<SendError<M2>>, Instant)>>,
 }
 
-/// Public duplex server that yields `(NetRx<M1>, DuplexNetTx<M2>)` pairs.
-pub(crate) struct DuplexServer<M1: RemoteMessage, M2: RemoteMessage> {
-    accept_rx: mpsc::Receiver<(DuplexNetRx<M1>, DuplexNetTx<M2>)>,
+/// Public duplex server that yields `(DuplexRx<M1>, DuplexTx<M2>)` pairs.
+pub struct DuplexServer<M1: RemoteMessage, M2: RemoteMessage> {
+    accept_rx: mpsc::Receiver<(DuplexRx<M1>, DuplexTx<M2>)>,
     _handle: ServerHandle,
     addr: ChannelAddr,
 }
 
 impl<M1: RemoteMessage, M2: RemoteMessage> DuplexServer<M1, M2> {
-    pub async fn accept(&mut self) -> Result<(DuplexNetRx<M1>, DuplexNetTx<M2>), ChannelError> {
+    /// Accept a new duplex link, returning `(rx, tx)` handles.
+    pub async fn accept(&mut self) -> Result<(DuplexRx<M1>, DuplexTx<M2>), ChannelError> {
         self.accept_rx.recv().await.ok_or(ChannelError::Closed)
     }
 
+    /// The address this server is listening on.
     pub fn addr(&self) -> &ChannelAddr {
         &self.addr
     }
 }
 
 /// Receiver half of a duplex channel.
-pub(crate) struct DuplexNetRx<M: RemoteMessage> {
-    rx: mpsc::Receiver<M>,
-    addr: ChannelAddr,
-}
+pub struct DuplexRx<M: RemoteMessage>(mpsc::Receiver<M>, ChannelAddr);
 
-impl<M: RemoteMessage> DuplexNetRx<M> {
-    pub async fn recv(&mut self) -> Result<M, ChannelError> {
-        self.rx.recv().await.ok_or(ChannelError::Closed)
+#[async_trait]
+impl<M: RemoteMessage> Rx<M> for DuplexRx<M> {
+    async fn recv(&mut self) -> Result<M, ChannelError> {
+        self.0.recv().await.ok_or(ChannelError::Closed)
     }
 
-    #[allow(dead_code)]
-    pub fn addr(&self) -> &ChannelAddr {
-        &self.addr
+    fn addr(&self) -> ChannelAddr {
+        self.1.clone()
     }
 }
 
 /// Sender half of a duplex channel.
-pub(crate) struct DuplexNetTx<M: RemoteMessage> {
+pub struct DuplexTx<M: RemoteMessage> {
     tx: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
     addr: ChannelAddr,
+    status: watch::Receiver<TxStatus>,
 }
 
-impl<M: RemoteMessage> DuplexNetTx<M> {
-    pub fn send(&self, message: M) -> Result<(), ChannelError> {
-        let (return_tx, _) = oneshot::channel();
-        self.tx
-            .send((message, return_tx, RealClock.now()))
-            .map_err(|_| ChannelError::Closed)
+#[async_trait]
+impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
+    fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
+        let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
+        if let Err(mpsc::error::SendError((message, return_channel, _))) =
+            self.tx.send((message, return_channel, RealClock.now()))
+        {
+            let _ = return_channel.send(SendError {
+                error: ChannelError::Closed,
+                message,
+                reason: None,
+            });
+        }
     }
 
-    #[allow(dead_code)]
-    pub fn addr(&self) -> &ChannelAddr {
-        &self.addr
+    fn addr(&self) -> ChannelAddr {
+        self.addr.clone()
+    }
+
+    fn status(&self) -> &watch::Receiver<TxStatus> {
+        &self.status
     }
 }
 
-impl<M: RemoteMessage> Clone for DuplexNetTx<M> {
+impl<M: RemoteMessage> Clone for DuplexTx<M> {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
             addr: self.addr.clone(),
+            status: self.status.clone(),
         }
     }
 }
 
 /// Start a duplex server on the given address.
-pub(crate) fn serve<M1: RemoteMessage, M2: RemoteMessage>(
+pub fn serve<M1: RemoteMessage, M2: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<DuplexServer<M1, M2>, ServerError> {
     match addr {
@@ -263,7 +277,7 @@ fn serve_with_listener<M1: RemoteMessage, M2: RemoteMessage, L: super::Listener>
 async fn duplex_listen<M1: RemoteMessage, M2: RemoteMessage, L: super::Listener>(
     mut listener: L,
     listener_addr: ChannelAddr,
-    accept_tx: mpsc::Sender<(DuplexNetRx<M1>, DuplexNetTx<M2>)>,
+    accept_tx: mpsc::Sender<(DuplexRx<M1>, DuplexTx<M2>)>,
     cancel_token: CancellationToken,
 ) -> Result<(), ServerError> {
     let child_cancel_token = CancellationToken::new();
@@ -315,13 +329,12 @@ async fn duplex_listen<M1: RemoteMessage, M2: RemoteMessage, L: super::Listener>
                                         e.insert(link.clone());
 
                                         // Send the new channel pair to accept().
-                                        let net_rx = DuplexNetRx {
-                                            rx: inbound_rx,
-                                            addr: addr.clone(),
-                                        };
-                                        let net_tx = DuplexNetTx {
+                                        let (_, status) = watch::channel(TxStatus::Active);
+                                        let net_rx = DuplexRx(inbound_rx, addr.clone());
+                                        let net_tx = DuplexTx {
                                             tx: outbound_tx,
                                             addr: addr.clone(),
+                                            status,
                                         };
                                         let _ = accept_tx.send((net_rx, net_tx)).await;
 
@@ -383,15 +396,14 @@ where
 {
     let (reader, writer) = tokio::io::split(stream);
     let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-    let demux = session::DemuxFrameReader::new(FrameReader::new(reader, max));
-    let mux = session::MuxWriter::new(writer, max);
+    let mux = session::Mux::new(reader, writer, max);
+    let stream_a = mux.stream(Side::A as u8);
+    let stream_b = mux.stream(Side::B as u8);
 
     let (mut inbound_next, outbound_next) = link.next.take().await;
     let mut outbound_rx = link.outbound_rx.take().await;
 
     let ct = cancel_token.child_token();
-    let side_a = demux.side(Side::A as u8);
-    let side_b = demux.side(Side::B as u8);
 
     let session_id = link.id.0;
     let log_id = format!("duplex server {:016x}", session_id);
@@ -404,13 +416,11 @@ where
     // Run both directions concurrently. When either finishes, the other
     // is dropped (the physical stream is broken once one direction fails).
     let result: Result<(), anyhow::Error> = tokio::select! {
-        r = session::recv_loop::<M1, _>(
-            &side_a, &mux, Side::A as u8,
-            &link.inbound_tx, &mut inbound_next, ct.clone(),
+        r = session::recv_loop::<M1, _, _>(
+            &stream_a, &link.inbound_tx, &mut inbound_next, ct.clone(),
         ) => r.map(|_| ()),
         r = session::send_loop(
-            &side_b, &mux, Side::B as u8,
-            &mut deliveries, &mut outbound_rx, ct.clone(),
+            &stream_b, &mut deliveries, &mut outbound_rx, ct.clone(),
         ) => match r {
             session::SendLoopResult::Error(e) => Err(e),
             _ => Ok(()),
@@ -431,8 +441,10 @@ where
 }
 
 struct DuplexConnection {
-    reader: session::DemuxFrameReader<tokio::io::ReadHalf<Box<dyn super::Stream>>>,
-    writer: session::MuxWriter<tokio::io::WriteHalf<Box<dyn super::Stream>>>,
+    mux: session::Mux<
+        tokio::io::ReadHalf<Box<dyn super::Stream>>,
+        tokio::io::WriteHalf<Box<dyn super::Stream>>,
+    >,
 }
 
 struct DuplexConnector<M2: RemoteMessage> {
@@ -468,8 +480,7 @@ impl<M1: RemoteMessage, M2: RemoteMessage> SessionConnector<M1> for DuplexConnec
         let (r, w) = tokio::io::split(s);
         let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
         Ok(DuplexConnection {
-            reader: session::DemuxFrameReader::new(FrameReader::new(r, max)),
-            writer: session::MuxWriter::new(w, max),
+            mux: session::Mux::new(r, w, max),
         })
     }
 
@@ -480,18 +491,16 @@ impl<M1: RemoteMessage, M2: RemoteMessage> SessionConnector<M1> for DuplexConnec
         receiver: &mut mpsc::UnboundedReceiver<(M1, oneshot::Sender<SendError<M1>>, Instant)>,
         cancel: CancellationToken,
     ) -> session::SendLoopResult {
-        let side_a = connected.reader.side(Side::A as u8);
-        let side_b = connected.reader.side(Side::B as u8);
+        let stream_a = connected.mux.stream(Side::A as u8);
+        let stream_b = connected.mux.stream(Side::B as u8);
         tokio::select! {
             r = session::send_loop(
-                &side_a, &connected.writer, Side::A as u8,
-                deliveries, receiver, cancel.clone(),
+                &stream_a, deliveries, receiver, cancel.clone(),
             ) => r,
-            r = session::recv_loop::<M2, _>(
-                &side_b, &connected.writer, Side::B as u8,
-                &self.inbound_tx, &mut self.inbound_next, cancel,
+            r = session::recv_loop::<M2, _, _>(
+                &stream_b, &self.inbound_tx, &mut self.inbound_next, cancel,
             ) => match r {
-                Ok(outcome) => match outcome {
+                Ok(status) => match status {
                     session::RecvResult::Eof => session::SendLoopResult::Eof,
                     session::RecvResult::Cancelled => session::SendLoopResult::Cancelled,
                     session::RecvResult::SequenceError(e) => session::SendLoopResult::Rejected(e),
@@ -502,16 +511,14 @@ impl<M1: RemoteMessage, M2: RemoteMessage> SessionConnector<M1> for DuplexConnec
     }
 
     async fn shutdown(connected: DuplexConnection) {
-        let inner = connected.writer.into_inner();
-        let mut w = inner.lock().await;
-        let _ = w.shutdown().await;
+        connected.mux.shutdown().await;
     }
 }
 
 /// Connect to a duplex server, returning tx and rx handles.
-pub(crate) async fn dial<M1: RemoteMessage, M2: RemoteMessage>(
+pub async fn dial<M1: RemoteMessage, M2: RemoteMessage>(
     addr: ChannelAddr,
-) -> Result<(DuplexNetTx<M1>, DuplexNetRx<M2>), super::ClientError> {
+) -> Result<(DuplexTx<M1>, DuplexRx<M2>), super::ClientError> {
     let link_id = LinkId::random();
 
     let (outbound_tx, outbound_rx) =
@@ -529,15 +536,14 @@ pub(crate) async fn dial<M1: RemoteMessage, M2: RemoteMessage>(
         session::client_run(connector, outbound_rx, None).await;
     });
 
+    let (_, status) = watch::channel(TxStatus::Active);
     Ok((
-        DuplexNetTx {
+        DuplexTx {
             tx: outbound_tx,
             addr: addr.clone(),
+            status,
         },
-        DuplexNetRx {
-            rx: inbound_rx,
-            addr,
-        },
+        DuplexRx(inbound_rx, addr),
     ))
 }
 
@@ -546,6 +552,7 @@ mod tests {
     use timed_test::async_timed_test;
 
     use super::*;
+    use crate::channel::ChannelTransport;
 
     #[async_timed_test(timeout_secs = 30)]
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
@@ -562,21 +569,21 @@ mod tests {
         let (mut server_rx, server_tx) = server.accept().await.unwrap();
 
         // Client sends to server.
-        client_tx.send(42).unwrap();
+        client_tx.post(42);
         let received = server_rx.recv().await.unwrap();
         assert_eq!(received, 42);
 
         // Server sends to client.
-        server_tx.send("hello".to_string()).unwrap();
+        server_tx.post("hello".to_string());
         let received = client_rx.recv().await.unwrap();
         assert_eq!(received, "hello");
 
         // Multiple messages both ways.
         for i in 0..10u64 {
-            client_tx.send(i).unwrap();
+            client_tx.post(i);
             assert_eq!(server_rx.recv().await.unwrap(), i);
 
-            server_tx.send(format!("msg-{}", i)).unwrap();
+            server_tx.post(format!("msg-{}", i));
             assert_eq!(client_rx.recv().await.unwrap(), format!("msg-{}", i));
         }
     }
@@ -595,15 +602,67 @@ mod tests {
         let (mut srx2, stx2) = server.accept().await.unwrap();
 
         // Send on link 1.
-        tx1.send(100).unwrap();
+        tx1.post(100);
         assert_eq!(srx1.recv().await.unwrap(), 100);
-        stx1.send(200).unwrap();
+        stx1.post(200);
         assert_eq!(rx1.recv().await.unwrap(), 200);
 
         // Send on link 2.
-        tx2.send(300).unwrap();
+        tx2.post(300);
         assert_eq!(srx2.recv().await.unwrap(), 300);
-        stx2.send(400).unwrap();
+        stx2.post(400);
         assert_eq!(rx2.recv().await.unwrap(), 400);
+    }
+
+    /// Ping-pong helper: server echoes back each message it receives.
+    /// Returns elapsed time for `iterations` round-trips.
+    async fn duplex_ping_pong(
+        addr: ChannelAddr,
+        iterations: usize,
+    ) -> anyhow::Result<std::time::Duration> {
+        let mut server = serve::<u64, u64>(addr)?;
+        let server_addr = server.addr().clone();
+
+        let server_handle = tokio::spawn(async move {
+            let (mut rx, tx) = server.accept().await.unwrap();
+            while let Ok(msg) = rx.recv().await {
+                tx.post(msg);
+            }
+        });
+
+        let (client_tx, mut client_rx) = dial::<u64, u64>(server_addr).await?;
+
+        // Warmup.
+        for i in 0..10u64 {
+            client_tx.post(i);
+            assert_eq!(client_rx.recv().await?, i);
+        }
+
+        let start = std::time::Instant::now();
+        for i in 0..iterations as u64 {
+            client_tx.post(i);
+            assert_eq!(client_rx.recv().await?, i);
+        }
+        let elapsed = start.elapsed();
+
+        server_handle.abort();
+        Ok(elapsed)
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg_attr(not(fbcode_build), ignore)]
+    async fn test_duplex_ping_pong_tcp() {
+        let elapsed = duplex_ping_pong(ChannelAddr::Tcp("[::1]:0".parse().unwrap()), 100)
+            .await
+            .unwrap();
+        println!("TCP duplex: 100 round-trips in {elapsed:?}");
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_duplex_ping_pong_unix() {
+        let elapsed = duplex_ping_pong(ChannelAddr::any(ChannelTransport::Unix), 100)
+            .await
+            .unwrap();
+        println!("Unix duplex: 100 round-trips in {elapsed:?}");
     }
 }
