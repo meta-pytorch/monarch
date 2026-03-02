@@ -82,19 +82,34 @@ pub(crate) trait Stream:
 }
 impl<S: AsyncRead + AsyncWrite + Unpin + Send + Sync + Debug + 'static> Stream for S {}
 
-/// Link represents a network link through which a stream may be established or accepted.
-// TODO: unify this with server connections
+/// Link represents a network link through which an outbound stream may be established.
 #[async_trait]
 pub(crate) trait Link: Send + Sync + Debug {
     /// The underlying stream type.
     type Stream: Stream;
 
     /// The address of the link's destination.
-    // Consider embedding the session ID in this address, making it truly persistent.
     fn dest(&self) -> ChannelAddr;
 
     /// Connect to the destination, returning a connected stream.
     async fn connect(&self) -> Result<Self::Stream, ClientError>;
+}
+
+/// Listener represents the server side of a network link: it accepts inbound connections.
+///
+/// This is the counterpart to [`Link`]. Each transport module (tcp, unix, tls)
+/// provides both a `Link` impl (for dialing) and a `Listener` impl (for accepting).
+#[allow(dead_code)] // local_addr is used by duplex (later in the stack)
+#[async_trait]
+pub(crate) trait Listener: Send + Unpin + 'static {
+    /// The underlying stream type produced by accepting a connection.
+    type Stream: Stream;
+
+    /// The local address this listener is bound to.
+    fn local_addr(&self) -> Result<ChannelAddr, ServerError>;
+
+    /// Accept the next inbound connection, returning the stream and the peer's address.
+    async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError>;
 }
 
 /// Frames are the messages sent between clients and servers over sessions.
@@ -276,6 +291,33 @@ pub(crate) mod unix {
         }
     }
 
+    /// Server-side listener for Unix domain sockets.
+    #[derive(Debug)]
+    pub(crate) struct UnixSocketListener {
+        inner: UnixListener,
+        addr: SocketAddr,
+    }
+
+    #[async_trait]
+    impl super::Listener for UnixSocketListener {
+        type Stream = UnixStream;
+
+        fn local_addr(&self) -> Result<ChannelAddr, ServerError> {
+            Ok(ChannelAddr::Unix(self.addr.clone()))
+        }
+
+        async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError> {
+            let (stream, peer_addr) = self
+                .inner
+                .accept()
+                .await
+                .map_err(|err| ServerError::Io(ChannelAddr::Unix(self.addr.clone()), err))?;
+            // tokio::net::unix::SocketAddr -> std::os::unix::net::SocketAddr
+            let std_addr: StdSocketAddr = peer_addr.into();
+            Ok((stream, ChannelAddr::Unix(SocketAddr::new(std_addr))))
+        }
+    }
+
     /// Dial the given unix socket.
     pub fn dial<M: RemoteMessage>(addr: SocketAddr) -> NetTx<M> {
         super::dial(UnixLink(addr))
@@ -293,8 +335,8 @@ pub(crate) mod unix {
                 .and_then(|u| u.local_addr())
                 .and_then(|uaddr| StdUnixListener::bind_addr(&uaddr)),
         };
-        let std_listener =
-            maybe_listener.map_err(|err| ServerError::Listen(ChannelAddr::Unix(addr), err))?;
+        let std_listener = maybe_listener
+            .map_err(|err| ServerError::Listen(ChannelAddr::Unix(addr.clone()), err))?;
 
         std_listener
             .set_nonblocking(true)
@@ -302,9 +344,14 @@ pub(crate) mod unix {
         let local_addr = std_listener
             .local_addr()
             .map_err(|err| ServerError::Resolve(caddr.clone(), err))?;
-        let listener: UnixListener = UnixListener::from_std(std_listener)
+        let tokio_listener: UnixListener = UnixListener::from_std(std_listener)
             .map_err(|err| ServerError::Io(caddr.clone(), err))?;
-        super::serve(listener, local_addr.into(), false)
+        let bound_addr = SocketAddr::new(local_addr);
+        let listener = UnixSocketListener {
+            inner: tokio_listener,
+            addr: bound_addr.clone(),
+        };
+        super::serve(listener, ChannelAddr::Unix(bound_addr), false)
     }
 
     /// Wrapper around std-lib's unix::SocketAddr that lets us implement equality functions
@@ -540,6 +587,31 @@ pub(crate) mod tcp {
         }
     }
 
+    /// Server-side listener for TCP sockets.
+    #[derive(Debug)]
+    pub(crate) struct TcpSocketListener {
+        pub(super) inner: TcpListener,
+        pub(super) addr: SocketAddr,
+    }
+
+    #[async_trait]
+    impl super::Listener for TcpSocketListener {
+        type Stream = TcpStream;
+
+        fn local_addr(&self) -> Result<ChannelAddr, ServerError> {
+            Ok(ChannelAddr::Tcp(self.addr))
+        }
+
+        async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError> {
+            let (stream, peer_addr) = self
+                .inner
+                .accept()
+                .await
+                .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
+            Ok((stream, ChannelAddr::Tcp(peer_addr)))
+        }
+    }
+
     pub fn dial<M: RemoteMessage>(addr: SocketAddr) -> NetTx<M> {
         super::dial(TcpLink(addr))
     }
@@ -556,11 +628,15 @@ pub(crate) mod tcp {
         std_listener
             .set_nonblocking(true)
             .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
-        let listener = TcpListener::from_std(std_listener)
+        let tokio_listener = TcpListener::from_std(std_listener)
             .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
-        let local_addr = listener
+        let local_addr = tokio_listener
             .local_addr()
             .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(addr), err))?;
+        let listener = TcpSocketListener {
+            inner: tokio_listener,
+            addr: local_addr,
+        };
         super::serve(listener, ChannelAddr::Tcp(local_addr), false)
     }
 }
@@ -956,12 +1032,16 @@ pub(crate) mod tls {
         std_listener
             .set_nonblocking(true)
             .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-        let listener = TcpListener::from_std(std_listener)
+        let tokio_listener = TcpListener::from_std(std_listener)
             .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
 
-        let local_addr = listener
+        let local_addr = tokio_listener
             .local_addr()
             .map_err(|err| ServerError::Resolve(channel_addr, err))?;
+        let listener = super::tcp::TcpSocketListener {
+            inner: tokio_listener,
+            addr: local_addr,
+        };
         super::serve(
             listener,
             make_channel_addr(&hostname, local_addr.port()),
@@ -1318,13 +1398,11 @@ mod tests {
     use std::assert_matches::assert_matches;
     use std::collections::VecDeque;
     use std::marker::PhantomData;
-    use std::pin::Pin;
     use std::sync::Arc;
     use std::sync::RwLock;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
-    use std::task::Poll;
     use std::time::Duration;
     #[cfg(target_os = "linux")] // uses abstract names
     use std::time::UNIX_EPOCH;
@@ -1341,7 +1419,6 @@ mod tests {
     use tokio::io::ReadHalf;
     use tokio::io::WriteHalf;
     use tokio::task::JoinHandle;
-    use tokio_util::net::Listener;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -1898,7 +1975,6 @@ mod tests {
     struct MockLinkListener {
         receiver_storage: Arc<MVar<DuplexStream>>,
         channel_addr: ChannelAddr,
-        cached_future: Option<Pin<Box<dyn Future<Output = DuplexStream> + Send>>>,
     }
 
     impl MockLinkListener {
@@ -1906,37 +1982,29 @@ mod tests {
             Self {
                 receiver_storage,
                 channel_addr,
-                cached_future: None,
             }
         }
     }
 
-    impl Listener for MockLinkListener {
-        type Io = DuplexStream;
-        type Addr = ChannelAddr;
+    impl fmt::Debug for MockLinkListener {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("MockLinkListener")
+                .field("channel_addr", &self.channel_addr)
+                .finish()
+        }
+    }
 
-        fn poll_accept(
-            &mut self,
-            cx: &mut std::task::Context<'_>,
-        ) -> Poll<std::io::Result<(Self::Io, Self::Addr)>> {
-            if self.cached_future.is_none() {
-                let storage = self.receiver_storage.clone();
-                let fut = async move { storage.take().await };
-                self.cached_future = Some(Box::pin(fut));
-            }
-            self.cached_future
-                .as_mut()
-                .unwrap()
-                .as_mut()
-                .poll(cx)
-                .map(|io| {
-                    self.cached_future = None;
-                    Ok((io, self.channel_addr.clone()))
-                })
+    #[async_trait]
+    impl super::Listener for MockLinkListener {
+        type Stream = DuplexStream;
+
+        fn local_addr(&self) -> Result<ChannelAddr, ServerError> {
+            Ok(self.channel_addr.clone())
         }
 
-        fn local_addr(&self) -> std::io::Result<Self::Addr> {
-            Ok(self.channel_addr.clone())
+        async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError> {
+            let stream = self.receiver_storage.take().await;
+            Ok((stream, self.channel_addr.clone()))
         }
     }
 
