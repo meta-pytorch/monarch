@@ -29,36 +29,30 @@
 #![allow(dead_code)] // until used
 
 use std::io;
-use std::mem::replace;
 use std::sync::Arc;
 
-use bytes::Buf;
-use bytes::Bytes;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
-use tokio::io::WriteHalf;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::task::JoinSet;
-use tokio::time::Duration;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::Frame;
 use super::LinkId;
-use super::NetRxResponse;
 use super::ServerError;
-use super::deserialize_response;
 use super::framed::FrameReader;
-use super::framed::FrameWrite;
-use super::framed::WriteState;
-use super::serialize_response;
-use super::server::Next;
-use super::server::ServerHandle;
+use super::session;
+use super::session::Next;
+use super::session::SessionConnector;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::SendError;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::config;
@@ -106,54 +100,17 @@ async fn read_duplex_link_init<S: AsyncRead + Unpin>(stream: &mut S) -> Result<L
     Ok(link_id)
 }
 
-/// Both channels share one `WriteState`. Acks are `Bytes` and messages
-/// are `serde_multipart::Frame`. This enum delegates `Buf` to the
-/// active variant without allocation.
-pub(crate) enum DuplexBuf {
-    Ack(Bytes),
-    Msg(serde_multipart::Frame),
-}
-
-impl Buf for DuplexBuf {
-    fn remaining(&self) -> usize {
-        match self {
-            DuplexBuf::Ack(b) => b.remaining(),
-            DuplexBuf::Msg(f) => f.remaining(),
-        }
-    }
-
-    fn chunk(&self) -> &[u8] {
-        match self {
-            DuplexBuf::Ack(b) => b.chunk(),
-            DuplexBuf::Msg(f) => f.chunk(),
-        }
-    }
-
-    fn advance(&mut self, cnt: usize) {
-        match self {
-            DuplexBuf::Ack(b) => b.advance(cnt),
-            DuplexBuf::Msg(f) => f.advance(cnt),
-        }
-    }
-
-    fn chunks_vectored<'a>(&'a self, dst: &mut [io::IoSlice<'a>]) -> usize {
-        match self {
-            DuplexBuf::Ack(b) => b.chunks_vectored(dst),
-            DuplexBuf::Msg(f) => f.chunks_vectored(dst),
-        }
-    }
-}
+use super::server::ServerHandle;
 
 /// Per-link server state persisting across reconnections.
 struct DuplexServerLink<M1: RemoteMessage, M2: RemoteMessage> {
-    #[allow(dead_code)]
     id: LinkId,
     /// (inbound_next, outbound_next) — taken/put atomically with MVar.
     next: MVar<(Next, Next)>,
     /// Delivers inbound M1 messages to the link's Rx.
     inbound_tx: mpsc::Sender<M1>,
     /// Taken by the connection handler, put back on disconnect.
-    outbound_rx: MVar<mpsc::UnboundedReceiver<M2>>,
+    outbound_rx: MVar<mpsc::UnboundedReceiver<(M2, oneshot::Sender<SendError<M2>>, Instant)>>,
 }
 
 /// Public duplex server that yields `(NetRx<M1>, DuplexNetTx<M2>)` pairs.
@@ -192,13 +149,16 @@ impl<M: RemoteMessage> DuplexNetRx<M> {
 
 /// Sender half of a duplex channel.
 pub(crate) struct DuplexNetTx<M: RemoteMessage> {
-    tx: mpsc::UnboundedSender<M>,
+    tx: mpsc::UnboundedSender<(M, oneshot::Sender<SendError<M>>, Instant)>,
     addr: ChannelAddr,
 }
 
 impl<M: RemoteMessage> DuplexNetTx<M> {
     pub fn send(&self, message: M) -> Result<(), ChannelError> {
-        self.tx.send(message).map_err(|_| ChannelError::Closed)
+        let (return_tx, _) = oneshot::channel();
+        self.tx
+            .send((message, return_tx, RealClock.now()))
+            .map_err(|_| ChannelError::Closed)
     }
 
     #[allow(dead_code)]
@@ -342,7 +302,7 @@ async fn duplex_listen<M1: RemoteMessage, M2: RemoteMessage, L: super::Listener>
                                     dashmap::mapref::entry::Entry::Vacant(e) => {
                                         is_new = true;
                                         let (inbound_tx, inbound_rx) = mpsc::channel::<M1>(1024);
-                                        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<M2>();
+                                        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<(M2, oneshot::Sender<SendError<M2>>, Instant)>();
                                         let link = Arc::new(DuplexServerLink {
                                             id: link_id,
                                             next: MVar::full((
@@ -376,7 +336,7 @@ async fn duplex_listen<M1: RemoteMessage, M2: RemoteMessage, L: super::Listener>
                                 "duplex connection accepted"
                             );
 
-                            handle_duplex_connection(stream, link, ct).await
+                            handle_duplex_connection(stream, link, ct, addr).await
                         });
                     }
                     Err(err) => {
@@ -410,171 +370,142 @@ async fn join_nonempty<T: 'static>(set: &mut JoinSet<T>) -> Result<T, tokio::tas
 }
 
 /// Handle a single duplex connection. Takes `(inbound_next, outbound_next)`
-/// from the link's MVar, runs the select! loop, and puts them back on close.
+/// from the link's MVar, runs recv_loop and send_loop concurrently, and
+/// puts state back on close.
 async fn handle_duplex_connection<M1: RemoteMessage, M2: RemoteMessage, S>(
     stream: S,
     link: Arc<DuplexServerLink<M1, M2>>,
     cancel_token: CancellationToken,
+    addr: ChannelAddr,
 ) -> Result<(), anyhow::Error>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
-    let mut frame_reader = FrameReader::new(
-        reader,
-        hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-    );
+    let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+    let demux = session::DemuxFrameReader::new(FrameReader::new(reader, max));
+    let mux = session::MuxWriter::new(writer, max);
 
-    // Take session state.
-    let (mut inbound_next, mut outbound_next) = link.next.take().await;
+    let (mut inbound_next, outbound_next) = link.next.take().await;
     let mut outbound_rx = link.outbound_rx.take().await;
 
-    let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-    let ack_msg_interval: u64 =
-        hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
-    let ack_time_interval: Duration =
-        hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
+    let ct = cancel_token.child_token();
+    let side_a = demux.side(Side::A as u8);
+    let side_b = demux.side(Side::B as u8);
 
-    let mut write_state: WriteState<WriteHalf<S>, DuplexBuf, Side> = WriteState::Idle(writer);
-    let mut last_inbound_ack_time = RealClock.now();
+    let session_id = link.id.0;
+    let log_id = format!("duplex server {:016x}", session_id);
+    let mut deliveries = session::Deliveries {
+        outbox: session::Outbox::new(log_id.clone(), addr.clone(), session_id),
+        unacked: session::Unacked::new(None, log_id),
+    };
+    deliveries.outbox.next_seq = outbound_next.seq;
 
-    // Retransmit unacked outbound messages.
-    // We don't have a replay buffer on the server side for outbound yet,
-    // so we just track seq/ack for ordering. In a full implementation
-    // we'd replay from a buffer. For now, outbound starts fresh each
-    // connection.
-
-    let result: Result<(), anyhow::Error> = loop {
-        let inbound_ack_behind = inbound_next.ack + ack_msg_interval <= inbound_next.seq
-            || (inbound_next.ack < inbound_next.seq
-                && last_inbound_ack_time.elapsed() > ack_time_interval);
-
-        tokio::select! {
-            biased;
-
-            // Drive in-progress write to completion.
-            result = write_state.send() => {
-                match result {
-                    Ok(side) => {
-                        if side == Side::A {
-                            last_inbound_ack_time = RealClock.now();
-                            inbound_next.ack = inbound_next.seq;
-                        }
-                    }
-                    Err(e) => {
-                        break Err(e.into());
-                    }
-                }
-            }
-
-            // Inbound ack write (Side::A — we ack the client's messages).
-            _ = std::future::ready(()), if write_state.is_idle() && inbound_ack_behind => {
-                let Ok(writer) = replace(&mut write_state, WriteState::Broken).into_idle() else {
-                    panic!("illegal state");
-                };
-                let ack = serialize_response(NetRxResponse::Ack(inbound_next.seq - 1))?;
-                match FrameWrite::new(writer, DuplexBuf::Ack(ack), max, Side::A as u8) {
-                    Ok(fw) => {
-                        write_state = WriteState::Writing(fw, Side::A);
-                    }
-                    Err((w, _e)) => {
-                        write_state = WriteState::Idle(w);
-                    }
-                }
-            }
-
-            // Outbound message write (Side::B — server sends M2 to client).
-            msg = outbound_rx.recv(), if write_state.is_idle() => {
-                match msg {
-                    Some(message) => {
-                        let Ok(writer) = replace(&mut write_state, WriteState::Broken).into_idle() else {
-                            panic!("illegal state");
-                        };
-                        let msg = serde_multipart::serialize_bincode(
-                            &Frame::Message(outbound_next.seq, message),
-                        )?;
-                        match FrameWrite::new(writer, DuplexBuf::Msg(msg.framed()), max, Side::B as u8) {
-                            Ok(fw) => {
-                                outbound_next.seq += 1;
-                                write_state = WriteState::Writing(fw, Side::B);
-                            }
-                            Err((w, e)) => {
-                                write_state = WriteState::Idle(w);
-                                tracing::error!(error = %e, "failed to create outbound frame");
-                            }
-                        }
-                    }
-                    None => {
-                        // Outbound channel closed; send Closed response and exit.
-                        break Ok(());
-                    }
-                }
-            }
-
-            // Read from the wire.
-            frame_result = frame_reader.next() => {
-                match frame_result {
-                    Ok(Some((tag, bytes))) => {
-                        if tag == Side::A as u8 {
-                            // Side::A frame from client = inbound message (M1).
-                            let message = serde_multipart::Message::from_framed(bytes)?;
-                            let frame: Frame<M1> = serde_multipart::deserialize_bincode(message)?;
-                            match frame {
-                                Frame::Message(seq, msg) => {
-                                    if seq < inbound_next.seq {
-                                        // Retransmit — ignore.
-                                        tracing::debug!(seq, "duplex: ignoring inbound retransmit");
-                                    } else if seq == inbound_next.seq {
-                                        link.inbound_tx.send(msg).await
-                                            .map_err(|_| anyhow::anyhow!("inbound channel closed"))?;
-                                        inbound_next.seq += 1;
-                                    } else {
-                                        break Err(anyhow::anyhow!(
-                                            "out-of-sequence inbound message: expected {}, got {}",
-                                            inbound_next.seq, seq
-                                        ));
-                                    }
-                                }
-                            }
-                        } else if tag == Side::B as u8 {
-                            // Side::B frame from client = ack for our outbound M2.
-                            let response = deserialize_response(bytes)?;
-                            match response {
-                                NetRxResponse::Ack(acked_seq) => {
-                                    outbound_next.ack = acked_seq + 1;
-                                }
-                                NetRxResponse::Reject(reason) => {
-                                    break Err(anyhow::anyhow!("peer rejected: {}", reason));
-                                }
-                                NetRxResponse::Closed => {
-                                    break Ok(());
-                                }
-                            }
-                        } else {
-                            tracing::warn!(tag, "duplex: unknown tag, ignoring frame");
-                        }
-                    }
-                    Ok(None) => {
-                        // EOF — peer disconnected.
-                        break Ok(());
-                    }
-                    Err(e) => {
-                        break Err(e.into());
-                    }
-                }
-            }
-
-            _ = cancel_token.cancelled() => {
-                break Ok(());
-            }
-        }
+    // Run both directions concurrently. When either finishes, the other
+    // is dropped (the physical stream is broken once one direction fails).
+    let result: Result<(), anyhow::Error> = tokio::select! {
+        r = session::recv_loop::<M1, _>(
+            &side_a, &mux, Side::A as u8,
+            &link.inbound_tx, &mut inbound_next, ct.clone(),
+        ) => r.map(|_| ()),
+        r = session::send_loop(
+            &side_b, &mux, Side::B as u8,
+            &mut deliveries, &mut outbound_rx, ct.clone(),
+        ) => match r {
+            session::SendLoopResult::Error(e) => Err(e),
+            _ => Ok(()),
+        },
     };
 
-    // Put state back for reconnection.
-    link.next.put((inbound_next, outbound_next)).await;
+    let new_outbound_next = Next {
+        seq: deliveries.outbox.next_seq,
+        ack: deliveries
+            .unacked
+            .largest_acked
+            .as_ref()
+            .map_or(outbound_next.ack, |a| a.0 + 1),
+    };
+    link.next.put((inbound_next, new_outbound_next)).await;
     link.outbound_rx.put(outbound_rx).await;
-
     result
+}
+
+struct DuplexConnection {
+    reader: session::DemuxFrameReader<tokio::io::ReadHalf<Box<dyn super::Stream>>>,
+    writer: session::MuxWriter<tokio::io::WriteHalf<Box<dyn super::Stream>>>,
+}
+
+struct DuplexConnector<M2: RemoteMessage> {
+    addr: ChannelAddr,
+    link_id: LinkId,
+    inbound_tx: mpsc::Sender<M2>,
+    inbound_next: Next,
+}
+
+#[async_trait]
+impl<M1: RemoteMessage, M2: RemoteMessage> SessionConnector<M1> for DuplexConnector<M2> {
+    type Connected = DuplexConnection;
+
+    fn dest(&self) -> ChannelAddr {
+        self.addr.clone()
+    }
+
+    fn session_id(&self) -> u64 {
+        self.link_id.0
+    }
+
+    fn on_demand(&self) -> bool {
+        false
+    }
+
+    async fn connect(&mut self) -> Result<DuplexConnection, super::ClientError> {
+        let mut s = super::connect_raw(&self.addr).await?;
+        write_duplex_link_init(&mut s, self.link_id)
+            .await
+            .map_err(|e| {
+                super::ClientError::Connect(self.addr.clone(), e, "DuplexLinkInit".into())
+            })?;
+        let (r, w) = tokio::io::split(s);
+        let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+        Ok(DuplexConnection {
+            reader: session::DemuxFrameReader::new(FrameReader::new(r, max)),
+            writer: session::MuxWriter::new(w, max),
+        })
+    }
+
+    async fn run_connected(
+        &mut self,
+        connected: &DuplexConnection,
+        deliveries: &mut session::Deliveries<M1>,
+        receiver: &mut mpsc::UnboundedReceiver<(M1, oneshot::Sender<SendError<M1>>, Instant)>,
+        cancel: CancellationToken,
+    ) -> session::SendLoopResult {
+        let side_a = connected.reader.side(Side::A as u8);
+        let side_b = connected.reader.side(Side::B as u8);
+        tokio::select! {
+            r = session::send_loop(
+                &side_a, &connected.writer, Side::A as u8,
+                deliveries, receiver, cancel.clone(),
+            ) => r,
+            r = session::recv_loop::<M2, _>(
+                &side_b, &connected.writer, Side::B as u8,
+                &self.inbound_tx, &mut self.inbound_next, cancel,
+            ) => match r {
+                Ok(outcome) => match outcome {
+                    session::RecvResult::Eof => session::SendLoopResult::Eof,
+                    session::RecvResult::Cancelled => session::SendLoopResult::Cancelled,
+                    session::RecvResult::SequenceError(e) => session::SendLoopResult::Rejected(e),
+                },
+                Err(e) => session::SendLoopResult::Error(e),
+            },
+        }
+    }
+
+    async fn shutdown(connected: DuplexConnection) {
+        let inner = connected.writer.into_inner();
+        let mut w = inner.lock().await;
+        let _ = w.shutdown().await;
+    }
 }
 
 /// Connect to a duplex server, returning tx and rx handles.
@@ -583,12 +514,19 @@ pub(crate) async fn dial<M1: RemoteMessage, M2: RemoteMessage>(
 ) -> Result<(DuplexNetTx<M1>, DuplexNetRx<M2>), super::ClientError> {
     let link_id = LinkId::random();
 
-    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<M1>();
+    let (outbound_tx, outbound_rx) =
+        mpsc::unbounded_channel::<(M1, oneshot::Sender<SendError<M1>>, Instant)>();
     let (inbound_tx, inbound_rx) = mpsc::channel::<M2>(1024);
 
-    let ca = addr.clone();
+    let connector = DuplexConnector::<M2> {
+        addr: addr.clone(),
+        link_id,
+        inbound_tx,
+        inbound_next: Next { seq: 0, ack: 0 },
+    };
+
     tokio::spawn(async move {
-        duplex_client_run::<M1, M2>(ca, link_id, outbound_rx, inbound_tx).await;
+        session::client_run(connector, outbound_rx, None).await;
     });
 
     Ok((
@@ -601,266 +539,6 @@ pub(crate) async fn dial<M1: RemoteMessage, M2: RemoteMessage>(
             addr,
         },
     ))
-}
-
-/// Background task that manages the client side of a duplex connection,
-/// including reconnection.
-async fn duplex_client_run<M1: RemoteMessage, M2: RemoteMessage>(
-    addr: ChannelAddr,
-    link_id: LinkId,
-    mut outbound_rx: mpsc::UnboundedReceiver<M1>,
-    inbound_tx: mpsc::Sender<M2>,
-) {
-    use backoff::ExponentialBackoffBuilder;
-    use backoff::backoff::Backoff;
-
-    let mut outbound_next = Next { seq: 0, ack: 0 };
-    let mut inbound_next = Next { seq: 0, ack: 0 };
-
-    // Replay buffer for unacked outbound messages.
-    let mut unacked: std::collections::VecDeque<(u64, Bytes)> = std::collections::VecDeque::new();
-
-    let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-    let ack_msg_interval: u64 =
-        hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
-    let ack_time_interval: Duration =
-        hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
-
-    let mut backoff = ExponentialBackoffBuilder::new()
-        .with_initial_interval(Duration::from_millis(100))
-        .with_max_interval(Duration::from_secs(5))
-        .with_max_elapsed_time(None)
-        .build();
-
-    loop {
-        // Connect.
-        let stream = match super::connect_raw(&addr).await {
-            Ok(mut s) => {
-                if let Err(e) = write_duplex_link_init(&mut s, link_id).await {
-                    tracing::info!(error = %e, "failed to write DuplexLinkInit");
-                    if let Some(d) = backoff.next_backoff() {
-                        RealClock.sleep(d).await;
-                    }
-                    continue;
-                }
-                backoff.reset();
-                s
-            }
-            Err(e) => {
-                tracing::debug!(error = %e, "duplex client connect failed");
-                if let Some(d) = backoff.next_backoff() {
-                    RealClock.sleep(d).await;
-                }
-                continue;
-            }
-        };
-
-        let (reader, writer) = tokio::io::split(stream);
-        let mut frame_reader = FrameReader::new(reader, max);
-        let mut write_state: WriteState<WriteHalf<Box<dyn super::Stream>>, DuplexBuf, Side> =
-            WriteState::Idle(writer);
-
-        // Retransmit unacked outbound messages.
-        let mut retransmit_queue: std::collections::VecDeque<(u64, Bytes)> = unacked.clone();
-
-        let mut last_inbound_ack_time = RealClock.now();
-        #[allow(unused_assignments)] // initial false IS read on clean-break paths
-        let mut conn_broken = false;
-
-        loop {
-            let inbound_ack_behind = inbound_next.ack + ack_msg_interval <= inbound_next.seq
-                || (inbound_next.ack < inbound_next.seq
-                    && last_inbound_ack_time.elapsed() > ack_time_interval);
-            let has_retransmit = !retransmit_queue.is_empty();
-
-            tokio::select! {
-                biased;
-
-                // Drive in-progress write.
-                result = write_state.send() => {
-                    match result {
-                        Ok(side) => {
-                            if side == Side::B {
-                                last_inbound_ack_time = RealClock.now();
-                                inbound_next.ack = inbound_next.seq;
-                            }
-                        }
-                        Err(_e) => {
-                            break;
-                        }
-                    }
-                }
-
-                // Retransmit unacked outbound (Side::A).
-                _ = std::future::ready(()), if write_state.is_idle() && has_retransmit => {
-                    let Ok(writer) = replace(&mut write_state, WriteState::Broken).into_idle() else {
-                        panic!("illegal state");
-                    };
-                    let (_, data) = retransmit_queue.pop_front().unwrap();
-                    match FrameWrite::new(writer, DuplexBuf::Ack(data), max, Side::A as u8) {
-                        Ok(fw) => {
-                            write_state = WriteState::Writing(fw, Side::A);
-                        }
-                        Err((_w, _)) => {
-                            break;
-                        }
-                    }
-                }
-
-                // Send outbound M1 (Side::A).
-                msg = outbound_rx.recv(), if write_state.is_idle() && !has_retransmit => {
-                    match msg {
-                        Some(message) => {
-                            let Ok(writer) = replace(&mut write_state, WriteState::Broken).into_idle() else {
-                                panic!("illegal state");
-                            };
-                            let seq = outbound_next.seq;
-                            let msg = match serde_multipart::serialize_bincode(
-                                &Frame::Message(seq, message),
-                            ) {
-                                Ok(f) => f,
-                                Err(e) => {
-                                    tracing::error!(error = %e, "failed to serialize outbound message");
-                                    conn_broken = true;
-                                    break;
-                                }
-                            };
-                            // Convert to framed bytes for both sending and replay.
-                            let mut framed = msg.framed();
-                            let payload = framed.copy_to_bytes(framed.remaining());
-                            match FrameWrite::new(writer, DuplexBuf::Ack(payload.clone()), max, Side::A as u8) {
-                                Ok(fw) => {
-                                    unacked.push_back((seq, payload));
-                                    outbound_next.seq += 1;
-                                    write_state = WriteState::Writing(fw, Side::A);
-                                }
-                                Err((w, e)) => {
-                                    write_state = WriteState::Idle(w);
-                                    tracing::error!(error = %e, "failed to create outbound frame");
-                                }
-                            }
-                        }
-                        None => {
-                            // Outbound channel dropped — we're done.
-                            return;
-                        }
-                    }
-                }
-
-                // Ack inbound (Side::B).
-                _ = std::future::ready(()), if write_state.is_idle() && inbound_ack_behind && !has_retransmit => {
-                    let Ok(writer) = replace(&mut write_state, WriteState::Broken).into_idle() else {
-                        panic!("illegal state");
-                    };
-                    let ack = match serialize_response(NetRxResponse::Ack(inbound_next.seq - 1)) {
-                        Ok(a) => a,
-                        Err(_) => {
-                            break;
-                        }
-                    };
-                    match FrameWrite::new(writer, DuplexBuf::Ack(ack), max, Side::B as u8) {
-                        Ok(fw) => {
-                            write_state = WriteState::Writing(fw, Side::B);
-                        }
-                        Err((w, _)) => {
-                            write_state = WriteState::Idle(w);
-                        }
-                    }
-                }
-
-                // Read from the wire.
-                frame_result = frame_reader.next() => {
-                    match frame_result {
-                        Ok(Some((tag, bytes))) => {
-                            if tag == Side::A as u8 {
-                                // Side::A from server = ack for our outbound M1.
-                                match deserialize_response(bytes) {
-                                    Ok(NetRxResponse::Ack(acked_seq)) => {
-                                        // Prune unacked up to and including acked_seq.
-                                        while let Some((seq, _)) = unacked.front() {
-                                            if *seq <= acked_seq {
-                                                unacked.pop_front();
-                                            } else {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Ok(NetRxResponse::Reject(reason)) => {
-                                        tracing::error!(reason = %reason, "duplex server rejected");
-                                        return;
-                                    }
-                                    Ok(NetRxResponse::Closed) => {
-                                        return;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "failed to deserialize ack");
-                                        conn_broken = true;
-                                        break;
-                                    }
-                                }
-                            } else if tag == Side::B as u8 {
-                                // Side::B from server = inbound M2 message.
-                                match serde_multipart::Message::from_framed(bytes) {
-                                    Ok(message) => {
-                                        match serde_multipart::deserialize_bincode::<Frame<M2>>(message) {
-                                            Ok(Frame::Message(seq, msg)) => {
-                                                if seq < inbound_next.seq {
-                                                    // Retransmit — ignore.
-                                                    tracing::debug!(seq, "duplex client: ignoring inbound retransmit");
-                                                } else if seq == inbound_next.seq {
-                                                    if inbound_tx.send(msg).await.is_err() {
-                                                        // Receiver dropped.
-                                                        return;
-                                                    }
-                                                    inbound_next.seq += 1;
-                                                } else {
-                                                    tracing::error!(
-                                                        expected = inbound_next.seq,
-                                                        got = seq,
-                                                        "out-of-sequence inbound message"
-                                                    );
-                                                    conn_broken = true;
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(error = %e, "failed to deserialize inbound message");
-                                                conn_broken = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "failed to deframe inbound message");
-                                        conn_broken = true;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                tracing::warn!(tag, "duplex client: unknown tag");
-                            }
-                        }
-                        Ok(None) => {
-                            // EOF — reconnect.
-                            break;
-                        }
-                        Err(_e) => {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        if !conn_broken {
-            return;
-        }
-
-        // Reconnect with backoff.
-        if let Some(d) = backoff.next_backoff() {
-            RealClock.sleep(d).await;
-        }
-    }
 }
 
 #[cfg(test)]
