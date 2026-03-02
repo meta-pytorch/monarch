@@ -30,26 +30,6 @@ jobs:
         # Setup build environment (conda + system deps + rust + build deps)
         setup_build_environment ${{ matrix.python-version }}
 
-        # === S3/sccache diagnostics (remove after confirming cache works) ===
-        echo "::group::sccache S3 diagnostics"
-        echo "--- AWS identity ---"
-        aws sts get-caller-identity 2>&1 || echo "aws sts failed (no credentials?)"
-        echo "--- EC2 metadata (IMDSv2) ---"
-        TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30" 2>&1) || true
-        echo "IMDS token result: ${TOKEN:0:20}..."
-        curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/iam/info 2>&1 || echo "No IAM role on instance"
-        echo "--- S3 read test (ossci-compiler-cache) ---"
-        aws s3 ls s3://ossci-compiler-cache/ --max-items 5 2>&1 || echo "Cannot list ossci-compiler-cache bucket"
-        aws s3 ls s3://ossci-compiler-cache/monarch/ --max-items 5 2>&1 || echo "No monarch/ prefix yet (expected on first run)"
-        echo "--- S3 write test ---"
-        echo "sccache-probe-$(date +%s)" > /tmp/sccache-probe.txt
-        aws s3 cp /tmp/sccache-probe.txt s3://ossci-compiler-cache/monarch/__probe_test.txt 2>&1 || echo "Cannot write to ossci-compiler-cache/monarch/"
-        aws s3 rm s3://ossci-compiler-cache/monarch/__probe_test.txt 2>&1 || true
-        echo "--- sccache stats (before build) ---"
-        sccache --show-stats 2>&1 || echo "sccache not running yet"
-        echo "::endgroup::"
-        # === end diagnostics ===
-
         # Install torch nightly (CPU version)
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
         pip install -r build-requirements.txt
@@ -57,7 +37,6 @@ jobs:
         # Build monarch (No tensor engine, CPU version)
         USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
 
-        # === post-build sccache stats (remove after confirming cache works) ===
-        echo "::group::sccache stats (after build)"
-        sccache --show-stats 2>&1 || true
-        echo "::endgroup::"
+        echo "=== sccache stats ==="
+        sccache --show-stats
+        echo "=== end sccache stats ==="
