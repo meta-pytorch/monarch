@@ -21,7 +21,7 @@ use ndslice::view::CollectMeshExt;
 
 use crate::supervision::MeshFailure;
 
-pub mod mesh_agent;
+pub mod host_agent;
 
 use std::collections::HashSet;
 use std::ops::Deref;
@@ -52,14 +52,14 @@ use crate::ValueMesh;
 use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
-use crate::host_mesh::mesh_agent::HostAgentMode;
-pub use crate::host_mesh::mesh_agent::HostMeshAgent;
-use crate::host_mesh::mesh_agent::HostMeshAgentProcMeshTrampoline;
-use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-use crate::host_mesh::mesh_agent::ProcState;
-use crate::host_mesh::mesh_agent::SetClientConfigClient;
-use crate::host_mesh::mesh_agent::ShutdownHostClient;
-use crate::host_mesh::mesh_agent::SpawnMeshAdminClient;
+pub use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostAgentMode;
+use crate::host_mesh::host_agent::HostMeshAgentProcMeshTrampoline;
+use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+use crate::host_mesh::host_agent::ProcState;
+use crate::host_mesh::host_agent::SetClientConfigClient;
+use crate::host_mesh::host_agent::ShutdownHostClient;
+use crate::host_mesh::host_agent::SpawnMeshAdminClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -106,10 +106,10 @@ wirevalue::register_type!(HostRef);
 
 impl HostRef {
     /// The host mesh agent associated with this host.
-    fn mesh_agent(&self) -> ActorRef<HostMeshAgent> {
+    fn mesh_agent(&self) -> ActorRef<HostAgent> {
         ActorRef::attest(
             self.service_proc()
-                .actor_id(mesh_agent::HOST_MESH_AGENT_ACTOR_NAME, 0),
+                .actor_id(host_agent::HOST_MESH_AGENT_ACTOR_NAME, 0),
         )
     }
 
@@ -157,10 +157,10 @@ impl HostRef {
     }
 }
 
-impl TryFrom<ActorRef<HostMeshAgent>> for HostRef {
+impl TryFrom<ActorRef<HostAgent>> for HostRef {
     type Error = crate::Error;
 
-    fn try_from(value: ActorRef<HostMeshAgent>) -> Result<Self, crate::Error> {
+    fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_id().proc_id();
         match proc_id.as_direct() {
             Some((addr, _)) => Ok(HostRef(addr.clone())),
@@ -258,7 +258,7 @@ impl HostMesh {
     ///   does not produce a `HostMesh`.
     ///
     /// - launcher mode: otherwise, we are the process that is setting
-    ///   up the mesh. we create a `Host`, spawn a `HostMeshAgent` in
+    ///   up the mesh. we create a `Host`, spawn a `HostAgent` in
     ///   it, and build a single-host `HostMesh` around that. that
     ///   `HostMesh` is returned to the caller.
     ///
@@ -292,14 +292,14 @@ impl HostMesh {
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
             .spawn(
-                "agent",
-                HostMeshAgent::new(HostAgentMode::Process {
+                "host_agent",
+                HostAgent::new(HostAgentMode::Process {
                     host,
                     exit_on_shutdown: false,
                 }),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
-        host_mesh_agent.bind::<HostMeshAgent>();
+        host_mesh_agent.bind::<HostAgent>();
 
         let host = HostRef(addr);
         let host_mesh_ref = HostMeshRef::new(
@@ -356,11 +356,11 @@ impl HostMesh {
         let system_proc = host.system_proc().clone();
         let host_mesh_agent = system_proc
             .spawn(
-                mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostMeshAgent::new(HostAgentMode::Local(host)),
+                host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
-        host_mesh_agent.bind::<HostMeshAgent>();
+        host_mesh_agent.bind::<HostAgent>();
         Ok(HostRef(addr))
     }
 
@@ -411,7 +411,7 @@ impl HostMesh {
     ///
     /// Because HostMeshes use direct-addressed procs, and must fully control the procs they are
     /// managing, `HostMesh::allocate` uses a trampoline actor to launch the host, which in turn
-    /// runs a [`crate::host_mesh::mesh_agent::HostMeshAgent`] actor to manage the host itself.
+    /// runs a [`crate::host_mesh::host_agent::HostAgent`] actor to manage the host itself.
     /// The host (and thus all of its procs) are exposed directly through a separate listening
     /// channel, established by the host.
     ///
@@ -593,7 +593,7 @@ impl HostMesh {
     /// `HostMesh`.
     ///
     /// For each host, this sends `ShutdownHost` to its
-    /// `HostMeshAgent`. The agent takes and drops its `Host` (via
+    /// `HostAgent`. The agent takes and drops its `Host` (via
     /// `Option::take()`), which in turn drops the embedded
     /// `BootstrapProcManager`. On drop, the manager walks its PID
     /// table and sends SIGKILL to any procs it spawned—tying proc
@@ -850,10 +850,7 @@ impl HostMeshRef {
     }
 
     /// Create a new HostMeshRef from an arbitrary set of host mesh agents.
-    pub fn from_host_agents(
-        name: Name,
-        agents: Vec<ActorRef<HostMeshAgent>>,
-    ) -> crate::Result<Self> {
+    pub fn from_host_agents(name: Name, agents: Vec<ActorRef<HostAgent>>) -> crate::Result<Self> {
         Ok(Self {
             name,
             region: extent!(hosts = agents.len()).into(),
@@ -867,7 +864,7 @@ impl HostMeshRef {
     }
 
     /// Create a unit HostMeshRef from a host mesh agent.
-    pub fn from_host_agent(name: Name, agent: ActorRef<HostMeshAgent>) -> crate::Result<Self> {
+    pub fn from_host_agent(name: Name, agent: ActorRef<HostAgent>) -> crate::Result<Self> {
         Ok(Self {
             name,
             region: Extent::unity().into(),
@@ -1207,7 +1204,7 @@ impl HostMeshRef {
     /// return its HTTP address.
     ///
     /// Sends a `SpawnMeshAdmin` message to `ranks[0]`'s
-    /// `HostMeshAgent`, which spawns the admin agent on that host's
+    /// `HostAgent`, which spawns the admin agent on that host's
     /// system proc. When `admin_addr` is `Some`, the HTTP server
     /// binds to that address; otherwise it reads `MESH_ADMIN_ADDR`
     /// from config.
@@ -1216,7 +1213,7 @@ impl HostMeshRef {
         cx: &impl hyperactor::context::Actor,
         admin_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<String> {
-        let hosts: Vec<(String, ActorRef<HostMeshAgent>)> = self
+        let hosts: Vec<(String, ActorRef<HostAgent>)> = self
             .ranks
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
@@ -1260,7 +1257,7 @@ impl HostMeshRef {
                     proc_id,
                 ));
             };
-            // The name stored in HostMeshAgent is not the same as the
+            // The name stored in HostAgent is not the same as the
             // one stored in the ProcMesh. We instead take each proc id
             // and map it to that particular agent.
             let proc_name = proc_name.parse::<Name>()?;

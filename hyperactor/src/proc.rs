@@ -1274,8 +1274,8 @@ impl<A: Actor> Instance<A> {
     /// actor loop), so it must be `Send + Sync` and must not access
     /// actor-mutable state. Capture cloned `Proc` references.
     ///
-    /// Only `HostMeshAgent` uses this today — for resolving system
-    /// procs that have no independent `ProcMeshAgent`.
+    /// Only `HostAgent` uses this today — for resolving system
+    /// procs that have no independent `ProcAgent`.
     pub fn set_query_child_handler(
         &self,
         handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
@@ -2042,7 +2042,7 @@ struct InstanceCellState {
 
     /// Optional callback for resolving non-addressable children
     /// (e.g., system procs). Registered by infrastructure actors
-    /// like `HostMeshAgent` in `Actor::init`. Invoked by the
+    /// like `HostAgent` in `Actor::init`. Invoked by the
     /// introspection runtime handler for `QueryChild` messages.
     /// `None` means `QueryChild` returns a "not_found" error.
     ///
@@ -2361,7 +2361,7 @@ impl InstanceCell {
     /// introspection. The `published_at` timestamp is set
     /// automatically to `RealClock.system_time_now()`.
     ///
-    /// Infrastructure actors (HostMeshAgent, ProcMeshAgent) call this
+    /// Infrastructure actors (HostAgent, ProcAgent) call this
     /// to make their managed-entity metadata available without going
     /// through the actor's message handler.
     pub fn set_published_properties(&self, kind: PublishedPropertiesKind) {

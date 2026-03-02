@@ -290,7 +290,7 @@ lazy_static! {
     /// Global unified entity event dispatcher with pre-registration buffering.
     /// Events emitted before a dispatcher is registered are buffered and replayed
     /// when `set_entity_dispatcher` is called. This ensures bootstrap actors
-    /// (e.g., HostMeshAgent and ProcAgent) are captured even though they are spawned before the
+    /// (e.g., HostAgent and ProcAgent) are captured even though they are spawned before the
     /// telemetry system is initialized.
     static ref ENTITY_EVENT_STATE: Mutex<EntityEventState> = Mutex::new(
         EntityEventState::Buffering(Vec::new())

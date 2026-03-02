@@ -1,6 +1,6 @@
 # §5 Bootstrapping from Python
 
-So far we described the Rust side: there is a host, the host has a `HostMeshAgent`, and we send `CreateOrUpdate<ProcSpec>` etc. That's the control plane.
+So far we described the Rust side: there is a host, the host has a `HostAgent`, and we send `CreateOrUpdate<ProcSpec>` etc. That's the control plane.
 
 Most users won't do that by hand — they'll write Python like this:
 
@@ -278,4 +278,4 @@ impl PyHostMesh {
 ```
 (This returns a Python task because all v1 Python bindings wrap Rust async in a small bridge. See Appendix: **Python async bridge (pytokio)**.)
 
-`HostMesh::allocate(...)` is the entry point that stands up the host, creates its system proc, spawns the `HostMeshAgent`, and makes it reachable — it's the same path we used in the Rust canonical example.
+`HostMesh::allocate(...)` is the entry point that stands up the host, creates its system proc, spawns the `HostAgent`, and makes it reachable — it's the same path we used in the Rust canonical example.

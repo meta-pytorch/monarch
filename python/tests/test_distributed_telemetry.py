@@ -378,7 +378,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 def test_bootstrap_actors_captured(cleanup_callbacks) -> None:
-    """Test that bootstrap actors (ProcAgent, HostMeshAgent) are captured in the actors table.
+    """Test that bootstrap actors (ProcAgent, HostAgent) are captured in the actors table.
 
     These actors are spawned during process bootstrap, before `set_entity_dispatcher`
     is called. The buffering mechanism in `hyperactor_telemetry` should buffer their
@@ -395,7 +395,7 @@ def test_bootstrap_actors_captured(cleanup_callbacks) -> None:
     result = engine.query("SELECT full_name FROM actors")
     full_names = result.to_pydict().get("full_name", [])
 
-    # The Bootstrap actor HostMeshAgent is spawned with name "agent",
+    # The Bootstrap actor HostAgent is spawned with name "host_agent",
     # ProcAgent has the name "proc_agent".
     # Their full_name looks like "unix:@...,<proc>,agent[0]".
     agent_names = [
@@ -403,11 +403,11 @@ def test_bootstrap_actors_captured(cleanup_callbacks) -> None:
     ]
 
     # TODO: Enable this after finding discrepancy between OSS and internal test
-    # # Verify the HostMeshAgent (on the "service" proc) was captured.
+    # # Verify the HostAgent (on the "service" proc) was captured.
     # # This is the first actor spawned during bootstrap, before set_entity_dispatcher.
     # has_host_mesh_agent = any(",service,agent[" in name for name in full_names)
     # assert has_host_mesh_agent, (
-    #     f"Expected HostMeshAgent on service proc, but not found. "
+    #     f"Expected HostAgent on service proc, but not found. "
     #     f"Agent actors: {agent_names}"
     # )
 

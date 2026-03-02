@@ -17,7 +17,7 @@
 //! Incoming HTTP requests are bridged into the actor message loop
 //! using `ResolveReferenceMessage`, ensuring that all topology
 //! resolution and data collection happens through actor messaging.
-//! The agent fans out to `HostMeshAgent` instances to fetch host,
+//! The agent fans out to `HostAgent` instances to fetch host,
 //! proc, and actor details, then normalizes them into a single
 //! tree-shaped model (`NodeProperties` + children references)
 //! suitable for topology-agnostic clients such as the admin TUI.
@@ -147,8 +147,8 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use typeuri::Named;
 
-use crate::host_mesh::mesh_agent::HostId;
-use crate::host_mesh::mesh_agent::HostMeshAgent;
+use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostId;
 
 /// Actor name used when spawning the mesh admin agent.
 pub const MESH_ADMIN_ACTOR_NAME: &str = "mesh_admin";
@@ -331,7 +331,7 @@ wirevalue::register_type!(ResolveReferenceMessage);
 /// Actor that serves a mesh-level admin HTTP endpoint.
 ///
 /// `MeshAdminAgent` is the mesh-wide aggregation point for
-/// introspection: it holds `ActorRef<HostMeshAgent>` handles for each
+/// introspection: it holds `ActorRef<HostAgent>` handles for each
 /// host, and answers admin queries by forwarding targeted requests to
 /// the appropriate host agent and assembling a uniform `NodePayload`
 /// response for the client.
@@ -342,11 +342,11 @@ wirevalue::register_type!(ResolveReferenceMessage);
 /// plus child references.
 #[hyperactor::export(handlers = [MeshAdminMessage, ResolveReferenceMessage])]
 pub struct MeshAdminAgent {
-    /// Map of host address string → `HostMeshAgent` reference used to
+    /// Map of host address string → `HostAgent` reference used to
     /// fan out or target admin queries.
-    hosts: HashMap<String, ActorRef<HostMeshAgent>>,
+    hosts: HashMap<String, ActorRef<HostAgent>>,
 
-    /// Reverse index: `HostMeshAgent` `ActorId` → host address
+    /// Reverse index: `HostAgent` `ActorId` → host address
     /// string.
     ///
     /// The host agent itself is an actor that can appear in multiple
@@ -408,7 +408,7 @@ impl MeshAdminAgent {
     ///
     /// Builds both:
     /// - `hosts`: the forward map used to route admin queries to the
-    ///   correct `HostMeshAgent`, and
+    ///   correct `HostAgent`, and
     /// - `host_agents_by_actor_id`: a reverse index used during
     ///   reference resolution to recognize host-agent `ActorId`s and
     ///   resolve them as `NodeProperties::Host` rather than as
@@ -421,7 +421,7 @@ impl MeshAdminAgent {
     /// The HTTP listen address is initialized to `None` and populated
     /// during `init()` after the server socket is bound.
     pub fn new(
-        hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
+        hosts: Vec<(String, ActorRef<HostAgent>)>,
         root_client_actor_id: Option<ActorId>,
         admin_addr: Option<std::net::SocketAddr>,
     ) -> Self {
@@ -746,7 +746,7 @@ impl MeshAdminAgent {
 
         // Host refs use the "host:<actor_id>" format so they are
         // unambiguous from plain actor references. The same
-        // HostMeshAgent ActorId can appear both as a host (from root)
+        // HostAgent ActorId can appear both as a host (from root)
         // and as an actor (from a proc's children list).
         if let Ok(host_id) = reference_string.parse::<HostId>() {
             return self.resolve_host_node(cx, &host_id.0).await;
@@ -794,7 +794,7 @@ impl MeshAdminAgent {
     ///
     /// The root is not a real actor/proc; it's a convenience node
     /// that anchors navigation. Its children are the configured
-    /// `HostMeshAgent` actor IDs (as reference strings) plus any
+    /// `HostAgent` actor IDs (as reference strings) plus any
     /// standalone procs (root client proc, admin proc).
     fn build_root_payload(&self) -> NodePayload {
         let mut children: Vec<String> = self
@@ -823,11 +823,11 @@ impl MeshAdminAgent {
         }
     }
 
-    /// Resolve a `HostMeshAgent` actor reference into a host-level
+    /// Resolve a `HostAgent` actor reference into a host-level
     /// `NodePayload`.
     ///
     /// Sends `IntrospectMessage::Query` directly to the
-    /// `HostMeshAgent`, which returns a `NodePayload` with
+    /// `HostAgent`, which returns a `NodePayload` with
     /// `NodeProperties::Host` and the host's children. The resolver
     /// overrides `parent` to `"root"` since the host agent
     /// doesn't know its position in the navigation tree.
@@ -860,7 +860,7 @@ impl MeshAdminAgent {
     /// Resolve a `ProcId` reference into a proc-level `NodePayload`.
     ///
     /// First tries `IntrospectMessage::QueryChild` against the owning
-    /// `HostMeshAgent` (system procs). If that returns an error
+    /// `HostAgent` (system procs). If that returns an error
     /// payload, falls back to sending `IntrospectMessage::Query` to
     /// the conventional `ProcAgent` actor (`<proc_id>/agent[0]`)
     /// for user procs.
@@ -942,7 +942,7 @@ impl MeshAdminAgent {
     /// Resolve a standalone proc into a proc-level `NodePayload`.
     ///
     /// Standalone procs (e.g. `mesh_root_client_proc`, the admin
-    /// proc) are not managed by any `HostMeshAgent`, so
+    /// proc) are not managed by any `HostAgent`, so
     /// `resolve_proc_node` cannot resolve them. Instead, we query the
     /// anchor actor on the proc for its introspection data, collect
     /// its supervision children, and build a synthetic proc node.
@@ -1057,7 +1057,7 @@ impl MeshAdminAgent {
             cx.introspect_payload()
         } else if self.is_standalone_proc_actor(actor_id) {
             // Standalone procs (e.g. mesh_root_client_proc) have no
-            // ProcMeshAgent at agent[0], so skip the QueryChild
+            // ProcAgent at agent[0], so skip the QueryChild
             // terminated-snapshot check and query the actor directly.
             let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
             let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
@@ -1443,7 +1443,7 @@ async fn tree_dump(
 ///
 /// Extracts the proc name — the meaningful identifier for tree
 /// display — from the various reference formats emitted by
-/// `HostMeshAgent`'s children list:
+/// `HostAgent`'s children list:
 ///
 /// - System proc ref `"[system] unix:@hash,service"` → `"service"`
 /// - ProcAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
@@ -1759,8 +1759,8 @@ mod tests {
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
         let actor_id2 = ActorId::root(proc2, "mesh_agent".to_string());
 
-        let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
-        let ref2: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id2.clone());
+        let ref1: ActorRef<HostAgent> = ActorRef::attest(actor_id1.clone());
+        let ref2: ActorRef<HostAgent> = ActorRef::attest(actor_id2.clone());
 
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
@@ -1792,7 +1792,7 @@ mod tests {
     // End-to-end smoke test for MeshAdminAgent::resolve that walks
     // the reference tree: root → host → system proc → host-agent
     // cross-reference. Verifies the reverse index routes the
-    // HostMeshAgent ActorId to NodeProperties::Host (not Actor),
+    // HostAgent ActorId to NodeProperties::Host (not Actor),
     // preventing the TUI's cycle detection from dropping that node.
     #[tokio::test]
     async fn test_resolve_reference_tree_walk() {
@@ -1801,11 +1801,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // -- 1. Stand up a local in-process Host with a HostMeshAgent --
+        // -- 1. Stand up a local in-process Host with a HostAgent --
         // Use Unix transport for all procs — Local transport does not
         // support cross-proc message routing.
         let spawn: ProcManagerSpawnFn =
@@ -1819,11 +1819,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
             .spawn(
-                crate::host_mesh::mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostMeshAgent::new(HostAgentMode::Local(host)),
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
             )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // -- 2. Spawn MeshAdminAgent on a separate proc --
@@ -1905,7 +1905,7 @@ mod tests {
             panic!("expected Proc properties, got {:?}", proc_node.properties);
         }
         assert_eq!(proc_node.parent, Some(host_child_ref_str.clone()));
-        // The system proc should have at least the "agent" actor.
+        // The system proc should have at least the "host_agent" actor.
         assert!(
             !proc_node.children.is_empty(),
             "proc should have at least one actor child"
@@ -1913,7 +1913,7 @@ mod tests {
 
         // -- 7. Cross-reference: system proc child is the host agent --
         //
-        // The service proc's actor (agent[0]) IS the HostMeshAgent, so
+        // The service proc's actor (agent[0]) IS the HostAgent, so
         // it appears both as a host node (from root, via HostId) and
         // as an actor (from a proc's children list, via plain ActorId).
         // HostId in root children makes resolution unambiguous: host
@@ -1962,14 +1962,14 @@ mod tests {
         use hyperactor::host::LocalProcManager;
 
         use crate::Name;
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
         use crate::resource::Rank;
 
-        // Stand up a local in-process Host with a HostMeshAgent.
+        // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -1981,11 +1981,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
             .spawn(
-                crate::host_mesh::mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostMeshAgent::new(HostAgentMode::Local(host)),
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
             )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // Spawn MeshAdminAgent on a separate proc.
@@ -2087,7 +2087,7 @@ mod tests {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
         let proc1 = ProcId::Direct(ChannelAddr::Tcp(addr1), "host1".to_string());
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
-        let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
+        let ref1: ActorRef<HostAgent> = ActorRef::attest(actor_id1.clone());
 
         let client_proc_id =
             ProcId::Direct(ChannelAddr::Tcp(addr1), "mesh_root_client_proc".to_string());
@@ -2125,11 +2125,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // Stand up a local in-process Host with a HostMeshAgent.
+        // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -2141,11 +2141,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
             .spawn(
-                crate::host_mesh::mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostMeshAgent::new(HostAgentMode::Local(host)),
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
             )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // Create a genuinely introspectable root client actor.
@@ -2284,11 +2284,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // Stand up a local host with a HostMeshAgent.
+        // Stand up a local host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -2300,11 +2300,11 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
             .spawn(
-                crate::host_mesh::mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostMeshAgent::new(HostAgentMode::Local(host)),
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
             )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // Spawn MeshAdminAgent on a separate proc.
@@ -2389,11 +2389,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // -- 1. Stand up a local in-process Host with a HostMeshAgent --
+        // -- 1. Stand up a local in-process Host with a HostAgent --
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -2406,11 +2406,11 @@ mod tests {
         let system_proc_id = system_proc.proc_id().clone();
         let host_agent_handle = system_proc
             .spawn(
-                crate::host_mesh::mesh_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                HostMeshAgent::new(HostAgentMode::Local(host)),
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
             )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // -- 2. Spawn MeshAdminAgent on a separate proc --
