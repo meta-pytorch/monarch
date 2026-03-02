@@ -903,7 +903,7 @@ where
             let len = outbox.front_size().expect("not empty");
             let message = outbox.front_message().expect("not empty");
 
-            match FrameWrite::new(writer, message.framed(), max) {
+            match FrameWrite::new(writer, message.framed(), max, 0) {
                 Ok(fw) => (
                     State::Running(Deliveries { outbox, unacked }),
                     Conn::Connected {
@@ -966,7 +966,7 @@ where
 
                 ack_result = reader.next() => {
                     match ack_result {
-                        Ok(Some(buffer)) => {
+                        Ok(Some((_, buffer))) => {
                             match deserialize_response(buffer) {
                                 Ok(response) => {
                                     match response {

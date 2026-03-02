@@ -144,6 +144,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 writer,
                 ack,
                 hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                0,
             ) {
                 Ok(fw) => {
                     self.write_state = WriteState::Writing(fw, next.seq);
@@ -198,7 +199,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 *rcv_raw_frame_count += 1;
                 // First handle transport-level I/O errors, and EOFs.
                 let bytes = match bytes_result {
-                    Ok(Some(bytes)) => bytes,
+                    Ok(Some((_, bytes))) => bytes,
                     Ok(None) => {
                         tracing::debug!(
                                 source = %self.source,
@@ -437,8 +438,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     .map_err(anyhow::Error::from)?;
 
                 let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-                let fw =
-                    FrameWrite::new(writer, ack, max).map_err(|(_, e)| anyhow::Error::from(e))?;
+                let fw = FrameWrite::new(writer, ack, max, 0)
+                    .map_err(|(_, e)| anyhow::Error::from(e))?;
                 self.write_state = WriteState::Writing(fw, final_next.seq);
                 self.write_state.send().await.map_err(anyhow::Error::from)
             };
@@ -478,6 +479,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                     writer,
                     data,
                     hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+                    0,
                 ) {
                     Ok(fw) => {
                         self.write_state = WriteState::Writing(fw, 0);
@@ -556,11 +558,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
 
 /// Used to bookkeep message processing states.
 #[derive(Clone)]
-struct Next {
+pub(super) struct Next {
     // The last received message's seq number + 1.
-    seq: u64,
+    pub(super) seq: u64,
     // The last acked seq number + 1.
-    ack: u64,
+    pub(super) ack: u64,
 }
 
 impl fmt::Display for Next {
@@ -794,6 +796,19 @@ impl fmt::Display for ServerHandle {
 }
 
 impl ServerHandle {
+    /// Create a new server handle.
+    pub(super) fn new(
+        join_handle: JoinHandle<Result<(), ServerError>>,
+        cancel_token: CancellationToken,
+        channel_addr: ChannelAddr,
+    ) -> Self {
+        Self {
+            join_handle,
+            cancel_token,
+            channel_addr,
+        }
+    }
+
     /// Signal the server to stop. This will stop accepting new
     /// incoming connection requests, and drain pending operations
     /// on active connections. After draining is completed, the
