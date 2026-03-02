@@ -470,7 +470,7 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     engine = start_telemetry(use_fake_data=False, batch_size=10)
 
     # Spawn a named proc mesh and user actors
-    job = ProcessJob({"hosts": 1})
+    job = ProcessJob({"hosts": 2})
     hosts = job.state(cached_path=None).hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
     workers = worker_procs.spawn("worker_actors", WorkerActor)
@@ -485,6 +485,13 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
         f"Expected exactly 1 hosts mesh, got {len(host_mesh_ids)}"
     )
     host_mesh_id = host_mesh_ids[0]
+
+    # HostAgent actors have mesh_id pointing directly to the host mesh
+    host_agents = engine.query(f"SELECT id FROM actors WHERE mesh_id = {host_mesh_id}")
+    host_agents_count = len(host_agents.to_pydict().get("id", []))
+    assert host_agents_count == 2, (
+        f"Expected 2 HostAgent actors, got {host_agents_count}"
+    )
 
     # Query all proc meshes of this hosts mesh
     proc_meshes = engine.query(
@@ -523,10 +530,8 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
         actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
         actor_dict = actor_result.to_pydict()
         actor_count = len(actor_dict.get("id", []))
-
-        # Each mesh on a 2-worker proc mesh should have exactly 2 actors
-        assert actor_count == 2, (
-            f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
+        assert actor_count == 4, (
+            f"Expected 4 actors for mesh '{mesh_name}' (class={mesh_class}), "
             f"got {actor_count}"
         )
 
