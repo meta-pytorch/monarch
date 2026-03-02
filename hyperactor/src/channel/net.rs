@@ -76,6 +76,7 @@ use crate::clock::RealClock;
 mod client;
 pub(crate) mod duplex;
 mod framed;
+pub(super) mod session;
 use client::dial;
 mod server;
 pub use server::ServerHandle;
@@ -155,11 +156,11 @@ pub(crate) trait Link: Send + Sync + Debug {
     /// The address of the link's destination.
     fn dest(&self) -> ChannelAddr;
 
-    /// The link's unique identifier.
+    /// The link's unique identifier, used to correlate reconnections.
     fn link_id(&self) -> LinkId;
 
     /// Connect to the destination, returning a connected stream.
-    /// The implementation sends the LinkInit header before returning.
+    /// Implementations write the LinkInit header before returning.
     async fn connect(&self) -> Result<Self::Stream, ClientError>;
 }
 
@@ -701,12 +702,11 @@ pub(crate) mod tcp {
             let mut stream = TcpStream::connect(&self.addr).await.map_err(|err| {
                 ClientError::Connect(self.dest(), err, "cannot connect TCP socket".to_string())
             })?;
-            // Always disable Nagle algorithm, so it doesn't hurt the latency of small messages.
             stream.set_nodelay(true).map_err(|err| {
                 ClientError::Connect(
                     self.dest(),
                     err,
-                    "cannot disables Nagle algorithm".to_string(),
+                    "cannot disable Nagle algorithm".to_string(),
                 )
             })?;
 
@@ -1100,7 +1100,6 @@ pub(crate) mod tls {
             let stream = TcpStream::connect(&addr).await.map_err(|err| {
                 ClientError::Connect(self.dest(), err, format!("cannot connect to {}", addr))
             })?;
-            // Always disable Nagle algorithm, so it doesn't hurt the latency of small messages.
             stream.set_nodelay(true).map_err(|err| {
                 ClientError::Connect(
                     self.dest(),
@@ -1573,7 +1572,6 @@ mod tests {
     use crate::channel;
     use crate::channel::net::framed::FrameReader;
     use crate::channel::net::framed::FrameWrite;
-    use crate::channel::net::server::ServerConn;
     use crate::channel::net::server::ServerLink;
     use crate::channel::net::server::handle_connection;
     use crate::config;
@@ -1965,7 +1963,6 @@ mod tests {
         type Stream = DuplexStream;
 
         fn dest(&self) -> ChannelAddr {
-            // Use a dummy address as a placeholder.
             ChannelAddr::Local(u64::MAX)
         }
 
@@ -2191,9 +2188,9 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         let link_clone = link.clone();
         let ct = cancel_token.child_token();
-        let conn = ServerConn::new(receiver, source, dest);
-        let join_handle =
-            tokio::spawn(async move { handle_connection(conn, link_clone, tx, ct).await });
+        let join_handle = tokio::spawn(async move {
+            handle_connection(receiver, source, dest, link_clone, tx, ct).await
+        });
         let (r, writer) = tokio::io::split(sender);
         let reader = FrameReader::new(
             r,
@@ -2262,12 +2259,11 @@ mod tests {
             let (sender, receiver) = tokio::io::duplex(5000);
             let source = ChannelAddr::Local(u64::MAX);
             let dest = ChannelAddr::Local(u64::MAX);
-            let conn = ServerConn::new(receiver, source, dest);
             let link_clone = link.clone();
             let tx_clone = tx.clone();
             let cancel_token = CancellationToken::new();
             let handle = tokio::spawn(async move {
-                handle_connection(conn, link_clone, tx_clone, cancel_token).await
+                handle_connection(receiver, source, dest, link_clone, tx_clone, cancel_token).await
             });
 
             let (r, writer) = tokio::io::split(sender);
@@ -2312,15 +2308,13 @@ mod tests {
             let (sender2, receiver2) = tokio::io::duplex(5000);
             let source2 = ChannelAddr::Local(u64::MAX);
             let dest2 = ChannelAddr::Local(u64::MAX);
-            let conn2 = ServerConn::new(receiver2, source2, dest2);
             let link_clone = link.clone();
             let tx_clone = tx.clone();
             let cancel_token2 = CancellationToken::new();
             let ct = cancel_token2.clone();
-            let handle2 =
-                tokio::spawn(
-                    async move { handle_connection(conn2, link_clone, tx_clone, ct).await },
-                );
+            let handle2 = tokio::spawn(async move {
+                handle_connection(receiver2, source2, dest2, link_clone, tx_clone, ct).await
+            });
 
             let (r2, writer2) = tokio::io::split(sender2);
             let mut reader2 = FrameReader::new(
