@@ -13,11 +13,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 
-use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
@@ -28,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use super::read_link_init;
 use super::serialize_response;
 use super::session;
+use super::session::Mux;
 use super::session::Next;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
@@ -35,7 +34,6 @@ use crate::channel::ChannelTransport;
 use crate::channel::net::NetRx;
 use crate::channel::net::NetRxResponse;
 use crate::channel::net::ServerError;
-use crate::channel::net::framed::FrameReader;
 use crate::channel::net::meta;
 use crate::channel::net::tls;
 use crate::config;
@@ -90,18 +88,10 @@ where
 
     let (reader, writer) = tokio::io::split(stream);
     let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-    let frame_stream = session::SimplexFrameStream::new(FrameReader::new(reader, max));
-    let mux_writer = session::MuxWriter::new(writer, max);
+    let mux = Mux::new(reader, writer, max);
+    let stream = mux.stream(0);
 
-    let result = session::recv_loop::<M, _>(
-        &frame_stream,
-        &mux_writer,
-        0, // simplex tag
-        &tx,
-        &mut next,
-        cancel_token,
-    )
-    .await;
+    let result = session::recv_loop::<M, _, _>(&stream, &tx, &mut next, cancel_token).await;
 
     tracing::info!(
         source = %source,
@@ -117,13 +107,12 @@ where
     );
 
     // Post-loop cleanup: flush final ack, send reject/closed, shutdown.
-    let mut cleanup_state: session::MuxWriteState<_, Bytes, ()> = session::MuxWriteState::Idle;
 
     // Flush remaining ack if behind.
     if next.ack < next.seq {
         if let Ok(ack) = serialize_response(NetRxResponse::Ack(next.seq - 1)) {
-            cleanup_state.begin_write(&mux_writer, ack, 0, ());
-            match cleanup_state.send().await {
+            let mut completion = stream.write(ack);
+            match completion.drive().await {
                 Ok(()) => {
                     next.ack = next.seq;
                 }
@@ -150,27 +139,20 @@ where
     };
 
     if let Some(rsp) = terminal_response {
-        if cleanup_state.is_idle() {
-            if let Ok(data) = serialize_response(rsp) {
-                cleanup_state.begin_write(&mux_writer, data, 0, ());
-                let _ = cleanup_state.send().await;
-            }
+        if let Ok(data) = serialize_response(rsp) {
+            let mut completion = stream.write(data);
+            let _ = completion.drive().await;
         }
     }
 
     // Shutdown the underlying writer.
-    if let Ok(inner) = Arc::try_unwrap(mux_writer.into_inner()) {
-        let mut w = inner.into_inner();
-        let _ = w.shutdown().await;
-    }
+    drop(stream);
+    mux.shutdown().await;
 
     link.next.put(next).await;
 
-    // CLAUDE: Ok(result?) instead
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e),
-    }
+    result?;
+    Ok(())
 }
 
 /// Main listen loop. Each accepted connection spawns a task that looks up (or

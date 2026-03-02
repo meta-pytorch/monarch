@@ -31,6 +31,7 @@ use bytes::Buf;
 use bytes::Bytes;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::OwnedMutexGuard;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -58,51 +59,20 @@ use crate::clock::RealClock;
 use crate::config;
 use crate::metrics;
 
-/// Read side abstraction over framed transport. Simplex wraps a
-/// `FrameReader` directly; duplex wraps a per-side view of a
-/// `DemuxFrameReader`.
-#[async_trait]
-pub(super) trait FrameStream: Send + Sync {
-    /// Read the next frame body. Returns `None` on EOF.
-    async fn next(&self) -> io::Result<Option<Bytes>>;
-}
-
-/// Simplex `FrameStream`: wraps a `FrameReader`, ignoring the tag byte.
-/// Uses a `Mutex` because `FrameStream::next` takes `&self` (required
-/// by the shared duplex trait), so interior mutability is needed even
-/// though simplex access is uncontended.
-pub(super) struct SimplexFrameStream<R> {
-    reader: tokio::sync::Mutex<FrameReader<R>>,
-}
-
-impl<R> SimplexFrameStream<R> {
-    pub fn new(reader: FrameReader<R>) -> Self {
-        Self {
-            reader: tokio::sync::Mutex::new(reader),
-        }
-    }
-}
-
-#[async_trait]
-impl<R: AsyncRead + Unpin + Send> FrameStream for SimplexFrameStream<R> {
-    async fn next(&self) -> io::Result<Option<Bytes>> {
-        self.reader
-            .lock()
-            .await
-            .next()
-            .await
-            .map(|opt| opt.map(|(_tag, bytes)| bytes))
-    }
-}
+/// Per-tag buffer array. Each tag value (0..255) gets its own slot.
+const NUM_TAGS: usize = 256;
 
 struct DemuxState<R> {
     reader: FrameReader<R>,
-    buffered: Option<(u8, Bytes)>,
+    /// One buffer slot per tag value. A reader for tag `t` checks
+    /// `buffered[t]`; if populated, it takes the frame without
+    /// touching the underlying reader.
+    buffered: Box<[Option<Bytes>; NUM_TAGS]>,
     eof: bool,
 }
 
-/// Demultiplexes a single `FrameReader` into per-side views using
-/// the tag byte. Buffers at most one frame for the other side.
+/// Demultiplexes a single `FrameReader` into per-tag views.
+/// Buffers at most one frame per tag value.
 pub(super) struct DemuxFrameReader<R> {
     inner: tokio::sync::Mutex<DemuxState<R>>,
     notify: tokio::sync::Notify,
@@ -110,19 +80,16 @@ pub(super) struct DemuxFrameReader<R> {
 
 impl<R: AsyncRead + Unpin + Send> DemuxFrameReader<R> {
     pub fn new(reader: FrameReader<R>) -> Self {
+        // Use Box to keep the large array off the stack.
+        const NONE: Option<Bytes> = None;
         Self {
             inner: tokio::sync::Mutex::new(DemuxState {
                 reader,
-                buffered: None,
+                buffered: Box::new([NONE; NUM_TAGS]),
                 eof: false,
             }),
             notify: tokio::sync::Notify::new(),
         }
-    }
-
-    /// Create a view that reads only frames with the given tag.
-    pub fn side(&self, tag: u8) -> SideReader<'_, R> {
-        SideReader { demux: self, tag }
     }
 
     async fn next_tagged(&self, tag: u8) -> io::Result<Option<Bytes>> {
@@ -132,46 +99,30 @@ impl<R: AsyncRead + Unpin + Send> DemuxFrameReader<R> {
                 if state.eof {
                     return Ok(None);
                 }
-                if let Some((t, _)) = &state.buffered {
-                    if *t == tag {
-                        let (_, bytes) = state.buffered.take().unwrap();
+                // Check if our tag already has a buffered frame.
+                if let Some(bytes) = state.buffered[tag as usize].take() {
+                    drop(state);
+                    self.notify.notify_waiters();
+                    return Ok(Some(bytes));
+                }
+                // No buffered frame for our tag — read from the underlying reader.
+                match state.reader.next().await? {
+                    Some((t, bytes)) if t == tag => return Ok(Some(bytes)),
+                    Some((t, bytes)) => {
+                        state.buffered[t as usize] = Some(bytes);
                         drop(state);
                         self.notify.notify_waiters();
-                        return Ok(Some(bytes));
                     }
-                    // Buffer has a frame for the other side; drop lock and wait.
-                } else {
-                    match state.reader.next().await? {
-                        Some((t, bytes)) if t == tag => return Ok(Some(bytes)),
-                        Some((t, bytes)) => {
-                            state.buffered = Some((t, bytes));
-                            drop(state);
-                            self.notify.notify_waiters();
-                        }
-                        None => {
-                            state.eof = true;
-                            drop(state);
-                            self.notify.notify_waiters();
-                            return Ok(None);
-                        }
+                    None => {
+                        state.eof = true;
+                        drop(state);
+                        self.notify.notify_waiters();
+                        return Ok(None);
                     }
                 }
             }
             self.notify.notified().await;
         }
-    }
-}
-
-/// Per-side view of a [`DemuxFrameReader`].
-pub(super) struct SideReader<'a, R> {
-    demux: &'a DemuxFrameReader<R>,
-    tag: u8,
-}
-
-#[async_trait]
-impl<R: AsyncRead + Unpin + Send> FrameStream for SideReader<'_, R> {
-    async fn next(&self) -> io::Result<Option<Bytes>> {
-        self.demux.next_tagged(self.tag).await
     }
 }
 
@@ -215,110 +166,165 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for OwnedWriter<W> {
     }
 }
 
-/// Shared writer. For simplex the mutex is uncontended; for duplex
-/// two protocol loops share the same `MuxWriter`.
-pub(super) struct MuxWriter<W> {
-    inner: Arc<tokio::sync::Mutex<W>>,
+/// Handle for a single in-flight frame write.
+///
+/// Created by [`TaggedStream::write`] (sync, no I/O). Must be driven
+/// via [`drive`](Completion::drive) until it returns `Ok(())`.
+///
+/// Cancel safety: `drive()` is cancel-safe at every await point.
+/// Dropping a `Completion` before it completes releases the lock but
+/// corrupts the stream (the connection should be torn down).
+pub(super) enum Completion<W: AsyncWrite + Unpin + Send, B: Buf> {
+    Pending {
+        writer: Arc<tokio::sync::Mutex<W>>,
+        body: B,
+        tag: u8,
+        max_len: usize,
+    },
+    Acquiring {
+        writer: Arc<tokio::sync::Mutex<W>>,
+        body: B,
+        tag: u8,
+        max_len: usize,
+    },
+    Writing(FrameWrite<OwnedWriter<W>, B>),
+    Broken,
+}
+
+impl<W: AsyncWrite + Unpin + Send, B: Buf> Completion<W, B> {
+    /// Drive the write to completion. Cancel-safe at every await point.
+    pub async fn drive(&mut self) -> io::Result<()> {
+        loop {
+            match self {
+                Self::Pending { writer: _, .. } => {
+                    // Transition to Acquiring (same state, just marks intent).
+                    let Self::Pending {
+                        writer,
+                        body,
+                        tag,
+                        max_len,
+                    } = std::mem::replace(self, Self::Broken)
+                    else {
+                        unreachable!()
+                    };
+                    *self = Self::Acquiring {
+                        writer,
+                        body,
+                        tag,
+                        max_len,
+                    };
+                }
+                Self::Acquiring { writer, .. } => {
+                    let writer_clone = Arc::clone(writer);
+                    let guard = writer_clone.lock_owned().await;
+                    let Self::Acquiring {
+                        body, tag, max_len, ..
+                    } = std::mem::replace(self, Self::Broken)
+                    else {
+                        unreachable!()
+                    };
+                    match FrameWrite::new(OwnedWriter(guard), body, max_len, tag) {
+                        Ok(fw) => *self = Self::Writing(fw),
+                        Err((_owned, e)) => {
+                            *self = Self::Broken;
+                            return Err(e);
+                        }
+                    }
+                }
+                Self::Writing(fw) => {
+                    fw.send().await?;
+                    let Self::Writing(fw) = std::mem::replace(self, Self::Broken) else {
+                        unreachable!()
+                    };
+                    let _ = fw.complete(); // drops OwnedWriter → releases lock
+                    return Ok(());
+                }
+                Self::Broken => panic!("Completion: illegal state"),
+            }
+        }
+    }
+}
+
+/// Bidirectional frame channel for a single mux tag.
+///
+/// Reads are demuxed: only frames whose tag matches are returned.
+/// Writes are muxed: the tag byte is written into the frame header.
+///
+/// Multiple `TaggedStream`s can coexist (sharing the underlying
+/// reader and writer) as long as they use different tags.
+pub(super) struct TaggedStream<R, W> {
+    demux: Arc<DemuxFrameReader<R>>,
+    writer: Arc<tokio::sync::Mutex<W>>,
+    tag: u8,
     max_frame_len: usize,
 }
 
-impl<W> MuxWriter<W> {
-    pub fn new(writer: W, max_frame_len: usize) -> Self {
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(writer)),
-            max_frame_len,
+impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> TaggedStream<R, W> {
+    /// Read the next frame body for this tag. Cancel-safe.
+    pub async fn next(&self) -> io::Result<Option<Bytes>> {
+        self.demux.next_tagged(self.tag).await
+    }
+
+    /// Begin a frame write. Sync (no I/O). Returns a [`Completion`]
+    /// that must be driven via [`Completion::drive`].
+    pub fn write<B: Buf>(&self, body: B) -> Completion<W, B> {
+        Completion::Pending {
+            writer: Arc::clone(&self.writer),
+            body,
+            tag: self.tag,
+            max_len: self.max_frame_len,
         }
     }
 
-    /// Consume the `MuxWriter`, returning the inner `Arc<Mutex<W>>`.
-    /// Used during connection cleanup to recover the writer for shutdown.
-    pub fn into_inner(self) -> Arc<tokio::sync::Mutex<W>> {
-        self.inner
-    }
-
-    /// Maximum frame body length accepted by this writer.
+    /// Maximum frame body length accepted by this stream's writer.
     pub fn max_frame_len(&self) -> usize {
         self.max_frame_len
     }
 }
 
-/// Cancel-safe write state machine for shared writers.
+/// Tagged frame multiplexer over a split connection.
 ///
-/// Transitions: Idle → Acquiring → Writing → Idle.
+/// A `Mux` wraps a `DemuxFrameReader` (read side) and a shared
+/// writer (write side). Call [`stream`](Mux::stream) to get a
+/// [`TaggedStream`] for a specific tag byte.
 ///
-/// Cancel safety:
-/// - **Idle**: `pending()` never completes.
-/// - **Acquiring**: if cancelled during `lock_owned().await`, `self`
-///   is still `Acquiring`. Retries on next `send()`.
-/// - **Writing**: `FrameWrite::send` preserves progress;
-///   `OwnedWriter` keeps the mutex held.
-pub(super) enum MuxWriteState<W: AsyncWrite + Unpin + Send, B: Buf, T> {
-    Idle,
-    Acquiring {
-        mux: Arc<tokio::sync::Mutex<W>>,
-        body: B,
-        tag: u8,
-        max: usize,
-        value: T,
-    },
-    Writing(FrameWrite<OwnedWriter<W>, B>, T),
-    Broken,
+/// For simplex, use `mux.stream(0)`.
+/// For duplex, use `mux.stream(Side::A)` and `mux.stream(Side::B)`.
+pub(super) struct Mux<R, W> {
+    demux: Arc<DemuxFrameReader<R>>,
+    writer: Arc<tokio::sync::Mutex<W>>,
+    max_frame_len: usize,
 }
 
-impl<W: AsyncWrite + Unpin + Send, B: Buf, T> MuxWriteState<W, B, T> {
-    pub fn is_idle(&self) -> bool {
-        matches!(self, Self::Idle)
-    }
-
-    /// Begin a write. Transitions Idle → Acquiring (no I/O).
-    pub fn begin_write(&mut self, mux: &MuxWriter<W>, body: B, tag: u8, value: T) {
-        debug_assert!(self.is_idle());
-        *self = Self::Acquiring {
-            mux: Arc::clone(&mux.inner),
-            body,
-            tag,
-            max: mux.max_frame_len,
-            value,
-        };
-    }
-
-    /// Drive the state machine to completion. Cancel-safe at every await.
-    pub async fn send(&mut self) -> io::Result<T> {
-        loop {
-            match self {
-                Self::Idle => return std::future::pending().await,
-                Self::Acquiring { mux, .. } => {
-                    let mux_clone = Arc::clone(mux);
-                    let guard = mux_clone.lock_owned().await;
-                    let Self::Acquiring {
-                        body,
-                        tag,
-                        max,
-                        value,
-                        ..
-                    } = std::mem::replace(self, Self::Broken)
-                    else {
-                        unreachable!()
-                    };
-                    match FrameWrite::new(OwnedWriter(guard), body, max, tag) {
-                        Ok(fw) => *self = Self::Writing(fw, value),
-                        Err((_owned, e)) => {
-                            *self = Self::Idle;
-                            return Err(e);
-                        }
-                    }
-                }
-                Self::Writing(fw, _) => {
-                    fw.send().await?;
-                    let Self::Writing(fw, value) = std::mem::replace(self, Self::Idle) else {
-                        unreachable!()
-                    };
-                    let _ = fw.complete(); // drops OwnedWriter → releases lock
-                    return Ok(value);
-                }
-                Self::Broken => panic!("MuxWriteState: illegal state"),
-            }
+impl<R: AsyncRead + Unpin + Send, W> Mux<R, W> {
+    /// Create a new Mux from a reader and writer half.
+    pub fn new(reader: R, writer: W, max_frame_len: usize) -> Self {
+        Self {
+            demux: Arc::new(DemuxFrameReader::new(FrameReader::new(
+                reader,
+                max_frame_len,
+            ))),
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            max_frame_len,
         }
+    }
+
+    /// Create a [`TaggedStream`] for the given tag byte.
+    pub fn stream(&self, tag: u8) -> TaggedStream<R, W> {
+        TaggedStream {
+            demux: Arc::clone(&self.demux),
+            writer: Arc::clone(&self.writer),
+            tag,
+            max_frame_len: self.max_frame_len,
+        }
+    }
+}
+
+impl<R, W: AsyncWrite + Unpin> Mux<R, W> {
+    /// Shutdown the underlying writer. Best-effort.
+    pub async fn shutdown(self) {
+        let mut w = self.writer.lock().await;
+        let _ = w.shutdown().await;
     }
 }
 
@@ -726,10 +732,12 @@ pub(super) enum RecvResult {
 ///
 /// This is the shared implementation used by both simplex (`server.rs`)
 /// and duplex (`duplex.rs`).
-pub(super) async fn recv_loop<M: RemoteMessage, W: AsyncWrite + Unpin + Send>(
-    reader: &impl FrameStream,
-    writer: &MuxWriter<W>,
-    ack_tag: u8,
+pub(super) async fn recv_loop<
+    M: RemoteMessage,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+>(
+    stream: &TaggedStream<R, W>,
     deliver_tx: &mpsc::Sender<M>,
     next: &mut Next,
     cancel: CancellationToken,
@@ -739,25 +747,27 @@ pub(super) async fn recv_loop<M: RemoteMessage, W: AsyncWrite + Unpin + Send>(
         hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
     let mut last_ack_time = RealClock.now();
-    let mut write_state: MuxWriteState<W, Bytes, u64> = MuxWriteState::Idle;
+    let mut pending_ack: Option<(Completion<W, Bytes>, u64)> = None;
 
     loop {
         let ack_behind = next.ack + ack_msg_interval <= next.seq
             || (next.ack < next.seq && last_ack_time.elapsed() > ack_time_interval);
 
         // Begin ack write if idle and behind.
-        if write_state.is_idle() && ack_behind {
+        if pending_ack.is_none() && ack_behind {
             let ack = serialize_response(NetRxResponse::Ack(next.seq - 1))?;
-            write_state.begin_write(writer, ack, ack_tag, next.seq);
+            pending_ack = Some((stream.write(ack), next.seq));
         }
 
         tokio::select! {
             biased;
 
             // Drive ack write to completion.
-            result = write_state.send() => {
+            result = async { pending_ack.as_mut().unwrap().0.drive().await },
+                if pending_ack.is_some() => {
                 match result {
-                    Ok(acked_seq) => {
+                    Ok(()) => {
+                        let acked_seq = pending_ack.take().unwrap().1;
                         last_ack_time = RealClock.now();
                         next.ack = acked_seq;
                     }
@@ -773,7 +783,7 @@ pub(super) async fn recv_loop<M: RemoteMessage, W: AsyncWrite + Unpin + Send>(
                 return Ok(RecvResult::Cancelled);
             }
 
-            bytes_result = reader.next() => {
+            bytes_result = stream.next() => {
                 let bytes = match bytes_result {
                     Ok(Some(bytes)) => bytes,
                     Ok(None) => return Ok(RecvResult::Eof),
@@ -841,30 +851,29 @@ impl fmt::Display for Next {
 }
 
 /// Send protocol loop: accept messages from the application,
-/// serialize, write via `MuxWriteState`, read ack responses, and
+/// serialize, write via [`Completion`], read ack responses, and
 /// manage the outbox/unacked buffers.
 ///
 /// This is the shared implementation used by both simplex (`client.rs`)
 /// and duplex (`duplex.rs`).
-pub(super) async fn send_loop<M, W>(
-    reader: &impl FrameStream,
-    writer: &MuxWriter<W>,
-    msg_tag: u8,
+pub(super) async fn send_loop<M, R, W>(
+    stream: &TaggedStream<R, W>,
     deliveries: &mut Deliveries<M>,
     receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
     cancel: CancellationToken,
 ) -> SendLoopResult
 where
     M: RemoteMessage,
+    R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    let mut write_state: MuxWriteState<W, serde_multipart::Frame, ()> = MuxWriteState::Idle;
+    let mut pending: Option<Completion<W, serde_multipart::Frame>> = None;
 
     loop {
         // Begin write if idle and outbox has messages.
-        if write_state.is_idle() && !deliveries.outbox.is_empty() {
+        if pending.is_none() && !deliveries.outbox.is_empty() {
             let len = deliveries.outbox.front_size().expect("not empty");
-            let max = writer.max_frame_len();
+            let max = stream.max_frame_len();
             if len > max {
                 let reason = format!(
                     "rejecting oversize frame: len={} > max={}. \
@@ -879,14 +888,14 @@ where
                 return SendLoopResult::OversizedFrame(reason);
             }
             let message = deliveries.outbox.front_message().expect("not empty");
-            write_state.begin_write(writer, message.framed(), msg_tag, ());
+            pending = Some(stream.write(message.framed()));
         }
 
         tokio::select! {
             biased;
 
             // Read acks/responses from the peer.
-            ack_result = reader.next() => {
+            ack_result = stream.next() => {
                 match ack_result {
                     Ok(Some(buffer)) => {
                         let response = match deserialize_response(buffer) {
@@ -921,9 +930,11 @@ where
             }
 
             // Drive frame write to completion.
-            send_result = write_state.send() => {
+            send_result = async { pending.as_mut().unwrap().drive().await },
+                if pending.is_some() => {
                 match send_result {
                     Ok(()) => {
+                        pending = None;
                         let mut message = deliveries.outbox.pop_front()
                             .expect("outbox should not be empty");
                         message.sent_at = Some(RealClock.now());

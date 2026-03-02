@@ -74,7 +74,7 @@ use crate::clock::RealClock;
 // the suppression must be at module scope.
 #[allow(unused_assignments)]
 mod client;
-pub(crate) mod duplex;
+pub mod duplex;
 mod framed;
 pub(super) mod session;
 use client::dial;
@@ -738,6 +738,9 @@ pub(crate) mod tcp {
                 .inner
                 .accept()
                 .await
+                .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
+            stream
+                .set_nodelay(true)
                 .map_err(|err| ServerError::Io(ChannelAddr::Tcp(self.addr), err))?;
             Ok((stream, ChannelAddr::Tcp(peer_addr)))
         }
