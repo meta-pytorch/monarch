@@ -68,7 +68,9 @@ impl ActorSupervisionEvent {
             .unwrap_or_else(|| self.actor_id.to_string())
     }
 
-    fn actually_failing_actor(&self) -> &ActorSupervisionEvent {
+    /// Walk the `UnhandledSupervisionEvent` chain to find the root-cause
+    /// actor that originally failed.
+    pub fn actually_failing_actor(&self) -> &ActorSupervisionEvent {
         let mut event = self;
         while let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(e)) =
             &event.actor_status
@@ -94,7 +96,9 @@ fn fmt_status<'a>(
     let mut f = indented(f).with_str(" ");
 
     match status {
-        ActorStatus::Stopped(_) if actor_id.name() == "agent" => {
+        ActorStatus::Stopped(_)
+            if actor_id.name() == "agent" || actor_id.name() == "proc_agent" =>
+        {
             // Host agent stopped - use simplified message from D86984496
             let name = match actor_id.proc_id() {
                 crate::reference::ProcId::Direct(addr, _) => addr.to_string(),

@@ -603,7 +603,7 @@ pub(crate) mod meta {
 
     /// Construct a PemBundle for server operations from Meta-specific paths.
     /// Server cert and key come from the same file (server.pem).
-    fn get_server_pem_bundle() -> PemBundle {
+    pub(super) fn get_server_pem_bundle() -> PemBundle {
         let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
@@ -634,6 +634,15 @@ pub(crate) mod meta {
     pub(crate) fn tls_acceptor(enforce_client_tls: bool) -> Result<TlsAcceptor> {
         let bundle = get_server_pem_bundle();
         tls::tls_acceptor_from_bundle(&bundle, enforce_client_tls)
+    }
+
+    /// Try to create a TLS connector for Meta environments.
+    ///
+    /// Returns `Ok` when the root CA is present (optional client certs
+    /// are added when `THRIFT_TLS_CL_CERT_PATH` / `THRIFT_TLS_CL_KEY_PATH`
+    /// are set).
+    pub(super) fn try_tls_connector() -> Result<TlsConnector> {
+        tls_connector()
     }
 
     /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
@@ -733,9 +742,8 @@ pub(crate) mod tls {
     /// Load certificates from a Pem value.
     pub(super) fn load_certs(pem: &Pem) -> Result<Vec<CertificateDer<'static>>> {
         let mut reader = BufReader::new(pem.reader()?);
-        let certs = rustls_pemfile::certs(&mut reader)?
-            .into_iter()
-            .map(CertificateDer::from)
+        let certs = rustls_pemfile::certs(&mut reader)
+            .filter_map(Result::ok)
             .collect();
         Ok(certs)
     }
@@ -745,12 +753,9 @@ pub(crate) mod tls {
         let mut reader = BufReader::new(pem.reader()?);
         loop {
             break match rustls_pemfile::read_one(&mut reader)? {
-                Some(rustls_pemfile::Item::RSAKey(key)) => Ok(PrivateKeyDer::try_from(key)
-                    .map_err(|_| anyhow::anyhow!("invalid RSA private key format"))?),
-                Some(rustls_pemfile::Item::PKCS8Key(key)) => Ok(PrivateKeyDer::try_from(key)
-                    .map_err(|_| anyhow::anyhow!("invalid PKCS8 private key format"))?),
-                Some(rustls_pemfile::Item::ECKey(key)) => Ok(PrivateKeyDer::try_from(key)
-                    .map_err(|_| anyhow::anyhow!("invalid EC private key format"))?),
+                Some(rustls_pemfile::Item::Pkcs1Key(key)) => Ok(PrivateKeyDer::Pkcs1(key)),
+                Some(rustls_pemfile::Item::Pkcs8Key(key)) => Ok(PrivateKeyDer::Pkcs8(key)),
+                Some(rustls_pemfile::Item::Sec1Key(key)) => Ok(PrivateKeyDer::Sec1(key)),
                 Some(_) => continue,
                 None => anyhow::bail!("no private key found in TLS key file"),
             };
@@ -1214,6 +1219,100 @@ u19txmtkiMEH+aNmekk=
     }
 }
 
+/// Build the OSS PemBundle from hyperactor_config attributes.
+fn oss_pem_bundle() -> crate::config::PemBundle {
+    crate::config::PemBundle {
+        ca: hyperactor_config::global::get_cloned(crate::config::TLS_CA),
+        cert: hyperactor_config::global::get_cloned(crate::config::TLS_CERT),
+        key: hyperactor_config::global::get_cloned(crate::config::TLS_KEY),
+    }
+}
+
+/// Try to find a usable TLS [`PemBundle`](crate::config::PemBundle)
+/// by probing the same sources as [`try_tls_acceptor`] /
+/// [`try_tls_connector`].
+///
+/// Returns the first bundle whose CA certificate is readable.
+/// Only CA readability is checked — cert and key are returned as-is
+/// and may not be valid. Callers that cannot use `tokio_rustls` types
+/// directly (e.g. reqwest) can read the raw PEM bytes via
+/// [`Pem::reader`](crate::config::Pem::reader).
+pub fn try_tls_pem_bundle() -> Option<crate::config::PemBundle> {
+    let oss_bundle = oss_pem_bundle();
+    if oss_bundle.ca.reader().is_ok() {
+        return Some(oss_bundle);
+    }
+    tracing::debug!("OSS TLS bundle: CA not readable, trying Meta paths");
+
+    let meta_bundle = meta::get_server_pem_bundle();
+    if meta_bundle.ca.reader().is_ok() {
+        return Some(meta_bundle);
+    }
+    tracing::debug!("Meta TLS bundle: CA not readable, no TLS available");
+
+    None
+}
+
+/// Try to build a [`TlsAcceptor`](tokio_rustls::TlsAcceptor) for an
+/// HTTP server by probing for available TLS certificates.
+///
+/// Detection order:
+/// 1. **OSS / explicit config** — `HYPERACTOR_TLS_CERT`,
+///    `HYPERACTOR_TLS_KEY`, and `HYPERACTOR_TLS_CA` (read via
+///    [`hyperactor_config`]).
+/// 2. **Meta default paths** —
+///    `/var/facebook/x509_identities/server.pem` and
+///    `/var/facebook/rootcanal/ca.pem`. These are present on
+///    devservers and in MAST / Tupperware containers.
+/// 3. **None** — no usable certificates found; caller should fall
+///    back to plain HTTP.
+///
+/// The returned acceptor does **not** require client certificates
+/// (`with_no_client_auth`), matching the convention for HTTP admin
+/// endpoints where the server authenticates itself but does not
+/// demand mutual TLS from browsers or CLI tools.
+pub fn try_tls_acceptor() -> Option<tokio_rustls::TlsAcceptor> {
+    let oss_bundle = oss_pem_bundle();
+    if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&oss_bundle, false) {
+        return Some(acceptor);
+    }
+    tracing::debug!("OSS TLS acceptor failed, trying Meta paths");
+
+    let meta_bundle = meta::get_server_pem_bundle();
+    if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&meta_bundle, false) {
+        return Some(acceptor);
+    }
+    tracing::debug!("Meta TLS acceptor failed, no TLS available");
+
+    None
+}
+
+/// Try to build a [`TlsConnector`](tokio_rustls::TlsConnector) for an
+/// HTTP client that needs to connect to a TLS-enabled server.
+///
+/// Detection mirrors [`try_tls_acceptor`]:
+/// 1. **OSS** — `HYPERACTOR_TLS_CA` (and optionally
+///    `HYPERACTOR_TLS_CERT` + `HYPERACTOR_TLS_KEY` for mutual TLS).
+/// 2. **Meta** — root CA at `/var/facebook/rootcanal/ca.pem`,
+///    optional client certs from `THRIFT_TLS_CL_CERT_PATH` /
+///    `THRIFT_TLS_CL_KEY_PATH`.
+/// 3. **None** — no usable CA found; caller should fall back to plain
+///    HTTP.
+pub fn try_tls_connector() -> Option<tokio_rustls::TlsConnector> {
+    let oss_bundle = oss_pem_bundle();
+    if let Ok(connector) = tls::tls_connector_from_bundle(&oss_bundle) {
+        return Some(connector);
+    }
+    tracing::debug!("OSS TLS connector failed, trying Meta paths");
+
+    if let Ok(connector) = meta::try_tls_connector() {
+        return Some(connector);
+    }
+    tracing::debug!("Meta TLS connector failed, no TLS available");
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches::assert_matches;
@@ -1254,6 +1353,19 @@ mod tests {
     use crate::config;
     use crate::metrics;
     use crate::sync::mvar::MVar;
+
+    /// Like the `logs_assert` injected by `#[traced_test]`, but without scope
+    /// filtering. Use when asserting on events emitted outside the test's span
+    /// (e.g. from spawned tasks or panic hooks).
+    fn logs_assert_unscoped(f: impl Fn(&[&str]) -> Result<(), String>) {
+        let buf = tracing_test::internal::global_buf().lock().unwrap();
+        let logs_str = std::str::from_utf8(&buf).expect("Logs contain invalid UTF8");
+        let lines: Vec<&str> = logs_str.lines().collect();
+        match f(&lines) {
+            Ok(()) => {}
+            Err(msg) => panic!("{}", msg),
+        }
+    }
 
     #[cfg(target_os = "linux")] // uses abstract names
     #[tracing_test::traced_test]
@@ -2055,7 +2167,7 @@ mod tests {
             Ok(Ok(())) => {
                 let current_status = *tx_status.borrow();
                 assert_eq!(current_status, TxStatus::Closed);
-                logs_assert(|logs| {
+                logs_assert_unscoped(|logs| {
                     if logs.iter().any(|log| log.contains(expected_log)) {
                         Ok(())
                     } else {

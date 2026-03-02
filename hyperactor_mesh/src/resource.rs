@@ -46,8 +46,8 @@ use crate::Name;
 use crate::StatusOverlay;
 use crate::bootstrap;
 use crate::host_mesh::mesh_agent::ProcState;
-use crate::mesh_agent::ActorSpec;
-use crate::mesh_agent::ActorState;
+use crate::proc_agent::ActorSpec;
+use crate::proc_agent::ActorState;
 
 /// The current lifecycle status of a resource.
 #[derive(
@@ -81,6 +81,8 @@ pub enum Status {
     /// The resource has been declared failed after a timeout.
     #[strum(to_string = "Timeout({0:?})")]
     Timeout(Duration),
+    /// The resource exists but its status is not known.
+    Unknown,
 }
 
 impl Status {

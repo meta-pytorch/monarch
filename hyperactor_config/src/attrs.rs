@@ -328,6 +328,11 @@ pub trait AttrValue:
     fn parse(value: &str) -> Result<Self, anyhow::Error>;
 }
 
+/// Marker trait for types that implement a "display" that never produces an
+/// empty string. This allows Option<T> where T: DisplayNonEmpty to not require
+/// a Some(...) wrapper, and can use the empty string as the "None" value.
+trait DisplayNonEmpty {}
+
 /// Macro to implement AttrValue for types that implement ToString and FromStr.
 ///
 /// This macro provides a convenient way to implement AttrValue for types that already
@@ -358,24 +363,26 @@ macro_rules! impl_attrvalue {
     };
 }
 
+#[macro_export]
+macro_rules! impl_attrvalue_and_display_non_empty {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl_attrvalue!($ty);
+            impl $crate::attrs::DisplayNonEmpty for $ty {}
+        )+
+    };
+}
+
 // pub use impl_attrvalue;
 
 // Implement AttrValue for common standard library types
+impl_attrvalue_and_display_non_empty!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64,
+);
+
+// String has a display that can produce an empty string, so it cannot impl
+// DisplayNonEmpty
 impl_attrvalue!(
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    isize,
-    u8,
-    u16,
-    u32,
-    u64,
-    u128,
-    usize,
-    f32,
-    f64,
     String,
     std::net::IpAddr,
     std::net::Ipv4Addr,
@@ -392,6 +399,9 @@ impl AttrValue for std::time::Duration {
     }
 }
 
+// Durations never have an empty display.
+impl DisplayNonEmpty for std::time::Duration {}
+
 impl AttrValue for std::time::SystemTime {
     fn display(&self) -> String {
         let datetime: DateTime<Utc> = (*self).into();
@@ -403,6 +413,9 @@ impl AttrValue for std::time::SystemTime {
         Ok(datetime.into())
     }
 }
+
+// SystemTimes never have an empty display.
+impl DisplayNonEmpty for std::time::SystemTime {}
 
 impl<T, E> AttrValue for std::ops::Range<T>
 where
@@ -445,6 +458,25 @@ impl AttrValue for bool {
                 "expected `0`, `1`, `true` or `false`, got `{}`",
                 value
             )),
+        }
+    }
+}
+
+impl DisplayNonEmpty for bool {}
+
+impl<T: AttrValue + DisplayNonEmpty> AttrValue for Option<T> {
+    fn display(&self) -> String {
+        match self {
+            Some(value) => value.display(),
+            None => String::new(),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        if value.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(T::parse(value)?))
         }
     }
 }
@@ -1044,6 +1076,8 @@ mod tests {
         attr TEST_COUNT: u32;
         @meta(TEST_COUNT = 42)
         pub attr TEST_NAME: String;
+        attr TEST_OPTION_COUNT: Option<u32>;
+        attr TEST_OPTION_TIMEOUT: Option<Duration>;
     }
 
     #[test]
@@ -1160,6 +1194,8 @@ mod tests {
         let mut original = Attrs::new();
         original.set(TEST_TIMEOUT, Duration::from_secs(10));
         original.set(TEST_COUNT, 5u32);
+        original.set(TEST_OPTION_COUNT, Some(5u32));
+        original.set(TEST_OPTION_TIMEOUT, None);
         original.set(TEST_NAME, "test-service".to_string());
 
         // Serialize
@@ -1174,6 +1210,8 @@ mod tests {
             Some(&Duration::from_secs(10))
         );
         assert_eq!(deserialized.get(TEST_COUNT), Some(&5u32));
+        assert_eq!(deserialized.get(TEST_OPTION_COUNT), Some(&Some(5u32)));
+        assert_eq!(deserialized.get(TEST_OPTION_TIMEOUT), Some(&None));
         assert_eq!(
             deserialized.get(TEST_NAME),
             Some(&"test-service".to_string())

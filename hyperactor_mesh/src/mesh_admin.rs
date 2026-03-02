@@ -82,20 +82,46 @@
 //!
 //! Together these ensure that the TUI can correlate responses to tree
 //! nodes, and that upward/downward navigation is consistent.
+//!
+//! ## Robustness invariant
+//!
+//! **`MeshAdminAgent` must never crash the OS process it resides in.**
+//! Every handler catches errors and converts them into structured
+//! error payloads (`ResolveReferenceResponse(Err(..))`,
+//! `NodeProperties::Error`, etc.) rather than propagating panics or
+//! unwinding. Failed reply sends (the caller went away) are silently
+//! swallowed. This is critical because the admin agent is
+//! co-located with the mesh coordinator — an unhandled panic would
+//! tear down the entire mesh.
+//!
+//! ## TLS transport invariant
+//!
+//! The admin HTTP server auto-detects TLS certificates at startup via
+//! [`try_tls_acceptor`](hyperactor::channel::try_tls_acceptor): OSS
+//! config attrs → Meta well-known paths → plain HTTP fallback. When
+//! certs are found, the server serves HTTPS; otherwise HTTP.
+//!
+//! **`admin_host` includes the scheme**: the URL returned by
+//! `GetAdminAddr` is always `https://host:port` or
+//! `http://host:port`, never a bare `host:port`. All callers (Rust
+//! examples, Python examples, TUI, tests) receive and use this full
+//! URL directly.
 
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Json;
 use axum::Router;
-use axum::extract::Path;
+use axum::extract::Path as AxumPath;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use hyperactor::Actor;
+use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
 use hyperactor::Context;
@@ -106,6 +132,7 @@ use hyperactor::OncePortRef;
 use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
+use hyperactor::channel::try_tls_acceptor;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::introspect::IntrospectMessage;
@@ -117,18 +144,20 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use typeuri::Named;
 
-use crate::global_root_client;
 use crate::host_mesh::mesh_agent::HostId;
 use crate::host_mesh::mesh_agent::HostMeshAgent;
-use crate::host_mesh::mesh_agent::parse_system_proc_ref;
-use crate::host_mesh::mesh_agent::system_proc_ref;
+
+/// Actor name used when spawning the mesh admin agent.
+pub const MESH_ADMIN_ACTOR_NAME: &str = "mesh_admin";
 
 /// Timeout for targeted queries that hit a single, specific host.
-/// Longer than the fan-out timeout because the caller explicitly chose
-/// this host and is willing to wait for a response.
-const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Kept short so a slow or dying actor cannot block the
+/// single-threaded MeshAdminAgent message loop (which serializes
+/// all resolve requests, including the fast root refresh).
+const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Structured error response following the gateway RFC envelope
 /// pattern.
@@ -174,6 +203,7 @@ impl IntoResponse for ApiError {
         let status = match self.code.as_str() {
             "not_found" => StatusCode::NOT_FOUND,
             "bad_request" => StatusCode::BAD_REQUEST,
+            "gateway_timeout" => StatusCode::GATEWAY_TIMEOUT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let envelope = ApiErrorEnvelope { error: self };
@@ -312,6 +342,16 @@ pub struct MeshAdminAgent {
     /// Bound address of the admin HTTP server once started in `init`.
     admin_addr: Option<std::net::SocketAddr>,
 
+    /// Hostname-based address string (e.g.
+    /// ``"myhost.facebook.com:8080"``) for the admin HTTP server.
+    /// Uses the machine's hostname rather than a raw IP so it works
+    /// with DNS and TLS certificate validation in Tupperware/MAST.
+    admin_host: Option<String>,
+
+    /// Optional fixed port for the admin HTTP server. When `Some`,
+    /// `init` binds to ``[::]:<port>`` instead of an ephemeral port.
+    admin_port: Option<u16>,
+
     /// When the mesh was started (ISO-8601 timestamp).
     started_at: String,
 
@@ -340,6 +380,7 @@ impl MeshAdminAgent {
     pub fn new(
         hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
         root_client_actor_id: Option<ActorId>,
+        admin_port: Option<u16>,
     ) -> Self {
         let host_agents_by_actor_id: HashMap<ActorId, String> = hosts
             .iter()
@@ -358,6 +399,8 @@ impl MeshAdminAgent {
             root_client_actor_id,
             self_actor_id: None,
             admin_addr: None,
+            admin_host: None,
+            admin_port,
             started_at,
             started_by,
         }
@@ -372,6 +415,7 @@ impl std::fmt::Debug for MeshAdminAgent {
             .field("root_client_actor_id", &self.root_client_actor_id)
             .field("self_actor_id", &self.self_actor_id)
             .field("admin_addr", &self.admin_addr)
+            .field("admin_host", &self.admin_host)
             .field("started_at", &self.started_at)
             .field("started_by", &self.started_by)
             .finish()
@@ -390,34 +434,144 @@ struct BridgeState {
     /// Reference to the `MeshAdminAgent` actor that performs
     /// reference resolution.
     admin_ref: ActorRef<MeshAdminAgent>,
+    /// Dedicated client mailbox on system_proc for HTTP bridge reply
+    /// ports. Using a separate `Instance<()>` avoids sharing the
+    /// actor's own mailbox with the HTTP bridge and ensures the
+    /// bridge context is routable via system_proc's frontend address.
+    // Previous approach used `this.clone_for_py()` which cloned the
+    // admin actor's Instance:
+    //   bridge_cx: Instance<MeshAdminAgent>,
+    bridge_cx: Instance<()>,
+    /// Keep the handle alive so the bridge mailbox is not dropped.
+    _bridge_handle: ActorHandle<()>,
+}
+
+/// A TCP listener that performs a TLS handshake on each accepted
+/// connection before handing it to axum.
+///
+/// Implements [`axum::serve::Listener`] so it can be passed directly
+/// to [`axum::serve`].  Per the trait contract, `accept` handles
+/// errors internally (logging + retrying) and never returns `Err`.
+struct TlsListener {
+    tcp: TcpListener,
+    acceptor: TlsAcceptor,
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let (stream, addr) = match self.tcp.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::warn!("TCP accept error: {}", e);
+                    continue;
+                }
+            };
+
+            match self.acceptor.accept(stream).await {
+                Ok(tls_stream) => return (tls_stream, addr),
+                Err(e) => {
+                    tracing::warn!("TLS handshake failed from {}: {}", addr, e);
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.tcp.local_addr()
+    }
 }
 
 #[async_trait]
 impl Actor for MeshAdminAgent {
-    /// Initializes the mesh admin HTTP server.
+    /// Initializes the mesh admin agent and its HTTP server.
     ///
-    /// Binds an ephemeral local TCP listener, builds the axum router,
-    /// and spawns the server in a background task. The chosen
-    /// listen address is stored in `admin_addr` so it can be returned
-    /// via `GetAdminAddr`.
+    /// 1. Binds well-known message ports (`proc.spawn()` does not
+    ///    call `bind()` — unlike `gspawn` — so the actor must do it
+    ///    itself before becoming reachable).
+    /// 2. Binds a TCP listener (ephemeral or fixed port).
+    /// 3. Probes for TLS certificates (explicit env vars, then Meta
+    ///    default paths, then falls back to plain HTTP).
+    /// 4. Creates a dedicated `Instance<()>` client mailbox on
+    ///    system_proc for the HTTP bridge's reply ports, keeping
+    ///    bridge traffic off the actor's own mailbox.
+    /// 5. Spawns the axum server in a background task (HTTPS or HTTP
+    ///    depending on step 3).
+    ///
+    /// The hostname-based listen address is stored in `admin_host` so
+    /// it can be returned via `GetAdminAddr`. The scheme (`https://`
+    /// or `http://`) is included so clients know which protocol to
+    /// use.
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        // Bind well-known ports before the HTTP server is spawned, so
+        // messages (including Undeliverable bounces) can be delivered
+        // as soon as the admin is reachable.
+        this.bind::<Self>();
         self.self_actor_id = Some(this.self_id().clone());
 
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        self.admin_addr = Some(addr);
+        let port = self.admin_port.unwrap_or(0);
+        // Bind dual-stack (IPv6 + IPv4) so the server is reachable
+        // regardless of which address family the hostname resolves
+        // to.
+        let listener = TcpListener::bind(format!("[::]:{}", port)).await?;
+        let bound_addr = listener.local_addr()?;
+        // Report the hostname (e.g. Tupperware container name) + port
+        // rather than a raw IP, so the address works with DNS and TLS
+        // certificate validation.
+        let host = hostname::get()
+            .unwrap_or_else(|_| "localhost".into())
+            .into_string()
+            .unwrap_or_else(|_| "localhost".to_string());
+        self.admin_addr = Some(bound_addr);
 
+        // Probe for TLS certificates (OSS config, then Meta paths,
+        // then plain HTTP fallback). See `try_tls_acceptor` docs.
+        let tls_acceptor = try_tls_acceptor();
+        let scheme = if tls_acceptor.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+
+        self.admin_host = Some(format!("{}://{}:{}", scheme, host, bound_addr.port()));
+
+        // Create a dedicated client mailbox on system_proc for the
+        // HTTP bridge's reply ports. This avoids sharing the admin
+        // actor's own mailbox with async HTTP handlers.
+        let (bridge_cx, bridge_handle) = this.proc().instance("admin_bridge")?;
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_id().clone()),
+            bridge_cx,
+            _bridge_handle: bridge_handle,
         });
         let router = create_mesh_admin_router(bridge_state);
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router).await {
-                tracing::error!("mesh admin server error: {}", e);
-            }
-        });
 
-        tracing::info!("mesh admin server listening on http://{}", addr);
+        if let Some(acceptor) = tls_acceptor {
+            let tls_listener = TlsListener {
+                tcp: listener,
+                acceptor,
+            };
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(tls_listener, router).await {
+                    tracing::error!("mesh admin server (TLS) error: {}", e);
+                }
+            });
+        } else {
+            tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, router).await {
+                    tracing::error!("mesh admin server error: {}", e);
+                }
+            });
+        }
+
+        tracing::info!(
+            "mesh admin server listening on {}",
+            self.admin_host.as_deref().unwrap_or("unknown")
+        );
         Ok(())
     }
 
@@ -467,7 +621,7 @@ impl Handler<MeshAdminMessage> for MeshAdminAgent {
         match msg {
             MeshAdminMessage::GetAdminAddr { reply } => {
                 let resp = MeshAdminAddrResponse {
-                    addr: self.admin_addr.map(|a| a.to_string()),
+                    addr: self.admin_host.clone(),
                 };
                 if let Err(e) = reply.send(cx, resp) {
                     tracing::debug!("GetAdminAddr reply failed (caller gone?): {e}");
@@ -541,14 +695,6 @@ impl MeshAdminAgent {
             return Ok(self.build_root_payload());
         }
 
-        // System proc refs are non-addressable children of a
-        // HostMeshAgent. They use the "[system] <proc_id>" format
-        // which does not parse as a Reference, so intercept them
-        // before attempting Reference::from_str.
-        if parse_system_proc_ref(reference_string).is_some() {
-            return self.resolve_system_proc_node(cx, reference_string).await;
-        }
-
         // Host refs use the "host:<actor_id>" format so they are
         // unambiguous from plain actor references. The same
         // HostMeshAgent ActorId can appear both as a host (from root)
@@ -609,8 +755,12 @@ impl MeshAdminAgent {
             .values()
             .map(|agent| HostId(agent.actor_id().clone()).to_string())
             .collect();
+        // Standalone procs (admin, root client) are infrastructure.
+        let mut system_children: Vec<String> = Vec::new();
         for actor_id in self.standalone_proc_actors() {
-            children.push(actor_id.proc_id().to_string());
+            let proc_ref = actor_id.proc_id().to_string();
+            system_children.push(proc_ref.clone());
+            children.push(proc_ref);
         }
         NodePayload {
             identity: "root".to_string(),
@@ -618,9 +768,11 @@ impl MeshAdminAgent {
                 num_hosts: self.hosts.len(),
                 started_at: self.started_at.clone(),
                 started_by: self.started_by.clone(),
+                system_children,
             },
             children,
             parent: None,
+            as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
         }
     }
 
@@ -658,77 +810,12 @@ impl MeshAdminAgent {
         Ok(payload)
     }
 
-    /// Resolve a system proc reference (e.g. `"[system]
-    /// tcp!127.0.0.1:12345,system"`) into a proc-level `NodePayload`.
-    ///
-    /// System procs are non-addressable children of a
-    /// `HostMeshAgent`. The resolver strips the `"[system] "` prefix,
-    /// parses the embedded `ProcId`, finds the owning
-    /// `HostMeshAgent`, and sends `IntrospectMessage::QueryChild`
-    /// with `Reference::Proc` so the host can answer on the proc's
-    /// behalf.
-    async fn resolve_system_proc_node(
-        &self,
-        cx: &Context<'_, Self>,
-        reference_string: &str,
-    ) -> Result<NodePayload, anyhow::Error> {
-        let proc_id_str = parse_system_proc_ref(reference_string)
-            .ok_or_else(|| anyhow::anyhow!("not a system proc reference: {}", reference_string))?;
-        let proc_id: ProcId = proc_id_str.parse().map_err(|e| {
-            anyhow::anyhow!(
-                "invalid proc id in system ref '{}': {}",
-                reference_string,
-                e
-            )
-        })?;
-        let host_addr = match &proc_id {
-            ProcId::Direct(addr, _) => addr.to_string(),
-            ProcId::Ranked(world_id, _) => {
-                return Err(anyhow::anyhow!(
-                    "ranked proc references not yet supported: {}",
-                    world_id
-                ));
-            }
-        };
-
-        let agent = self
-            .hosts
-            .get(&host_addr)
-            .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
-
-        let child_ref = Reference::Proc(proc_id);
-        let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(agent.actor_id());
-        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-        introspect_port.send(
-            cx,
-            IntrospectMessage::QueryChild {
-                child_ref,
-                reply: reply_handle.bind(),
-            },
-        )?;
-
-        let mut payload = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying system proc"))?
-            .map_err(|e| anyhow::anyhow!("failed to receive system proc introspection: {}", e))?;
-
-        // Override the identity to match the child reference string
-        // from the host's children list, so that the TUI can
-        // correlate navigated nodes with their parent's child
-        // entries.
-        payload.identity = reference_string.to_string();
-        // Set parent to the host reference (host:<actor_id>).
-        payload.parent = Some(HostId(agent.actor_id().clone()).to_string());
-        Ok(payload)
-    }
-
     /// Resolve a `ProcId` reference into a proc-level `NodePayload`.
     ///
     /// First tries `IntrospectMessage::QueryChild` against the owning
     /// `HostMeshAgent` (system procs). If that returns an error
     /// payload, falls back to sending `IntrospectMessage::Query` to
-    /// the conventional `ProcMeshAgent` actor (`<proc_id>/agent[0]`)
+    /// the conventional `ProcAgent` actor (`<proc_id>/agent[0]`)
     /// for user procs.
     async fn resolve_proc_node(
         &self,
@@ -773,10 +860,10 @@ impl MeshAdminAgent {
             return Ok(payload);
         }
 
-        // Fall back to querying the ProcMeshAgent directly (user
-        // procs). The conventional ProcMeshAgent ActorId is
-        // <proc_id>/agent[0].
-        let mesh_agent_id = proc_id.actor_id("agent", 0);
+        // Fall back to querying the ProcAgent directly (user
+        // procs). The conventional ProcAgent ActorId is
+        // <proc_id>/proc_agent[0].
+        let mesh_agent_id = proc_id.actor_id("proc_agent", 0);
         let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
         let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
         agent_port.send(
@@ -795,7 +882,7 @@ impl MeshAdminAgent {
                 anyhow::anyhow!("failed to receive proc mesh agent introspection: {}", e)
             })?;
 
-        // The ProcMeshAgent sets identity to its own ActorId, but the
+        // The ProcAgent sets identity to its own ActorId, but the
         // caller asked for the proc by ProcId. Override so the
         // payload matches the reference the TUI navigated to.
         payload.identity = proc_id.to_string();
@@ -827,9 +914,11 @@ impl MeshAdminAgent {
             .standalone_proc_anchor(proc_id)
             .ok_or_else(|| anyhow::anyhow!("no anchor actor for standalone proc {}", proc_id))?;
 
-        let children = if self.self_actor_id.as_ref() == Some(actor_id) {
+        let (children, system_children) = if self.self_actor_id.as_ref() == Some(actor_id) {
             // Self-proc: we are the only actor; no message needed.
-            vec![actor_id.to_string()]
+            // The admin agent is a system actor.
+            let self_ref = actor_id.to_string();
+            (vec![self_ref.clone()], vec![self_ref])
         } else {
             // Query the anchor actor for its supervision children.
             let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
@@ -850,10 +939,23 @@ impl MeshAdminAgent {
                     anyhow::anyhow!("failed to receive anchor actor introspection: {}", e)
                 })?;
 
-            // Anchor actor + its supervision children.
-            let mut children = vec![actor_id.to_string()];
+            // Check if anchor actor is system.
+            let anchor_ref = actor_id.to_string();
+            let anchor_is_system = matches!(
+                &actor_payload.properties,
+                NodeProperties::Actor {
+                    is_system: true,
+                    ..
+                }
+            );
+
+            let mut children = vec![anchor_ref.clone()];
+            let mut system_children = Vec::new();
+            if anchor_is_system {
+                system_children.push(anchor_ref);
+            }
             children.extend(actor_payload.children);
-            children
+            (children, system_children)
         };
 
         let proc_name = match proc_id {
@@ -861,14 +963,23 @@ impl MeshAdminAgent {
             _ => proc_id.to_string(),
         };
 
+        // A standalone proc is system if all its actors are system.
+        let is_system = !system_children.is_empty() && system_children.len() == children.len();
+
         Ok(NodePayload {
             identity: proc_id.to_string(),
             properties: NodeProperties::Proc {
                 proc_name,
                 num_actors: children.len(),
-                is_system: false,
+                is_system,
+                system_children,
+                stopped_children: vec![],
+                stopped_retention_cap: 0,
+                is_poisoned: false,
+                failed_actor_count: 0,
             },
             children,
+            as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
             parent: Some("root".to_string()),
         })
     }
@@ -880,7 +991,7 @@ impl MeshAdminAgent {
     /// via `PortRef::attest_message_port`. The blanket handler
     /// returns a `NodePayload` with `NodeProperties::Actor` (or a
     /// domain-specific override like `NodeProperties::Proc` for
-    /// `ProcMeshAgent`).
+    /// `ProcAgent`).
     ///
     /// The resolver sets `parent` based on the actor's position
     /// in the topology: if the actor lives in a system proc, the
@@ -897,7 +1008,10 @@ impl MeshAdminAgent {
         // directly.
         let mut payload = if self.self_actor_id.as_ref() == Some(actor_id) {
             cx.introspect_payload()
-        } else {
+        } else if self.is_standalone_proc_actor(actor_id) {
+            // Standalone procs (e.g. mesh_root_client_proc) have no
+            // ProcMeshAgent at agent[0], so skip the QueryChild
+            // terminated-snapshot check and query the actor directly.
             let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
             let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
             introspect_port.send(
@@ -907,12 +1021,59 @@ impl MeshAdminAgent {
                     reply: reply_handle.bind(),
                 },
             )?;
-
             RealClock
                 .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
                 .await
                 .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
                 .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?
+        } else {
+            // Check terminated snapshots first — fast, no ambiguity.
+            // If found, the actor is definitively dead.
+            let terminated = {
+                let proc_id = actor_id.proc_id();
+                let mesh_agent_id = proc_id.actor_id("agent", 0);
+                let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
+                let child_ref = Reference::Actor(actor_id.clone());
+                let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+                agent_port.send(
+                    cx,
+                    IntrospectMessage::QueryChild {
+                        child_ref,
+                        reply: reply_handle.bind(),
+                    },
+                )?;
+                RealClock
+                    .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .filter(|p| !matches!(p.properties, NodeProperties::Error { .. }))
+            };
+
+            match terminated {
+                Some(snapshot) => snapshot,
+                None => {
+                    // Not terminated — query the live actor with
+                    // the full timeout.
+                    let introspect_port =
+                        PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+                    let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
+                    introspect_port.send(
+                        cx,
+                        IntrospectMessage::Query {
+                            view: hyperactor::introspect::IntrospectView::Actor,
+                            reply: reply_handle.bind(),
+                        },
+                    )?;
+                    RealClock
+                        .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                        .await
+                        .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
+                        .map_err(|e| {
+                            anyhow::anyhow!("failed to receive actor introspection: {}", e)
+                        })?
+                }
+            }
         };
 
         // Actors on standalone procs: parent is the proc.
@@ -922,13 +1083,13 @@ impl MeshAdminAgent {
         }
 
         // Set parent based on topology. If the actor returns Proc
-        // properties (ProcMeshAgent override), its parent is the host
+        // properties (ProcAgent override), its parent is the host
         // agent. Otherwise, it's a regular actor and its parent is
         // the proc.
         let proc_id = actor_id.proc_id();
         match &payload.properties {
             NodeProperties::Proc { .. } => {
-                // ProcMeshAgent: parent is the host agent.
+                // ProcAgent: parent is the host agent.
                 let host_addr = match proc_id {
                     ProcId::Direct(addr, _) => addr.to_string(),
                     _ => proc_id.to_string(),
@@ -940,34 +1101,16 @@ impl MeshAdminAgent {
             _ => {
                 // Regular actor: parent is the proc. We use the
                 // system proc ref format if the proc is a known
-                // system/local proc, otherwise the ProcMeshAgent
+                // system/local proc, otherwise the ProcAgent
                 // ActorId.
-                let host_addr = match proc_id {
+                let _host_addr = match proc_id {
                     ProcId::Direct(addr, _) => Some(addr.to_string()),
                     _ => None,
                 };
 
-                // Check if this is a system proc by seeing if the
-                // host lists it as a system proc child.
-                let is_system = host_addr
-                    .as_ref()
-                    .and_then(|addr| self.hosts.get(addr))
-                    .map(|agent| {
-                        // If the actor's proc is the same proc the
-                        // host agent lives in (system proc) or any
-                        // other known infrastructure proc, treat it
-                        // as system.
-                        agent.actor_id().proc_id() == proc_id
-                    })
-                    .unwrap_or(false);
-
-                if is_system {
-                    payload.parent = Some(system_proc_ref(&proc_id.to_string()));
-                } else {
-                    // User proc: parent is the proc node, whose
-                    // identity is the ProcId string.
-                    payload.parent = Some(proc_id.to_string());
-                }
+                // Parent is the proc node, whose identity is the
+                // ProcId string (same for system and user procs).
+                payload.parent = Some(proc_id.to_string());
             }
         }
 
@@ -1006,7 +1149,11 @@ async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let base = format!("http://{}", host);
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http");
+    let base = format!("{}://{}", scheme, host);
     let body = SKILL_MD_TEMPLATE.replace("{base}", &base);
     (
         [(
@@ -1031,7 +1178,7 @@ async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::
 ///   `internal_error`).
 async fn resolve_reference_bridge(
     State(state): State<Arc<BridgeState>>,
-    Path(reference): Path<String>,
+    AxumPath(reference): AxumPath<String>,
 ) -> Result<Json<NodePayload>, ApiError> {
     // Axum's wildcard may include a leading slash; strip it.
     let reference = reference.trim_start_matches('/');
@@ -1047,7 +1194,7 @@ async fn resolve_reference_bridge(
             )
         })?;
 
-    let cx = global_root_client();
+    let cx = &state.bridge_cx;
     let response = RealClock
         .timeout(SINGLE_HOST_TIMEOUT, state.admin_ref.resolve(cx, reference))
         .await
@@ -1096,7 +1243,7 @@ async fn tree_dump(
     State(state): State<Arc<BridgeState>>,
     headers: axum::http::header::HeaderMap,
 ) -> Result<String, ApiError> {
-    let cx = global_root_client();
+    let cx = &state.bridge_cx;
 
     // Build base URL from the Host header for clickable links.
     let host = headers
@@ -1252,20 +1399,13 @@ async fn tree_dump(
 /// `HostMeshAgent`'s children list:
 ///
 /// - System proc ref `"[system] unix:@hash,service"` → `"service"`
-/// - ProcMeshAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
+/// - ProcAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
 ///   `"my_proc"`
 /// - Bare ProcId `"unix:@hash,my_proc"` → `"my_proc"`
 ///
 /// Note: `ActorId::Display` for `ProcId::Direct` uses commas as
 /// separators (`proc_id,actor_name[idx]`), not slashes.
 fn derive_tree_label(reference: &str) -> String {
-    // System proc refs: "[system] transport!addr,name" → name.
-    if let Some(proc_id_str) = parse_system_proc_ref(reference) {
-        if let Some((_addr, name)) = proc_id_str.rsplit_once(',') {
-            return name.to_string();
-        }
-        return proc_id_str.to_string();
-    }
     // ActorId (Direct): "transport!addr,proc_name,actor[idx]"
     // ProcId (Direct): "transport!addr,proc_name"
     // In both cases, split on ',' and take the second segment (the
@@ -1334,6 +1474,7 @@ mod tests {
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
             None,
+            None,
         );
 
         let payload = agent.build_root_payload();
@@ -1371,13 +1512,13 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // -- 1. Stand up a local in-process Host with a HostMeshAgent --
         // Use Unix transport for all procs — Local transport does not
         // support cross-proc message routing.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1399,8 +1540,12 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
+                MESH_ADMIN_ACTOR_NAME,
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    None,
+                    None,
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1525,14 +1670,14 @@ mod tests {
         use crate::Name;
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
         use crate::resource::Rank;
 
         // Stand up a local in-process Host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1552,8 +1697,12 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
-                MeshAdminAgent::new(vec![(host_addr_str.clone(), host_agent_ref.clone())], None),
+                MESH_ADMIN_ACTOR_NAME,
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    None,
+                    None,
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1650,6 +1799,7 @@ mod tests {
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1)],
             Some(client_actor_id.clone()),
+            None,
         );
 
         let payload = agent.build_root_payload();
@@ -1680,11 +1830,11 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // Stand up a local in-process Host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1718,10 +1868,11 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
+                MESH_ADMIN_ACTOR_NAME,
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     Some(root_client_actor_id.clone()),
+                    None,
                 ),
             )
             .unwrap();
@@ -1835,11 +1986,11 @@ mod tests {
 
         use crate::host_mesh::mesh_agent::HostAgentMode;
         use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
-        use crate::mesh_agent::ProcMeshAgent;
+        use crate::proc_agent::ProcAgent;
 
         // Stand up a local host with a HostMeshAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcMeshAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -1859,8 +2010,8 @@ mod tests {
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
             .spawn(
-                "mesh_admin",
-                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None),
+                MESH_ADMIN_ACTOR_NAME,
+                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None, None),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -1913,5 +2064,189 @@ mod tests {
             "expected at least 4 nodes in the tree, visited {}",
             visited.len()
         );
+    }
+
+    // Verifies that system procs are correctly identified via the
+    // host's system_children field and that resolving them produces
+    // correct payloads:
+    //
+    // 1. The identity of the resolved system proc matches the plain
+    //    ProcId reference from the host's system_children list.
+    // 2. The properties are NodeProperties::Proc with is_system=true.
+    // 3. The parent is set to the HostId format ("host:<actor_id>").
+    // 4. The as_of field is present and non-empty.
+    #[tokio::test]
+    async fn test_system_proc_identity() {
+        use hyperactor::Proc;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::host::Host;
+        use hyperactor::host::LocalProcManager;
+
+        use crate::host_mesh::mesh_agent::HostAgentMode;
+        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::proc_agent::ProcAgent;
+
+        // -- 1. Stand up a local in-process Host with a HostMeshAgent --
+        let spawn: ProcManagerSpawnFn =
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
+        let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+        let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
+            Host::new(manager, ChannelTransport::Unix.any())
+                .await
+                .unwrap();
+        let host_addr = host.addr().clone();
+        let system_proc = host.system_proc().clone();
+        let system_proc_id = system_proc.proc_id().clone();
+        let host_agent_handle = system_proc
+            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .unwrap();
+        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_addr_str = host_addr.to_string();
+
+        // -- 2. Spawn MeshAdminAgent on a separate proc --
+        let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
+        use hyperactor::test_utils::proc_supervison::ProcSupervisionCoordinator;
+        let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
+        let admin_handle = admin_proc
+            .spawn(
+                MESH_ADMIN_ACTOR_NAME,
+                MeshAdminAgent::new(
+                    vec![(host_addr_str.clone(), host_agent_ref.clone())],
+                    None,
+                    None,
+                ),
+            )
+            .unwrap();
+        let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
+
+        // -- 3. Create a bare client instance for sending messages --
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _handle) = client_proc.instance("client").unwrap();
+
+        // -- 4. Resolve the host to get its children --
+        let host_ref_str = HostId(host_agent_ref.actor_id().clone()).to_string();
+        let host_resp = admin_ref
+            .resolve(&client, host_ref_str.clone())
+            .await
+            .unwrap();
+        let host_node = host_resp.0.unwrap();
+        assert!(
+            !host_node.children.is_empty(),
+            "host should have at least one proc child"
+        );
+
+        // -- 5. Find a system proc child via system_children --
+        let system_children = match &host_node.properties {
+            NodeProperties::Host {
+                system_children, ..
+            } => system_children.clone(),
+            other => panic!("expected Host properties, got {:?}", other),
+        };
+        assert!(
+            !system_children.is_empty(),
+            "host should report at least one system child"
+        );
+        let system_child_ref = &system_children[0];
+
+        // -- 6. Resolve the system proc reference --
+        let proc_resp = admin_ref
+            .resolve(&client, system_child_ref.clone())
+            .await
+            .unwrap();
+        let proc_node = proc_resp.0.unwrap();
+
+        // -- 7. Assert identity matches the proc_id --
+        // The identity must equal the reference string we used to
+        // resolve it (navigation identity invariant).
+        assert_eq!(
+            proc_node.identity, *system_child_ref,
+            "identity must match the system proc ref from the host's children list"
+        );
+
+        // -- 8. Assert properties are Proc with is_system=true --
+        match &proc_node.properties {
+            NodeProperties::Proc {
+                is_system,
+                proc_name,
+                ..
+            } => {
+                assert!(
+                    *is_system,
+                    "system proc '{}' should have is_system=true",
+                    proc_name
+                );
+            }
+            other => {
+                panic!(
+                    "expected NodeProperties::Proc with is_system=true, got {:?}",
+                    other
+                );
+            }
+        }
+
+        // -- 9. Assert parent is set to the HostId format --
+        assert_eq!(
+            proc_node.parent,
+            Some(host_ref_str.clone()),
+            "system proc parent should be the host reference (host:<actor_id>)"
+        );
+
+        // -- 10. Assert as_of is present and non-empty --
+        assert!(
+            !proc_node.as_of.is_empty(),
+            "as_of should be present and non-empty"
+        );
+
+        // -- 11. Verify all system proc children have correct identity --
+        // Resolve every system child to confirm each one individually
+        // satisfies the invariant.
+        let expected_system_ref = system_proc_id.to_string();
+        let found = host_node.children.contains(&expected_system_ref);
+        assert!(
+            found,
+            "host children {:?} should contain the system proc ref '{}'",
+            host_node.children, expected_system_ref
+        );
+
+        for child_ref in &system_children {
+            let resp = admin_ref.resolve(&client, child_ref.clone()).await.unwrap();
+            let node = resp.0.unwrap();
+
+            // Identity == reference used.
+            assert_eq!(
+                node.identity, *child_ref,
+                "system proc identity mismatch for '{}'",
+                child_ref
+            );
+
+            // Must be Proc with is_system=true.
+            assert!(
+                matches!(
+                    node.properties,
+                    NodeProperties::Proc {
+                        is_system: true,
+                        ..
+                    }
+                ),
+                "expected is_system=true for '{}', got {:?}",
+                child_ref,
+                node.properties
+            );
+
+            // Parent must be the host.
+            assert_eq!(
+                node.parent,
+                Some(host_ref_str.clone()),
+                "parent mismatch for system proc '{}'",
+                child_ref
+            );
+
+            // as_of must be non-empty.
+            assert!(
+                !node.as_of.is_empty(),
+                "as_of should be non-empty for '{}'",
+                child_ref
+            );
+        }
     }
 }

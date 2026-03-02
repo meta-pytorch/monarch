@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -78,6 +79,9 @@ use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
 use crate::introspect::IntrospectMessage;
+use crate::introspect::NodePayload;
+use crate::introspect::PublishedProperties;
+use crate::introspect::PublishedPropertiesKind;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -152,6 +156,12 @@ struct ProcState {
     /// All actor instances in this proc.
     instances: DashMap<ActorId, WeakInstanceCell>,
 
+    /// Snapshots of terminated actors for post-mortem introspection.
+    /// Populated by the introspect task just before it exits on
+    /// terminal status. Bounded by
+    /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
+    terminated_snapshots: DashMap<ActorId, crate::introspect::NodePayload>,
+
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
@@ -170,6 +180,23 @@ impl Drop for ProcState {
             status = "Dropped"
         );
     }
+}
+
+/// Structured return type for [`Proc::actor_instance`].
+///
+/// Groups the instance, handle, and per-channel receivers that an
+/// "inverted" actor caller needs to drive the actor manually.
+pub struct ActorInstance<A: Actor> {
+    /// The actor instance (used for sending/receiving messages, spawning children, etc.).
+    pub instance: Instance<A>,
+    /// Handle to the actor (used for lifecycle control and port access).
+    pub handle: ActorHandle<A>,
+    /// Supervision events delivered to this actor.
+    pub supervision: PortReceiver<ActorSupervisionEvent>,
+    /// Control signals for the actor.
+    pub signal: PortReceiver<Signal>,
+    /// Primary work queue for handler dispatch.
+    pub work: mpsc::UnboundedReceiver<WorkCell<A>>,
 }
 
 impl Proc {
@@ -222,6 +249,7 @@ impl Proc {
                 forwarder,
                 roots: DashMap::new(),
                 instances: DashMap::new(),
+                terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 clock,
             }),
@@ -360,13 +388,7 @@ impl Proc {
         actor: A,
         parent: Option<InstanceCell>,
     ) -> Result<ActorHandle<A>, anyhow::Error> {
-        let (instance, mut actor_loop_receivers, work_rx) =
-            Instance::new(self.clone(), actor_id.clone(), false, parent);
-
-        // Bind IntrospectMessage so that every actor is externally
-        // introspectable, even if the caller does not call
-        // `handle.bind()`.
-        instance.inner.ports.bind::<IntrospectMessage>();
+        let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, parent);
 
         // Notify telemetry sinks of actor creation
         {
@@ -394,35 +416,27 @@ impl Proc {
             });
         }
 
-        Ok(instance.start(actor, actor_loop_receivers.take().unwrap(), work_rx))
+        Ok(instance.start(actor, receivers))
     }
 
-    /// Wrapper for [`Proc::actor_instance::<()>`].
+    /// Create a lightweight client instance (no actor loop, no
+    /// introspect task).  This is safe to call outside a Tokio
+    /// runtime — unlike [`actor_instance`], it never calls
+    /// `tokio::spawn`.
     pub fn instance(&self, name: &str) -> Result<(Instance<()>, ActorHandle<()>), anyhow::Error> {
-        let (instance, handle, ..) = self.actor_instance(name)?;
-
+        let actor_id = self.allocate_root_id(name)?;
+        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, None);
+        let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
+        instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
     }
 
-    /// Create and return an actor instance, its corresponding handle, its signal port receiver,
-    /// its supervision port receiver, and its message receiver. This allows actors to be
-    /// "inverted": the caller can use the returned [`Instance`] to send and receive messages,
-    /// launch child actors, etc. The actor itself does not handle any messages unless driven by
-    /// the caller. Otherwise the instance acts as a normal actor, and can be referenced and
-    /// stopped.
-    pub fn actor_instance<A: Actor>(
-        &self,
-        name: &str,
-    ) -> Result<
-        (
-            Instance<A>,
-            ActorHandle<A>,
-            PortReceiver<ActorSupervisionEvent>,
-            PortReceiver<Signal>,
-            mpsc::UnboundedReceiver<WorkCell<A>>,
-        ),
-        anyhow::Error,
-    > {
+    /// Create and return an actor instance, its handle, and its
+    /// receivers. This allows actors to be "inverted": the caller can
+    /// use the returned [`Instance`] to send and receive messages,
+    /// launch child actors, etc. The actor itself does not handle any
+    /// messages unless driven by the caller.
+    pub fn actor_instance<A: Actor>(&self, name: &str) -> Result<ActorInstance<A>, anyhow::Error> {
         let actor_id = self.allocate_root_id(name)?;
         let span = tracing::debug_span!(
             "actor_instance",
@@ -431,12 +445,26 @@ impl Proc {
             actor_id = actor_id.to_string(),
         );
         let _guard = span.enter();
-        let (instance, actor_loop_receivers, work_rx) =
-            Instance::new(self.clone(), actor_id.clone(), false, None);
-        let (signal_rx, supervision_rx) = actor_loop_receivers.unwrap();
+        let (instance, receivers) = Instance::new(self.clone(), actor_id.clone(), false, None);
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
-        Ok((instance, handle, supervision_rx, signal_rx, work_rx))
+
+        let introspect_cell = instance.inner.cell.clone();
+        let introspect_mailbox = instance.inner.mailbox.clone();
+        tokio::spawn(crate::introspect::serve_introspect(
+            introspect_cell,
+            introspect_mailbox,
+            receivers.introspect,
+        ));
+
+        let (signal_rx, supervision_rx) = receivers.actor_loop.unwrap();
+        Ok(ActorInstance {
+            instance,
+            handle,
+            supervision: supervision_rx,
+            signal: signal_rx,
+            work: receivers.work,
+        })
     }
 
     /// Traverse all actor trees in this proc, starting from root actors (pid=0).
@@ -473,11 +501,43 @@ impl Proc {
 
     /// Returns the ActorIds of all live actors in this proc, including
     /// dynamically spawned children.
+    ///
+    /// An actor is considered live if its weak reference is
+    /// upgradeable and its status is not terminal. This excludes
+    /// actors whose `InstanceCell` has been dropped and actors that
+    /// have stopped or failed but whose Arc is still held (e.g. by
+    /// the introspect task during teardown).
     pub fn all_actor_ids(&self) -> Vec<ActorId> {
         self.state()
             .instances
             .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .upgrade()
+                    .is_some_and(|cell| !cell.status().borrow().is_terminal())
+            })
             .map(|entry| entry.key().clone())
+            .collect()
+    }
+
+    /// Look up a terminated actor's snapshot by ID.
+    pub fn terminated_snapshot(
+        &self,
+        actor_id: &ActorId,
+    ) -> Option<crate::introspect::NodePayload> {
+        self.state()
+            .terminated_snapshots
+            .get(actor_id)
+            .map(|e| e.value().clone())
+    }
+
+    /// Return all terminated actor IDs currently retained.
+    pub fn all_terminated_actor_ids(&self) -> Vec<ActorId> {
+        self.state()
+            .terminated_snapshots
+            .iter()
+            .map(|e| e.key().clone())
             .collect()
     }
 
@@ -494,7 +554,9 @@ impl Proc {
             actor_id = %actor_id,
         );
 
-        let (instance, _, _) = Instance::new(self.clone(), actor_id, false, Some(parent));
+        let (instance, _receivers) = Instance::new(self.clone(), actor_id, false, Some(parent));
+        // Client-mode instance: no actor loop, no introspect task.
+        // Receivers are intentionally dropped.
         let handle = ActorHandle::new(instance.inner.cell.clone(), instance.inner.ports.clone());
         instance.change_status(ActorStatus::Client);
         Ok((instance, handle))
@@ -702,8 +764,21 @@ impl Proc {
         Ok((stopped_actors, aborted_actors))
     }
 
-    /// Resolve an actor reference to an actor residing on this proc.
-    /// Returns None if the actor is not found on this proc.
+    /// Resolve an actor reference to a **live** actor on this proc.
+    ///
+    /// Returns `None` if:
+    /// - the actor was never spawned here,
+    /// - the actor's `InstanceCell` has been dropped, or
+    /// - the actor's status is terminal (stopped or failed).
+    ///
+    /// The terminal-status check guards a race window: the introspect
+    /// task (`serve_introspect`) holds a strong `InstanceCell` Arc
+    /// and drops it only after observing terminal status. Between the
+    /// actor reaching terminal and the introspect task reacting,
+    /// `upgrade()` on the weak ref succeeds even though the actor is
+    /// dead. The `is_terminal()` check closes that window. Once the
+    /// introspect task exits, the Arc is dropped and `upgrade()`
+    /// returns `None` on its own.
     ///
     /// Bounds:
     /// - `R: Actor` — must be a real actor that can live in this
@@ -714,11 +789,14 @@ impl Proc {
         &self,
         actor_ref: &ActorRef<R>,
     ) -> Option<ActorHandle<R>> {
-        self.inner
-            .instances
-            .get(actor_ref.actor_id())?
-            .upgrade()?
-            .downcast_handle()
+        let cell = self.inner.instances.get(actor_ref.actor_id())?.upgrade()?;
+        // An actor whose status is terminal has stopped processing
+        // messages even if its InstanceCell Arc is still alive (e.g.
+        // held by the introspect task during teardown).
+        if cell.status().borrow().is_terminal() {
+            return None;
+        }
+        cell.downcast_handle()
     }
 
     /// Create a root allocation in the proc.
@@ -933,6 +1011,25 @@ impl<A: Actor> Drop for InstanceState<A> {
     }
 }
 
+/// Receivers created by [`Instance::new`] that must be threaded to
+/// their respective consumers (actor loop, introspect task, etc.).
+///
+/// # Invariant S10
+///
+/// The introspect receiver is created for every instance in
+/// `Instance::new()`. Callers that run a message loop (`start()`)
+/// spawn the introspect task. `child_instance()` intentionally
+/// drops the receiver.
+pub struct InstanceReceivers<A: Actor> {
+    /// Signal and supervision receivers for the actor loop. `None`
+    /// for detached/client instances that don't run an actor loop.
+    actor_loop: Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
+    /// Work queue for dispatching messages to actor handlers.
+    work: mpsc::UnboundedReceiver<WorkCell<A>>,
+    /// Introspect message receiver for the dedicated introspect task.
+    introspect: PortReceiver<IntrospectMessage>,
+}
+
 impl<A: Actor> Instance<A> {
     /// Create a new actor instance in Created state.
     fn new(
@@ -940,11 +1037,7 @@ impl<A: Actor> Instance<A> {
         actor_id: ActorId,
         detached: bool,
         parent: Option<InstanceCell>,
-    ) -> (
-        Self,
-        Option<(PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>)>,
-        mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) {
+    ) -> (Self, InstanceReceivers<A>) {
         // Set up messaging
         let mailbox = Mailbox::new(actor_id.clone(), BoxedMailboxSender::new(proc.downgrade()));
         let (work_tx, work_rx) = ordered_channel(
@@ -972,6 +1065,22 @@ impl<A: Actor> Instance<A> {
 
         let (actor_loop, actor_loop_receivers) = actor_loop_ports.unzip();
 
+        // Introspect port: a separate channel handled by a dedicated
+        // tokio task (not the actor's message loop). Pre-registered
+        // so Ports::get finds the Occupied entry and skips WorkCell
+        // creation. bind_actor_port() registers in the mailbox
+        // dispatch table at IntrospectMessage::port().
+        //
+        // Invariant S3: senders target IntrospectMessage::port() — the
+        // same PortId used here — so routing is unchanged across processes.
+        // Invariant S4: pre-registration ensures no WorkCell creation
+        // for IntrospectMessage -- the port gets its own channel.
+        // Invariant S9: port bound exactly once here via
+        // bind_actor_port(); no other site calls bind for this port.
+        let (introspect_port, introspect_receiver) =
+            ports.open_message_port::<IntrospectMessage>().unwrap();
+        introspect_port.bind_actor_port();
+
         let cell = InstanceCell::new(
             actor_id,
             actor_type,
@@ -992,7 +1101,14 @@ impl<A: Actor> Instance<A> {
             id: instance_id,
             instance_locals: ActorLocalStorage::new(),
         });
-        (Self { inner }, actor_loop_receivers, work_rx)
+        (
+            Self { inner },
+            InstanceReceivers {
+                actor_loop: actor_loop_receivers,
+                work: work_rx,
+                introspect: introspect_receiver,
+            },
+        )
     }
 
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
@@ -1064,31 +1180,71 @@ impl<A: Actor> Instance<A> {
         self.inner.self_id()
     }
 
-    /// Crate-internal access to the underlying runtime cell.
-    ///
-    /// Used by default introspection and other runtime plumbing. Not
-    /// part of the public actor API.
-    pub(crate) fn cell(&self) -> &InstanceCell {
-        &self.inner.cell
-    }
-
     /// Snapshot of this actor's introspection payload.
     ///
-    /// Returns the same [`NodePayload`] that the blanket
-    /// `Handler<IntrospectMessage>` would produce, but without going
-    /// through the actor message loop. This is safe to call from
-    /// within a handler on the same actor (no self-send deadlock).
+    /// Returns a [`NodePayload`] built from live [`InstanceCell`]
+    /// state, without going through the actor message loop. This is
+    /// safe to call from within a handler on the same actor (no
+    /// self-send deadlock).
     ///
     /// The snapshot is best-effort: it reflects framework-owned state
     /// (status, message count, flight recorder, supervision children)
-    /// at the instant of the call. `nav_parent` is left as `None` —
+    /// at the instant of the call. `parent` is left as `None` —
     /// callers are responsible for setting topology context.
     ///
     /// Note: this acquires a write lock on the flight recorder spool
     /// and clones its contents. Suitable for occasional introspection
     /// requests, not for hot paths.
     pub fn introspect_payload(&self) -> crate::introspect::NodePayload {
-        crate::introspect::default_actor_payload(&self.inner.cell)
+        crate::introspect::live_actor_payload(&self.inner.cell)
+    }
+
+    /// Publish domain-specific properties for introspection.
+    ///
+    /// Infrastructure actors call this to make their managed-entity
+    /// metadata (host address, proc count, custom children) visible
+    /// to admin tooling without going through the actor's message
+    /// handler. The timestamp is set automatically.
+    ///
+    /// Values may be arbitrarily stale for stuck actors — they
+    /// reflect the last time this method was called.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// cx.publish_properties(PublishedPropertiesKind::Host {
+    ///     addr: "127.0.0.1:8080".into(),
+    ///     num_procs: 2,
+    ///     children: vec!["proc_a".into(), "proc_b".into()],
+    /// });
+    /// ```
+    pub fn publish_properties(&self, kind: PublishedPropertiesKind) {
+        self.inner.cell.set_published_properties(kind);
+    }
+
+    /// Mark this actor as system/infrastructure. System actors are
+    /// hidden by default in the TUI (toggled via `s`).
+    pub fn set_system(&self) {
+        self.inner
+            .cell
+            .inner
+            .is_system
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Register a callback for resolving non-addressable children.
+    ///
+    /// The callback runs on the actor's introspect task (not the
+    /// actor loop), so it must be `Send + Sync` and must not access
+    /// actor-mutable state. Capture cloned `Proc` references.
+    ///
+    /// Only `HostMeshAgent` uses this today — for resolving system
+    /// procs that have no independent `ProcMeshAgent`.
+    pub fn set_query_child_handler(
+        &self,
+        handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
+    ) {
+        self.inner.cell.set_query_child_handler(handler);
     }
 
     /// Signal the actor to stop.
@@ -1194,20 +1350,30 @@ impl<A: Actor> Instance<A> {
 
     /// Start an A-typed actor onto this instance with the provided params. When spawn returns,
     /// the actor has been linked with its parent, if it has one.
-    fn start(
-        self,
-        actor: A,
-        actor_loop_receivers: (PortReceiver<Signal>, PortReceiver<ActorSupervisionEvent>),
-        work_rx: mpsc::UnboundedReceiver<WorkCell<A>>,
-    ) -> ActorHandle<A> {
+    fn start(self, actor: A, receivers: InstanceReceivers<A>) -> ActorHandle<A> {
         let instance_cell = self.inner.cell.clone();
         let actor_id = self.inner.cell.actor_id().clone();
         let actor_handle = ActorHandle::new(self.inner.cell.clone(), self.inner.ports.clone());
+
+        // Spawn the introspect task — a separate tokio task that
+        // reads InstanceCell directly and replies via the actor's
+        // Mailbox. The actor loop never sees IntrospectMessage.
+        let introspect_cell = self.inner.cell.clone();
+        let introspect_mailbox = self.inner.mailbox.clone();
+        tokio::spawn(crate::introspect::serve_introspect(
+            introspect_cell,
+            introspect_mailbox,
+            receivers.introspect,
+        ));
+
+        let actor_loop_receivers = receivers
+            .actor_loop
+            .expect("non-detached instance must have actor loop receivers");
         let actor_task_handle = A::spawn_server_task(
             panic_handler::with_backtrace_tracking(self.serve(
                 actor,
                 actor_loop_receivers,
-                work_rx,
+                receivers.work,
             ))
             .instrument(Span::current()),
         );
@@ -1249,6 +1415,9 @@ impl<A: Actor> Instance<A> {
                         // terminal status.
                         assert!(event.actor_status.is_terminal());
                         self.mailbox().close(event.actor_status.clone());
+                        // FI-1: store supervision_event BEFORE change_status.
+                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
+                            Some(event.clone());
                         self.change_status(event.actor_status.clone());
                         Some(event)
                     }
@@ -1256,13 +1425,17 @@ impl<A: Actor> Instance<A> {
                         let error_kind = ActorErrorKind::Generic(err.kind.to_string());
                         let status = ActorStatus::Failed(error_kind);
                         self.mailbox().close(status.clone());
-                        self.change_status(status.clone());
-                        Some(ActorSupervisionEvent::new(
+                        let event = ActorSupervisionEvent::new(
                             self.inner.cell.actor_id().clone(),
                             actor.display_name(),
-                            status,
+                            status.clone(),
                             None,
-                        ))
+                        );
+                        // FI-1: store supervision_event BEFORE change_status.
+                        *self.inner.cell.inner.supervision_event.lock().unwrap() =
+                            Some(event.clone());
+                        self.change_status(status);
+                        Some(event)
                     }
                 }
             }
@@ -1565,20 +1738,6 @@ impl<A: Actor> Instance<A> {
             }
         };
 
-        // Save previous status and handler before overwriting, so
-        // introspection can report what the actor was doing before the
-        // introspect query arrived.
-        *self.inner.cell.inner.pre_dispatch_status.write().unwrap() =
-            self.inner.status_tx.borrow().clone();
-        *self.inner.cell.inner.pre_dispatch_handler.write().unwrap() = self
-            .inner
-            .cell
-            .inner
-            .last_message_handler
-            .read()
-            .unwrap()
-            .clone();
-
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler_info.clone(),
@@ -1677,6 +1836,17 @@ impl<A: Actor> Instance<A> {
     /// Return this instance's ID.
     pub fn instance_id(&self) -> Uuid {
         self.inner.id
+    }
+
+    /// Return a handle to this instance's parent actor, if it has one.
+    pub fn parent_handle<P: Actor>(&self) -> Option<ActorHandle<P>> {
+        let parent_cell = self.inner.cell.inner.parent.upgrade()?;
+        let ports = if let Ok(ports) = parent_cell.inner.ports.clone().downcast() {
+            ports
+        } else {
+            return None;
+        };
+        Some(ActorHandle::new(parent_cell, ports))
     }
 }
 
@@ -1814,31 +1984,48 @@ struct InstanceCellState {
     /// Name of the last message handler invoked.
     last_message_handler: RwLock<Option<HandlerInfo>>,
 
-    /// Actor status captured immediately before the current handler
-    /// began executing.
-    ///
-    /// Introspection reads this instead of the live `status` so that
-    /// the reported state reflects what the actor was doing *before*
-    /// the introspect query arrived — not "processing
-    /// IntrospectMessage" (the Heisenberg problem). Snapshotted at
-    /// the top of each `dispatch_to_handler` call, before `status` is
-    /// overwritten with `Processing(...)`.
-    pre_dispatch_status: RwLock<ActorStatus>,
-
-    /// Message handler that was active immediately before the current
-    /// handler began executing.
-    ///
-    /// Same rationale as `pre_dispatch_status`: introspection reports
-    /// this so the last-handler field reflects the handler that ran
-    /// before the current dispatch, not the introspect handler itself.
-    pre_dispatch_handler: RwLock<Option<HandlerInfo>>,
-
     /// Total time spent processing messages, in microseconds.
     total_processing_time_us: AtomicU64,
 
     /// The log recording associated with this actor. It is used to
     /// store a 'flight record' of events while the actor is running.
     recording: Recording,
+
+    /// Domain-specific properties published by the actor for
+    /// introspection. Written by the actor via
+    /// `Instance::publish_properties()`; read by the introspection
+    /// runtime handler. `None` means the actor has not published
+    /// custom properties — the runtime handler falls back to
+    /// `NodeProperties::Actor`.
+    ///
+    /// Invariant S8: only `Host` and `Proc` variants are accepted
+    /// (no `Root` or `Error`).
+    /// Invariant S6: Entity view reads from this field; Actor view
+    /// reads live state from `InstanceCell`.
+    published_properties: RwLock<Option<crate::introspect::PublishedProperties>>,
+
+    /// Optional callback for resolving non-addressable children
+    /// (e.g., system procs). Registered by infrastructure actors
+    /// like `HostMeshAgent` in `Actor::init`. Invoked by the
+    /// introspection runtime handler for `QueryChild` messages.
+    /// `None` means `QueryChild` returns a "not_found" error.
+    ///
+    /// Invariant S7: system procs are resolvable without entering
+    /// the actor loop — the callback runs on the introspect task.
+    query_child_handler:
+        RwLock<Option<Box<dyn (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync>>>,
+
+    /// The supervision event produced when this actor failed, if any.
+    /// Written in `serve()` BEFORE `change_status()` transitions to
+    /// terminal, so that `serve_introspect` sees it when
+    /// `wait_for(is_terminal)` fires. `None` for actors that stopped
+    /// cleanly. Write-once per actor lifetime (FI-2).
+    supervision_event: std::sync::Mutex<Option<crate::supervision::ActorSupervisionEvent>>,
+
+    /// Whether this actor is infrastructure/system (hidden by default
+    /// in the TUI `s` toggle). Set by spawning code via
+    /// `Instance::set_system()`.
+    is_system: AtomicBool,
 
     /// A type-erased reference to Ports<A>, which allows us to recover
     /// an ActorHandle<A> by downcasting.
@@ -1859,6 +2046,54 @@ impl InstanceCellState {
         assert_eq!(self.actor_id.proc_id(), child.actor_id.proc_id());
         self.children.remove(&child.actor_id.pid()).is_some()
     }
+}
+
+/// Select which terminated snapshots to evict when the retention cap
+/// is exceeded.
+///
+/// Each entry is `(actor_id, Option<occurred_at>)` where `Some` means
+/// the actor has `failure_info` (i.e. it failed), and `None` means a
+/// clean stop.
+///
+/// Eviction priority:
+/// 1. Cleanly-stopped actors are evicted first (arbitrary order).
+/// 2. If more evictions are needed, failed actors are evicted
+///    newest-first (descending `occurred_at`), preserving the
+///    earliest failures which are closest to the root cause.
+fn select_eviction_candidates(
+    entries: &[(ActorId, Option<String>)],
+    excess: usize,
+) -> Vec<ActorId> {
+    let mut clean: Vec<&ActorId> = Vec::new();
+    let mut failed: Vec<(&ActorId, &str)> = Vec::new();
+    for (id, occurred_at) in entries {
+        match occurred_at {
+            Some(ts) => failed.push((id, ts.as_str())),
+            None => clean.push(id),
+        }
+    }
+
+    let mut to_remove: Vec<ActorId> = Vec::new();
+    let mut remaining = excess;
+
+    // Evict cleanly-stopped first.
+    for id in clean {
+        if remaining == 0 {
+            break;
+        }
+        to_remove.push(id.clone());
+        remaining -= 1;
+    }
+
+    // If still over cap, evict most-recent failures first.
+    if remaining > 0 {
+        failed.sort_by(|a, b| b.1.cmp(a.1));
+        for (id, _) in failed.into_iter().take(remaining) {
+            to_remove.push(id.clone());
+        }
+    }
+
+    to_remove
 }
 
 impl InstanceCell {
@@ -1888,10 +2123,12 @@ impl InstanceCell {
                 num_processed_messages: AtomicU64::new(0),
                 created_at: RealClock.system_time_now(),
                 last_message_handler: RwLock::new(None),
-                pre_dispatch_status: RwLock::new(ActorStatus::Created),
-                pre_dispatch_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
+                published_properties: RwLock::new(None),
+                query_child_handler: RwLock::new(None),
+                supervision_event: std::sync::Mutex::new(None),
+                is_system: AtomicBool::new(false),
                 ports,
             }),
         };
@@ -1925,6 +2162,12 @@ impl InstanceCell {
     /// The instance's status observer.
     pub fn status(&self) -> &watch::Receiver<ActorStatus> {
         &self.inner.status
+    }
+
+    /// The supervision event stored when this actor failed.
+    /// `None` for actors that stopped cleanly or are still running.
+    pub fn supervision_event(&self) -> Option<crate::supervision::ActorSupervisionEvent> {
+        self.inner.supervision_event.lock().unwrap().clone()
     }
 
     /// Send a signal to the actor.
@@ -2063,26 +2306,6 @@ impl InstanceCell {
         self.inner.last_message_handler.read().unwrap().clone()
     }
 
-    /// Actor status captured immediately before the current handler
-    /// began executing.
-    ///
-    /// Used by introspection to report what the actor was doing before
-    /// the introspect query arrived, not "processing
-    /// IntrospectMessage" (the Heisenberg problem).
-    pub fn prev_status(&self) -> ActorStatus {
-        self.inner.pre_dispatch_status.read().unwrap().clone()
-    }
-
-    /// Message handler that was active immediately before the current
-    /// handler began executing.
-    ///
-    /// Same rationale as [`prev_status`](Self::prev_status):
-    /// introspection reports this so the last-handler field reflects
-    /// the handler that ran before the current dispatch.
-    pub fn prev_last_message_handler(&self) -> Option<HandlerInfo> {
-        self.inner.pre_dispatch_handler.read().unwrap().clone()
-    }
-
     /// Total time spent processing messages, in microseconds.
     pub fn total_processing_time_us(&self) -> u64 {
         self.inner.total_processing_time_us.load(Ordering::SeqCst)
@@ -2098,15 +2321,103 @@ impl InstanceCell {
         self.inner.actor_type.type_name()
     }
 
+    /// Set the domain-specific properties published by this actor for
+    /// introspection. The `published_at` timestamp is set
+    /// automatically to `RealClock.system_time_now()`.
+    ///
+    /// Infrastructure actors (HostMeshAgent, ProcMeshAgent) call this
+    /// to make their managed-entity metadata available without going
+    /// through the actor's message handler.
+    pub fn set_published_properties(&self, kind: PublishedPropertiesKind) {
+        *self.inner.published_properties.write().unwrap() = Some(PublishedProperties {
+            published_at: RealClock.system_time_now(),
+            kind,
+        });
+    }
+
+    /// Read the last-published domain-specific properties, if any.
+    pub fn published_properties(&self) -> Option<PublishedProperties> {
+        self.inner.published_properties.read().unwrap().clone()
+    }
+
+    /// Register a callback for resolving non-addressable children
+    /// via `IntrospectMessage::QueryChild`.
+    ///
+    /// The callback runs on the actor's introspect task (a separate
+    /// tokio task, not the actor's message loop), so it must be
+    /// `Send + Sync` and must not access actor-mutable state.
+    /// Capture cloned `Proc` references, not `&mut self`.
+    pub fn set_query_child_handler(
+        &self,
+        handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
+    ) {
+        *self.inner.query_child_handler.write().unwrap() = Some(Box::new(handler));
+    }
+
+    /// Invoke the registered QueryChild handler, if any.
+    pub fn query_child(&self, child_ref: &crate::reference::Reference) -> Option<NodePayload> {
+        let guard = self.inner.query_child_handler.read().unwrap();
+        guard.as_ref().map(|handler| handler(child_ref))
+    }
+
+    /// Whether this actor is infrastructure/system.
+    pub fn is_system(&self) -> bool {
+        self.inner.is_system.load(Ordering::Relaxed)
+    }
+
+    /// Store a post-mortem snapshot for this actor in the proc's
+    /// `terminated_snapshots` map. Called by the introspect task
+    /// just before exiting on terminal status.
+    ///
+    /// Eviction policy when the retention cap is exceeded:
+    /// 1. Evict cleanly-stopped actors first (no `failure_info`).
+    /// 2. When only failed actors remain, evict the most recent
+    ///    (by `occurred_at`), preserving the earliest failures
+    ///    which are closest to the root cause.
+    pub fn store_terminated_snapshot(&self, payload: crate::introspect::NodePayload) {
+        let snapshots = &self.inner.proc.inner.terminated_snapshots;
+        snapshots.insert(self.actor_id().clone(), payload);
+        let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
+        let excess = snapshots.len().saturating_sub(max);
+        if excess > 0 {
+            // Build entries for the eviction selector.
+            let entries: Vec<_> = snapshots
+                .iter()
+                .map(|entry| {
+                    let occurred_at = match &entry.value().properties {
+                        crate::introspect::NodeProperties::Actor {
+                            failure_info: Some(fi),
+                            ..
+                        } => Some(fi.occurred_at.clone()),
+                        _ => None,
+                    };
+                    (entry.key().clone(), occurred_at)
+                })
+                .collect();
+
+            for key in select_eviction_candidates(&entries, excess) {
+                snapshots.remove(&key);
+            }
+        }
+    }
+
     /// This is temporary so that we can share binding code between handle and instance.
     /// We should find some (better) way to consolidate the two.
     pub(crate) fn bind<A: Actor, R: Binds<A>>(&self, ports: &Ports<A>) -> ActorRef<R> {
         <R as Binds<A>>::bind(ports);
-        // All actors handle signals, undeliverable messages, and
-        // introspection.
+        // Signal: pre-registered via open_message_port() in
+        // Instance::new(), handled by the actor loop's select!.
+        // Ports::bind() here reuses the existing handle.
+        //
+        // Undeliverable: dispatched through the work queue to the
+        // actor's Handler<Undeliverable<MessageEnvelope>>.
+        //
+        // IntrospectMessage: pre-registered via open_message_port()
+        // in Instance::new(), handled by a dedicated introspect task.
+        // NOT bound here — its port is registered via
+        // bind_actor_port() directly.
         ports.bind::<Signal>();
         ports.bind::<Undeliverable<MessageEnvelope>>();
-        ports.bind::<IntrospectMessage>();
         // TODO: consider sharing `ports.bound` directly.
         for entry in ports.bound.iter() {
             self.inner
@@ -2220,6 +2531,11 @@ impl<A: Actor> Ports<A> {
                     key,
                     TypeId::of::<Signal>(),
                     "cannot provision Signal port through `Ports::get`"
+                );
+                assert_ne!(
+                    key,
+                    TypeId::of::<IntrospectMessage>(),
+                    "cannot provision IntrospectMessage port through `Ports::get`"
                 );
 
                 let type_info = TypeInfo::get_by_typeid(key);
@@ -3173,5 +3489,313 @@ mod tests {
                         if msg.contains("intentional failure")
                 )
         );
+    }
+
+    /// Wait for a terminated snapshot to appear for the given actor.
+    /// The introspect task runs in a separate tokio task and may not
+    /// have stored the snapshot by the time `handle.await` returns.
+    async fn wait_for_terminated_snapshot(
+        proc: &Proc,
+        actor_id: &ActorId,
+    ) -> crate::introspect::NodePayload {
+        // Yield to let the introspect task run, then poll. Use a
+        // combination of yields (for fast paths) and sleeps (to
+        // avoid busy-spinning if the scheduler is loaded).
+        for i in 0..1000 {
+            if let Some(snapshot) = proc.terminated_snapshot(actor_id) {
+                return snapshot;
+            }
+            if i < 50 {
+                tokio::task::yield_now().await;
+            } else {
+                RealClock.sleep(Duration::from_millis(50)).await;
+            }
+        }
+        panic!("timed out waiting for terminated snapshot for {}", actor_id);
+    }
+
+    // Verifies that when an actor is stopped, the proc eventually
+    // records a "terminated snapshot" for it (written by the
+    // introspect task, which runs asynchronously). The test asserts
+    // the snapshot is absent while the actor is live, then stops the
+    // actor, waits for the introspect task to observe the terminal
+    // state, and confirms:
+    //   - the stored snapshot reports a `stopped:*` actor_status, and
+    //   - the actor id moves from the live set to the terminated set.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminated_snapshot_stored_on_stop() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        // Actor is live — no terminated snapshot yet.
+        assert!(proc.terminated_snapshot(&actor_id).is_none());
+        assert!(!proc.all_terminated_actor_ids().contains(&actor_id));
+
+        // Stop the actor and wait for it to fully terminate.
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        // The introspect task runs in a separate tokio task; wait for
+        // it to observe the terminal status and store the snapshot.
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        assert_matches!(
+            &snapshot.properties,
+            crate::introspect::NodeProperties::Actor { actor_status, .. }
+                if actor_status.starts_with("stopped:")
+        );
+
+        // Actor should appear in terminated IDs but not in live IDs.
+        assert!(proc.all_terminated_actor_ids().contains(&actor_id));
+        assert!(
+            !proc.all_actor_ids().contains(&actor_id),
+            "stopped actor should not appear in live actor IDs"
+        );
+    }
+
+    // Verifies that an actor failure results in a terminated snapshot
+    // being stored. The test installs a ProcSupervisionCoordinator
+    // (required for failure handling), spawns an actor, triggers a
+    // failure via a message, waits for the actor to terminate, then
+    // waits for the introspect task to persist the terminal snapshot
+    // and asserts the snapshot reports a `failed:*` actor_status.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminated_snapshot_stored_on_failure() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        // Supervision coordinator required for actor failure handling.
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        // Trigger a failure.
+        handle
+            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")))
+            .unwrap();
+        handle.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        assert_matches!(
+            &snapshot.properties,
+            crate::introspect::NodeProperties::Actor { actor_status, .. }
+                if actor_status.starts_with("failed:")
+        );
+    }
+
+    // Invariant FI-1/FI-2: supervision_event is stored on the
+    // InstanceCell when an actor fails and is readable after
+    // termination.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_event_stored_on_failure() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+        let cell = handle.cell().clone();
+
+        handle
+            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("boom")))
+            .unwrap();
+        handle.await;
+
+        let event = cell.supervision_event();
+        assert!(event.is_some(), "failed actor must have supervision_event");
+        let event = event.unwrap();
+        assert_eq!(event.actor_id, actor_id);
+        assert!(event.actor_status.is_failed());
+        // Originated here, not propagated.
+        assert_eq!(event.actually_failing_actor().actor_id, actor_id);
+    }
+
+    // Invariant FI-2/INV-6: clean stop produces no supervision_event.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_event_none_on_clean_stop() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let cell = handle.cell().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        assert!(
+            cell.supervision_event().is_none(),
+            "cleanly stopped actor must have no supervision_event"
+        );
+    }
+
+    // Invariant: propagated failures carry the originating actor's
+    // identity through actually_failing_actor().
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_event_on_propagated_failure() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent_cell = parent.cell().clone();
+        // Spawn child under parent.
+        let (tx, rx) = oneshot::channel();
+        parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
+        let child = rx.await.unwrap();
+        let child_id = child.actor_id().clone();
+
+        // Fail the child — parent doesn't handle supervision, so it
+        // propagates and terminates too.
+        child
+            .send(
+                &client,
+                TestActorMessage::Fail(anyhow::anyhow!("child boom")),
+            )
+            .unwrap();
+        parent.await;
+
+        let event = parent_cell.supervision_event();
+        assert!(
+            event.is_some(),
+            "parent must have supervision_event from propagated failure"
+        );
+        let event = event.unwrap();
+        // Root cause is the child, not the parent.
+        assert_eq!(event.actually_failing_actor().actor_id, child_id);
+    }
+
+    // Invariant: resolve_actor_ref returns None for terminal actors.
+    //
+    // A live actor is resolvable. After drain_and_stop + await, the
+    // actor's status is terminal and resolve_actor_ref must return
+    // None — even though the introspect task may still hold a strong
+    // InstanceCell Arc (it drops the Arc only after observing
+    // terminal status asynchronously). The is_terminal() check in
+    // resolve_actor_ref closes that race window.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_resolve_actor_ref_none_for_terminal_actor() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("target", TestActor).unwrap();
+        let actor_ref: ActorRef<TestActor> = handle.bind();
+
+        // Actor is live — resolve should succeed.
+        assert!(
+            proc.resolve_actor_ref(&actor_ref).is_some(),
+            "live actor should be resolvable"
+        );
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        // Actor is terminal — resolve must return None regardless of
+        // whether the introspect task has dropped its Arc yet.
+        assert!(
+            proc.resolve_actor_ref(&actor_ref).is_none(),
+            "terminal actor must not be resolvable"
+        );
+    }
+
+    // INV-3: terminated snapshot for a failed actor has failure_info.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_terminated_snapshot_has_failure_info() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("fail_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        handle
+            .send(&client, TestActorMessage::Fail(anyhow::anyhow!("kaboom")))
+            .unwrap();
+        handle.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        match &snapshot.properties {
+            crate::introspect::NodeProperties::Actor {
+                actor_status,
+                failure_info,
+                ..
+            } => {
+                assert!(actor_status.starts_with("failed:"));
+                let info = failure_info
+                    .as_ref()
+                    .expect("failed actor snapshot must have failure_info");
+                assert!(!info.error_message.is_empty());
+                assert_eq!(info.root_cause_actor, actor_id.to_string());
+                assert!(!info.is_propagated);
+                assert!(!info.occurred_at.is_empty());
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+    }
+
+    // INV-4: propagated failure has root_cause pointing to child.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_propagated_failure_info() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let parent = proc.spawn::<TestActor>("parent", TestActor).unwrap();
+        let parent_id = parent.actor_id().clone();
+
+        let (tx, rx) = oneshot::channel();
+        parent.send(&client, TestActorMessage::Spawn(tx)).unwrap();
+        let child = rx.await.unwrap();
+        let child_id = child.actor_id().clone();
+
+        child
+            .send(
+                &client,
+                TestActorMessage::Fail(anyhow::anyhow!("child fail")),
+            )
+            .unwrap();
+        parent.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &parent_id).await;
+        match &snapshot.properties {
+            crate::introspect::NodeProperties::Actor { failure_info, .. } => {
+                let info = failure_info
+                    .as_ref()
+                    .expect("propagated failure must have failure_info");
+                assert_eq!(info.root_cause_actor, child_id.to_string());
+                assert!(info.is_propagated);
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+    }
+
+    // INV-6: cleanly stopped actor has no failure_info.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_stopped_snapshot_has_no_failure_info() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+
+        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
+        match &snapshot.properties {
+            crate::introspect::NodeProperties::Actor {
+                actor_status,
+                failure_info,
+                ..
+            } => {
+                assert!(actor_status.starts_with("stopped:"));
+                assert!(
+                    failure_info.is_none(),
+                    "stopped actor must not have failure_info"
+                );
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
     }
 }

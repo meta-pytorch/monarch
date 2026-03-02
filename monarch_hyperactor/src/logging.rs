@@ -10,6 +10,8 @@
 
 use std::ops::Deref;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -19,6 +21,7 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
+use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
@@ -85,7 +88,13 @@ impl LoggerRuntimeActor {
         Ok(())
     }
 }
-impl Actor for LoggerRuntimeActor {}
+#[async_trait]
+impl Actor for LoggerRuntimeActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl RemoteSpawn for LoggerRuntimeActor {
@@ -286,8 +295,15 @@ impl LoggingMeshClient {
         PyPythonTask::new(async move {
             // 1. Spawn the client-side coordinator actor (lives in
             // the caller's process).
+            static LOG_CLIENT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let id = LOG_CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let name = if id == 0 {
+                "log_client".to_string()
+            } else {
+                format!("log_client_{}", id)
+            };
             let client_actor: ActorHandle<LogClientActor> =
-                instance.spawn(LogClientActor::default())?;
+                instance.proc().spawn(&name, LogClientActor::default())?;
             let client_actor_ref = client_actor.bind();
 
             // Read config to decide if we stand up per-proc
@@ -584,9 +600,10 @@ mod tests {
         let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
             .expect("failed to start root Proc");
 
-        let (instance, ..) = proc
+        let ai = proc
             .actor_instance("client")
             .expect("failed to create proc Instance");
+        let instance = ai.instance;
 
         let host_mesh = HostMesh::local_with_bootstrap(
             crate::testresource::get("monarch/monarch_hyperactor/bootstrap").into(),

@@ -14,7 +14,8 @@ dynamic = ["version"]  # overridden via MONARCH_VERSION env var
 description = "Monarch: Single controller library"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "BSD-3-Clause"}
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 authors = [
     {name = "Meta", email = "oncall+monarch@xmail.facebook.com"}
 ]
@@ -72,6 +73,15 @@ prerelease = "allow"  # Required for torch nightly builds (pre-release versions)
 required-environments = ["sys_platform == 'linux'"]  # Force resolution for Linux x86_64
 python-preference = "managed"  # Use uv-managed Python installations
 python-downloads = "automatic"  # Automatically download Python if needed
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { file = "**/*.rs" },
+    { file = "**/Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "**/*.{cc, cpp, c, h}" },
+    { file = "**/*.{cu, cuh}" },
+]
 
 [project.optional-dependencies]
 examples = [

@@ -47,7 +47,7 @@ use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
 use crate::casting::update_undeliverable_envelope_for_casting;
 use crate::host_mesh::HostMeshRef;
-use crate::mesh_agent::ActorState;
+use crate::proc_agent::ActorState;
 use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
 use crate::supervision::MeshFailure;
@@ -454,7 +454,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             .keys()
             .next()
             .map(|p| p.extent().clone());
-        // Send a stop message to the ProcMeshAgent for these actors.
+        // Send a stop message to the ProcAgent for these actors.
         match self.stop(cx, message.reason.clone()).await {
             Ok(statuses) => {
                 // All stops successful, set actor status on health state.

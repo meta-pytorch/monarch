@@ -6,45 +6,60 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Blanket introspection protocol for hyperactor actors.
+//! Introspection protocol for hyperactor actors.
 //!
-//! Every actor automatically handles [`IntrospectMessage`] via a
-//! blanket `Handler` implementation. The default response is
-//! *structural*: it reports only framework-owned state (identity,
-//! type, status, supervision parent/children) and is intended to be
-//! cheap and safe to call on any actor at any time.
+//! Every actor has a dedicated introspect task that handles
+//! [`IntrospectMessage`] by reading [`InstanceCell`] state directly,
+//! without going through the actor's message loop. This means:
+//!
+//! - Stuck actors can be introspected (the task runs independently).
+//! - Introspection does not perturb observed state (no Heisenberg).
+//! - Live status is reported accurately.
+//!
+//! Infrastructure actors publish domain-specific metadata via
+//! [`PublishedProperties`], which the introspect task reads for
+//! Entity-view queries. Non-addressable children (e.g., system procs)
+//! are resolved via a callback registered on [`InstanceCell`].
 //!
 //! Callers navigate topology by fetching a [`NodePayload`] and
-//! following its `children` references. Children come in two forms:
+//! following its `children` references.
 //!
-//! - **Addressable children** are actors with their own `ActorId` and
-//!   mailbox. They can be introspected directly by sending
-//!   [`IntrospectMessage::Query`] to that actor. The default handler
-//!   reports these automatically.
-//! - **Non-addressable children** are nodes a parent chooses to
-//!   expose in `children` but which are not independently messageable
-//!   (no mailbox / `ActorId`). These must be described indirectly via
-//!   [`IntrospectMessage::QueryChild`], where the parent answers on
-//!   the child's behalf (for example, a host exposing system procs
-//!   that are not independently addressable actors).
+//! # Design Invariants
 //!
-//! Actors that own non-addressable children, or that want to publish
-//! domain-specific [`NodeProperties`] (e.g. `Host` or `Proc`),
-//! override [`Actor::handle_introspect`].
+//! The introspection subsystem maintains eleven invariants (S1--S11).
+//! Each is documented at the code site that enforces it.
 //!
-//! # Pre-dispatch snapshot (one-behind invariant)
-//!
-//! [`default_actor_payload`] reports `actor_status` and
-//! `last_message_handler` from a *pre-dispatch snapshot* — the values
-//! captured immediately before the current handler began executing.
-//! The running handler therefore never sees itself in the payload.
-//!
-//! This is a purely mechanical "one behind" guarantee: consecutive
-//! introspect queries *will* reveal each other (the second query
-//! reports the first introspect handler), and introspection is not
-//! otherwise hidden from the history. For a freshly spawned actor
-//! with no prior messages, the snapshot reports post-initialization
-//! state (`idle`) and no last handler.
+//! - **S1.** Introspection must not depend on actor responsiveness --
+//!   a wedged actor can still be introspected (runtime task, not
+//!   actor loop).
+//! - **S2.** Introspection must not perturb observed state -- reading
+//!   `InstanceCell` never sets `last_message_handler` to
+//!   `IntrospectMessage`.
+//! - **S3.** Sender routing is unchanged -- senders target the same
+//!   `PortId` (`IntrospectMessage::port()`) across processes.
+//! - **S4.** `IntrospectMessage` never produces a `WorkCell` --
+//!   pre-registration via `open_message_port` gives the introspect
+//!   port its own channel, independent of the actor's work queue.
+//! - **S5.** Replies never use `PanickingMailboxSender` -- the
+//!   introspect task replies via `Mailbox::serialize_and_send_once`.
+//! - **S6.** View semantics are stable -- Actor view uses live
+//!   structural state + supervision children; Entity view uses
+//!   published properties + domain children.
+//! - **S7.** `QueryChild` must work without actor handlers -- system
+//!   procs are resolved via a per-actor callback on `InstanceCell`.
+//! - **S8.** Published properties are constrained -- actors cannot
+//!   publish `Root` or `Error` payloads (only `Host` and `Proc`
+//!   variants).
+//! - **S9.** Port binding is single source of truth -- the introspect
+//!   port is bound exactly once via `bind_actor_port()` in
+//!   `Instance::new()`.
+//! - **S10.** Introspect receiver lifecycle -- created in
+//!   `Instance::new()`, spawned in `start()`, dropped in
+//!   `child_instance()`.
+//! - **S11.** Terminated snapshots do not keep actors resolvable --
+//!   `store_terminated_snapshot` writes to the proc's snapshot map,
+//!   not the instances map. `resolve_actor_ref` checks terminal
+//!   status independently and is unaffected by snapshot storage.
 
 use std::time::SystemTime;
 
@@ -54,11 +69,58 @@ use typeuri::Named;
 
 use crate::InstanceCell;
 use crate::OncePortRef;
+use crate::clock::Clock;
 use crate::reference::Reference;
 
-/// Node-type-specific metadata for a single entity in the mesh
-/// topology (root, host, proc, actor, or error sentinel).
+/// Structured failure information extracted from an
+/// [`ActorSupervisionEvent`](crate::supervision::ActorSupervisionEvent)
+/// at introspection time. Provides root-cause provenance without
+/// carrying the recursive event type across the wire.
 ///
+/// # Invariants
+///
+/// The failure introspection pipeline (from `serve()` in `proc.rs`
+/// through this struct to the TUI) maintains six invariants. Each
+/// is documented at its enforcement site with an `INV-N` comment.
+///
+/// - **FI-1 (event-before-status):** All `InstanceCell` state that
+///   [`live_actor_payload`] reads must be written BEFORE
+///   `change_status()` transitions to terminal. Enforced in
+///   `proc.rs` `serve()`.
+/// - **FI-2 (write-once):** `InstanceCellState::supervision_event`
+///   is written at most once per actor lifetime. Enforced in
+///   `proc.rs` `serve()` terminal paths.
+/// - **FI-3 (failure_info ↔ actor_status):**
+///   `failure_info.is_some()` iff
+///   `actor_status.starts_with("failed:")`. Enforced in
+///   [`live_actor_payload`].
+/// - **FI-4 (is_propagated ↔ root_cause_actor):**
+///   `is_propagated == true` iff `root_cause_actor !=
+///   this_actor_id`. Enforced in [`live_actor_payload`].
+/// - **FI-5 (is_poisoned ↔ failed_actor_count):**
+///   `is_poisoned == true` iff `failed_actor_count > 0`. Enforced
+///   in `mesh_agent.rs` `publish_introspect_properties()`.
+/// - **FI-6 (clean stop = no artifacts):** When an actor stops
+///   cleanly, `supervision_event` is `None`, `failure_info` is
+///   `None`, and the actor does not contribute to
+///   `failed_actor_count`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
+pub struct FailureInfo {
+    /// The error message (from `ActorStatus::Failed` display).
+    pub error_message: String,
+    /// The actor that originally caused the failure (root cause).
+    /// Same as this actor if the failure originated here.
+    pub root_cause_actor: String,
+    /// Display name of the root cause actor, if set.
+    pub root_cause_name: Option<String>,
+    /// When the failure occurred (formatted timestamp).
+    pub occurred_at: String,
+    /// `true` if this actor is propagating a child's failure,
+    /// `false` if the failure originated in this actor.
+    pub is_propagated: bool,
+}
+wirevalue::register_type!(FailureInfo);
+
 /// Kept "wire-friendly" (no `serde_json::Value`) so it can be encoded
 /// via wirevalue's bincode path, while the HTTP layer can still
 /// expose structured JSON via `Serialize`.
@@ -72,6 +134,9 @@ pub enum NodeProperties {
         started_at: String,
         /// Username who started the mesh.
         started_by: String,
+        /// Children that are infrastructure-owned (system procs,
+        /// admin procs) and should be hidden by default.
+        system_children: Vec<String>,
     },
 
     /// A host in the mesh, represented by its `HostMeshAgent`.
@@ -80,6 +145,9 @@ pub enum NodeProperties {
         addr: String,
         /// Number of procs currently reported on this host.
         num_procs: usize,
+        /// References of children that are system/infrastructure
+        /// procs.
+        system_children: Vec<String>,
     },
 
     /// Properties describing a proc running on a host.
@@ -90,8 +158,25 @@ pub enum NodeProperties {
         num_actors: usize,
         /// Whether this proc is infrastructure-owned rather than
         /// user-created.
-        #[serde(default)]
         is_system: bool,
+        /// References of children that are system/infrastructure
+        /// actors. Allows the TUI to filter lazily without fetching
+        /// each child individually.
+        system_children: Vec<String>,
+        /// References of children that are stopped or failed.
+        /// Populated from terminated snapshots so the TUI can
+        /// filter/gray without per-child fetches.
+        stopped_children: Vec<String>,
+        /// Maximum number of terminated snapshots retained.
+        /// When `stopped_children.len() >= stopped_retention_cap`,
+        /// the list is at capacity and older entries were evicted.
+        stopped_retention_cap: usize,
+        /// Whether this proc is refusing new spawns because at least
+        /// one actor has an unhandled supervision event.
+        /// FI-5: `is_poisoned` iff `failed_actor_count > 0`.
+        is_poisoned: bool,
+        /// Number of actors with unhandled supervision events.
+        failed_actor_count: usize,
     },
 
     /// Runtime metadata for a single actor instance.
@@ -114,6 +199,14 @@ pub enum NodeProperties {
         /// Serialized flight-recorder events for the actor, if
         /// enabled/available.
         flight_recorder: Option<String>,
+        /// Whether this actor is infrastructure-owned (e.g.
+        /// ProcAgent, HostMeshAgent) rather than user-created.
+        is_system: bool,
+        /// Structured failure information, present only for failed
+        /// actors. `None` for running or cleanly stopped actors.
+        /// FI-3: `failure_info.is_some()` iff
+        /// `actor_status.starts_with("failed:")`.
+        failure_info: Option<FailureInfo>,
     },
 
     /// Error sentinel returned when a child reference cannot be
@@ -143,13 +236,15 @@ pub struct NodePayload {
     pub children: Vec<String>,
     /// Parent node reference for upward navigation.
     pub parent: Option<String>,
+    /// ISO 8601 timestamp indicating when this data was captured.
+    pub as_of: String,
 }
 wirevalue::register_type!(NodePayload);
 
 /// Context for introspection query - what aspect of the actor to
 /// describe.
 ///
-/// Infrastructure actors (e.g., ProcMeshAgent, HostMeshAgent)
+/// Infrastructure actors (e.g., ProcAgent, HostMeshAgent)
 /// have dual nature: they manage entities (Proc, Host) while also
 /// being actors themselves. IntrospectView allows callers to
 /// specify which aspect to query.
@@ -212,23 +307,86 @@ pub struct RecordedEvent {
     pub fields: serde_json::Value,
 }
 
-/// Structural projection of an [`InstanceCell`] into a
-/// [`NodePayload`] with [`NodeProperties::Actor`].
+/// Domain-specific properties an actor may publish for introspection.
 ///
-/// This is the default introspection response for any actor — it
-/// reports only framework-owned state. Used by
-/// [`default_handle_introspect`](crate::actor::default_handle_introspect).
+/// Infrastructure actors (HostMeshAgent, ProcAgent) push these to
+/// make their managed-entity metadata available to the introspection
+/// runtime without going through the actor's message handler. The
+/// runtime handler reads the last-published value and merges it into
+/// the [`NodePayload`] response for Entity-view queries.
 ///
-/// Status and last-handler are taken from the *previous* values
-/// (before the current handler started), so the introspect query
-/// doesn't report itself. This avoids the Heisenberg problem where
-/// observing the actor always shows "processing IntrospectMessage".
-pub fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
+/// Values may be arbitrarily stale for stuck actors — they reflect
+/// whatever the actor last published before it stopped making
+/// progress. The `published_at` timestamp makes staleness visible to
+/// tooling.
+#[derive(Debug, Clone)]
+pub struct PublishedProperties {
+    /// When these properties were last published.
+    pub published_at: SystemTime,
+    /// Domain-specific metadata.
+    pub kind: PublishedPropertiesKind,
+}
+
+/// The domain-specific metadata variants that an actor may publish.
+///
+/// Only `Host` and `Proc` variants are available — actors cannot
+/// publish `Root` or `Error` payloads.
+#[derive(Debug, Clone)]
+pub enum PublishedPropertiesKind {
+    /// A host in the mesh.
+    Host {
+        /// Host address (e.g. `127.0.0.1:12345`).
+        addr: String,
+        /// Number of procs currently reported on this host.
+        num_procs: usize,
+        /// Custom children list (system procs + user procs).
+        children: Vec<String>,
+        /// Children that are system/infrastructure procs.
+        system_children: Vec<String>,
+    },
+    /// A proc running on a host.
+    Proc {
+        /// Human-readable proc identifier.
+        proc_name: String,
+        /// Number of actors currently hosted by this proc.
+        num_actors: usize,
+        /// Whether this proc is infrastructure-owned.
+        is_system: bool,
+        /// Custom children list (all actors in the proc).
+        children: Vec<String>,
+        /// Children that are system/infrastructure actors, reported
+        /// by the proc so the TUI can filter without fetching each
+        /// child.
+        system_children: Vec<String>,
+        /// Children that are stopped or failed. Populated from
+        /// terminated snapshots so the TUI can filter/gray without
+        /// per-child fetches.
+        stopped_children: Vec<String>,
+        /// Maximum number of terminated snapshots retained.
+        stopped_retention_cap: usize,
+        /// Whether this proc is refusing new spawns due to actor
+        /// failures.
+        is_poisoned: bool,
+        /// Number of actors with unhandled supervision events.
+        failed_actor_count: usize,
+    },
+}
+
+/// Format a [`SystemTime`] as an ISO 8601 timestamp with millisecond
+/// precision.
+pub fn format_timestamp(time: SystemTime) -> String {
+    humantime::format_rfc3339_millis(time).to_string()
+}
+
+/// Build a [`NodePayload`] from live [`InstanceCell`] state.
+///
+/// Reads the current live status and last handler directly from
+/// the cell. Used by the introspect task (which runs outside
+/// the actor's message loop) and by `Instance::introspect_payload`.
+pub fn live_actor_payload(cell: &InstanceCell) -> NodePayload {
     let actor_id = cell.actor_id();
-    // Use prev_status / prev_last_message_handler so the introspect
-    // handler doesn't report itself.
-    let status = cell.prev_status();
-    let last_handler = cell.prev_last_message_handler();
+    let status = cell.status().borrow().clone();
+    let last_handler = cell.last_message_handler();
 
     let children: Vec<String> = cell
         .child_actor_ids()
@@ -252,11 +410,29 @@ pub fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
     let flight_recorder = if flight_recorder_events.is_empty() {
         None
     } else {
-        // Pre-serialize to JSON string for wire transport.
         serde_json::to_string(&flight_recorder_events).ok()
     };
 
     let supervisor = cell.parent().map(|p| p.actor_id().to_string());
+
+    // FI-3: failure_info is computed from the same status value as
+    // actor_status, ensuring they agree on whether the actor failed.
+    let failure_info = if status.is_failed() {
+        cell.supervision_event().map(|event| {
+            let root = event.actually_failing_actor();
+            // FI-4: is_propagated iff root_cause_actor != this actor.
+            let is_propagated = root.actor_id != *actor_id;
+            FailureInfo {
+                error_message: event.actor_status.to_string(),
+                root_cause_actor: root.actor_id.to_string(),
+                root_cause_name: root.display_name.clone(),
+                occurred_at: format_timestamp(event.occurred_at),
+                is_propagated,
+            }
+        })
+    } else {
+        None
+    };
 
     NodePayload {
         identity: actor_id.to_string(),
@@ -268,14 +444,172 @@ pub fn default_actor_payload(cell: &InstanceCell) -> NodePayload {
             last_message_handler: last_handler.map(|info| info.to_string()),
             total_processing_time_us: cell.total_processing_time_us(),
             flight_recorder,
+            is_system: cell.is_system()
+                || cell.published_properties().is_some_and(|p| {
+                    matches!(
+                        p.kind,
+                        PublishedPropertiesKind::Host { .. } | PublishedPropertiesKind::Proc { .. }
+                    )
+                }),
+            failure_info,
         },
         children,
         parent: supervisor,
+        as_of: format_timestamp(crate::clock::RealClock.system_time_now()),
     }
 }
 
-/// Format a [`SystemTime`] as an ISO 8601 timestamp with millisecond
-/// precision.
-fn format_timestamp(time: SystemTime) -> String {
-    humantime::format_rfc3339_millis(time).to_string()
+/// Introspect task: runs on a dedicated tokio task per actor,
+/// handling [`IntrospectMessage`] by reading [`InstanceCell`]
+/// directly and replying via the actor's [`Mailbox`].
+///
+/// The actor's message loop never sees these messages.
+///
+/// # Invariants
+///
+/// - **S1:** Introspection does not depend on actor responsiveness --
+///   this task runs independently; a wedged actor is still introspectable.
+/// - **S2:** Introspection does not perturb observed state -- reads
+///   `InstanceCell` directly, never sets `last_message_handler`.
+/// - **S4:** `IntrospectMessage` never produces a `WorkCell` -- the
+///   introspect port has its own channel, separate from the work queue.
+/// - **S5:** Replies never use `PanickingMailboxSender` -- replies go
+///   through `Mailbox::serialize_and_send_once`.
+/// - **S6:** View semantics -- Actor view uses live structural state +
+///   supervision children; Entity view uses published properties +
+///   domain children.
+/// - **S11:** Terminated snapshots do not keep actors resolvable --
+///   `store_terminated_snapshot` writes to the proc's snapshot map,
+///   not the instances map. `resolve_actor_ref` checks terminal status
+///   independently and is unaffected by snapshot storage.
+pub async fn serve_introspect(
+    cell: InstanceCell,
+    mailbox: crate::mailbox::Mailbox,
+    mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
+) {
+    use crate::actor::ActorStatus;
+    use crate::mailbox::PortSender as _;
+
+    // Watch for terminal status so we can break the reference cycle:
+    // InstanceCellState → Ports → introspect sender → keeps receiver
+    // open → this task holds InstanceCell → InstanceCellState.
+    // Without this, a stopped actor's InstanceCellState is never
+    // dropped and the actor lingers in the proc's instances map.
+    let mut status = cell.status().clone();
+
+    loop {
+        let msg = tokio::select! {
+            msg = receiver.recv() => {
+                match msg {
+                    Ok(msg) => msg,
+                    Err(_) => {
+                        // Channel closed. If the actor reached a
+                        // terminal state, snapshot it before exiting
+                        // so it remains queryable post-mortem.
+                        if cell.status().borrow().is_terminal() {
+                            let snapshot = live_actor_payload(&cell);
+                            cell.store_terminated_snapshot(snapshot);
+                        }
+                        break;
+                    }
+                }
+            }
+            _ = status.wait_for(ActorStatus::is_terminal) => {
+                // Snapshot for post-mortem introspection before
+                // dropping our InstanceCell reference.
+                let snapshot = live_actor_payload(&cell);
+                cell.store_terminated_snapshot(snapshot);
+                break;
+            }
+        };
+
+        let result = match msg {
+            IntrospectMessage::Query { view, reply } => {
+                let payload = match view {
+                    IntrospectView::Entity => match cell.published_properties() {
+                        Some(props) => {
+                            let published_at = props.published_at;
+                            let children = match &props.kind {
+                                PublishedPropertiesKind::Host { children, .. } => children.clone(),
+                                PublishedPropertiesKind::Proc { children, .. } => children.clone(),
+                            };
+                            let properties = match props.kind {
+                                PublishedPropertiesKind::Host {
+                                    addr,
+                                    num_procs,
+                                    system_children,
+                                    ..
+                                } => NodeProperties::Host {
+                                    addr,
+                                    num_procs,
+                                    system_children,
+                                },
+                                PublishedPropertiesKind::Proc {
+                                    proc_name,
+                                    num_actors,
+                                    is_system,
+                                    system_children,
+                                    stopped_children,
+                                    stopped_retention_cap,
+                                    is_poisoned,
+                                    failed_actor_count,
+                                    ..
+                                } => NodeProperties::Proc {
+                                    proc_name,
+                                    num_actors,
+                                    is_system,
+                                    system_children,
+                                    stopped_children,
+                                    stopped_retention_cap,
+                                    is_poisoned,
+                                    failed_actor_count,
+                                },
+                            };
+                            NodePayload {
+                                identity: cell.actor_id().to_string(),
+                                properties,
+                                children,
+                                parent: cell.parent().map(|p| p.actor_id().to_string()),
+                                as_of: format_timestamp(published_at),
+                            }
+                        }
+                        None => live_actor_payload(&cell),
+                    },
+                    IntrospectView::Actor => live_actor_payload(&cell),
+                };
+                mailbox.serialize_and_send_once(
+                    reply,
+                    payload,
+                    crate::mailbox::monitored_return_handle(),
+                )
+            }
+            IntrospectMessage::QueryChild { child_ref, reply } => {
+                let payload = cell.query_child(&child_ref).unwrap_or_else(|| NodePayload {
+                    identity: String::new(),
+                    properties: NodeProperties::Error {
+                        code: "not_found".into(),
+                        message: format!("child {} not found (no callback registered)", child_ref),
+                    },
+                    children: Vec::new(),
+                    parent: None,
+                    as_of: humantime::format_rfc3339_millis(
+                        crate::clock::RealClock.system_time_now(),
+                    )
+                    .to_string(),
+                });
+                mailbox.serialize_and_send_once(
+                    reply,
+                    payload,
+                    crate::mailbox::monitored_return_handle(),
+                )
+            }
+        };
+        if let Err(e) = result {
+            tracing::debug!("introspect reply failed: {e}");
+        }
+    }
+    tracing::debug!(
+        actor_id = %cell.actor_id(),
+        "introspect task exiting"
+    );
 }

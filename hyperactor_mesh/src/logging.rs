@@ -1000,6 +1000,7 @@ pub struct LogForwardActor {
 #[async_trait]
 impl Actor for LogForwardActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         this.self_message_with_delay(LogForwardMessage::Forward {}, Duration::from_secs(0))?;
 
         // Make sure we start the flush loop periodically so the log channel will not deadlock.
@@ -1203,6 +1204,14 @@ impl Default for LogClientActor {
     }
 }
 
+#[async_trait]
+impl Actor for LogClientActor {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+}
+
 impl LogClientActor {
     fn print_aggregators(&mut self) {
         for (output_target, aggregator) in self.aggregators.iter_mut() {
@@ -1241,9 +1250,6 @@ impl LogClientActor {
         self.next_flush_deadline = None;
     }
 }
-
-#[async_trait]
-impl Actor for LogClientActor {}
 
 impl Drop for LogClientActor {
     fn drop(&mut self) {

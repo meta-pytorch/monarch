@@ -15,7 +15,6 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import cloudpickle
-import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -302,12 +301,7 @@ def test_context_proc_mesh_in_controller_spawns_actor_in_client_os_process() -> 
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_proc_meshes() -> None:
     orig_get_client_context = _client_context.get
-    with (
-        patch.object(_client_context, "get") as mock_get_client_context,
-        patch.object(
-            monarch._src.actor.host_mesh, "fake_in_process_host"
-        ) as mock_fake_in_process_host,
-    ):
+    with patch.object(_client_context, "get") as mock_get_client_context:
         mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():
@@ -324,11 +318,6 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
             t.join()
 
         assert mock_get_client_context.call_count == 100
-        # If this test is run in isolation, the local host mesh will
-        # be created once. But if it runs with other tests, the host mesh
-        # will have already been initialized and the function never gets
-        # called.
-        assert mock_fake_in_process_host.call_count in (0, 1)
 
 
 @pytest.mark.timeout(60)

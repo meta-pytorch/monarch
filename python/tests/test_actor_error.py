@@ -26,7 +26,7 @@ from monarch._rust_bindings.monarch_hyperactor.mailbox import (
 )
 from monarch._rust_bindings.monarch_hyperactor.supervision import SupervisionError
 from monarch._src.actor.actor_mesh import ActorMesh, context
-from monarch._src.actor.host_mesh import fake_in_process_host, this_host
+from monarch._src.actor.host_mesh import this_host
 from monarch._src.actor.proc_mesh import ProcMesh
 from monarch.actor import Actor, ActorError, endpoint, MeshFailure
 from monarch.config import configured, parametrize_config
@@ -121,7 +121,7 @@ class BrokenPickleClass:
 
 
 def spawn_procs_on_fake_host(per_host: dict[str, int]) -> ProcMesh:
-    return fake_in_process_host().spawn_procs(per_host)
+    return this_host().spawn_procs(per_host)
 
 
 def spawn_procs_on_this_host(per_host: dict[str, int]) -> ProcMesh:
@@ -825,7 +825,7 @@ async def test_process_exit_handling(error_actor_cls) -> None:
 
 class FaultActor(Actor):
     # This will dereference a null pointer and crash the process
-    # This should also kill the ProcMeshAgent, rendering it unresponsive.
+    # This should also kill the ProcAgent, rendering it unresponsive.
     # In this case, actor mesh should still return a SupervisionError,
     # and proc_mesh.stop() should still work, albeit it will do nothing
     # because all the processes should be dead already.
@@ -897,7 +897,7 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
 
     # new call should fail with check of health state of actor mesh
     # after the proc mesh is stopped, the actor mesh is also stopped, and
-    # the ProcMeshAgent is no longer reachable.
+    # the ProcAgent is no longer reachable.
     with pytest.raises(
         SupervisionError,
         match="Endpoint call healthy.check\\(\\) failed, Actor.*healthy.*is "
