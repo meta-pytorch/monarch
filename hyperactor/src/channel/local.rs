@@ -12,8 +12,9 @@ use std::marker::PhantomData;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
+use serde_multipart::Message;
+
 use super::*;
-use crate::Data;
 
 /// Create a new local channel, returning its two ends.
 #[allow(dead_code)] // Not used outside tests.
@@ -27,15 +28,15 @@ pub fn new<M: RemoteMessage>() -> (impl Tx<M>, impl Rx<M>) {
 // In-process channels, with a shared registry.
 
 struct Ports {
-    ports: HashMap<u64, (mpsc::UnboundedSender<Data>, watch::Receiver<TxStatus>)>,
+    ports: HashMap<u64, (mpsc::UnboundedSender<Message>, watch::Receiver<TxStatus>)>,
     next_port: u64,
 }
 
 impl Ports {
-    fn alloc(&mut self) -> (u64, mpsc::UnboundedReceiver<Data>, watch::Sender<TxStatus>) {
+    fn alloc(&mut self) -> (u64, mpsc::UnboundedReceiver<Message>, watch::Sender<TxStatus>) {
         let port = self.next_port;
         self.next_port += 1;
-        let (tx, rx) = mpsc::unbounded_channel::<Data>();
+        let (tx, rx) = mpsc::unbounded_channel::<Message>();
         let (status_tx, status_rx) = watch::channel(TxStatus::Active);
         if self.ports.insert(port, (tx.clone(), status_rx)).is_some() {
             panic!("port reused")
@@ -47,7 +48,10 @@ impl Ports {
         self.ports.remove(&port);
     }
 
-    fn get(&self, port: u64) -> Option<&(mpsc::UnboundedSender<Data>, watch::Receiver<TxStatus>)> {
+    fn get(
+        &self,
+        port: u64,
+    ) -> Option<&(mpsc::UnboundedSender<Message>, watch::Receiver<TxStatus>)> {
         self.ports.get(&port)
     }
 }
@@ -64,7 +68,7 @@ impl Default for Ports {
 static PORTS: LazyLock<Mutex<Ports>> = LazyLock::new(|| Mutex::new(Ports::default()));
 
 pub struct LocalTx<M: RemoteMessage> {
-    tx: mpsc::UnboundedSender<Data>,
+    tx: mpsc::UnboundedSender<Message>,
     port: u64,
     status: watch::Receiver<TxStatus>, // Default impl. Always reports `Active`.
     _phantom: PhantomData<M>,
@@ -73,7 +77,7 @@ pub struct LocalTx<M: RemoteMessage> {
 #[async_trait]
 impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
-        let data: Data = match bincode::serialize(&message) {
+        let data = match serde_multipart::serialize_bincode(&message) {
             Ok(data) => data,
             Err(err) => {
                 if let Some(return_channel) = return_channel {
@@ -111,7 +115,7 @@ impl<M: RemoteMessage> Tx<M> for LocalTx<M> {
 }
 
 pub struct LocalRx<M: RemoteMessage> {
-    data_rx: mpsc::UnboundedReceiver<Data>,
+    data_rx: mpsc::UnboundedReceiver<Message>,
     status_tx: watch::Sender<TxStatus>,
     port: u64,
     _phantom: PhantomData<M>,
@@ -120,8 +124,8 @@ pub struct LocalRx<M: RemoteMessage> {
 #[async_trait]
 impl<M: RemoteMessage> Rx<M> for LocalRx<M> {
     async fn recv(&mut self) -> Result<M, ChannelError> {
-        let data = self.data_rx.recv().await.ok_or(ChannelError::Closed)?;
-        bincode::deserialize(&data).map_err(ChannelError::from)
+        let message = self.data_rx.recv().await.ok_or(ChannelError::Closed)?;
+        serde_multipart::deserialize_bincode(message).map_err(ChannelError::from)
     }
 
     fn addr(&self) -> ChannelAddr {
