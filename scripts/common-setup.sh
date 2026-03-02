@@ -38,7 +38,7 @@ setup_rust_toolchain() {
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
-    cargo binstall cargo-nextest --secure -y
+    curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
     # Setup sccache for distributed Rust compilation caching via S3.
     setup_sccache
