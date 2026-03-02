@@ -188,12 +188,6 @@ impl<M: RemoteMessage> QueuedMessage<M> {
                     reason,
                 });
             }
-            Ok(_) => {
-                tracing::debug!(
-                    seq = self.seq,
-                    "queued frame was not a Frame::Message; dropping without return"
-                );
-            }
             Err(_e) => {
                 tracing::warn!(
                     seq = self.seq,
@@ -591,8 +585,8 @@ async fn run<M: RemoteMessage>(
     // If we can't deliver a message within this limit consider
     // `link` broken and return.
 
-    let session_id = rand::random();
-    let log_id = format!("session {}.{}", link.dest(), session_id);
+    let session_id = link.link_id().0;
+    let log_id = format!("session {}.{:016x}", link.dest(), session_id);
     let dest = link.dest();
     let mut state = State::init(&log_id, &dest, session_id);
     let mut conn = Conn::reconnect_with_default();
@@ -1182,19 +1176,6 @@ where
             } else {
                 match link.connect().await {
                     Ok(stream) => {
-                        let message =
-                            serde_multipart::serialize_bincode(&Frame::<M>::Init(session_id))
-                                .unwrap();
-
-                        let mut write = FrameWrite::new(
-                            stream,
-                            message.framed(),
-                            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-                        )
-                        .expect("enough length");
-                        let initialized = write.send().await.is_ok();
-                        let stream = write.complete();
-
                         metrics::CHANNEL_CONNECTIONS.add(
                             1,
                             hyperactor_telemetry::kv_pairs!(
@@ -1226,7 +1207,7 @@ where
                                 // we still want to keep `largest_acked` to known Rx's watermark.
                                 unacked: Unacked::new(largest_acked, log_id),
                             }),
-                            if initialized {
+                            {
                                 backoff.reset();
                                 let (reader, writer) = tokio::io::split(stream);
                                 Conn::Connected {
@@ -1238,8 +1219,6 @@ where
                                     ),
                                     write_state: WriteState::Idle(writer),
                                 }
-                            } else {
-                                Conn::reconnect(backoff, first_failure_at)
                             },
                         )
                     }
