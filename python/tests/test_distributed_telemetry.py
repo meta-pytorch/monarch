@@ -596,3 +596,84 @@ def test_actor_status_events_table(cleanup_callbacks) -> None:
 
     # Clean up
     hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
+    """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
+    engine = start_telemetry(use_fake_data=False, batch_size=10)
+
+    # Spawn 3 workers so we can slice a subset
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 3}, name="rank_test_procs")
+
+    # Full view: spawn on the unsliced proc mesh (all 3 workers)
+    full_actors = worker_procs.spawn("full_view_actor", WorkerActor)
+    full_actors.initialized.get()
+
+    # Sliced view: take workers 1..3 (indices 1 and 2)
+    sliced_procs = worker_procs.slice(workers=slice(1, 3))
+    sliced_actors = sliced_procs.spawn("sliced_view_actor", WorkerActor)
+    sliced_actors.initialized.get()
+
+    # -- Verify full-view actor mesh --
+    full_mesh = engine.query(
+        "SELECT id, shape_json, parent_view_json FROM meshes "
+        "WHERE given_name = 'full_view_actor'"
+    )
+    full_mesh_dict = full_mesh.to_pydict()
+    assert len(full_mesh_dict["id"]) == 1, (
+        f"Expected 1 full_view_actor mesh, got {len(full_mesh_dict['id'])}"
+    )
+    full_mesh_id = full_mesh_dict["id"][0]
+
+    # parent_view_json for full view should have offset 0
+    full_view = json.loads(full_mesh_dict["parent_view_json"][0])
+    assert full_view["slice"]["offset"] == 0, (
+        f"Expected full view offset=0, got {full_view['slice']['offset']}"
+    )
+    # Full view should cover all 3 workers
+    workers_label_idx = full_view["labels"].index("workers")
+    assert full_view["slice"]["sizes"][workers_label_idx] == 3, (
+        f"Expected full view size=3, got {full_view['slice']['sizes'][workers_label_idx]}"
+    )
+
+    # Actors in the full mesh should have ranks 0, 1, 2
+    full_actors_result = engine.query(
+        f"SELECT rank FROM actors WHERE mesh_id = {full_mesh_id} ORDER BY rank"
+    )
+    full_ranks = full_actors_result.to_pydict()["rank"]
+    assert full_ranks == [0, 1, 2], f"Expected ranks [0, 1, 2], got {full_ranks}"
+
+    # -- Verify sliced-view actor mesh --
+    sliced_mesh = engine.query(
+        "SELECT id, shape_json, parent_view_json FROM meshes "
+        "WHERE given_name = 'sliced_view_actor'"
+    )
+    sliced_mesh_dict = sliced_mesh.to_pydict()
+    assert len(sliced_mesh_dict["id"]) == 1, (
+        f"Expected 1 sliced_view_actor mesh, got {len(sliced_mesh_dict['id'])}"
+    )
+    sliced_mesh_id = sliced_mesh_dict["id"][0]
+
+    # parent_view_json for sliced view should have offset > 0 (starts at worker 1)
+    sliced_view = json.loads(sliced_mesh_dict["parent_view_json"][0])
+    assert sliced_view["slice"]["offset"] > 0, (
+        f"Expected sliced view offset > 0, got {sliced_view['slice']['offset']}"
+    )
+    # Sliced view should cover 2 workers
+    workers_label_idx = sliced_view["labels"].index("workers")
+    assert sliced_view["slice"]["sizes"][workers_label_idx] == 2, (
+        f"Expected sliced view size=2, got {sliced_view['slice']['sizes'][workers_label_idx]}"
+    )
+
+    # Actors in the sliced mesh should have ranks 0, 1 (0-indexed within the slice)
+    sliced_actors_result = engine.query(
+        f"SELECT rank FROM actors WHERE mesh_id = {sliced_mesh_id} ORDER BY rank"
+    )
+    sliced_ranks = sliced_actors_result.to_pydict()["rank"]
+    assert sliced_ranks == [0, 1], f"Expected ranks [0, 1], got {sliced_ranks}"
+
+    # Clean up
+    hosts.shutdown().get()
