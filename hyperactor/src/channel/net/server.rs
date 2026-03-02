@@ -18,7 +18,6 @@ use std::task::Poll;
 use anyhow::Context;
 use bytes::Bytes;
 use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt as _;
@@ -34,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use tracing::Span;
 
+use super::read_link_init;
 use super::serialize_response;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
@@ -106,23 +106,6 @@ enum RejectConn {
 }
 
 impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
-    async fn handshake<M: RemoteMessage>(&mut self) -> Result<u64, anyhow::Error> {
-        let Some(frame) = self
-            .reader
-            .next()
-            .instrument(hyperactor_telemetry::context_span!("read handshake"))
-            .await?
-        else {
-            anyhow::bail!("end of stream before first frame from {}", self.source);
-        };
-        let message = serde_multipart::Message::from_framed(frame)?;
-        let Frame::Init(session_id) = serde_multipart::deserialize_bincode::<Frame<M>>(message)?
-        else {
-            anyhow::bail!("unexpected initial frame from {}", self.source);
-        };
-        Ok(session_id)
-    }
-
     async fn process_step<M: RemoteMessage>(
         &mut self,
         session_id: u64,
@@ -269,15 +252,6 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static + Unpin> ServerConn<S> {
                 // Finally decode the message. This assembles the M-typed message
                 // from its constituent parts.
                 match serde_multipart::deserialize_bincode(message) {
-                    Ok(Frame::Init(_)) => {
-                        return (
-                            next,
-                            Some((
-                                Err(anyhow::anyhow!("{log_id}: unexpected init frame")),
-                                RejectConn::EncounterError("expect Frame::Message; got Frame::Int".to_string())
-                            )),
-                        )
-                    },
                     // Ignore retransmits.
                     Ok(Frame::Message(seq, _)) if seq < next.seq => {
                         tracing::debug!(
@@ -595,68 +569,57 @@ impl fmt::Display for Next {
     }
 }
 
-/// Manages persistent sessions, ensuring that only one connection can own
-/// a session at a time, and arranging for session handover.
-#[derive(Clone)]
-pub(super) struct SessionManager {
-    sessions: Arc<DashMap<u64, MVar<Next>>>,
+/// Server-side representation of a logical link. Created when a new `LinkId` is
+/// first seen. Wraps `MVar<Next>` for session state; the MVar acts as both
+/// storage and a serializer — only one connection at a time can hold the
+/// `Next` state for a given link.
+pub(super) struct ServerLink {
+    id: super::LinkId,
+    next: MVar<Next>,
 }
 
-impl SessionManager {
-    pub(super) fn new() -> Self {
+impl Clone for ServerLink {
+    fn clone(&self) -> Self {
         Self {
-            sessions: Arc::new(DashMap::new()),
+            id: self.id,
+            next: self.next.clone(),
         }
-    }
-
-    pub(super) async fn serve<S, M>(
-        &self,
-        mut conn: ServerConn<S>,
-        tx: mpsc::Sender<M>,
-        cancel_token: CancellationToken,
-    ) -> Result<(), anyhow::Error>
-    where
-        S: AsyncRead + AsyncWrite + Send + 'static + Unpin,
-        M: RemoteMessage,
-    {
-        let session_id = conn
-            .handshake::<M>()
-            .await
-            .context("while serving handshake")?;
-
-        let session_var = match self.sessions.entry(session_id) {
-            Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => {
-                // We haven't seen this session before. We begin with seq=0 and ack=0.
-                let var = MVar::full(Next { seq: 0, ack: 0 });
-                entry.insert(var.clone());
-                var
-            }
-        };
-
-        let source = conn.source.clone();
-        let dest = conn.dest.clone();
-
-        let next = session_var.take().await;
-        let (next, res) = conn.process(session_id, tx, cancel_token, next).await;
-        session_var.put(next).await;
-
-        if let Err(ref err) = res {
-            tracing::info!(
-                source = %source,
-                dest = %dest,
-                error = ?err,
-                session_id = session_id,
-                "process encountered an error"
-            );
-        }
-
-        res
     }
 }
 
-/// Main listen loop that actually runs the server. The loop will exit when `parent_cancel_token` is
-/// canceled.
+impl ServerLink {
+    pub(super) fn new(id: super::LinkId) -> Self {
+        Self {
+            id,
+            next: MVar::full(Next { seq: 0, ack: 0 }),
+        }
+    }
+}
+
+/// Handles a single connection for a logical link. Takes `Next` state from
+/// the link's MVar, processes the connection, then puts `Next` back.
+/// The MVar take/put provides natural serialization across reconnections.
+pub(super) async fn handle_connection<S, M>(
+    mut conn: ServerConn<S>,
+    link: ServerLink,
+    tx: mpsc::Sender<M>,
+    cancel_token: CancellationToken,
+) -> Result<(), anyhow::Error>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    M: RemoteMessage,
+{
+    let session_id = link.id.0;
+    let next = link.next.take().await;
+    let (new_next, result) = conn.process(session_id, tx, cancel_token, next).await;
+    link.next.put(new_next).await;
+    result
+}
+
+/// Main listen loop. Each accepted connection spawns a task that looks up (or
+/// creates) the `ServerLink` for its `LinkId`, then calls `handle_connection`.
+/// The MVar inside `ServerLink` serializes overlapping connections for the
+/// same link.
 async fn listen<M: RemoteMessage, L: super::Listener>(
     mut listener: L,
     listener_channel_addr: ChannelAddr,
@@ -672,7 +635,7 @@ where
     // Cancellation token used to cancel our children only.
     let child_cancel_token = CancellationToken::new();
 
-    let manager = SessionManager::new();
+    let links: Arc<DashMap<super::LinkId, ServerLink>> = Arc::new(DashMap::new());
 
     // Heartbeat timer for server health metrics
     let heartbeat_interval = hyperactor_config::global::get(config::SERVER_HEARTBEAT_INTERVAL);
@@ -699,26 +662,31 @@ where
 
                         let tx = tx.clone();
                         let child_cancel_token = child_cancel_token.child_token();
-                        let dest  = listener_channel_addr.clone();
-                        let manager = manager.clone();
+                        let dest = listener_channel_addr.clone();
+                        let links = Arc::clone(&links);
                         connections.spawn(async move {
                             let res = if is_tls {
-                                // Choose TLS acceptor based on transport type
                                 let tls_acceptor = match dest.transport() {
                                     ChannelTransport::Tls => tls::tls_acceptor()?,
                                     _ => meta::tls_acceptor(true)?,
                                 };
-                                let conn = ServerConn::new(tls_acceptor
-                                    .accept(stream)
-                                    .await?, source.clone(), dest.clone());
-                                manager.serve(conn, tx, child_cancel_token).await
-                            } else {
+                                let mut stream = tls_acceptor.accept(stream).await?;
+                                let link_id = read_link_init(&mut stream).await
+                                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                                let link = links.entry(link_id).or_insert_with(|| ServerLink::new(link_id)).value().clone();
                                 let conn = ServerConn::new(stream, source.clone(), dest.clone());
-                                manager.serve(conn, tx, child_cancel_token).await
+                                handle_connection(conn, link, tx, child_cancel_token).await
+                            } else {
+                                let mut stream = stream;
+                                let link_id = read_link_init(&mut stream).await
+                                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                                let link = links.entry(link_id).or_insert_with(|| ServerLink::new(link_id)).value().clone();
+                                let conn = ServerConn::new(stream, source.clone(), dest.clone());
+                                handle_connection(conn, link, tx, child_cancel_token).await
                             };
 
                             if let Err(ref err) = res {
-                                        metrics::CHANNEL_ERRORS.add(
+                                metrics::CHANNEL_ERRORS.add(
                                     1,
                                     hyperactor_telemetry::kv_pairs!(
                                         "transport" => dest.transport().to_string(),
@@ -728,7 +696,6 @@ where
                                     ),
                                 );
 
-                                // we don't want the health probe TCP connections to be counted as an error.
                                 match source {
                                     ChannelAddr::Tcp(source_addr) if source_addr.ip().is_loopback() => {},
                                     _ => {
@@ -738,12 +705,11 @@ where
                                             error = ?err,
                                             "error processing peer connection"
                                         );
-
                                     }
                                 }
                             }
                             res
-                    });
+                        });
                     }
                     Err(err) => {
                         metrics::CHANNEL_ERRORS.add(
