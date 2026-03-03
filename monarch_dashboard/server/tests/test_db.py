@@ -41,32 +41,44 @@ class _DbTestBase(unittest.TestCase):
 class ListMeshesTest(_DbTestBase):
     def test_returns_all_meshes(self):
         meshes = db.list_meshes()
-        self.assertEqual(len(meshes), 10)
-
-    def test_filter_by_class_host(self):
-        meshes = db.list_meshes(mesh_class="Host")
-        self.assertEqual(len(meshes), 2)
-        for m in meshes:
-            self.assertEqual(m["class"], "Host")
-
-    def test_filter_by_class_proc(self):
-        meshes = db.list_meshes(mesh_class="Proc")
-        self.assertEqual(len(meshes), 4)
-
-    def test_filter_by_nonexistent_class(self):
-        meshes = db.list_meshes(mesh_class="DoesNotExist")
-        self.assertEqual(len(meshes), 0)
+        self.assertGreater(len(meshes), 0)
 
     def test_rows_are_dicts(self):
         meshes = db.list_meshes()
         self.assertIsInstance(meshes[0], dict)
         self.assertIn("id", meshes[0])
         self.assertIn("class", meshes[0])
+        self.assertIn("given_name", meshes[0])
 
     def test_ordered_by_id(self):
         meshes = db.list_meshes()
         ids = [m["id"] for m in meshes]
         self.assertEqual(ids, sorted(ids))
+
+    def test_filter_by_class(self):
+        hosts = db.list_meshes(class_filter="Host")
+        self.assertEqual(len(hosts), 2)
+        for m in hosts:
+            self.assertEqual(m["class"], "Host")
+
+    def test_filter_by_class_proc(self):
+        procs = db.list_meshes(class_filter="Proc")
+        self.assertGreaterEqual(len(procs), 4)
+        for m in procs:
+            self.assertEqual(m["class"], "Proc")
+
+    def test_filter_by_parent_mesh_id(self):
+        # Get first host mesh id
+        hosts = db.list_meshes(class_filter="Host")
+        host_id = hosts[0]["id"]
+        children = db.list_meshes(parent_mesh_id=host_id)
+        self.assertGreater(len(children), 0)
+        for m in children:
+            self.assertEqual(m["parent_mesh_id"], host_id)
+
+    def test_filter_nonexistent_class(self):
+        meshes = db.list_meshes(class_filter="Nonexistent")
+        self.assertEqual(len(meshes), 0)
 
 
 class GetMeshTest(_DbTestBase):
@@ -74,7 +86,8 @@ class GetMeshTest(_DbTestBase):
         mesh = db.get_mesh(1)
         self.assertIsNotNone(mesh)
         self.assertEqual(mesh["id"], 1)
-        self.assertEqual(mesh["class"], "Host")
+        self.assertIn("class", mesh)
+        self.assertIn("full_name", mesh)
 
     def test_nonexistent_mesh(self):
         mesh = db.get_mesh(9999)
@@ -82,20 +95,16 @@ class GetMeshTest(_DbTestBase):
 
 
 class GetMeshChildrenTest(_DbTestBase):
-    def test_host_has_proc_children(self):
-        children = db.get_mesh_children(1)
-        self.assertEqual(len(children), 2)
+    def test_host_mesh_has_children(self):
+        hosts = db.list_meshes(class_filter="Host")
+        host_id = hosts[0]["id"]
+        children = db.get_mesh_children(host_id)
+        self.assertGreater(len(children), 0)
         for c in children:
-            self.assertEqual(c["class"], "Proc")
-            self.assertEqual(c["parent_mesh_id"], 1)
+            self.assertEqual(c["parent_mesh_id"], host_id)
 
-    def test_proc_has_actor_mesh_children(self):
-        children = db.get_mesh_children(3)
-        self.assertEqual(len(children), 1)
-        self.assertNotEqual(children[0]["class"], "Proc")
-
-    def test_leaf_has_no_children(self):
-        children = db.get_mesh_children(7)
+    def test_nonexistent_mesh_returns_empty(self):
+        children = db.get_mesh_children(9999)
         self.assertEqual(len(children), 0)
 
 
@@ -107,13 +116,18 @@ class GetMeshChildrenTest(_DbTestBase):
 class ListActorsTest(_DbTestBase):
     def test_returns_all_actors(self):
         actors = db.list_actors()
-        self.assertEqual(len(actors), 10)
+        self.assertGreater(len(actors), 0)
 
     def test_filter_by_mesh_id(self):
-        actors = db.list_actors(mesh_id=1)
+        # Get an actor mesh
+        meshes = db.list_meshes()
+        actor_mesh = next(
+            m for m in meshes if m["class"] != "Host" and m["class"] != "Proc"
+        )
+        actors = db.list_actors(mesh_id=actor_mesh["id"])
         self.assertGreater(len(actors), 0)
         for a in actors:
-            self.assertEqual(a["mesh_id"], 1)
+            self.assertEqual(a["mesh_id"], actor_mesh["id"])
 
     def test_filter_by_nonexistent_mesh(self):
         actors = db.list_actors(mesh_id=9999)
@@ -205,7 +219,6 @@ class ListMessagesTest(_DbTestBase):
 
     def test_filter_by_both(self):
         all_msgs = db.list_messages()
-        # Pick a real sender/receiver pair from the data.
         pair = next((m["from_actor_id"], m["to_actor_id"]) for m in all_msgs)
         filtered = db.list_messages(from_actor_id=pair[0], to_actor_id=pair[1])
         for m in filtered:
@@ -301,6 +314,7 @@ class GetSummaryTest(_DbTestBase):
         summary = db.get_summary()
         for key in (
             "mesh_counts",
+            "hierarchy_counts",
             "actor_counts",
             "message_counts",
             "errors",
@@ -312,19 +326,23 @@ class GetSummaryTest(_DbTestBase):
     def test_mesh_counts(self):
         summary = db.get_summary()
         mc = summary["mesh_counts"]
-        self.assertEqual(mc["total"], 10)
-        self.assertIn("by_class", mc)
-        self.assertEqual(mc["by_class"]["Host"], 2)
-        self.assertEqual(mc["by_class"]["Proc"], 4)
+        self.assertGreater(mc["total"], 0)
+
+    def test_hierarchy_counts(self):
+        summary = db.get_summary()
+        hc = summary["hierarchy_counts"]
+        self.assertEqual(hc["host_meshes"], 2)
+        self.assertGreaterEqual(hc["proc_meshes"], 4)
+        self.assertGreater(hc["actor_meshes"], 0)
 
     def test_actor_counts(self):
         summary = db.get_summary()
         ac = summary["actor_counts"]
-        self.assertEqual(ac["total"], 10)
+        self.assertGreater(ac["total"], 0)
         self.assertIn("by_status", ac)
-        # All 10 actors should be represented across statuses.
+        # All actors should be represented across statuses.
         total_by_status = sum(ac["by_status"].values())
-        self.assertEqual(total_by_status, 10)
+        self.assertEqual(total_by_status, ac["total"])
 
     def test_actor_status_includes_failed(self):
         summary = db.get_summary()

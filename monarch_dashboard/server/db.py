@@ -9,6 +9,10 @@
 Provides read-only access to the fake (or real) SQLite telemetry database.
 Each public function executes a single query and returns a list of row dicts.
 All SQL is parameterised to prevent injection.
+
+The data model uses two core tables:
+  - meshes: all mesh types (Host, Proc, actor meshes) differentiated by class
+  - actors: all actors including system agents (HostAgent, ProcAgent)
 """
 
 import sqlite3
@@ -57,11 +61,21 @@ def _query_one(sql: str, params: tuple = ()) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-def list_meshes(mesh_class: str | None = None) -> list[dict[str, Any]]:
-    """Return all meshes, optionally filtered by class."""
-    if mesh_class:
-        return _query("SELECT * FROM meshes WHERE class = ? ORDER BY id", (mesh_class,))
-    return _query("SELECT * FROM meshes ORDER BY id")
+def list_meshes(
+    class_filter: str | None = None,
+    parent_mesh_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return meshes, optionally filtered by class and/or parent_mesh_id."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if class_filter is not None:
+        clauses.append("class = ?")
+        params.append(class_filter)
+    if parent_mesh_id is not None:
+        clauses.append("parent_mesh_id = ?")
+        params.append(parent_mesh_id)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return _query(f"SELECT * FROM meshes{where} ORDER BY id", tuple(params))
 
 
 def get_mesh(mesh_id: int) -> dict[str, Any] | None:
@@ -70,7 +84,7 @@ def get_mesh(mesh_id: int) -> dict[str, Any] | None:
 
 
 def get_mesh_children(mesh_id: int) -> list[dict[str, Any]]:
-    """Return child meshes whose parent_mesh_id equals *mesh_id*."""
+    """Return child meshes of *mesh_id* (where parent_mesh_id = mesh_id)."""
     return _query(
         "SELECT * FROM meshes WHERE parent_mesh_id = ? ORDER BY id", (mesh_id,)
     )
@@ -207,12 +221,17 @@ def get_summary() -> dict[str, Any]:
     """
     conn = _connect()
     try:
-        # -- Mesh counts --
+        # -- Mesh counts by class --
         total_meshes = conn.execute("SELECT COUNT(*) FROM meshes").fetchone()[0]
-        by_class_rows = conn.execute(
-            "SELECT class, COUNT(*) AS cnt FROM meshes GROUP BY class ORDER BY class"
-        ).fetchall()
-        mesh_by_class = {row["class"]: row["cnt"] for row in by_class_rows}
+        host_meshes = conn.execute(
+            "SELECT COUNT(*) FROM meshes WHERE class = 'Host'"
+        ).fetchone()[0]
+        proc_meshes = conn.execute(
+            "SELECT COUNT(*) FROM meshes WHERE class = 'Proc'"
+        ).fetchone()[0]
+        actor_meshes = conn.execute(
+            "SELECT COUNT(*) FROM meshes WHERE class != 'Host' AND class != 'Proc'"
+        ).fetchone()[0]
 
         # -- Actor counts --
         total_actors = conn.execute("SELECT COUNT(*) FROM actors").fetchone()[0]
@@ -311,8 +330,6 @@ def get_summary() -> dict[str, Any]:
         ).fetchone()[0]
 
         # -- Health score (0-100) --
-        # Weighted by status: idle=100, processing=80, unknown/client=50,
-        # transitional=30, stopped=20, failed=0
         weights = {
             "idle": 100,
             "processing": 80,
@@ -341,7 +358,11 @@ def get_summary() -> dict[str, Any]:
         return {
             "mesh_counts": {
                 "total": total_meshes,
-                "by_class": mesh_by_class,
+            },
+            "hierarchy_counts": {
+                "host_meshes": host_meshes,
+                "proc_meshes": proc_meshes,
+                "actor_meshes": actor_meshes,
             },
             "actor_counts": {
                 "total": total_actors,

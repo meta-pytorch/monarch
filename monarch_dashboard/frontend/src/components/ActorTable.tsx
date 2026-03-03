@@ -51,7 +51,7 @@ export function ActorTable({ meshId, onActorClick }: ActorTableProps) {
     { key: "full_name", label: "Name" },
     { key: "rank", label: "Rank" },
     { key: "latest_status", label: "Status" },
-    { key: "latest_status_timestamp_us", label: "Last Updated" },
+    { key: "status_timestamp_us", label: "Last Updated" },
   ];
 
   return (
@@ -90,11 +90,9 @@ export function ActorTable({ meshId, onActorClick }: ActorTableProps) {
 
 /** Individual actor row that fetches its latest status. */
 function ActorRow({ actor, onClick }: { actor: Actor; onClick: () => void }) {
-  // The /actors?mesh_id= endpoint returns base actor data without latest_status.
-  // Fetch the single-actor endpoint which includes it.
   const { data: detail } = useApi<Actor>(`/actors/${actor.id}`);
   const status = detail?.latest_status ?? null;
-  const lastUpdated = detail?.latest_status_timestamp_us;
+  const lastUpdated = detail?.status_timestamp_us;
 
   return (
     <tr onClick={onClick} className="clickable-row">
@@ -103,7 +101,7 @@ function ActorRow({ actor, onClick }: { actor: Actor; onClick: () => void }) {
       <td><StatusBadge status={status} /></td>
       <td>
         <span className="mono-cell">
-          {lastUpdated ? formatTimestamp(lastUpdated) : "—"}
+          {lastUpdated ? formatTimestamp(lastUpdated) : "\u2014"}
         </span>
       </td>
     </tr>

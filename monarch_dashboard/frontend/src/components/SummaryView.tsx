@@ -83,8 +83,10 @@ function HealthGauge({ score }: { score: number }) {
 }
 
 function OverviewCards({ data }: { data: Summary }) {
+  const hc = data.hierarchy_counts;
+  const totalEntities = hc.host_meshes + hc.proc_meshes + hc.actor_meshes;
   const cards = [
-    { label: "Meshes", value: data.mesh_counts.total, sub: `${Object.keys(data.mesh_counts.by_class).length} types` },
+    { label: "Entities", value: totalEntities, sub: "across hierarchy" },
     { label: "Actors", value: data.actor_counts.total, sub: `${Object.keys(data.actor_counts.by_status).length} statuses` },
     { label: "Messages", value: data.message_counts.total, sub: `${(data.message_counts.delivery_rate * 100).toFixed(1)}% delivered` },
     { label: "Events", value: data.timeline.total_status_events + data.timeline.total_message_events, sub: "status + message" },
@@ -330,20 +332,24 @@ function TimelineBar({ timeline }: { timeline: Summary["timeline"] }) {
   );
 }
 
-function MeshBreakdown({ byClass }: { byClass: Record<string, number> }) {
-  const entries = Object.entries(byClass).sort((a, b) => b[1] - a[1]);
+function HierarchyBreakdown({ counts }: { counts: Summary["hierarchy_counts"] }) {
+  const entries: Array<[string, number]> = [
+    ["Host Meshes", counts.host_meshes],
+    ["Proc Meshes", counts.proc_meshes],
+    ["Actor Meshes", counts.actor_meshes],
+  ];
   const total = entries.reduce((s, [, c]) => s + c, 0);
 
   return (
     <div className="summary-section" data-testid="mesh-breakdown">
-      <h3 className="summary-section-title">Mesh Hierarchy</h3>
+      <h3 className="summary-section-title">Hierarchy Breakdown</h3>
       <div className="summary-mesh-chips">
-        {entries.map(([cls, count]) => (
-          <div key={cls} className="summary-mesh-chip">
+        {entries.map(([label, count]) => (
+          <div key={label} className="summary-mesh-chip">
             <span className="summary-mesh-chip-count">{count}</span>
-            <span className="summary-mesh-chip-label">{cls}</span>
+            <span className="summary-mesh-chip-label">{label}</span>
             <span className="summary-mesh-chip-pct">
-              {((count / total) * 100).toFixed(0)}%
+              {total > 0 ? ((count / total) * 100).toFixed(0) : 0}%
             </span>
           </div>
         ))}
@@ -394,7 +400,7 @@ export function SummaryView() {
       {/* Bottom grid: messages + mesh breakdown */}
       <div className="summary-grid-2col">
         <MessageTraffic counts={data.message_counts} />
-        <MeshBreakdown byClass={data.mesh_counts.by_class} />
+        <HierarchyBreakdown counts={data.hierarchy_counts} />
       </div>
     </div>
   );

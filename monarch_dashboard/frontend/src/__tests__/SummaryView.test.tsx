@@ -14,7 +14,11 @@ import { SummaryView } from "../components/SummaryView";
 const MOCK_SUMMARY = {
   mesh_counts: {
     total: 10,
-    by_class: { Host: 2, Proc: 4, "Python<Trainer>": 4 },
+  },
+  hierarchy_counts: {
+    host_meshes: 2,
+    proc_meshes: 4,
+    actor_meshes: 4,
   },
   actor_counts: {
     total: 10,
@@ -36,19 +40,19 @@ const MOCK_SUMMARY = {
     failed_actors: [
       {
         actor_id: 10,
-        full_name: "//root/host_mesh_1/proc_mesh_1_1/actor_mesh_1_1/PythonActor<Trainer>[0]",
+        full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[0]",
         reason: "CUDA OOM",
         timestamp_us: 1700000240000000,
-        mesh_id: 10,
+        mesh_id: 5,
       },
     ],
     stopped_actors: [
       {
         actor_id: 6,
-        full_name: "//root/host_mesh_1/proc_mesh_1_1/ProcAgent[0]",
-        reason: "death propagation from proc_mesh_1_1",
+        full_name: "host_mesh_1/ProcAgent[0]",
+        reason: "death propagation from host_mesh_1",
         timestamp_us: 1700000250000000,
-        mesh_id: 6,
+        mesh_id: 4,
       },
     ],
     failed_messages: 5,
@@ -124,10 +128,10 @@ describe("SummaryView", () => {
     });
   });
 
-  it("shows mesh count", async () => {
+  it("shows entities count", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByText("Meshes")).toBeInTheDocument();
+      expect(screen.getByText("Entities")).toBeInTheDocument();
     });
   });
 
@@ -224,18 +228,18 @@ describe("SummaryView", () => {
     });
   });
 
-  it("renders mesh breakdown", async () => {
+  it("renders hierarchy breakdown", async () => {
     render(<SummaryView />);
     await waitFor(() => {
       expect(screen.getByTestId("mesh-breakdown")).toBeInTheDocument();
     });
   });
 
-  it("shows mesh class names", async () => {
+  it("shows hierarchy entity names", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByText("Host")).toBeInTheDocument();
-      expect(screen.getByText("Proc")).toBeInTheDocument();
+      expect(screen.getByText("Host Meshes")).toBeInTheDocument();
+      expect(screen.getByText("Proc Meshes")).toBeInTheDocument();
     });
   });
 

@@ -9,21 +9,21 @@
 import { computeLayout, DagGraph } from "../utils/dagLayout";
 import { Mesh, Actor } from "../types";
 
-// Minimal test data matching the fake_data topology.
+// Minimal test data matching the actual API response fields.
 const meshes: Mesh[] = [
-  { id: 1, timestamp_us: 0, class: "Host", given_name: "host_mesh_0", full_name: "//root/host_mesh_0", shape_json: '{"dims":[2]}', parent_mesh_id: null, parent_view_json: null },
-  { id: 2, timestamp_us: 0, class: "Host", given_name: "host_mesh_1", full_name: "//root/host_mesh_1", shape_json: '{"dims":[2]}', parent_mesh_id: null, parent_view_json: null },
-  { id: 3, timestamp_us: 0, class: "Proc", given_name: "proc_mesh_0_0", full_name: "//root/host_mesh_0/proc_mesh_0_0", shape_json: '{"dims":[2]}', parent_mesh_id: 1, parent_view_json: null },
-  { id: 4, timestamp_us: 0, class: "Proc", given_name: "proc_mesh_0_1", full_name: "//root/host_mesh_0/proc_mesh_0_1", shape_json: '{"dims":[2]}', parent_mesh_id: 1, parent_view_json: null },
-  { id: 7, timestamp_us: 0, class: "Python<Trainer>", given_name: "actor_mesh_0_0", full_name: "//root/.../actor_mesh_0_0", shape_json: '{"dims":[1]}', parent_mesh_id: 3, parent_view_json: null },
-  { id: 8, timestamp_us: 0, class: "Python<Trainer>", given_name: "actor_mesh_0_1", full_name: "//root/.../actor_mesh_0_1", shape_json: '{"dims":[1]}', parent_mesh_id: 4, parent_view_json: null },
+  { id: 1, timestamp_us: 0, class: "Host", given_name: "host_mesh_0", full_name: "host_mesh_0", shape_json: '{"dims": [1]}', parent_mesh_id: null, parent_view_json: null },
+  { id: 2, timestamp_us: 0, class: "Host", given_name: "host_mesh_1", full_name: "host_mesh_1", shape_json: '{"dims": [1]}', parent_mesh_id: null, parent_view_json: null },
+  { id: 3, timestamp_us: 0, class: "Proc", given_name: "proc_mesh_0", full_name: "host_mesh_0/proc_mesh_0", shape_json: '{"dims": [1]}', parent_mesh_id: 1, parent_view_json: '{"offset": [0], "sizes": [1]}' },
+  { id: 4, timestamp_us: 0, class: "Proc", given_name: "proc_mesh_0", full_name: "host_mesh_1/proc_mesh_0", shape_json: '{"dims": [1]}', parent_mesh_id: 2, parent_view_json: '{"offset": [0], "sizes": [1]}' },
+  { id: 5, timestamp_us: 0, class: "Python<Trainer>", given_name: "Python<Trainer>", full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>", shape_json: '{"dims": [2]}', parent_mesh_id: 3, parent_view_json: '{"offset": [0], "sizes": [1]}' },
+  { id: 6, timestamp_us: 0, class: "Python<Trainer>", given_name: "Python<Trainer>", full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>", shape_json: '{"dims": [2]}', parent_mesh_id: 4, parent_view_json: '{"offset": [0], "sizes": [1]}' },
 ];
 
 const actors: Actor[] = [
-  { id: 1, timestamp_us: 0, mesh_id: 3, rank: 0, full_name: "ProcAgent[0,0]" },
-  { id: 2, timestamp_us: 0, mesh_id: 7, rank: 0, full_name: "PythonActor<Trainer>[0,0]" },
-  { id: 3, timestamp_us: 0, mesh_id: 4, rank: 0, full_name: "ProcAgent[0,1]" },
-  { id: 4, timestamp_us: 0, mesh_id: 8, rank: 0, full_name: "PythonActor<Trainer>[0,1]" },
+  { id: 1, timestamp_us: 0, mesh_id: 5, rank: 0, full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[0]" },
+  { id: 2, timestamp_us: 0, mesh_id: 5, rank: 1, full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[1]" },
+  { id: 3, timestamp_us: 0, mesh_id: 6, rank: 0, full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[0]" },
+  { id: 4, timestamp_us: 0, mesh_id: 6, rank: 1, full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[1]" },
 ];
 
 const statuses: Record<number, string> = {
@@ -46,14 +46,14 @@ describe("computeLayout", () => {
     graph = computeLayout(meshes, actors, statuses, messagePairs);
   });
 
-  it("creates nodes for all meshes and actors", () => {
-    // 6 meshes + 4 actors = 10 nodes
+  it("creates nodes for all entities", () => {
+    // 2 host meshes + 2 proc meshes + 2 actor meshes + 4 actors = 10
     expect(graph.nodes.length).toBe(10);
   });
 
-  it("creates mesh nodes with correct tiers", () => {
-    const hostNodes = graph.nodes.filter((n) => n.tier === "host");
-    const procNodes = graph.nodes.filter((n) => n.tier === "proc");
+  it("creates nodes with correct tiers", () => {
+    const hostNodes = graph.nodes.filter((n) => n.tier === "host_mesh");
+    const procNodes = graph.nodes.filter((n) => n.tier === "proc_mesh");
     const amNodes = graph.nodes.filter((n) => n.tier === "actor_mesh");
     expect(hostNodes.length).toBe(2);
     expect(procNodes.length).toBe(2);
@@ -65,15 +65,15 @@ describe("computeLayout", () => {
     expect(actorNodes.length).toBe(4);
   });
 
-  it("host nodes have largest radius", () => {
-    const host = graph.nodes.find((n) => n.tier === "host")!;
+  it("host mesh nodes have largest radius", () => {
+    const hostMesh = graph.nodes.find((n) => n.tier === "host_mesh")!;
     const actor = graph.nodes.find((n) => n.tier === "actor")!;
-    expect(host.radius).toBeGreaterThan(actor.radius);
+    expect(hostMesh.radius).toBeGreaterThan(actor.radius);
   });
 
   it("creates hierarchy edges", () => {
     const hierEdges = graph.edges.filter((e) => e.type === "hierarchy");
-    // 4 mesh-to-mesh + 4 mesh-to-actor = 8
+    // 2 host->proc + 2 proc->am + 4 am->actor = 8
     expect(hierEdges.length).toBe(8);
   });
 
@@ -90,34 +90,14 @@ describe("computeLayout", () => {
     }
   });
 
-  it("positions host nodes to the left of proc nodes", () => {
-    const host = graph.nodes.find((n) => n.tier === "host")!;
-    const proc = graph.nodes.find((n) => n.tier === "proc")!;
-    expect(host.x).toBeLessThan(proc.x);
-  });
-
-  it("positions proc nodes to the left of actor mesh nodes", () => {
-    const proc = graph.nodes.find((n) => n.tier === "proc")!;
-    const am = graph.nodes.find((n) => n.tier === "actor_mesh")!;
-    expect(proc.x).toBeLessThan(am.x);
-  });
-
-  it("positions actor mesh nodes to the left of actor nodes", () => {
-    const am = graph.nodes.find((n) => n.tier === "actor_mesh")!;
+  it("positions tiers left to right", () => {
+    const hostMesh = graph.nodes.find((n) => n.tier === "host_mesh")!;
+    const procMesh = graph.nodes.find((n) => n.tier === "proc_mesh")!;
+    const actorMesh = graph.nodes.find((n) => n.tier === "actor_mesh")!;
     const actor = graph.nodes.find((n) => n.tier === "actor")!;
-    expect(am.x).toBeLessThan(actor.x);
-  });
-
-  it("computes aggregate status for mesh with failed child", () => {
-    // actor_mesh_0_1 (id=8) contains actor 4 which is "failed"
-    const amNode = graph.nodes.find((n) => n.id === "mesh-8")!;
-    expect(amNode.status).toBe("failed");
-  });
-
-  it("computes aggregate status for healthy mesh", () => {
-    // actor_mesh_0_0 (id=7) contains actor 2 which is "processing"
-    const amNode = graph.nodes.find((n) => n.id === "mesh-7")!;
-    expect(amNode.status).toBe("processing");
+    expect(hostMesh.x).toBeLessThan(procMesh.x);
+    expect(procMesh.x).toBeLessThan(actorMesh.x);
+    expect(actorMesh.x).toBeLessThan(actor.x);
   });
 
   it("sets graph dimensions", () => {

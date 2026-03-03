@@ -46,16 +46,15 @@ describe("DagLegend", () => {
 });
 
 const sampleNode: DagNode = {
-  id: "mesh-1",
+  id: "host_mesh-1",
   label: "host_mesh_0",
-  subtitle: "Host",
+  subtitle: "Host Mesh",
   x: 120,
   y: 200,
-  radius: 40,
-  tier: "host",
+  radius: 44,
+  tier: "host_mesh",
   status: "idle",
   entityId: 1,
-  meshClass: "Host",
 };
 
 describe("DagNodeComponent", () => {
@@ -71,7 +70,7 @@ describe("DagNodeComponent", () => {
         onHover={jest.fn()}
       />
     );
-    expect(screen.getByTestId("dag-node-mesh-1")).toBeInTheDocument();
+    expect(screen.getByTestId("dag-node-host_mesh-1")).toBeInTheDocument();
   });
 
   it("renders the node label", () => {
@@ -96,7 +95,7 @@ describe("DagNodeComponent", () => {
         onHover={jest.fn()}
       />
     );
-    screen.getByTestId("dag-node-mesh-1").dispatchEvent(
+    screen.getByTestId("dag-node-host_mesh-1").dispatchEvent(
       new MouseEvent("click", { bubbles: true })
     );
     expect(onSelect).toHaveBeenCalledWith(sampleNode);

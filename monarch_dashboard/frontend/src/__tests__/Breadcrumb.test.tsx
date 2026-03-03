@@ -12,9 +12,9 @@ import { Breadcrumb } from "../components/Breadcrumb";
 import { NavItem } from "../types";
 
 const ITEMS: NavItem[] = [
-  { label: "Host Meshes", level: "hosts" },
-  { label: "host_mesh_0", level: "procs", meshId: 1 },
-  { label: "proc_mesh_0_0", level: "actor_meshes", meshId: 3 },
+  { label: "Host Meshes", level: "host_meshes" },
+  { label: "host_mesh_0", level: "proc_meshes", meshId: 1 },
+  { label: "proc_mesh_0", level: "actor_meshes", meshId: 3 },
 ];
 
 describe("Breadcrumb", () => {
@@ -22,12 +22,12 @@ describe("Breadcrumb", () => {
     render(<Breadcrumb items={ITEMS} onNavigate={jest.fn()} />);
     expect(screen.getByText("Host Meshes")).toBeInTheDocument();
     expect(screen.getByText("host_mesh_0")).toBeInTheDocument();
-    expect(screen.getByText("proc_mesh_0_0")).toBeInTheDocument();
+    expect(screen.getByText("proc_mesh_0")).toBeInTheDocument();
   });
 
   test("last item is not a button", () => {
     render(<Breadcrumb items={ITEMS} onNavigate={jest.fn()} />);
-    const current = screen.getByText("proc_mesh_0_0");
+    const current = screen.getByText("proc_mesh_0");
     expect(current.tagName).not.toBe("BUTTON");
     expect(current).toHaveClass("breadcrumb-current");
   });
@@ -54,7 +54,7 @@ describe("Breadcrumb", () => {
   });
 
   test("single item has no separators or buttons", () => {
-    const single: NavItem[] = [{ label: "Root", level: "hosts" }];
+    const single: NavItem[] = [{ label: "Root", level: "host_meshes" }];
     const { container } = render(
       <Breadcrumb items={single} onNavigate={jest.fn()} />
     );
