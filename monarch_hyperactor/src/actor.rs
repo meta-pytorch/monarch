@@ -636,11 +636,33 @@ impl PythonActor {
                 // monitor the client ProcAgent for now.
                 tracing::error!(
                     actor_id = %instance.self_id(),
-                    "could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
+                    "could not propagate supervision event {} because it reached the global client: signaling KeyboardInterrupt to main thread",
                     event,
                 );
 
-                std::process::exit(1);
+                // This is running in a background thread, and thus cannot run
+                // Py_FinalizeEx when it exits the process to properly shut down
+                // all python objects.
+                // We use _thread.interrupt_main to raise a KeyboardInterrupt
+                // to the main thread at some point in the future.
+                // There is no way to propagate the exception message, but it
+                // will at least run proper shutdown code as long as BaseException
+                // isn't caught.
+                monarch_with_gil_blocking(|py| {
+                    // Use _thread.interrupt_main to force the client to exit if it has an
+                    // unhandled supervision event.
+                    let thread_mod = py.import("_thread").expect("import _thread");
+                    let interrupt_main = thread_mod
+                        .getattr("interrupt_main")
+                        .expect("get interrupt_main");
+
+                    // Ignore any exception from calling interrupt_main
+                    if let Err(e) = interrupt_main.call0() {
+                        tracing::error!("unable to interrupt main, exiting the process instead: {:?}", e);
+                        eprintln!("unable to interrupt main, exiting the process with code 1 instead: {:?}", e);
+                        std::process::exit(1);
+                    }
+                });
             } else {
                 tracing::info!(actor_id = %instance.self_id(), "client stopped");
             }
