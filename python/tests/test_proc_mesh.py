@@ -88,6 +88,7 @@ class TestActor(Actor):
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 async def test_proc_mesh_initialization() -> None:
     host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
@@ -96,6 +97,7 @@ async def test_proc_mesh_initialization() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_proc_mesh_spawn_single_actor() -> None:
     host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
@@ -106,6 +108,7 @@ def test_proc_mesh_spawn_single_actor() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_proc_mesh_multi_actor() -> None:
     host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
@@ -120,6 +123,7 @@ def test_proc_mesh_multi_actor() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_proc_mesh_sliced() -> None:
     host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
@@ -224,6 +228,7 @@ async def test_deprecated_proc_mesh_from_alloc_mock() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_deprecated_proc_mesh_from_alloc_multi_actor() -> None:
     allocator = ProcessAllocator(*_get_bootstrap_args())
     spec = AllocSpec(AllocConstraints(), replicas=2, hosts=2, gpus=3)
@@ -337,6 +342,7 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
         time.sleep(15)
