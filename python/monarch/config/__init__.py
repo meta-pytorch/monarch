@@ -83,6 +83,7 @@ if TYPE_CHECKING:
             actor_queue_dispatch: NotRequired[bool]
             mesh_admin_addr: NotRequired[str]
             mesh_attach_config_timeout: NotRequired[str]
+            mesh_orphan_timeout: NotRequired[str]
 
         ConfigureKwargsType = Unpack[ConfigureArgs]
     else:
