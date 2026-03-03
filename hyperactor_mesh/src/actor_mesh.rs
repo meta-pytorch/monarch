@@ -1312,8 +1312,8 @@ mod tests {
     async fn test_undeliverable_message_return() {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;
-        use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongMessage;
+        use hyperactor::testing::pingpong::PingPongActor;
+        use hyperactor::testing::pingpong::PingPongMessage;
 
         hyperactor_telemetry::initialize_logging_for_test();
 

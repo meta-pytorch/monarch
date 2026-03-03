@@ -62,9 +62,8 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             ..
         } => {
             let short = ProcId::from_str(proc_name)
-                .ok()
-                .and_then(|pid| pid.name().cloned())
-                .unwrap_or_else(|| proc_name.clone());
+                .map(|pid| pid.name().to_string())
+                .unwrap_or_else(|_| proc_name.clone());
             let num_system = system_children.len();
             let num_stopped = stopped_children.len();
             let num_live = num_actors.saturating_sub(num_system);
@@ -528,7 +527,7 @@ mod tests {
     #[test]
     fn derive_label_actor_standard_actor_id() {
         let payload = NodePayload {
-            identity: "myworld[0].worker[3]".to_string(),
+            identity: "unix:@abc123,myworld,worker[3]".to_string(),
             properties: NodeProperties::Actor {
                 actor_status: "Running".to_string(),
                 actor_type: "Worker".to_string(),
@@ -541,7 +540,7 @@ mod tests {
                 failure_info: None,
             },
             children: vec![],
-            parent: Some("myworld[0]".to_string()),
+            parent: Some("unix:@abc123,myworld".to_string()),
             as_of: "2026-01-01T00:00:00.000Z".to_string(),
         };
         assert_eq!(derive_label(&payload), "worker[3]");
