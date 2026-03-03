@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from typing import Generator
 
+import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
