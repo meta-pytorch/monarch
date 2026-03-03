@@ -10,12 +10,13 @@ import asyncio
 import ctypes
 import datetime
 import importlib.resources
+import multiprocessing
 import os
 import re
 import subprocess
 import sys
 import time
-from typing import cast, Optional
+from typing import cast, IO, Optional
 
 import monarch.actor
 import pytest
@@ -1502,3 +1503,53 @@ def test_controller_controller_error():
     # Note that we cannot spawn new actors on a proc mesh that has prior supervision
     # events at the moment, so we have to use a pre-existing one.
     actor_2.check.call_one().get()
+
+
+def _subprocess_unhandled_fault_hook_atexit(marker_path: str) -> None:
+    import atexit
+
+    def finalize_file(file: IO[str]) -> None:
+        file.write("finalized")
+        file.close()
+
+    # Callback which should run even if we get an unhandled fault hook.
+    atexit.register(finalize_file, open(marker_path, "w"))
+
+    proc = this_host().spawn_procs({"gpus": 1})
+    actor = proc.spawn("error", ErrorActor)
+    actor.check.call().get()
+
+    # Trigger supervision error that reaches unhandled_fault_hook.
+    with pytest.raises(SupervisionError):
+        actor.fail_with_supervision_error.call().get()
+
+    # Wait for the fault to come back before exiting the process. The fault
+    # will raise KeyboardInterrupt at some point, but it needs to have a chance
+    # to interrupt the interpreter, so don't sleep for the whole time.
+    for _ in range(5):
+        time.sleep(5)
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+def test_unhandled_fault_hook_runs_atexit() -> None:
+    """Tests that atexit hooks are run in case of an unhandled fault"""
+    import tempfile
+
+    marker = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    marker_path = marker.name
+    marker.write(b"not finalized")
+    marker.close()
+
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(target=_subprocess_unhandled_fault_hook_atexit, args=[marker_path])
+    p.start()
+    p.join(30)
+    assert p.exitcode == 1
+
+    # Test that the file got the right contents
+    with open(marker_path) as f:
+        assert f.read() == "finalized", (
+            f"file {marker_path} should have contents 'finalized' if the atexit handlers were run"
+        )
+    os.unlink(marker_path)
