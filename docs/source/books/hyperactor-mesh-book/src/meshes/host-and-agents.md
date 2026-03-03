@@ -235,7 +235,7 @@ When the agent calls `host.spawn(name, …)`, the **host itself** is not doing t
 - process-backed host → `Host<BootstrapProcManager>`
 - in-proc/test host → `Host<LocalProcManager<...>>`
 
-The manager is the thing that can "make a proc real" (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the `procs: HashSet<String>` table and expose it as `ProcId::Direct(frontend_addr, name)`.
+The manager is the thing that can "make a proc real" (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the `procs: HashSet<String>` table and expose it as `ProcId(frontend_addr, name)`.
 
 We're not going to unpack the process-backed path here — that lives in **"BootstrapProcManager (process-backed hosts)"** where we can talk about commands, ready signals, and termination.
 

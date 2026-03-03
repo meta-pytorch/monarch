@@ -237,9 +237,8 @@ fn render_host_detail(
     ];
     for child in &payload.children {
         let short = ProcId::from_str(child)
-            .ok()
-            .and_then(|pid| pid.name().cloned())
-            .unwrap_or_else(|| child.clone());
+            .map(|pid| pid.name().to_string())
+            .unwrap_or_else(|_| child.clone());
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(short, Style::default().fg(Color::Green)),
