@@ -32,16 +32,22 @@ def start_dashboard(db_path, host="0.0.0.0", port=5000, rebuild=False):
     if not os.path.isfile(build_index):
         frontend_dir = os.path.join(pkg_dir, "frontend")
         if os.path.isdir(frontend_dir):
-            print(">> Building frontend...")
-            node_modules = os.path.join(frontend_dir, "node_modules")
-            if not os.path.isdir(node_modules):
+            try:
+                print(">> Building frontend...")
+                node_modules = os.path.join(frontend_dir, "node_modules")
+                if not os.path.isdir(node_modules):
+                    subprocess.run(
+                        ["/usr/bin/npm", "install"], cwd=frontend_dir, check=True
+                    )
                 subprocess.run(
-                    ["/usr/bin/npm", "install"], cwd=frontend_dir, check=True
+                    ["npx", "react-scripts", "build"], cwd=frontend_dir, check=True
                 )
-            subprocess.run(
-                ["npx", "react-scripts", "build"], cwd=frontend_dir, check=True
-            )
-            print(">> Frontend built!")
+                print(">> Frontend built!")
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                print(f">> Frontend build failed: {e}")
+                print(
+                    ">> Continuing in API-only mode (use pre-built frontend or buck2 run)"
+                )
         else:
             print(">> No frontend directory found (API-only mode)")
 

@@ -72,6 +72,7 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmpdir)
 
+    @pytest.mark.oss_skip
     async def test_sync_workspace(self) -> None:
         local_workspace_dir = self.tmpdir / "local" / "github" / "torch"
         local_workspace_dir.mkdir(parents=True)

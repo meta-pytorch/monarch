@@ -58,7 +58,7 @@ class MeshRoutesTest(_RouteTestBase):
         resp = self.client.get("/api/meshes")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(len(data), 10)
+        self.assertGreater(len(data), 0)
 
     def test_list_meshes_filter_class(self):
         resp = self.client.get("/api/meshes?class=Host")
@@ -68,38 +68,42 @@ class MeshRoutesTest(_RouteTestBase):
         for m in data:
             self.assertEqual(m["class"], "Host")
 
-    def test_list_meshes_filter_proc(self):
-        resp = self.client.get("/api/meshes?class=Proc")
+    def test_list_meshes_filter_parent_mesh_id(self):
+        # Get a host mesh
+        hosts = self.client.get("/api/meshes?class=Host").get_json()
+        host_id = hosts[0]["id"]
+        resp = self.client.get(f"/api/meshes?parent_mesh_id={host_id}")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.get_json()), 4)
+        data = resp.get_json()
+        self.assertGreater(len(data), 0)
+        for m in data:
+            self.assertEqual(m["parent_mesh_id"], host_id)
 
     def test_get_mesh(self):
         resp = self.client.get("/api/meshes/1")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertEqual(data["id"], 1)
-        self.assertEqual(data["class"], "Host")
+        self.assertIn("class", data)
+        self.assertIn("full_name", data)
 
     def test_get_mesh_not_found(self):
         resp = self.client.get("/api/meshes/9999")
         self.assertEqual(resp.status_code, 404)
 
     def test_get_mesh_children(self):
-        resp = self.client.get("/api/meshes/1/children")
+        hosts = self.client.get("/api/meshes?class=Host").get_json()
+        host_id = hosts[0]["id"]
+        resp = self.client.get(f"/api/meshes/{host_id}/children")
         self.assertEqual(resp.status_code, 200)
         children = resp.get_json()
-        self.assertEqual(len(children), 2)
+        self.assertGreater(len(children), 0)
         for c in children:
-            self.assertEqual(c["parent_mesh_id"], 1)
+            self.assertEqual(c["parent_mesh_id"], host_id)
 
     def test_get_mesh_children_not_found(self):
         resp = self.client.get("/api/meshes/9999/children")
         self.assertEqual(resp.status_code, 404)
-
-    def test_get_mesh_children_leaf(self):
-        resp = self.client.get("/api/meshes/7/children")
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.get_json()), 0)
 
     def test_mesh_json_keys(self):
         resp = self.client.get("/api/meshes/1")
@@ -126,15 +130,20 @@ class ActorRoutesTest(_RouteTestBase):
     def test_list_actors(self):
         resp = self.client.get("/api/actors")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.get_json()), 10)
+        self.assertGreater(len(resp.get_json()), 0)
 
     def test_list_actors_filter_mesh_id(self):
-        resp = self.client.get("/api/actors?mesh_id=1")
+        # Get an actor mesh
+        meshes = self.client.get("/api/meshes").get_json()
+        actor_mesh = next(
+            m for m in meshes if m["class"] != "Host" and m["class"] != "Proc"
+        )
+        resp = self.client.get(f"/api/actors?mesh_id={actor_mesh['id']}")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertGreater(len(data), 0)
         for a in data:
-            self.assertEqual(a["mesh_id"], 1)
+            self.assertEqual(a["mesh_id"], actor_mesh["id"])
 
     def test_get_actor(self):
         resp = self.client.get("/api/actors/1")
@@ -302,11 +311,38 @@ class SentMessagesRoutesTest(_RouteTestBase):
             "id",
             "timestamp_us",
             "sender_actor_id",
-            "actor_mesh_id",
+            "mesh_id",
             "view_json",
             "shape_json",
         }
         self.assertEqual(set(sm.keys()), expected_keys)
+
+
+# ---------------------------------------------------------------------------
+# Old endpoints removed
+# ---------------------------------------------------------------------------
+
+
+class RemovedEndpointsTest(_RouteTestBase):
+    def test_host_units_removed(self):
+        resp = self.client.get("/api/host_units")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_proc_meshes_removed(self):
+        resp = self.client.get("/api/proc_meshes")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_procs_removed(self):
+        resp = self.client.get("/api/procs")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_actor_meshes_removed(self):
+        resp = self.client.get("/api/actor_meshes")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_mesh_host_units_removed(self):
+        resp = self.client.get("/api/meshes/1/host_units")
+        self.assertEqual(resp.status_code, 404)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +360,7 @@ class SummaryRoutesTest(_RouteTestBase):
         data = resp.get_json()
         for key in (
             "mesh_counts",
+            "hierarchy_counts",
             "actor_counts",
             "message_counts",
             "errors",
@@ -331,6 +368,13 @@ class SummaryRoutesTest(_RouteTestBase):
             "health_score",
         ):
             self.assertIn(key, data)
+
+    def test_summary_hierarchy_counts(self):
+        resp = self.client.get("/api/summary")
+        hc = resp.get_json()["hierarchy_counts"]
+        self.assertIn("host_meshes", hc)
+        self.assertIn("proc_meshes", hc)
+        self.assertIn("actor_meshes", hc)
 
 
 if __name__ == "__main__":

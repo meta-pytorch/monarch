@@ -42,9 +42,12 @@ def summary():
 
 @api.route("/meshes")
 def list_meshes():
-    """List all meshes.  Optional query param: ?class=Host"""
-    mesh_class = request.args.get("class")
-    return jsonify(db.list_meshes(mesh_class))
+    """List meshes.  Optional: ?class=Host&parent_mesh_id=1"""
+    class_filter = request.args.get("class", type=str)
+    parent_mesh_id = request.args.get("parent_mesh_id", type=int)
+    return jsonify(
+        db.list_meshes(class_filter=class_filter, parent_mesh_id=parent_mesh_id)
+    )
 
 
 @api.route("/meshes/<int:mesh_id>")
@@ -72,9 +75,9 @@ def get_mesh_children(mesh_id):
 
 @api.route("/actors")
 def list_actors():
-    """List all actors.  Optional query param: ?mesh_id=3"""
+    """List all actors.  Optional: ?mesh_id=1"""
     mesh_id = request.args.get("mesh_id", type=int)
-    return jsonify(db.list_actors(mesh_id))
+    return jsonify(db.list_actors(mesh_id=mesh_id))
 
 
 @api.route("/actors/<int:actor_id>")

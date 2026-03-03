@@ -6,8 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-/** Data contract types matching the Monarch Dashboard SQLite schema. */
+/** Data contract types matching the Monarch Dashboard API. */
 
+/** A mesh in the hierarchy (Host, Proc, or actor mesh). */
 export interface Mesh {
   id: number;
   timestamp_us: number;
@@ -19,6 +20,7 @@ export interface Mesh {
   parent_view_json: string | null;
 }
 
+/** An actor (regular actors + system agents like HostAgent, ProcAgent). */
 export interface Actor {
   id: number;
   timestamp_us: number;
@@ -26,7 +28,7 @@ export interface Actor {
   rank: number;
   full_name: string;
   latest_status?: string | null;
-  latest_status_timestamp_us?: number | null;
+  status_timestamp_us?: number | null;
 }
 
 export interface ActorStatusEvent {
@@ -58,7 +60,7 @@ export interface SentMessage {
   id: number;
   timestamp_us: number;
   sender_actor_id: number;
-  actor_mesh_id: number;
+  mesh_id: number;
   view_json: string;
   shape_json: string;
 }
@@ -66,7 +68,12 @@ export interface SentMessage {
 /** Navigation breadcrumb item. */
 export interface NavItem {
   label: string;
-  level: "hosts" | "procs" | "actor_meshes" | "actors" | "actor_detail";
+  level:
+    | "host_meshes"
+    | "proc_meshes"
+    | "actor_meshes"
+    | "actors"
+    | "actor_detail";
   meshId?: number;
   actorId?: number;
 }
@@ -75,7 +82,11 @@ export interface NavItem {
 export interface Summary {
   mesh_counts: {
     total: number;
-    by_class: Record<string, number>;
+  };
+  hierarchy_counts: {
+    host_meshes: number;
+    proc_meshes: number;
+    actor_meshes: number;
   };
   actor_counts: {
     total: number;

@@ -9,15 +9,33 @@
 """Deterministic fake data generator for the Monarch Dashboard.
 
 Produces a SQLite database with realistic Monarch telemetry data spanning
-a 5-minute window. The topology includes 2 host meshes, 2 procs per host,
-and 4 actors per host mesh (1 system ProcAgent + 1 user actor per proc).
+a 5-minute window. The topology follows the real Monarch hierarchy:
+
+    meshes table (all mesh types differentiated by class):
+      Host meshes   (class="Host", parent_mesh_id=NULL)
+        -> Proc meshes  (class="Proc", parent_mesh_id=host_mesh.id)
+          -> Actor meshes (class="Python<Trainer>" etc., parent_mesh_id=proc_mesh.id)
+
+    actors table (all actors including system agents):
+      HostAgent  (mesh_id -> host mesh)
+      ProcAgent  (mesh_id -> proc mesh)
+      Regular actors (mesh_id -> actor mesh)
+
+Sizing (deterministic):
+  - 2 host meshes
+  - 2 proc meshes per host mesh (4 total)
+  - 1 actor mesh per proc mesh (4 total)
+  - 1 HostAgent per host mesh (2 total)
+  - 1 ProcAgent per proc mesh (4 total)
+  - 1 user actor per actor mesh (4 total)
+  - 10 actors total
 
 The generated data exercises all dashboard features:
-  - Full mesh hierarchy (host -> proc -> actor meshes)
+  - Full mesh hierarchy via parent_mesh_id
   - System actors (HostAgent, ProcAgent) and user actors
   - Complete ActorStatus lifecycle with failure at T=4:00
   - Non-sparse message traffic across multiple endpoints
-  - Death propagation from a failed actor to its mesh siblings
+  - Death propagation from a failed actor to its host mesh siblings
 
 Usage:
     python generate.py [--output PATH]
@@ -26,6 +44,7 @@ The default output is fake_data.db in the same directory as this script.
 """
 
 import argparse
+import json
 import os
 import random
 import sqlite3
@@ -36,7 +55,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 SEED = 42
-"""RNG seed — keeps every run reproducible."""
+"""RNG seed -- keeps every run reproducible."""
 
 BASE_TIMESTAMP_US = 1_700_000_000_000_000
 """Epoch anchor in microseconds (approx 2023-11-14). All timestamps are
@@ -80,6 +99,16 @@ ENDPOINTS = [
 
 MESSAGE_STATUSES = ["queued", "sent", "delivered", "failed"]
 """Possible message lifecycle statuses."""
+
+# ---------------------------------------------------------------------------
+# Hierarchy naming pools
+# ---------------------------------------------------------------------------
+
+_ACTOR_MESH_CLASSES = [
+    "Python<Trainer>",
+    "Python<DataLoader>",
+    "Python<Aggregator>",
+]
 
 # ---------------------------------------------------------------------------
 # Schema DDL
@@ -140,11 +169,11 @@ CREATE TABLE IF NOT EXISTS sent_messages (
     id              INTEGER PRIMARY KEY,
     timestamp_us    INTEGER NOT NULL,
     sender_actor_id INTEGER NOT NULL,
-    actor_mesh_id   INTEGER NOT NULL,
+    mesh_id         INTEGER NOT NULL,
     view_json       TEXT    NOT NULL,
     shape_json      TEXT    NOT NULL,
     FOREIGN KEY (sender_actor_id) REFERENCES actors(id),
-    FOREIGN KEY (actor_mesh_id)   REFERENCES meshes(id)
+    FOREIGN KEY (mesh_id)         REFERENCES meshes(id)
 );
 """
 
@@ -171,138 +200,165 @@ class _IdSeq:
 
 
 # ---------------------------------------------------------------------------
-# Mesh generation
+# Hierarchy generation
 # ---------------------------------------------------------------------------
 
 
-def _generate_meshes() -> list[dict]:
-    """Build the full mesh hierarchy.
+def _generate_hierarchy() -> tuple[
+    list[dict],
+    list[dict],
+    dict[int, int],
+    int,
+    int,
+    str,
+]:
+    """Build the 2-table Monarch hierarchy (meshes + actors).
 
-    Returns a list of row dicts ready for INSERT.  The topology is:
-
-        host_mesh_0  (id=1)
-          proc_mesh_0_0  (id=3)   ->  actor_mesh_0_0  (id=7)
-          proc_mesh_0_1  (id=4)   ->  actor_mesh_0_1  (id=8)
-        host_mesh_1  (id=2)
-          proc_mesh_1_0  (id=5)   ->  actor_mesh_1_0  (id=9)
-          proc_mesh_1_1  (id=6)   ->  actor_mesh_1_1  (id=10)
+    Returns:
+        (meshes, actors, actor_to_host_mesh, failed_host_mesh_id,
+         trigger_actor_id, failed_host_name)
     """
     ts = _ts(0)
-    meshes: list[dict] = []
 
-    # Host meshes (ids 1–2)
-    for h in range(2):
+    mesh_seq = _IdSeq()
+    actor_seq = _IdSeq()
+
+    meshes: list[dict] = []
+    actors: list[dict] = []
+    # Maps actor_id -> host_mesh_id for death propagation
+    actor_to_host_mesh: dict[int, int] = {}
+
+    failed_host_mesh_id: int | None = None
+    trigger_actor_id: int | None = None
+    failed_host_name: str = ""
+
+    for h_idx in range(2):
+        host_mesh_id = mesh_seq()
+        host_given = f"host_mesh_{h_idx}"
+        host_full = host_given
         meshes.append(
             {
-                "id": h + 1,
+                "id": host_mesh_id,
                 "timestamp_us": ts,
                 "class": "Host",
-                "given_name": f"host_mesh_{h}",
-                "full_name": f"/host_mesh_{h}",
-                "shape_json": '{"dims": [2]}',
+                "given_name": host_given,
+                "full_name": host_full,
+                "shape_json": json.dumps({"dims": [1]}),
                 "parent_mesh_id": None,
                 "parent_view_json": None,
             }
         )
 
-    # Proc meshes (ids 3–6)
-    proc_id = 3
-    for h in range(2):
-        for p in range(2):
+        # Designate the second host mesh as failing.
+        if h_idx == 1:
+            failed_host_mesh_id = host_mesh_id
+            failed_host_name = host_full
+
+        # Create HostAgent actor for this host mesh.
+        hma_id = actor_seq()
+        hma_full = f"{host_full}/HostAgent[0]"
+        actors.append(
+            {
+                "id": hma_id,
+                "timestamp_us": ts,
+                "mesh_id": host_mesh_id,
+                "rank": 0,
+                "full_name": hma_full,
+            }
+        )
+        actor_to_host_mesh[hma_id] = host_mesh_id
+
+        # First actor in failing host mesh is the trigger.
+        if host_mesh_id == failed_host_mesh_id and trigger_actor_id is None:
+            trigger_actor_id = hma_id
+
+        # Proc meshes under this host mesh (deterministic: 2 per host).
+        n_proc_meshes = 2
+        for pm_idx in range(n_proc_meshes):
+            proc_mesh_id = mesh_seq()
+            pm_given = f"proc_mesh_{pm_idx}"
+            pm_full = f"{host_full}/{pm_given}"
             meshes.append(
                 {
-                    "id": proc_id,
+                    "id": proc_mesh_id,
                     "timestamp_us": ts,
                     "class": "Proc",
-                    "given_name": f"proc_mesh_{h}_{p}",
-                    "full_name": f"/host_mesh_{h}/proc_mesh_{h}_{p}",
-                    "shape_json": '{"dims": [1]}',
-                    "parent_mesh_id": h + 1,
-                    "parent_view_json": f'{{"offset": [{p}], "sizes": [1]}}',
+                    "given_name": pm_given,
+                    "full_name": pm_full,
+                    "shape_json": json.dumps({"dims": [1]}),
+                    "parent_mesh_id": host_mesh_id,
+                    "parent_view_json": json.dumps({"offset": [0], "sizes": [1]}),
                 }
             )
-            proc_id += 1
 
-    # Actor meshes (ids 7–10), one per proc mesh
-    actor_mesh_id = 7
-    proc_id = 3
-    for h in range(2):
-        for p in range(2):
-            meshes.append(
-                {
-                    "id": actor_mesh_id,
-                    "timestamp_us": ts,
-                    "class": "Python<Trainer>",
-                    "given_name": f"actor_mesh_{h}_{p}",
-                    "full_name": (
-                        f"/host_mesh_{h}/proc_mesh_{h}_{p}/actor_mesh_{h}_{p}"
-                    ),
-                    "shape_json": '{"dims": [1]}',
-                    "parent_mesh_id": proc_id,
-                    "parent_view_json": '{"offset": [0], "sizes": [1]}',
-                }
-            )
-            actor_mesh_id += 1
-            proc_id += 1
-
-    return meshes
-
-
-# ---------------------------------------------------------------------------
-# Actor generation
-# ---------------------------------------------------------------------------
-
-
-def _generate_actors(meshes: list[dict]) -> list[dict]:
-    """Create actors for each mesh.
-
-    For each host mesh: 1 HostAgent (rank 0).
-    For each proc mesh: 1 ProcAgent (rank 0).
-    For each actor mesh: 1 PythonActor<Trainer> user actor (rank 0).
-
-    This yields 2 + 4 + 4 = 10 actors total.
-    """
-    ts = _ts(0)
-    next_id = _IdSeq()
-    actors: list[dict] = []
-
-    mesh_by_id = {m["id"]: m for m in meshes}
-
-    for m in meshes:
-        cls = m["class"]
-        if cls == "Host":
+            # Create ProcAgent actor for this proc mesh.
+            pma_id = actor_seq()
+            pma_full = f"{pm_full}/ProcAgent[0]"
             actors.append(
                 {
-                    "id": next_id(),
+                    "id": pma_id,
                     "timestamp_us": ts,
-                    "mesh_id": m["id"],
+                    "mesh_id": proc_mesh_id,
                     "rank": 0,
-                    "full_name": f"{m['full_name']}/HostAgent[0]",
+                    "full_name": pma_full,
                 }
             )
-        elif cls == "Proc":
-            actors.append(
-                {
-                    "id": next_id(),
-                    "timestamp_us": ts,
-                    "mesh_id": m["id"],
-                    "rank": 0,
-                    "full_name": f"{m['full_name']}/ProcAgent[0]",
-                }
-            )
-        else:
-            # User actor mesh
-            actors.append(
-                {
-                    "id": next_id(),
-                    "timestamp_us": ts,
-                    "mesh_id": m["id"],
-                    "rank": 0,
-                    "full_name": f"{m['full_name']}/PythonActor<Trainer>[0]",
-                }
-            )
+            actor_to_host_mesh[pma_id] = host_mesh_id
 
-    return actors
+            if host_mesh_id == failed_host_mesh_id and trigger_actor_id is None:
+                trigger_actor_id = pma_id
+
+            # Actor meshes under this proc mesh (deterministic: 1 per proc).
+            n_actor_meshes = 1
+            for _am_idx in range(n_actor_meshes):
+                am_class = _ACTOR_MESH_CLASSES[pm_idx % len(_ACTOR_MESH_CLASSES)]
+                actor_mesh_id = mesh_seq()
+                am_given = am_class
+                am_full = f"{pm_full}/{am_class}"
+                meshes.append(
+                    {
+                        "id": actor_mesh_id,
+                        "timestamp_us": ts,
+                        "class": am_class,
+                        "given_name": am_given,
+                        "full_name": am_full,
+                        "shape_json": json.dumps({"dims": [2]}),
+                        "parent_mesh_id": proc_mesh_id,
+                        "parent_view_json": json.dumps({"offset": [0], "sizes": [1]}),
+                    }
+                )
+
+                # Regular actors in this actor mesh (deterministic: 1 per mesh).
+                n_actors = 1
+                actor_type = am_class.replace("Python<", "PythonActor<")
+                for rank in range(n_actors):
+                    aid = actor_seq()
+                    actor_full = f"{am_full}/{actor_type}[{rank}]"
+                    actors.append(
+                        {
+                            "id": aid,
+                            "timestamp_us": ts,
+                            "mesh_id": actor_mesh_id,
+                            "rank": rank,
+                            "full_name": actor_full,
+                        }
+                    )
+                    actor_to_host_mesh[aid] = host_mesh_id
+
+                    if host_mesh_id == failed_host_mesh_id and trigger_actor_id is None:
+                        trigger_actor_id = aid
+
+    assert failed_host_mesh_id is not None
+    assert trigger_actor_id is not None
+
+    return (
+        meshes,
+        actors,
+        actor_to_host_mesh,
+        failed_host_mesh_id,
+        trigger_actor_id,
+        failed_host_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -310,24 +366,12 @@ def _generate_actors(meshes: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _is_in_failed_host(actor: dict, meshes_by_id: dict) -> bool:
-    """Return True if the actor belongs to host_mesh_1 (the failing mesh)."""
-    mesh = meshes_by_id[actor["mesh_id"]]
-    # Walk up to the host mesh.
-    while mesh["parent_mesh_id"] is not None:
-        mesh = meshes_by_id[mesh["parent_mesh_id"]]
-    return mesh["id"] == 2  # host_mesh_1
-
-
-def _is_failure_actor(actor: dict, meshes_by_id: dict) -> bool:
-    """The actor in proc_mesh_1_1's actor mesh is the one that fails first."""
-    mesh = meshes_by_id[actor["mesh_id"]]
-    return mesh["given_name"] == "actor_mesh_1_1"
-
-
 def _generate_status_events(
     actors: list[dict],
-    meshes: list[dict],
+    actor_to_host_mesh: dict[int, int],
+    failed_host_mesh_id: int,
+    trigger_actor_id: int,
+    failed_host_name: str,
     rng: random.Random,
 ) -> list[dict]:
     """Produce actor_status_events covering the full 5-min timeline.
@@ -336,23 +380,23 @@ def _generate_status_events(
       T=0:00  created
       T=0:05  initializing
       T=0:15  idle
-      T=0:20–3:50  cycle idle/processing (with occasional saving/loading)
-      T=4:00  failure actor -> failed; others in host_mesh_1 -> stopping
-      T=4:10  remaining host_mesh_1 actors -> stopped
-      host_mesh_0 actors continue idle/processing until T=5:00
+      T=0:20-3:50  cycle idle/processing (with occasional saving/loading)
+      T=4:00  failure actor -> failed; others in same host mesh -> stopping
+      T=4:10  remaining host mesh actors -> stopped
+      Actors in other host meshes continue idle/processing until T=5:00
 
     Every valid ActorStatus value is used at least once across the full set.
     """
     next_id = _IdSeq()
     events: list[dict] = []
-    meshes_by_id = {m["id"]: m for m in meshes}
 
     # Track which special statuses we still need to emit.
     needed = {"client", "unknown", "saving", "loading"}
 
     for idx, actor in enumerate(actors):
-        in_failed_host = _is_in_failed_host(actor, meshes_by_id)
-        is_trigger = _is_failure_actor(actor, meshes_by_id)
+        host_mesh_id = actor_to_host_mesh[actor["id"]]
+        in_failed_host = host_mesh_id == failed_host_mesh_id
+        is_trigger = actor["id"] == trigger_actor_id
 
         # --- Early lifecycle (all actors) ---
         events.append(
@@ -426,7 +470,7 @@ def _generate_status_events(
             )
             needed.discard("unknown")
 
-        # --- Steady-state cycling T=0:20 – T=3:50 ---
+        # --- Steady-state cycling T=0:20 - T=3:50 ---
         t = 0.333  # ~20 s in minutes
         cycle_statuses = ["idle", "processing"]
         cycle_idx = 0
@@ -502,7 +546,7 @@ def _generate_status_events(
 
             t += rng.uniform(0.15, 0.35)
 
-        # --- Failure sequence at T=4:00 (host_mesh_1 only) ---
+        # --- Failure sequence at T=4:00 (failing host mesh only) ---
         if is_trigger:
             events.append(
                 {
@@ -520,7 +564,7 @@ def _generate_status_events(
                     "timestamp_us": _ts(4.0, offset_us=5_000_000),  # T=4:05
                     "actor_id": actor["id"],
                     "new_status": "stopping",
-                    "reason": "death propagation from proc_mesh_1_1",
+                    "reason": f"death propagation from {failed_host_name}",
                 }
             )
             events.append(
@@ -529,11 +573,11 @@ def _generate_status_events(
                     "timestamp_us": _ts(4.167),  # T=4:10
                     "actor_id": actor["id"],
                     "new_status": "stopped",
-                    "reason": "death propagation from proc_mesh_1_1",
+                    "reason": f"death propagation from {failed_host_name}",
                 }
             )
         else:
-            # host_mesh_0 actors keep running.
+            # Actors in healthy host meshes keep running.
             t_end = 4.0
             while t_end < 5.0:
                 status = cycle_statuses[cycle_idx % 2]
@@ -559,14 +603,13 @@ def _generate_status_events(
 
 def _generate_messages(
     actors: list[dict],
-    meshes: list[dict],
     rng: random.Random,
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Generate messages, message_status_events, and sent_messages.
 
     Produces non-sparse traffic: each communicating actor pair has multiple
     messages across different endpoints.  Messages flow both within the same
-    proc mesh (local) and across proc meshes (remote).
+    mesh and across meshes.
 
     Returns (messages, message_status_events, sent_messages).
     """
@@ -578,11 +621,7 @@ def _generate_messages(
     msg_status_events: list[dict] = []
     sent_messages: list[dict] = []
 
-    meshes_by_id = {m["id"]: m for m in meshes}
-
-    # Build actor pairs. We generate messages between every ordered pair of
-    # actors that belong to actor meshes (user actors) or proc meshes (system).
-    # For simplicity, every actor can message every other actor.
+    actors_by_id = {a["id"]: a for a in actors}
     actor_ids = [a["id"] for a in actors]
 
     t = 0.333  # Start messages at ~20 s
@@ -626,16 +665,15 @@ def _generate_messages(
                 )
 
             # Sent message record.
-            sender_actor = next(a for a in actors if a["id"] == sender_id)
-            sender_mesh = meshes_by_id[sender_actor["mesh_id"]]
+            sender_actor = actors_by_id[sender_id]
             sent_messages.append(
                 {
                     "id": sm_id(),
                     "timestamp_us": ts_msg,
                     "sender_actor_id": sender_id,
-                    "actor_mesh_id": sender_actor["mesh_id"],
+                    "mesh_id": sender_actor["mesh_id"],
                     "view_json": '{"offset": [0], "sizes": [1]}',
-                    "shape_json": sender_mesh["shape_json"],
+                    "shape_json": '{"dims": [1]}',
                 }
             )
 
@@ -664,7 +702,7 @@ def _insert_rows(
     conn.executemany(sql, [tuple(r[c] for c in cols) for r in rows])
 
 
-def generate(db_path: str | None = None) -> str:
+def generate_fake_data(db_path: str | None = None) -> str:
     """Generate the fake SQLite database and return the file path.
 
     Args:
@@ -679,11 +717,26 @@ def generate(db_path: str | None = None) -> str:
 
     rng = random.Random(SEED)
 
-    # Build all data sets.
-    meshes = _generate_meshes()
-    actors = _generate_actors(meshes)
-    status_events = _generate_status_events(actors, meshes, rng)
-    messages, msg_status_events, sent_messages = _generate_messages(actors, meshes, rng)
+    # Build the full hierarchy.
+    (
+        meshes,
+        actors,
+        actor_to_host_mesh,
+        failed_host_mesh_id,
+        trigger_actor_id,
+        failed_host_name,
+    ) = _generate_hierarchy()
+
+    # Generate events.
+    status_events = _generate_status_events(
+        actors,
+        actor_to_host_mesh,
+        failed_host_mesh_id,
+        trigger_actor_id,
+        failed_host_name,
+        rng,
+    )
+    messages, msg_status_events, sent_messages = _generate_messages(actors, rng)
 
     # Write to SQLite.
     if os.path.exists(db_path):
@@ -705,6 +758,10 @@ def generate(db_path: str | None = None) -> str:
     return os.path.abspath(db_path)
 
 
+# Backward compatibility alias.
+generate = generate_fake_data
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -720,7 +777,7 @@ def main() -> None:
         help="Output SQLite file path (default: fake_data.db beside this script)",
     )
     args = parser.parse_args()
-    path = generate(args.output)
+    path = generate_fake_data(args.output)
     print(f"Generated fake data: {path}")
 
 

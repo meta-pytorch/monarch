@@ -20,7 +20,7 @@ const TIER_ITEMS = [
   { radius: 14, label: "Host Mesh" },
   { radius: 11, label: "Proc Mesh" },
   { radius: 9, label: "Actor Mesh" },
-  { radius: 7, label: "Actor" },
+  { radius: 6, label: "Actor" },
 ];
 
 /** Top-right legend overlay for the DAG view. */

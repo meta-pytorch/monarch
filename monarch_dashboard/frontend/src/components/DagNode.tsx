@@ -51,9 +51,10 @@ export function DagNodeComponent({
   const color = statusColor(node.status);
   const r = node.radius;
   const isActor = node.tier === "actor";
+  const isSmallNode = node.tier === "actor" || node.tier === "actor_mesh";
 
   // Truncate label for small nodes.
-  const maxChars = isActor ? 12 : 14;
+  const maxChars = isSmallNode ? 12 : 14;
   const displayLabel =
     node.label.length > maxChars
       ? node.label.slice(0, maxChars - 1) + "\u2026"
@@ -110,17 +111,17 @@ export function DagNodeComponent({
       {/* Label */}
       <text
         textAnchor="middle"
-        dy={isActor ? "0.35em" : "-0.15em"}
+        dy={isSmallNode ? "0.35em" : "-0.15em"}
         fill="var(--text-primary)"
-        fontSize={isActor ? "9px" : "10px"}
+        fontSize={isSmallNode ? "9px" : "10px"}
         fontFamily="var(--font-display)"
         fontWeight="500"
       >
         {displayLabel}
       </text>
 
-      {/* Subtitle (tier label) - only for mesh nodes */}
-      {!isActor && (
+      {/* Subtitle (tier label) - only for non-small nodes */}
+      {!isSmallNode && (
         <text
           textAnchor="middle"
           dy="1.3em"
