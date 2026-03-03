@@ -1081,9 +1081,9 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                 }
             };
 
-            // Flush the channel receiver to ensure pending acks are
+            // Join the channel receiver to ensure pending acks are
             // sent before the underlying channel server is torn down.
-            rx.flush().await;
+            rx.join().await;
 
             result
         });

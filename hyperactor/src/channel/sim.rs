@@ -406,7 +406,7 @@ impl<M: RemoteMessage> Rx<M> for SimRx<M> {
         self.addr.clone()
     }
 
-    async fn flush(self) {}
+    async fn join(self) {}
 }
 
 #[cfg(test)]

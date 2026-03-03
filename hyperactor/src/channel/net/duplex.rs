@@ -148,7 +148,7 @@ impl<M: RemoteMessage> Rx<M> for DuplexRx<M> {
         self.1.clone()
     }
 
-    async fn flush(self) {}
+    async fn join(self) {}
 }
 
 /// Sender half of a duplex channel.

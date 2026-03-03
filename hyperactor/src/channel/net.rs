@@ -262,9 +262,9 @@ impl<M: RemoteMessage> Rx<M> for NetRx<M> {
 
     /// Gracefully shut down the channel server, waiting for pending
     /// acks to be flushed before returning.
-    async fn flush(mut self) {
+    async fn join(mut self) {
         self.2
-            .stop(&format!("NetRx flushed; channel address: {}", self.1));
+            .stop(&format!("NetRx joined; channel address: {}", self.1));
         let _ = (&mut self.2).await;
         // Drop will call stop() again which is harmless (token already cancelled).
     }

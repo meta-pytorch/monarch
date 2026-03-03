@@ -184,7 +184,7 @@ pub trait Rx<M: RemoteMessage> {
     /// Gracefully shut down the channel receiver, flushing any pending
     /// acks before returning. Implementations must ensure all pending
     /// acks are sent before this method returns.
-    async fn flush(self)
+    async fn join(self)
     where
         Self: Sized;
 }
@@ -275,7 +275,7 @@ impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
         self.addr.clone()
     }
 
-    async fn flush(self) {}
+    async fn join(self) {}
 }
 
 /// The hostname to use for TLS connections.
@@ -1076,14 +1076,14 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
         }
     }
 
-    async fn flush(self) {
+    async fn join(self) {
         match self.inner {
-            ChannelRxKind::Local(rx) => rx.flush().await,
-            ChannelRxKind::Tcp(rx) => rx.flush().await,
-            ChannelRxKind::MetaTls(rx) => rx.flush().await,
-            ChannelRxKind::Tls(rx) => rx.flush().await,
-            ChannelRxKind::Unix(rx) => rx.flush().await,
-            ChannelRxKind::Sim(rx) => rx.flush().await,
+            ChannelRxKind::Local(rx) => rx.join().await,
+            ChannelRxKind::Tcp(rx) => rx.join().await,
+            ChannelRxKind::MetaTls(rx) => rx.join().await,
+            ChannelRxKind::Tls(rx) => rx.join().await,
+            ChannelRxKind::Unix(rx) => rx.join().await,
+            ChannelRxKind::Sim(rx) => rx.join().await,
         }
     }
 }
