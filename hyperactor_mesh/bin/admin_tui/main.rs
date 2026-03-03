@@ -183,13 +183,31 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 
 // Main loop
 
+#[cfg(fbcode_build)]
+#[fbinit::main]
+async fn main(fb: fbinit::FacebookInit) -> io::Result<()> {
+    run(Some(fb)).await
+}
+
+#[cfg(not(fbcode_build))]
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let args = Args::parse();
+    run(None).await
+}
+
+async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
+    let mut args = Args::parse();
 
     if !io::stdout().is_terminal() {
         eprintln!("This TUI requires a real terminal.");
         return Ok(());
+    }
+
+    // Resolve mast_conda:/// handles to https://fqdn:port before
+    // building the HTTP client (INV-DISPATCH).
+    if args.addr.starts_with("mast_conda:///") {
+        let resolver = client::MastResolver::new(fb, args.mast_resolver.as_deref());
+        args.addr = client::resolve_mast_addr(&resolver, &args.addr, args.admin_port).await;
     }
 
     // Build the HTTP client and base URL, configuring TLS when

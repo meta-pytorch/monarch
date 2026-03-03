@@ -1,6 +1,6 @@
 # Bootstrapping Overview
 
-*One sentence:* the controller boots remote hosts, then spawns procs (**1 proc = 1 OS process**). Each host runs one **HostMeshAgent**; **every proc runs its own ProcAgent** supervising that proc’s user/service actors.
+*One sentence:* the controller boots remote hosts, then spawns procs (**1 proc = 1 OS process**). Each host runs one **HostAgent**; **every proc runs its own ProcAgent** supervising that proc’s user/service actors.
 
 <figure id="fig-arch" style="text-align:center;">
   <img src="image/mesh-elements.png"
@@ -15,7 +15,7 @@
 ## What you’re looking at
 
 - **Controller process** (left): owns orchestration APIs and kicks off bootstrapping.
-- **HostMeshAgent** (one per host): manages host-local resources and the service proc.
+- **HostAgent** (one per host): manages host-local resources and the service proc.
 - **ProcAgent** (one per proc): supervises that proc’s actors (service + user).
 - **Procs** (squares): runtime containers; *1 proc = 1 OS process*.
 
@@ -23,7 +23,7 @@
 
 1. Obtain a **proc + instance** (control endpoint).
 2. Use the **v0 process allocator** and **bootstrap handshake** to get remote runtimes.
-3. Promote those runtimes into real **hosts** (start HostMeshAgent).
+3. Promote those runtimes into real **hosts** (start HostAgent).
 4. **Spawn procs and actors** on those hosts (start proc/ProcAgent, spawn  actors).
 
 _For the full, runnable test (see `bootstrap_canonical_simple`), see the appendix._

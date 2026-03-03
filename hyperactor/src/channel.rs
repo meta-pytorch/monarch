@@ -43,6 +43,15 @@ pub use net::try_tls_acceptor;
 pub use net::try_tls_connector;
 pub use net::try_tls_pem_bundle;
 
+/// Duplex channel API: a single connection carries messages in both directions.
+pub mod duplex {
+    pub use super::net::duplex::DuplexRx;
+    pub use super::net::duplex::DuplexServer;
+    pub use super::net::duplex::DuplexTx;
+    pub use super::net::duplex::dial;
+    pub use super::net::duplex::serve;
+}
+
 /// The type of error that can occur on channel operations.
 #[derive(thiserror::Error, Debug)]
 pub enum ChannelError {

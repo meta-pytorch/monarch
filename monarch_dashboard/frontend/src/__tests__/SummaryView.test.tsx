@@ -45,7 +45,7 @@ const MOCK_SUMMARY = {
     stopped_actors: [
       {
         actor_id: 6,
-        full_name: "//root/host_mesh_1/proc_mesh_1_1/ProcMeshAgent[0]",
+        full_name: "//root/host_mesh_1/proc_mesh_1_1/ProcAgent[0]",
         reason: "death propagation from proc_mesh_1_1",
         timestamp_us: 1700000250000000,
         mesh_id: 6,

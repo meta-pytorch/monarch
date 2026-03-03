@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 """Tests for the Monarch Dashboard fake data generator.
 
 Validates that the generated SQLite database conforms to the data contract
@@ -13,7 +15,7 @@ defined in the data contract, including:
   - 5-minute timeline with actor failure at minute 4
   - All ActorStatus enum values are exercised
   - Non-sparse message data
-  - Proper system actor (HostMeshAgent/ProcMeshAgent) and user actor presence
+  - Proper system actor (HostAgent/ProcAgent) and user actor presence
   - Death propagation semantics
   - Deterministic (reproducible) output
 """
@@ -221,19 +223,19 @@ class ActorTest(unittest.TestCase):
         os.remove(cls.db_path)
 
     def test_total_actor_count(self):
-        """10 actors: 2 HostMeshAgent + 4 ProcMeshAgent + 4 user actors."""
+        """10 actors: 2 HostAgent + 4 ProcAgent + 4 user actors."""
         count = self.conn.execute("SELECT COUNT(*) FROM actors").fetchone()[0]
         self.assertEqual(count, 10)
 
     def test_host_mesh_agents(self):
         rows = self.conn.execute(
-            "SELECT * FROM actors WHERE full_name LIKE '%HostMeshAgent%'"
+            "SELECT * FROM actors WHERE full_name LIKE '%HostAgent%'"
         ).fetchall()
         self.assertEqual(len(rows), 2)
 
     def test_proc_mesh_agents(self):
         rows = self.conn.execute(
-            "SELECT * FROM actors WHERE full_name LIKE '%ProcMeshAgent%'"
+            "SELECT * FROM actors WHERE full_name LIKE '%ProcAgent%'"
         ).fetchall()
         self.assertEqual(len(rows), 4)
 
@@ -258,16 +260,16 @@ class ActorTest(unittest.TestCase):
         """Each host mesh should have 4 actors in its subtree.
 
         host -> proc meshes -> actor meshes, each with one actor, plus
-        the host-level HostMeshAgent and proc-level ProcMeshAgents.
+        the host-level HostAgent and proc-level ProcMeshAgents.
         That's 1 (host agent) + 2 (proc agents) + 2 (user actors) = 5 per host...
         Wait — the plan says "4 actors per host mesh", meaning user+system
         actors linked under the host's subtree.  Our count is:
-          host mesh -> 1 HostMeshAgent
+          host mesh -> 1 HostAgent
           2 proc meshes -> 2 ProcMeshAgents
           2 actor meshes -> 2 user actors
           Total = 5.
         The plan's "4 actors per host mesh" likely counts the proc-level and
-        actor-level entities (excluding the HostMeshAgent itself).  We verify
+        actor-level entities (excluding the HostAgent itself).  We verify
         the subtree total is 5.
         """
         host_ids = [
