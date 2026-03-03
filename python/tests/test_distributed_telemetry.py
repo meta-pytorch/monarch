@@ -63,66 +63,6 @@ def cleanup_callbacks():
     telemetry_actor._spawn_callback_registered = False
 
 
-@pytest.mark.timeout(120)
-def test_distributed_telemetry_auto_callback(cleanup_callbacks) -> None:
-    """Test that start_telemetry registers a spawn callback."""
-    initial_callback_count = len(_proc_mesh_spawn_callbacks)
-
-    # Start telemetry with fake data - returns QueryEngine directly
-    engine = start_telemetry(use_fake_data=True)
-
-    # Verify callback was registered
-    assert len(_proc_mesh_spawn_callbacks) == initial_callback_count + 1
-
-    # Spawn workers - callback should fire and add them as children
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    hosts.spawn_procs(per_host={"workers": 2})
-
-    # Query should return data from coordinator + 2 workers = 3 sources
-    # Each source has 10 hosts, so we expect 30 total hosts
-    result = engine.query("SELECT COUNT(*) as total_hosts FROM hosts")
-    total_hosts = result.to_pydict()["total_hosts"][0]
-    assert total_hosts == 30, f"Expected 30 hosts, got {total_hosts}"
-
-    # Clean up
-    hosts.shutdown().get()
-
-
-@pytest.mark.timeout(180)
-def test_distributed_telemetry_grandchild(cleanup_callbacks) -> None:
-    """Test that grandchild data makes it to the top-level query."""
-    # Start telemetry with fake data - returns QueryEngine directly
-    engine = start_telemetry(use_fake_data=True)
-
-    # Spawn workers
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-
-    # Spawn worker actors for business logic
-    workers = worker_procs.spawn("worker", WorkerActor)
-    workers.initialized.get()
-
-    # Spawn a grandchild - telemetry automatically tracks it
-    hosts.spawn_procs(name="grandchild")
-
-    # Query should return data from coordinator + 2 workers + 1 grandchild = 4 sources
-    # Each source has 10 hosts, so we expect 40 total hosts
-    result = engine.query("SELECT COUNT(*) as total_hosts FROM hosts")
-    total_hosts = result.to_pydict()["total_hosts"][0]
-    assert total_hosts == 40, f"Expected 40 hosts (4 sources x 10), got {total_hosts}"
-
-    # Verify metrics are also collected from all sources
-    # Each source has 960 metrics
-    result = engine.query("SELECT COUNT(*) as total_metrics FROM metrics")
-    total_metrics = result.to_pydict()["total_metrics"][0]
-    assert total_metrics == 960 * 4, f"Expected {960 * 4} metrics, got {total_metrics}"
-
-    # Clean up
-    hosts.shutdown().get()
-
-
 @pytest.mark.timeout(60)
 def test_record_batch_tracing(cleanup_callbacks) -> None:
     """Test that RecordBatchSink captures trace events as RecordBatches."""
@@ -164,7 +104,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
 def test_actors_table(cleanup_callbacks) -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn some worker actors - this should trigger notify_actor_created
     job = ProcessJob({"hosts": 1})
@@ -204,7 +144,7 @@ def test_actors_table(cleanup_callbacks) -> None:
 def test_meshes_table(cleanup_callbacks) -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn some worker actors - this should trigger notify_mesh_created
     job = ProcessJob({"hosts": 1})
@@ -298,7 +238,7 @@ def test_meshes_table(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
     job = ProcessJob({"hosts": 1})
@@ -359,7 +299,7 @@ def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn actors — this populates both the actors and meshes tables
     job = ProcessJob({"hosts": 1})
@@ -407,7 +347,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 1})
@@ -467,7 +407,7 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 2})
@@ -542,7 +482,7 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_actor_status_events_table(cleanup_callbacks) -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn worker actors — actors go through status transitions during spawn
     job = ProcessJob({"hosts": 1})
@@ -601,7 +541,7 @@ def test_actor_status_events_table(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
-    engine = start_telemetry(use_fake_data=False, batch_size=10)
+    engine = start_telemetry(batch_size=10)
 
     # Spawn 3 workers so we can slice a subset
     job = ProcessJob({"hosts": 1})

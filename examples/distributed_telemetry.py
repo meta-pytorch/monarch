@@ -8,10 +8,9 @@
 """
 Distributed Telemetry with Real Tracing Data.
 
-This example demonstrates querying real tracing data collected from actors.
-Unlike the hello_world example which uses fake demo data, this example:
+This example demonstrates querying real tracing data collected from actors:
 
-1. Starts telemetry with use_fake_data=False
+1. Starts telemetry
 2. Spawns actors that do work (generating real tracing events)
 3. Queries the spans, span_events, events, and actors tables
 
@@ -395,7 +394,7 @@ def run_workload(procs, summary=False, spawn_child=None):
         spawn_child: Optional callable(actors) to spawn a child process and do work.
     """
     print("Starting telemetry with real data collection...")
-    engine = start_telemetry(use_fake_data=False)
+    engine = start_telemetry()
 
     print("Spawning compute actors...")
     # pyre-ignore[29]: procs is a ProcMesh
