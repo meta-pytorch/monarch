@@ -870,6 +870,10 @@ pub(crate) mod meta {
     /// Creates a TLS connector by looking for necessary certs and keys in a Meta server environment.
     /// Supports optional client authentication (unlike the tls module which always requires it).
     fn tls_connector() -> Result<TlsConnector> {
+        // Ensure ring is installed as the process-level crypto provider.
+        // No-op when already installed (e.g. under Buck with native-tls).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let ca_path = std::env::var_os(THRIFT_TLS_SRV_CA_PATH_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_SRV_CA_PATH));
@@ -1007,6 +1011,10 @@ pub(crate) mod tls {
         bundle: &PemBundle,
         enforce_client_tls: bool,
     ) -> Result<TlsAcceptor> {
+        // Ensure ring is installed as the process-level crypto provider.
+        // No-op when already installed (e.g. under Buck with native-tls).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
@@ -1034,6 +1042,10 @@ pub(crate) mod tls {
 
     /// Creates a TLS connector using certificates from the provided PEM bundle.
     pub(super) fn tls_connector_from_bundle(bundle: &PemBundle) -> Result<TlsConnector> {
+        // Ensure ring is installed as the process-level crypto provider.
+        // No-op when already installed (e.g. under Buck with native-tls).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let certs = load_certs(&bundle.cert).context("load TLS certificate")?;
         let key = load_key(&bundle.key).context("load TLS key")?;
         let root_store = build_root_store(&bundle.ca).context("build root cert store")?;
