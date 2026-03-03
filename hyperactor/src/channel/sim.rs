@@ -405,6 +405,8 @@ impl<M: RemoteMessage> Rx<M> for SimRx<M> {
     fn addr(&self) -> ChannelAddr {
         self.addr.clone()
     }
+
+    async fn join(self) {}
 }
 
 #[cfg(test)]
