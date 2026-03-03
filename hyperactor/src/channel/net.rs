@@ -178,6 +178,15 @@ impl<M: RemoteMessage> Rx<M> for NetRx<M> {
     fn addr(&self) -> ChannelAddr {
         self.1.clone()
     }
+
+    /// Gracefully shut down the channel server, waiting for pending
+    /// acks to be flushed before returning.
+    async fn flush(mut self) {
+        self.2
+            .stop(&format!("NetRx flushed; channel address: {}", self.1));
+        let _ = (&mut self.2).await;
+        // Drop will call stop() again which is harmless (token already cancelled).
+    }
 }
 
 impl<M: RemoteMessage> Drop for NetRx<M> {

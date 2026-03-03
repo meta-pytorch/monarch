@@ -1049,7 +1049,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         let join_handle = tokio::spawn(async move {
             let mut detached = false;
 
-            loop {
+            let result = loop {
                 if *stopped_rx.borrow_and_update() {
                     break Ok(());
                 }
@@ -1079,7 +1079,13 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                         }
                     }
                 }
-            }
+            };
+
+            // Flush the channel receiver to ensure pending acks are
+            // sent before the underlying channel server is torn down.
+            rx.flush().await;
+
+            result
         });
 
         MailboxServerHandle {
