@@ -61,9 +61,11 @@ export function DagView() {
     return computeLayout(meshes, actors, actorStatuses, messagePairs);
   }, [meshes, actors, messages]);
 
-  // Set initial view on load — cap height so nodes are visible.
+  // Set initial view on first load only — don't reset on data refresh.
+  const viewInitialized = useRef(false);
   useEffect(() => {
-    if (graph) {
+    if (graph && !viewInitialized.current) {
+      viewInitialized.current = true;
       setViewBox({
         x: -20,
         y: -20,
@@ -72,6 +74,18 @@ export function DagView() {
       });
     }
   }, [graph]);
+
+  // Keep selected node in sync with refreshed data.
+  useEffect(() => {
+    if (selectedNode && graph) {
+      const updated = graph.nodes.find((n) => n.id === selectedNode.id);
+      if (updated && updated !== selectedNode) {
+        setSelectedNode(updated);
+      } else if (!updated) {
+        setSelectedNode(null);
+      }
+    }
+  }, [graph, selectedNode]);
 
   // Node lookup map for edge rendering.
   const nodeMap = useMemo(() => {
