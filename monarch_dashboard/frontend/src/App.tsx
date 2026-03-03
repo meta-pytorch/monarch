@@ -14,7 +14,7 @@ import { ActorTable } from "./components/ActorTable";
 import { ActorDetail } from "./components/ActorDetail";
 import { DagView } from "./components/DagView";
 import { SummaryView } from "./components/SummaryView";
-import { NavItem, Mesh, Actor } from "./types";
+import { NavItem } from "./types";
 import "./App.css";
 
 const TABS = [
@@ -23,27 +23,17 @@ const TABS = [
   { id: "dag", label: "DAG" },
 ];
 
-const HOST_COLUMNS = [
-  { key: "given_name", label: "Name" },
-  { key: "full_name", label: "Full Name" },
-  { key: "shape_json", label: "Shape" },
-  { key: "children", label: "Children" },
-  { key: "status", label: "Status" },
-  { key: "timestamp_us", label: "Created" },
-];
-
-const CHILD_MESH_COLUMNS = [
+const MESH_COLUMNS = [
   { key: "given_name", label: "Name" },
   { key: "class", label: "Class" },
   { key: "shape_json", label: "Shape" },
-  { key: "children", label: "Children" },
-  { key: "status", label: "Status" },
+  { key: "full_name", label: "Full Name" },
 ];
 
 function App() {
   const [activeTab, setActiveTab] = useState("summary");
   const [navStack, setNavStack] = useState<NavItem[]>([
-    { label: "Host Meshes", level: "hosts" },
+    { label: "Host Meshes", level: "host_meshes" },
   ]);
 
   const currentNav = navStack[navStack.length - 1];
@@ -58,19 +48,19 @@ function App() {
     []
   );
 
-  const handleHostClick = useCallback(
-    (mesh: Mesh) => {
+  const handleHostMeshClick = useCallback(
+    (mesh: any) => {
       pushNav({
         label: mesh.given_name,
-        level: "procs",
+        level: "proc_meshes",
         meshId: mesh.id,
       });
     },
     [pushNav]
   );
 
-  const handleProcClick = useCallback(
-    (mesh: Mesh) => {
+  const handleProcMeshClick = useCallback(
+    (mesh: any) => {
       pushNav({
         label: mesh.given_name,
         level: "actor_meshes",
@@ -81,7 +71,7 @@ function App() {
   );
 
   const handleActorMeshClick = useCallback(
-    (mesh: Mesh) => {
+    (mesh: any) => {
       pushNav({
         label: mesh.given_name,
         level: "actors",
@@ -92,7 +82,7 @@ function App() {
   );
 
   const handleActorClick = useCallback(
-    (actor: Actor) => {
+    (actor: any) => {
       pushNav({
         label: actor.full_name.split("/").pop() ?? `Actor #${actor.id}`,
         level: "actor_detail",
@@ -104,26 +94,26 @@ function App() {
 
   const handleTabChange = useCallback((id: string) => {
     setActiveTab(id);
-    setNavStack([{ label: "Host Meshes", level: "hosts" }]);
+    setNavStack([{ label: "Host Meshes", level: "host_meshes" }]);
   }, []);
 
   const renderHierarchyView = () => {
     switch (currentNav.level) {
-      case "hosts":
+      case "host_meshes":
         return (
           <MeshTable
             apiPath="/meshes?class=Host"
-            columns={HOST_COLUMNS}
-            onRowClick={handleHostClick}
+            columns={MESH_COLUMNS}
+            onRowClick={handleHostMeshClick}
             title="Host Meshes"
           />
         );
-      case "procs":
+      case "proc_meshes":
         return (
           <MeshTable
             apiPath={`/meshes/${currentNav.meshId}/children`}
-            columns={CHILD_MESH_COLUMNS}
-            onRowClick={handleProcClick}
+            columns={MESH_COLUMNS}
+            onRowClick={handleProcMeshClick}
             title="Proc Meshes"
           />
         );
@@ -131,7 +121,7 @@ function App() {
         return (
           <MeshTable
             apiPath={`/meshes/${currentNav.meshId}/children`}
-            columns={CHILD_MESH_COLUMNS}
+            columns={MESH_COLUMNS}
             onRowClick={handleActorMeshClick}
             title="Actor Meshes"
           />
