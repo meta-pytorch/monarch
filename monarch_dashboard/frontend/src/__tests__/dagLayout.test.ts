@@ -20,9 +20,9 @@ const meshes: Mesh[] = [
 ];
 
 const actors: Actor[] = [
-  { id: 1, timestamp_us: 0, mesh_id: 3, rank: 0, full_name: "ProcMeshAgent[0,0]" },
+  { id: 1, timestamp_us: 0, mesh_id: 3, rank: 0, full_name: "ProcAgent[0,0]" },
   { id: 2, timestamp_us: 0, mesh_id: 7, rank: 0, full_name: "PythonActor<Trainer>[0,0]" },
-  { id: 3, timestamp_us: 0, mesh_id: 4, rank: 0, full_name: "ProcMeshAgent[0,1]" },
+  { id: 3, timestamp_us: 0, mesh_id: 4, rank: 0, full_name: "ProcAgent[0,1]" },
   { id: 4, timestamp_us: 0, mesh_id: 8, rank: 0, full_name: "PythonActor<Trainer>[0,1]" },
 ];
 

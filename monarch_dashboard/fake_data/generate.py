@@ -4,15 +4,17 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 """Deterministic fake data generator for the Monarch Dashboard.
 
 Produces a SQLite database with realistic Monarch telemetry data spanning
 a 5-minute window. The topology includes 2 host meshes, 2 procs per host,
-and 4 actors per host mesh (1 system ProcMeshAgent + 1 user actor per proc).
+and 4 actors per host mesh (1 system ProcAgent + 1 user actor per proc).
 
 The generated data exercises all dashboard features:
   - Full mesh hierarchy (host -> proc -> actor meshes)
-  - System actors (HostMeshAgent, ProcMeshAgent) and user actors
+  - System actors (HostAgent, ProcAgent) and user actors
   - Complete ActorStatus lifecycle with failure at T=4:00
   - Non-sparse message traffic across multiple endpoints
   - Death propagation from a failed actor to its mesh siblings
@@ -254,8 +256,8 @@ def _generate_meshes() -> list[dict]:
 def _generate_actors(meshes: list[dict]) -> list[dict]:
     """Create actors for each mesh.
 
-    For each host mesh: 1 HostMeshAgent (rank 0).
-    For each proc mesh: 1 ProcMeshAgent (rank 0).
+    For each host mesh: 1 HostAgent (rank 0).
+    For each proc mesh: 1 ProcAgent (rank 0).
     For each actor mesh: 1 PythonActor<Trainer> user actor (rank 0).
 
     This yields 2 + 4 + 4 = 10 actors total.
@@ -275,7 +277,7 @@ def _generate_actors(meshes: list[dict]) -> list[dict]:
                     "timestamp_us": ts,
                     "mesh_id": m["id"],
                     "rank": 0,
-                    "full_name": f"{m['full_name']}/HostMeshAgent[0]",
+                    "full_name": f"{m['full_name']}/HostAgent[0]",
                 }
             )
         elif cls == "Proc":
@@ -285,7 +287,7 @@ def _generate_actors(meshes: list[dict]) -> list[dict]:
                     "timestamp_us": ts,
                     "mesh_id": m["id"],
                     "rank": 0,
-                    "full_name": f"{m['full_name']}/ProcMeshAgent[0]",
+                    "full_name": f"{m['full_name']}/ProcAgent[0]",
                 }
             )
         else:

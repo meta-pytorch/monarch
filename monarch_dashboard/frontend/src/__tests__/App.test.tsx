@@ -23,7 +23,7 @@ const MOCK_CHILDREN: any[] = [];
 const MOCK_ACTORS = [
   {
     id: 1, timestamp_us: 1700000000000000, mesh_id: 1,
-    rank: 0, full_name: "/host_mesh_0/HostMeshAgent[0]",
+    rank: 0, full_name: "/host_mesh_0/HostAgent[0]",
   },
 ];
 

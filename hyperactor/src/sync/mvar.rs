@@ -26,10 +26,21 @@ use tokio::sync::watch;
 /// - a communication channel (with `put` and `take` corresponding to `send` and `recv`);
 /// - a semaphore (with `put` and `take` corresponding to `signal` and `wait`);
 /// - a mutex (with `put` and `take` corresponding to `lock` and `unlock`);
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MVar<T> {
     seq: watch::Sender<usize>,
     value: Arc<Mutex<Option<T>>>,
+}
+
+// Manual Clone impl: cloning an MVar clones the Arc, not the inner value,
+// so T does not need to be Clone.
+impl<T> Clone for MVar<T> {
+    fn clone(&self) -> Self {
+        Self {
+            seq: self.seq.clone(),
+            value: self.value.clone(),
+        }
+    }
 }
 
 impl<T> MVar<T> {

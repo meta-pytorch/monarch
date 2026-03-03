@@ -68,7 +68,7 @@ use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
 use crate::assign::Ranks;
 use crate::comm::CommMeshConfig;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
 use crate::proc_agent;
@@ -284,6 +284,23 @@ impl ProcMesh {
                 parent_mesh_id,
                 parent_view_json,
             });
+
+            // Notify telemetry of each ProcAgent actor in this mesh.
+            // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
+            let now = RealClock.system_time_now();
+            for rank in current_ref.ranks.iter() {
+                let actor_id = rank.agent.actor_id();
+                let mut actor_hasher = DefaultHasher::new();
+                actor_id.hash(&mut actor_hasher);
+
+                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                    id: actor_hasher.finish(),
+                    timestamp: now,
+                    mesh_id: mesh_id_hash,
+                    rank: rank.create_rank as u64,
+                    full_name: actor_id.to_string(),
+                });
+            }
         }
 
         let mut proc_mesh = Self {
@@ -1122,7 +1139,7 @@ impl ProcMeshRef {
                 // `first_terminating().is_none()` semantics.
                 let has_terminating = statuses.values().any(|s| s.is_terminating());
                 if !has_terminating {
-                    Ok((statuses, ActorMesh::new(self.clone(), name, None)))
+                    Ok((statuses, ActorMesh::new(self.clone(), name.clone(), None)))
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,
@@ -1167,9 +1184,8 @@ impl ProcMeshRef {
         {
             let name_str = mesh.name().to_string();
 
-            // Hash the actor mesh name -- must match the mesh_id hash in
-            // hyperactor::proc::Proc::spawn_actor (which hashes actor_id.name(),
-            // i.e. the same Name::to_string()).
+            // Hash the actor mesh name. This is used as mesh_id for both
+            // the MeshEvent and the per-actor ActorEvents below.
             let mut mesh_hasher = DefaultHasher::new();
             name_str.hash(&mut mesh_hasher);
             let mesh_id_hash = mesh_hasher.finish();
@@ -1189,6 +1205,24 @@ impl ProcMeshRef {
                 parent_mesh_id: Some(parent_mesh_id_hash),
                 parent_view_json: serde_json::to_string(self.region()).ok(),
             });
+
+            // Notify telemetry of each actor in this mesh. The rank is
+            // the actor's position within the actor mesh (not the proc's
+            // create_rank, which reflects the original unsliced mesh).
+            let now = RealClock.system_time_now();
+            for (rank, proc_ref) in self.ranks.iter().enumerate() {
+                let actor_id = proc_ref.actor_id(&name);
+                let mut actor_hasher = DefaultHasher::new();
+                actor_id.hash(&mut actor_hasher);
+
+                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                    id: actor_hasher.finish(),
+                    timestamp: now,
+                    mesh_id: mesh_id_hash,
+                    rank: rank as u64,
+                    full_name: actor_id.to_string(),
+                });
+            }
         }
 
         Ok(mesh)

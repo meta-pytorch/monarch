@@ -45,6 +45,7 @@ use hyperactor::host::HostError;
 use hyperactor::host::LocalProcManager;
 use hyperactor::mailbox::PortSender as _;
 use hyperactor_config::Flattrs;
+use hyperactor_config::attrs::Attrs;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
@@ -62,10 +63,10 @@ use crate::resource::ProcSpec;
 
 /// Typed host-node identifier for mesh admin navigation.
 ///
-/// Wraps an [`ActorId`] (the `HostMeshAgent`'s actor id) and
+/// Wraps an [`ActorId`] (the `HostAgent`'s actor id) and
 /// serializes with a `host:` prefix so that the admin resolver can
 /// distinguish host-level references from plain actor references.
-/// The same `HostMeshAgent` `ActorId` can appear as both a host
+/// The same `HostAgent` `ActorId` can appear as both a host
 /// (from root's children) and as an actor (from a proc's children);
 /// `HostId` makes the host case unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +202,10 @@ pub(crate) struct ProcCreationState {
     pub(crate) created: Result<(ProcId, ActorRef<ProcAgent>), HostError>,
 }
 
-/// A mesh agent is responsible for managing a host iny a [`HostMesh`],
+/// Actor name used when spawning the host mesh agent on the system proc.
+pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "host_agent";
+
+/// A mesh agent is responsible for managing a host in a [`HostMesh`],
 /// through the resource behaviors defined in [`crate::resource`].
 #[hyperactor::export(
     handlers=[
@@ -212,16 +216,17 @@ pub(crate) struct ProcCreationState {
         resource::List,
         ShutdownHost,
         SpawnMeshAdmin,
+        SetClientConfig,
     ]
 )]
-pub struct HostMeshAgent {
+pub struct HostAgent {
     pub(crate) host: Option<HostAgentMode>,
     pub(crate) created: HashMap<Name, ProcCreationState>,
     /// Stores the lazily initialized proc mesh agent for the local proc.
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
 }
 
-impl HostMeshAgent {
+impl HostAgent {
     /// Create a new host mesh agent running in the provided mode.
     pub fn new(host: HostAgentMode) -> Self {
         Self {
@@ -274,7 +279,7 @@ impl HostMeshAgent {
 }
 
 #[async_trait]
-impl Actor for HostMeshAgent {
+impl Actor for HostAgent {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         // Serve the host now that the agent is initialized. Make sure our port is
         // bound before serving.
@@ -373,9 +378,9 @@ impl Actor for HostMeshAgent {
     }
 }
 
-impl fmt::Debug for HostMeshAgent {
+impl fmt::Debug for HostAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostMeshAgent")
+        f.debug_struct("HostAgent")
             .field("host", &"..")
             .field("created", &self.created)
             .finish()
@@ -383,8 +388,8 @@ impl fmt::Debug for HostMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
-    #[tracing::instrument("HostMeshAgent::CreateOrUpdate", level = "info", skip_all, fields(name=%create_or_update.name))]
+impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
+    #[tracing::instrument("HostAgent::CreateOrUpdate", level = "info", skip_all, fields(name=%create_or_update.name))]
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -433,7 +438,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::Stop> for HostMeshAgent {
+impl Handler<resource::Stop> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         tracing::info!(
             name = "HostMeshAgentStatus",
@@ -444,7 +449,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
         let host = self
             .host
             .as_ref()
-            .ok_or(anyhow::anyhow!("HostMeshAgent has already shut down"))?;
+            .ok_or(anyhow::anyhow!("HostAgent has already shut down"))?;
         let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
 
         if let Some(ProcCreationState {
@@ -462,7 +467,7 @@ impl Handler<resource::Stop> for HostMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::GetRankStatus> for HostMeshAgent {
+impl Handler<resource::GetRankStatus> for HostAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -495,7 +500,7 @@ impl Handler<resource::GetRankStatus> for HostMeshAgent {
                 .expect("valid single-run overlay")
         };
         let result = get_rank_status.reply.send(cx, overlay);
-        // Ignore errors, because returning Err from here would cause the HostMeshAgent
+        // Ignore errors, because returning Err from here would cause the HostAgent
         // to be stopped, which would take down the entire host. This only means
         // some actor that requested the rank status failed to receive it.
         if let Err(e) = result {
@@ -524,7 +529,7 @@ pub struct ShutdownHost {
 wirevalue::register_type!(ShutdownHost);
 
 #[async_trait]
-impl Handler<ShutdownHost> for HostMeshAgent {
+impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
         // Ack immediately so caller can stop waiting.
         let (return_handle, mut return_receiver) = cx.mailbox().open_port();
@@ -590,7 +595,7 @@ pub struct ProcState {
 wirevalue::register_type!(ProcState);
 
 #[async_trait]
-impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
+impl Handler<resource::GetState<ProcState>> for HostAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -630,7 +635,7 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
         };
 
         let result = get_state.reply.send(cx, state);
-        // Ignore errors, because returning Err from here would cause the HostMeshAgent
+        // Ignore errors, because returning Err from here would cause the HostAgent
         // to be stopped, which would take down the entire host. This only means
         // some actor that requested the state of a proc failed to receive it.
         if let Err(e) = result {
@@ -646,7 +651,7 @@ impl Handler<resource::GetState<ProcState>> for HostMeshAgent {
 }
 
 #[async_trait]
-impl Handler<resource::List> for HostMeshAgent {
+impl Handler<resource::List> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
         list.reply
             .send(cx, self.created.keys().cloned().collect())?;
@@ -663,17 +668,16 @@ pub struct SpawnMeshAdmin {
     /// All hosts in the mesh as `(address, agent_ref)` pairs. Passed
     /// through to [`MeshAdminAgent::new`] so the admin can fan out
     /// introspection queries to every host.
-    pub hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
+    pub hosts: Vec<(String, ActorRef<HostAgent>)>,
 
     /// `ActorId` of the process-global root client, exposed as a
     /// child node in the admin introspection tree. `None` if no root
     /// client is available.
     pub root_client_actor_id: Option<ActorId>,
 
-    /// Fixed port for the admin HTTP server. When `Some`, the server
-    /// binds to `[::]:<port>`; when `None`, an ephemeral port is
-    /// chosen.
-    pub admin_port: Option<u16>,
+    /// Explicit bind address for the admin HTTP server. When `None`,
+    /// the server reads `MESH_ADMIN_ADDR` from config.
+    pub admin_addr: Option<std::net::SocketAddr>,
 
     /// Reply port for the admin HTTP address string (e.g.
     /// `"myhost.facebook.com:8080"`).
@@ -683,7 +687,7 @@ pub struct SpawnMeshAdmin {
 wirevalue::register_type!(SpawnMeshAdmin);
 
 #[async_trait]
-impl Handler<SpawnMeshAdmin> for HostMeshAgent {
+impl Handler<SpawnMeshAdmin> for HostAgent {
     /// Spawns a [`MeshAdminAgent`] on this host's system proc, waits
     /// for its HTTP server to bind, and replies with the listen
     /// address.
@@ -699,7 +703,7 @@ impl Handler<SpawnMeshAdmin> for HostMeshAgent {
             crate::mesh_admin::MeshAdminAgent::new(
                 msg.hosts,
                 msg.root_client_actor_id,
-                msg.admin_port,
+                msg.admin_addr,
             ),
         )?;
         let response = agent_handle.get_admin_addr(cx).await?;
@@ -708,6 +712,40 @@ impl Handler<SpawnMeshAdmin> for HostMeshAgent {
             .ok_or_else(|| anyhow::anyhow!("mesh admin agent did not report an address"))?;
 
         msg.addr.send(cx, addr_str)?;
+        Ok(())
+    }
+}
+
+/// Push client configuration overrides to this host agent's process.
+///
+/// The attrs are installed as `Source::ClientOverride` (lowest explicit
+/// priority), so the host's own env vars and file config take precedence.
+/// This message is idempotent — sending the same attrs twice replaces
+/// the layer wholesale.
+///
+/// Request-reply: the reply acts as a barrier confirming the config
+/// is installed. The caller should await with a timeout and treat
+/// timeout as best-effort (log warning, continue).
+#[derive(Debug, Named, Handler, RefClient, HandleClient, Serialize, Deserialize)]
+pub struct SetClientConfig {
+    pub attrs: Attrs,
+    #[reply]
+    pub done: PortRef<()>,
+}
+wirevalue::register_type!(SetClientConfig);
+
+#[async_trait]
+impl Handler<SetClientConfig> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, msg: SetClientConfig) -> anyhow::Result<()> {
+        // Use `set` (not `create_or_merge`) because `push_config` always
+        // sends a complete `propagatable_attrs()` snapshot. Replacing the
+        // layer wholesale is intentional and idempotent.
+        hyperactor_config::global::set(
+            hyperactor_config::global::Source::ClientOverride,
+            msg.attrs,
+        );
+        tracing::debug!("installed client config override on host agent");
+        msg.done.send(cx, ())?;
         Ok(())
     }
 }
@@ -722,7 +760,7 @@ pub struct GetLocalProc {
 }
 
 #[async_trait]
-impl Handler<GetLocalProc> for HostMeshAgent {
+impl Handler<GetLocalProc> for HostAgent {
     async fn handle(
         &mut self,
         cx: &Context<Self>,
@@ -742,7 +780,7 @@ impl Handler<GetLocalProc> for HostMeshAgent {
 }
 
 /// A trampoline actor that spawns a [`Host`], and sends a reference to the
-/// corresponding [`HostMeshAgent`] to the provided reply port.
+/// corresponding [`HostAgent`] to the provided reply port.
 ///
 /// This is used to bootstrap host meshes from proc meshes.
 #[derive(Debug)]
@@ -751,8 +789,8 @@ impl Handler<GetLocalProc> for HostMeshAgent {
     handlers=[GetHostMeshAgent]
 )]
 pub(crate) struct HostMeshAgentProcMeshTrampoline {
-    host_mesh_agent: ActorHandle<HostMeshAgent>,
-    reply_port: PortRef<ActorRef<HostMeshAgent>>,
+    host_mesh_agent: ActorHandle<HostAgent>,
+    reply_port: PortRef<ActorRef<HostAgent>>,
 }
 
 #[async_trait]
@@ -767,7 +805,7 @@ impl Actor for HostMeshAgentProcMeshTrampoline {
 impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
     type Params = (
         ChannelTransport,
-        PortRef<ActorRef<HostMeshAgent>>,
+        PortRef<ActorRef<HostAgent>>,
         Option<BootstrapCommand>,
         bool, /* local? */
     );
@@ -797,7 +835,8 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
         };
 
         let system_proc = host.system_proc().clone();
-        let host_mesh_agent = system_proc.spawn("agent", HostMeshAgent::new(host))?;
+        let host_mesh_agent =
+            system_proc.spawn(HOST_MESH_AGENT_ACTOR_NAME, HostAgent::new(host))?;
 
         Ok(Self {
             host_mesh_agent,
@@ -809,7 +848,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
 #[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient)]
 pub struct GetHostMeshAgent {
     #[reply]
-    pub host_mesh_agent: PortRef<ActorRef<HostMeshAgent>>,
+    pub host_mesh_agent: PortRef<ActorRef<HostAgent>>,
 }
 wirevalue::register_type!(GetHostMeshAgent);
 
@@ -853,8 +892,8 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let host_agent = system_proc
             .spawn(
-                "agent",
-                HostMeshAgent::new(HostAgentMode::Process {
+                HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Process {
                     host,
                     exit_on_shutdown: false,
                 }),
@@ -894,7 +933,7 @@ mod tests {
                 }),
             } if name == resource_name
               && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id("proc_agent", 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

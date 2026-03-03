@@ -17,7 +17,7 @@
 //! Incoming HTTP requests are bridged into the actor message loop
 //! using `ResolveReferenceMessage`, ensuring that all topology
 //! resolution and data collection happens through actor messaging.
-//! The agent fans out to `HostMeshAgent` instances to fetch host,
+//! The agent fans out to `HostAgent` instances to fetch host,
 //! proc, and actor details, then normalizes them into a single
 //! tree-shaped model (`NodeProperties` + children references)
 //! suitable for topology-agnostic clients such as the admin TUI.
@@ -147,17 +147,47 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use typeuri::Named;
 
-use crate::host_mesh::mesh_agent::HostId;
-use crate::host_mesh::mesh_agent::HostMeshAgent;
+use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostId;
 
 /// Actor name used when spawning the mesh admin agent.
 pub const MESH_ADMIN_ACTOR_NAME: &str = "mesh_admin";
+
+/// Actor name for the HTTP bridge client mailbox on the service proc.
+///
+/// Unlike `MESH_ADMIN_ACTOR_NAME`, this is not a full actor: it is a
+/// client-mode `Instance<()>` created via
+/// `Proc::introspectable_instance()` and driven by Axum's Tokio task
+/// pool rather than an actor message loop. A separate instance is
+/// required because `MeshAdminAgent`'s own `Instance<Self>` is only
+/// accessible inside its message loop and cannot be shared with
+/// external tasks. This instance gives the HTTP handlers a routable
+/// proc identity so they can open one-shot reply ports
+/// (`open_once_port`) to receive responses from `MeshAdminAgent`.
+///
+/// Unlike a plain `instance()`, this uses
+/// `Proc::introspectable_instance()` so the bridge responds to
+/// `IntrospectMessage::Query` and appears as a navigable node in the
+/// mesh TUI rather than causing a 504 when selected.
+pub const MESH_ADMIN_BRIDGE_NAME: &str = "mesh_admin_bridge";
 
 /// Timeout for targeted queries that hit a single, specific host.
 /// Kept short so a slow or dying actor cannot block the
 /// single-threaded MeshAdminAgent message loop (which serializes
 /// all resolve requests, including the fast root refresh).
 const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Timeout for QueryChild snapshot lookups in resolve_actor_node.
+///
+/// QueryChild is handled by a synchronous callback on the target
+/// actor's IntrospectMessage port — it either returns a terminated
+/// snapshot immediately or returns Error { "not_found" } immediately.
+/// There is no async work behind it, so SINGLE_HOST_TIMEOUT is far
+/// too generous. A short budget here ensures the total time for
+/// resolve_actor_node (QueryChild + live actor Query) stays well
+/// under SINGLE_HOST_TIMEOUT, preventing cascading 504s when the
+/// outer bridge timeout fires before the inner work completes.
+const QUERY_CHILD_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Structured error response following the gateway RFC envelope
 /// pattern.
@@ -301,7 +331,7 @@ wirevalue::register_type!(ResolveReferenceMessage);
 /// Actor that serves a mesh-level admin HTTP endpoint.
 ///
 /// `MeshAdminAgent` is the mesh-wide aggregation point for
-/// introspection: it holds `ActorRef<HostMeshAgent>` handles for each
+/// introspection: it holds `ActorRef<HostAgent>` handles for each
 /// host, and answers admin queries by forwarding targeted requests to
 /// the appropriate host agent and assembling a uniform `NodePayload`
 /// response for the client.
@@ -312,11 +342,11 @@ wirevalue::register_type!(ResolveReferenceMessage);
 /// plus child references.
 #[hyperactor::export(handlers = [MeshAdminMessage, ResolveReferenceMessage])]
 pub struct MeshAdminAgent {
-    /// Map of host address string → `HostMeshAgent` reference used to
+    /// Map of host address string → `HostAgent` reference used to
     /// fan out or target admin queries.
-    hosts: HashMap<String, ActorRef<HostMeshAgent>>,
+    hosts: HashMap<String, ActorRef<HostAgent>>,
 
-    /// Reverse index: `HostMeshAgent` `ActorId` → host address
+    /// Reverse index: `HostAgent` `ActorId` → host address
     /// string.
     ///
     /// The host agent itself is an actor that can appear in multiple
@@ -339,18 +369,31 @@ pub struct MeshAdminAgent {
     /// introspect it").
     self_actor_id: Option<ActorId>,
 
-    /// Bound address of the admin HTTP server once started in `init`.
+    // -- HTTP server address fields --
+    //
+    // The admin HTTP server has three address representations:
+    //
+    //   1. `admin_addr_override` — caller-supplied bind address
+    //      (constructor param). When `None`, `init` reads
+    //      `MESH_ADMIN_ADDR` from config instead.
+    //
+    //   2. `admin_addr` — the actual `SocketAddr` the OS assigned
+    //      after `TcpListener::bind`. Populated during `init`.
+    //
+    //   3. `admin_host` — human-friendly URL with the machine
+    //      hostname (not the raw IP) so it works with DNS and TLS
+    //      certificate validation. Returned via `GetAdminAddr`.
+    /// Caller-supplied bind address. When `None`, `init` reads
+    /// `MESH_ADMIN_ADDR` from config.
+    admin_addr_override: Option<std::net::SocketAddr>,
+
+    /// Actual bound address after `TcpListener::bind`, populated
+    /// during `init`.
     admin_addr: Option<std::net::SocketAddr>,
 
-    /// Hostname-based address string (e.g.
-    /// ``"myhost.facebook.com:8080"``) for the admin HTTP server.
-    /// Uses the machine's hostname rather than a raw IP so it works
-    /// with DNS and TLS certificate validation in Tupperware/MAST.
+    /// Hostname-based URL (e.g. `"https://myhost.facebook.com:1729"`)
+    /// for the admin HTTP server. Returned via `GetAdminAddr`.
     admin_host: Option<String>,
-
-    /// Optional fixed port for the admin HTTP server. When `Some`,
-    /// `init` binds to ``[::]:<port>`` instead of an ephemeral port.
-    admin_port: Option<u16>,
 
     /// When the mesh was started (ISO-8601 timestamp).
     started_at: String,
@@ -365,7 +408,7 @@ impl MeshAdminAgent {
     ///
     /// Builds both:
     /// - `hosts`: the forward map used to route admin queries to the
-    ///   correct `HostMeshAgent`, and
+    ///   correct `HostAgent`, and
     /// - `host_agents_by_actor_id`: a reverse index used during
     ///   reference resolution to recognize host-agent `ActorId`s and
     ///   resolve them as `NodeProperties::Host` rather than as
@@ -378,9 +421,9 @@ impl MeshAdminAgent {
     /// The HTTP listen address is initialized to `None` and populated
     /// during `init()` after the server socket is bound.
     pub fn new(
-        hosts: Vec<(String, ActorRef<HostMeshAgent>)>,
+        hosts: Vec<(String, ActorRef<HostAgent>)>,
         root_client_actor_id: Option<ActorId>,
-        admin_port: Option<u16>,
+        admin_addr: Option<std::net::SocketAddr>,
     ) -> Self {
         let host_agents_by_actor_id: HashMap<ActorId, String> = hosts
             .iter()
@@ -398,9 +441,9 @@ impl MeshAdminAgent {
             host_agents_by_actor_id,
             root_client_actor_id,
             self_actor_id: None,
+            admin_addr_override: admin_addr,
             admin_addr: None,
             admin_host: None,
-            admin_port,
             started_at,
             started_by,
         }
@@ -511,13 +554,16 @@ impl Actor for MeshAdminAgent {
         // messages (including Undeliverable bounces) can be delivered
         // as soon as the admin is reachable.
         this.bind::<Self>();
+        this.set_system();
         self.self_actor_id = Some(this.self_id().clone());
 
-        let port = self.admin_port.unwrap_or(0);
-        // Bind dual-stack (IPv6 + IPv4) so the server is reachable
-        // regardless of which address family the hostname resolves
-        // to.
-        let listener = TcpListener::bind(format!("[::]:{}", port)).await?;
+        let bind_addr = match self.admin_addr_override {
+            Some(addr) => addr,
+            None => hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_ADDR)
+                .parse_socket_addr()
+                .map_err(|e| anyhow::anyhow!("invalid MESH_ADMIN_ADDR config: {}", e))?,
+        };
+        let listener = TcpListener::bind(bind_addr).await?;
         let bound_addr = listener.local_addr()?;
         // Report the hostname (e.g. Tupperware container name) + port
         // rather than a raw IP, so the address works with DNS and TLS
@@ -542,7 +588,10 @@ impl Actor for MeshAdminAgent {
         // Create a dedicated client mailbox on system_proc for the
         // HTTP bridge's reply ports. This avoids sharing the admin
         // actor's own mailbox with async HTTP handlers.
-        let (bridge_cx, bridge_handle) = this.proc().instance("admin_bridge")?;
+        let (bridge_cx, bridge_handle) = this
+            .proc()
+            .introspectable_instance(MESH_ADMIN_BRIDGE_NAME)?;
+        bridge_cx.set_system();
         let bridge_state = Arc::new(BridgeState {
             admin_ref: ActorRef::attest(this.self_id().clone()),
             bridge_cx,
@@ -697,7 +746,7 @@ impl MeshAdminAgent {
 
         // Host refs use the "host:<actor_id>" format so they are
         // unambiguous from plain actor references. The same
-        // HostMeshAgent ActorId can appear both as a host (from root)
+        // HostAgent ActorId can appear both as a host (from root)
         // and as an actor (from a proc's children list).
         if let Ok(host_id) = reference_string.parse::<HostId>() {
             return self.resolve_host_node(cx, &host_id.0).await;
@@ -725,9 +774,7 @@ impl MeshAdminAgent {
     /// introspectable. Each proc appears as a root child; the
     /// actor is the "anchor" used to discover the proc's contents.
     fn standalone_proc_actors(&self) -> impl Iterator<Item = &ActorId> {
-        self.root_client_actor_id
-            .iter()
-            .chain(self.self_actor_id.iter())
+        self.root_client_actor_id.iter()
     }
 
     /// If `proc_id` belongs to a standalone proc, return the anchor
@@ -747,7 +794,7 @@ impl MeshAdminAgent {
     ///
     /// The root is not a real actor/proc; it's a convenience node
     /// that anchors navigation. Its children are the configured
-    /// `HostMeshAgent` actor IDs (as reference strings) plus any
+    /// `HostAgent` actor IDs (as reference strings) plus any
     /// standalone procs (root client proc, admin proc).
     fn build_root_payload(&self) -> NodePayload {
         let mut children: Vec<String> = self
@@ -776,11 +823,11 @@ impl MeshAdminAgent {
         }
     }
 
-    /// Resolve a `HostMeshAgent` actor reference into a host-level
+    /// Resolve a `HostAgent` actor reference into a host-level
     /// `NodePayload`.
     ///
     /// Sends `IntrospectMessage::Query` directly to the
-    /// `HostMeshAgent`, which returns a `NodePayload` with
+    /// `HostAgent`, which returns a `NodePayload` with
     /// `NodeProperties::Host` and the host's children. The resolver
     /// overrides `parent` to `"root"` since the host agent
     /// doesn't know its position in the navigation tree.
@@ -813,7 +860,7 @@ impl MeshAdminAgent {
     /// Resolve a `ProcId` reference into a proc-level `NodePayload`.
     ///
     /// First tries `IntrospectMessage::QueryChild` against the owning
-    /// `HostMeshAgent` (system procs). If that returns an error
+    /// `HostAgent` (system procs). If that returns an error
     /// payload, falls back to sending `IntrospectMessage::Query` to
     /// the conventional `ProcAgent` actor (`<proc_id>/agent[0]`)
     /// for user procs.
@@ -850,7 +897,7 @@ impl MeshAdminAgent {
         )?;
 
         let payload = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            .timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| anyhow::anyhow!("timed out querying proc details"))?
             .map_err(|e| anyhow::anyhow!("failed to receive proc introspection: {}", e))?;
@@ -863,7 +910,7 @@ impl MeshAdminAgent {
         // Fall back to querying the ProcAgent directly (user
         // procs). The conventional ProcAgent ActorId is
         // <proc_id>/proc_agent[0].
-        let mesh_agent_id = proc_id.actor_id("proc_agent", 0);
+        let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
         let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
         let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
         agent_port.send(
@@ -895,7 +942,7 @@ impl MeshAdminAgent {
     /// Resolve a standalone proc into a proc-level `NodePayload`.
     ///
     /// Standalone procs (e.g. `mesh_root_client_proc`, the admin
-    /// proc) are not managed by any `HostMeshAgent`, so
+    /// proc) are not managed by any `HostAgent`, so
     /// `resolve_proc_node` cannot resolve them. Instead, we query the
     /// anchor actor on the proc for its introspection data, collect
     /// its supervision children, and build a synthetic proc node.
@@ -1010,7 +1057,7 @@ impl MeshAdminAgent {
             cx.introspect_payload()
         } else if self.is_standalone_proc_actor(actor_id) {
             // Standalone procs (e.g. mesh_root_client_proc) have no
-            // ProcMeshAgent at agent[0], so skip the QueryChild
+            // ProcAgent at agent[0], so skip the QueryChild
             // terminated-snapshot check and query the actor directly.
             let introspect_port = PortRef::<IntrospectMessage>::attest_message_port(actor_id);
             let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
@@ -1031,7 +1078,7 @@ impl MeshAdminAgent {
             // If found, the actor is definitively dead.
             let terminated = {
                 let proc_id = actor_id.proc_id();
-                let mesh_agent_id = proc_id.actor_id("agent", 0);
+                let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
                 let agent_port = PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
                 let child_ref = Reference::Actor(actor_id.clone());
                 let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
@@ -1043,7 +1090,7 @@ impl MeshAdminAgent {
                     },
                 )?;
                 RealClock
-                    .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                    .timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
                     .await
                     .ok()
                     .and_then(|r| r.ok())
@@ -1396,7 +1443,7 @@ async fn tree_dump(
 ///
 /// Extracts the proc name — the meaningful identifier for tree
 /// display — from the various reference formats emitted by
-/// `HostMeshAgent`'s children list:
+/// `HostAgent`'s children list:
 ///
 /// - System proc ref `"[system] unix:@hash,service"` → `"service"`
 /// - ProcAgent ActorId `"unix:@hash,my_proc,agent[0]"` →
@@ -1436,6 +1483,244 @@ fn derive_actor_label(reference: &str) -> String {
     }
 }
 
+// -- CLI-based mast_conda:/// resolution (INV-CLI-CONTRACT) --
+//
+// This is the OSS-compatible fallback for resolving `mast_conda:///`
+// handles. It shells out to `mast get-status --json <job>` and parses
+// the response. The thrift-based equivalent lives in
+// `hyperactor_meta::mesh_admin::resolve_mast_handle`.
+//
+// Invariants:
+//
+// - **INV-CLI-CONTRACT**: `mast get-status --json <job>` must exit 0
+//   and produce valid JSON. Missing binary → distinct error. Non-zero
+//   exit → includes exit code and stderr. Malformed JSON → parse
+//   error.
+//
+// - **INV-HEAD-HOSTNAME**: `head_hostname` extracts the first
+//   hostname by ascending task index from the last attempt of each
+//   task group.
+//
+// - **INV-FQDN-IDEMPOTENT**: `qualify_fqdn` passes through hostnames
+//   containing a dot. Short hostnames are qualified via
+//   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
+//   hostname.
+//
+// - **INV-FQDN-NONBLOCKING**: `qualify_fqdn` runs the blocking
+//   `getaddrinfo` syscall via `spawn_blocking`.
+//
+// - **INV-ADMIN-PORT**: `resolve_admin_port` uses the explicit
+//   override when provided, otherwise reads the port from
+//   `MESH_ADMIN_ADDR` config.
+
+/// Top-level response from `mast get-status --json`.
+#[derive(serde::Deserialize)]
+struct MastStatusResponse {
+    #[serde(rename = "latestAttempt")]
+    latest_attempt: MastAttempt,
+}
+
+/// A single execution attempt containing task groups.
+#[derive(serde::Deserialize)]
+struct MastAttempt {
+    #[serde(rename = "taskGroupExecutionAttempts")]
+    task_groups: std::collections::HashMap<String, Vec<MastTaskGroup>>,
+}
+
+/// A task group execution attempt containing per-task attempts.
+#[derive(serde::Deserialize)]
+struct MastTaskGroup {
+    #[serde(rename = "taskExecutionAttempts")]
+    tasks: std::collections::HashMap<String, Vec<MastTaskAttempt>>,
+}
+
+/// A single task execution attempt with an optional hostname.
+#[derive(serde::Deserialize)]
+struct MastTaskAttempt {
+    hostname: Option<String>,
+}
+
+/// Extract the head node hostname from a parsed MAST status response
+/// (INV-HEAD-HOSTNAME).
+///
+/// For each task group, the last attempt is selected. Within that
+/// attempt, each task's last execution attempt provides the hostname.
+/// Task indices (the map keys) are parsed as integers and sorted
+/// ascending; the first hostname is the head node.
+fn head_hostname(response: &MastStatusResponse) -> Result<String, String> {
+    let mut hosts: Vec<(i64, String)> = Vec::new();
+    for attempts in response.latest_attempt.task_groups.values() {
+        let group = match attempts.last() {
+            Some(g) => g,
+            None => continue,
+        };
+        for (index_str, task_attempts) in &group.tasks {
+            let attempt = match task_attempts.last() {
+                Some(a) => a,
+                None => continue,
+            };
+            if let Some(ref hostname) = attempt.hostname {
+                let index = index_str.parse::<i64>().unwrap_or(i64::MAX);
+                hosts.push((index, hostname.clone()));
+            }
+        }
+    }
+    hosts.sort_by_key(|(idx, _)| *idx);
+    hosts
+        .into_iter()
+        .next()
+        .map(|(_, h)| h)
+        .ok_or_else(|| "no hostnames found in MAST response".to_string())
+}
+
+/// Qualify a short hostname to an FQDN via
+/// `getaddrinfo(AI_CANONNAME)` (INV-FQDN-IDEMPOTENT,
+/// INV-FQDN-NONBLOCKING).
+///
+/// Called via `spawn_blocking` to avoid blocking tokio workers. Falls
+/// back to the raw hostname on any failure.
+async fn qualify_fqdn(hostname: &str) -> String {
+    if hostname.contains('.') {
+        return hostname.to_string();
+    }
+    let owned = hostname.to_string();
+    let fallback = owned.clone();
+    tokio::task::spawn_blocking(move || qualify_fqdn_blocking(&owned))
+        .await
+        .unwrap_or(fallback)
+}
+
+fn qualify_fqdn_blocking(hostname: &str) -> String {
+    use std::ffi::CStr;
+    use std::ffi::CString;
+    use std::ptr;
+
+    let c_host = match CString::new(hostname) {
+        Ok(c) => c,
+        Err(_) => return hostname.to_string(),
+    };
+    // SAFETY: zeroed addrinfo is a valid hints struct (all-zero is
+    // AF_UNSPEC with no flags, which we then override).
+    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+    hints.ai_flags = libc::AI_CANONNAME;
+    hints.ai_family = libc::AF_UNSPEC;
+
+    let mut result: *mut libc::addrinfo = ptr::null_mut();
+    // SAFETY: c_host is a valid NUL-terminated string, hints is
+    // initialized, and result is a valid out-pointer.
+    let rc = unsafe { libc::getaddrinfo(c_host.as_ptr(), ptr::null(), &hints, &mut result) };
+    if rc != 0 || result.is_null() {
+        return hostname.to_string();
+    }
+
+    // RAII guard ensures freeaddrinfo is called.
+    struct AddrInfoGuard(*mut libc::addrinfo);
+    impl Drop for AddrInfoGuard {
+        fn drop(&mut self) {
+            // SAFETY: self.0 was returned by a successful getaddrinfo.
+            unsafe { libc::freeaddrinfo(self.0) }
+        }
+    }
+    let _guard = AddrInfoGuard(result);
+
+    // SAFETY: result is non-null and was returned by getaddrinfo.
+    let canon = unsafe { (*result).ai_canonname };
+    if canon.is_null() {
+        return hostname.to_string();
+    }
+    // SAFETY: canon is non-null and NUL-terminated per getaddrinfo
+    // contract.
+    unsafe { CStr::from_ptr(canon) }
+        .to_str()
+        .unwrap_or(hostname)
+        .to_string()
+}
+
+/// Resolve admin port from an explicit override or `MESH_ADMIN_ADDR`
+/// config (INV-ADMIN-PORT).
+///
+/// When `port_override` is `Some`, that port is used directly. When
+/// `None`, the port is read from the `MESH_ADMIN_ADDR` configuration
+/// attribute (parsed as a `SocketAddr`).
+fn resolve_admin_port(port_override: Option<u16>) -> Result<u16, anyhow::Error> {
+    match port_override {
+        Some(p) => Ok(p),
+        None => {
+            let config_addr = hyperactor_config::global::get_cloned(crate::config::MESH_ADMIN_ADDR);
+            Ok(config_addr
+                .parse_socket_addr()
+                .map_err(|e| anyhow::anyhow!("invalid MESH_ADMIN_ADDR config: {}", e))?
+                .port())
+        }
+    }
+}
+
+/// Resolve a `mast_conda:///<job-name>` handle into an
+/// `https://<fqdn>:<port>` base URL by shelling out to the `mast` CLI
+/// (INV-CLI-CONTRACT).
+///
+/// This is the OSS-compatible counterpart to
+/// `hyperactor_meta::mesh_admin::resolve_mast_handle`. The `cmd`
+/// parameter names the CLI binary; production passes `"mast"`, tests
+/// substitute a synthetic command.
+async fn try_resolve_mast_handle(
+    handle: &str,
+    port_override: Option<u16>,
+    cmd: &str,
+) -> anyhow::Result<String> {
+    let port = resolve_admin_port(port_override)?;
+    let job_name = handle
+        .strip_prefix("mast_conda:///")
+        .ok_or_else(|| anyhow::anyhow!("expected mast_conda:/// prefix, got '{}'", handle))?;
+
+    let output = match tokio::process::Command::new(cmd)
+        .args(["get-status", "--json", job_name])
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "MAST CLI not found; install via `sudo feature install --persist mast_cli`"
+            );
+        }
+        Err(e) => {
+            anyhow::bail!("failed to run '{}': {}", cmd, e);
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "'mast get-status' exited with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let response: MastStatusResponse = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse mast JSON output: {}", e))?;
+
+    let hostname =
+        head_hostname(&response).map_err(|e| anyhow::anyhow!("MAST job '{}': {}", job_name, e))?;
+
+    let fqdn = qualify_fqdn(&hostname).await;
+    Ok(format!("https://{}:{}", fqdn, port))
+}
+
+/// Resolve a `mast_conda:///<job-name>` handle into an
+/// `https://<fqdn>:<port>` base URL using the `mast` CLI.
+///
+/// This is the CLI/OSS path. The thrift-based equivalent lives in
+/// `hyperactor_meta::mesh_admin::resolve_mast_handle`. Binaries
+/// match on `MastResolver` to select which to call.
+pub async fn resolve_mast_handle(
+    handle: &str,
+    port_override: Option<u16>,
+) -> anyhow::Result<String> {
+    try_resolve_mast_handle(handle, port_override, "mast").await
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -1443,6 +1728,12 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
 
     use super::*;
+
+    // Integration tests that spawn MeshAdminAgent must pass
+    // `Some("[::]:0".parse().unwrap())` as the admin_addr to get an
+    // ephemeral port. The default (`None`) reads MESH_ADMIN_ADDR
+    // config which is `[::]:1729` — a fixed port that causes bind
+    // conflicts when tests run concurrently.
 
     /// Minimal introspectable actor for tests. The `#[export]`
     /// attribute generates `Named + Referable + Binds` so that
@@ -1468,8 +1759,8 @@ mod tests {
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
         let actor_id2 = ActorId::root(proc2, "mesh_agent".to_string());
 
-        let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
-        let ref2: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id2.clone());
+        let ref1: ActorRef<HostAgent> = ActorRef::attest(actor_id1.clone());
+        let ref2: ActorRef<HostAgent> = ActorRef::attest(actor_id2.clone());
 
         let agent = MeshAdminAgent::new(
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
@@ -1501,7 +1792,7 @@ mod tests {
     // End-to-end smoke test for MeshAdminAgent::resolve that walks
     // the reference tree: root → host → system proc → host-agent
     // cross-reference. Verifies the reverse index routes the
-    // HostMeshAgent ActorId to NodeProperties::Host (not Actor),
+    // HostAgent ActorId to NodeProperties::Host (not Actor),
     // preventing the TUI's cycle detection from dropping that node.
     #[tokio::test]
     async fn test_resolve_reference_tree_walk() {
@@ -1510,11 +1801,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // -- 1. Stand up a local in-process Host with a HostMeshAgent --
+        // -- 1. Stand up a local in-process Host with a HostAgent --
         // Use Unix transport for all procs — Local transport does not
         // support cross-proc message routing.
         let spawn: ProcManagerSpawnFn =
@@ -1527,9 +1818,12 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // -- 2. Spawn MeshAdminAgent on a separate proc --
@@ -1544,7 +1838,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();
@@ -1568,7 +1862,7 @@ mod tests {
             NodeProperties::Root { num_hosts: 1, .. }
         ));
         assert_eq!(root.parent, None);
-        assert_eq!(root.children.len(), 2); // host + admin proc
+        assert_eq!(root.children.len(), 1); // host only (admin proc no longer standalone)
 
         // -- 5. Resolve the host child --
         let _host_agent_id_str = host_agent_ref.actor_id().to_string();
@@ -1611,7 +1905,7 @@ mod tests {
             panic!("expected Proc properties, got {:?}", proc_node.properties);
         }
         assert_eq!(proc_node.parent, Some(host_child_ref_str.clone()));
-        // The system proc should have at least the "agent" actor.
+        // The system proc should have at least the "host_agent" actor.
         assert!(
             !proc_node.children.is_empty(),
             "proc should have at least one actor child"
@@ -1619,7 +1913,7 @@ mod tests {
 
         // -- 7. Cross-reference: system proc child is the host agent --
         //
-        // The service proc's actor (agent[0]) IS the HostMeshAgent, so
+        // The service proc's actor (agent[0]) IS the HostAgent, so
         // it appears both as a host node (from root, via HostId) and
         // as an actor (from a proc's children list, via plain ActorId).
         // HostId in root children makes resolution unambiguous: host
@@ -1668,14 +1962,14 @@ mod tests {
         use hyperactor::host::LocalProcManager;
 
         use crate::Name;
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
         use crate::resource;
         use crate::resource::ProcSpec;
         use crate::resource::Rank;
 
-        // Stand up a local in-process Host with a HostMeshAgent.
+        // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -1686,9 +1980,12 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // Spawn MeshAdminAgent on a separate proc.
@@ -1701,7 +1998,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();
@@ -1790,7 +2087,7 @@ mod tests {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
         let proc1 = ProcId::Direct(ChannelAddr::Tcp(addr1), "host1".to_string());
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
-        let ref1: ActorRef<HostMeshAgent> = ActorRef::attest(actor_id1.clone());
+        let ref1: ActorRef<HostAgent> = ActorRef::attest(actor_id1.clone());
 
         let client_proc_id =
             ProcId::Direct(ChannelAddr::Tcp(addr1), "mesh_root_client_proc".to_string());
@@ -1828,11 +2125,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // Stand up a local in-process Host with a HostMeshAgent.
+        // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -1843,9 +2140,12 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // Create a genuinely introspectable root client actor.
@@ -1872,7 +2172,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     Some(root_client_actor_id.clone()),
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();
@@ -1984,11 +2284,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // Stand up a local host with a HostMeshAgent.
+        // Stand up a local host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -1999,9 +2299,12 @@ mod tests {
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // Spawn MeshAdminAgent on a separate proc.
@@ -2011,7 +2314,11 @@ mod tests {
         let admin_handle = admin_proc
             .spawn(
                 MESH_ADMIN_ACTOR_NAME,
-                MeshAdminAgent::new(vec![(host_addr_str, host_agent_ref)], None, None),
+                MeshAdminAgent::new(
+                    vec![(host_addr_str, host_agent_ref)],
+                    None,
+                    Some("[::]:0".parse().unwrap()),
+                ),
             )
             .unwrap();
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
@@ -2082,11 +2389,11 @@ mod tests {
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
-        use crate::host_mesh::mesh_agent::HostAgentMode;
-        use crate::host_mesh::mesh_agent::ProcManagerSpawnFn;
+        use crate::host_mesh::host_agent::HostAgentMode;
+        use crate::host_mesh::host_agent::ProcManagerSpawnFn;
         use crate::proc_agent::ProcAgent;
 
-        // -- 1. Stand up a local in-process Host with a HostMeshAgent --
+        // -- 1. Stand up a local in-process Host with a HostAgent --
         let spawn: ProcManagerSpawnFn =
             Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
@@ -2098,9 +2405,12 @@ mod tests {
         let system_proc = host.system_proc().clone();
         let system_proc_id = system_proc.proc_id().clone();
         let host_agent_handle = system_proc
-            .spawn("agent", HostMeshAgent::new(HostAgentMode::Local(host)))
+            .spawn(
+                crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
+                HostAgent::new(HostAgentMode::Local(host)),
+            )
             .unwrap();
-        let host_agent_ref: ActorRef<HostMeshAgent> = host_agent_handle.bind();
+        let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
         // -- 2. Spawn MeshAdminAgent on a separate proc --
@@ -2113,7 +2423,7 @@ mod tests {
                 MeshAdminAgent::new(
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
-                    None,
+                    Some("[::]:0".parse().unwrap()),
                 ),
             )
             .unwrap();
@@ -2248,5 +2558,311 @@ mod tests {
                 child_ref
             );
         }
+    }
+
+    // -- MAST CLI resolver tests --
+    //
+    // These tests exercise the invariants introduced by the CLI-based
+    // MAST handle resolution. Each test names the invariant it
+    // establishes.
+
+    /// Helper: build a `MastStatusResponse` from a list of
+    /// `(task_index, hostname)` pairs in one task group.
+    fn mast_response_from_hosts(hosts: &[(i64, &str)]) -> super::MastStatusResponse {
+        let mut tasks = std::collections::HashMap::new();
+        for (idx, host) in hosts {
+            tasks.insert(
+                idx.to_string(),
+                vec![super::MastTaskAttempt {
+                    hostname: Some(host.to_string()),
+                }],
+            );
+        }
+        super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        }
+    }
+
+    // INV-HEAD-HOSTNAME: single group, tasks sorted by ascending index.
+    #[test]
+    fn test_head_hostname_single_group() {
+        let response = mast_response_from_hosts(&[(2, "host2"), (0, "host0"), (1, "host1")]);
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "host0");
+    }
+
+    // INV-HEAD-HOSTNAME: last attempt selected per task.
+    #[test]
+    fn test_head_hostname_last_attempt_wins() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "0".to_string(),
+            vec![
+                super::MastTaskAttempt {
+                    hostname: Some("old_host".to_string()),
+                },
+                super::MastTaskAttempt {
+                    hostname: Some("new_host".to_string()),
+                },
+            ],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "new_host");
+    }
+
+    // INV-HEAD-HOSTNAME: multiple groups merged and sorted.
+    #[test]
+    fn test_head_hostname_multiple_groups() {
+        let mut tasks_a = std::collections::HashMap::new();
+        tasks_a.insert(
+            "1".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_a1".to_string()),
+            }],
+        );
+        let mut tasks_b = std::collections::HashMap::new();
+        tasks_b.insert(
+            "0".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_b0".to_string()),
+            }],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([
+                    (
+                        "group_a".to_string(),
+                        vec![super::MastTaskGroup { tasks: tasks_a }],
+                    ),
+                    (
+                        "group_b".to_string(),
+                        vec![super::MastTaskGroup { tasks: tasks_b }],
+                    ),
+                ]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "host_b0");
+    }
+
+    // INV-HEAD-HOSTNAME: no hostnames → error.
+    #[test]
+    fn test_head_hostname_empty() {
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::new(),
+            },
+        };
+        assert!(super::head_hostname(&response).is_err());
+    }
+
+    // INV-HEAD-HOSTNAME: hostname field is None (task not yet
+    // allocated) → skipped.
+    #[test]
+    fn test_head_hostname_skips_unallocated() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "0".to_string(),
+            vec![super::MastTaskAttempt { hostname: None }],
+        );
+        tasks.insert(
+            "1".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("allocated_host".to_string()),
+            }],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "allocated_host");
+    }
+
+    // INV-FQDN-IDEMPOTENT: hostname with dot passes through
+    // unchanged (no DNS lookup).
+    #[tokio::test]
+    async fn test_qualify_fqdn_already_qualified() {
+        let fqdn = super::qualify_fqdn("fake.nonexistent.tld").await;
+        assert_eq!(fqdn, "fake.nonexistent.tld");
+    }
+
+    // INV-FQDN-IDEMPOTENT, INV-FQDN-NONBLOCKING: short hostname
+    // goes through getaddrinfo via spawn_blocking. The result is
+    // environment-dependent, but must be non-empty and the call
+    // must complete without hanging.
+    #[tokio::test]
+    async fn test_qualify_fqdn_short_hostname() {
+        let fqdn = super::qualify_fqdn("localhost").await;
+        assert!(!fqdn.is_empty(), "qualify_fqdn returned empty string");
+    }
+
+    // INV-FQDN-IDEMPOTENT: nonexistent short hostname falls back
+    // to the raw input.
+    #[tokio::test]
+    async fn test_qualify_fqdn_nonexistent_fallback() {
+        let input = "__nonexistent_host_for_test";
+        let fqdn = super::qualify_fqdn(input).await;
+        assert_eq!(fqdn, input);
+    }
+
+    // INV-ADMIN-PORT: explicit override is used directly.
+    #[test]
+    fn test_resolve_admin_port_override() {
+        assert_eq!(super::resolve_admin_port(Some(8080)).unwrap(), 8080);
+    }
+
+    // INV-ADMIN-PORT: falls back to MESH_ADMIN_ADDR config
+    // (default [::]:1729).
+    #[test]
+    fn test_resolve_admin_port_from_config() {
+        let port = super::resolve_admin_port(None).unwrap();
+        assert_eq!(port, 1729);
+    }
+
+    // INV-CLI-CONTRACT: missing binary produces a "not found" error.
+    #[tokio::test]
+    async fn test_cli_missing_binary() {
+        let result = super::try_resolve_mast_handle(
+            "mast_conda:///test-job",
+            Some(1729),
+            "__nonexistent_mast_test_bin",
+        )
+        .await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("not found"),
+            "expected 'not found' in error, got: {}",
+            err
+        );
+    }
+
+    /// Write a shell script to a temp directory and return the
+    /// directory guard and script path.
+    fn write_test_script(content: &str) -> (tempfile::TempDir, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script_path = dir.path().join("mast_stub.sh");
+        std::fs::write(&script_path, content).unwrap();
+        std::fs::set_permissions(&script_path, PermissionsExt::from_mode(0o755)).unwrap();
+        let path_str = script_path.to_str().unwrap().to_string();
+        (dir, path_str)
+    }
+
+    // INV-CLI-CONTRACT: valid JSON, happy path end-to-end.
+    #[tokio::test]
+    async fn test_cli_happy_path() {
+        let json = r#"{"latestAttempt":{"taskGroupExecutionAttempts":{"trainers":[{"taskExecutionAttempts":{"0":[{"hostname":"devgpu042"}]}}]}}}"#;
+        let (_dir, script_path) = write_test_script(&format!("#!/bin/sh\necho '{}'\n", json));
+        let url =
+            super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
+                .await
+                .unwrap();
+        assert!(url.starts_with("https://"), "url: {}", url);
+        assert!(url.ends_with(":1729"), "url: {}", url);
+    }
+
+    // INV-CLI-CONTRACT: malformed JSON produces a parse error.
+    #[tokio::test]
+    async fn test_cli_malformed_json() {
+        let (_dir, script_path) = write_test_script("#!/bin/sh\necho 'not json'\n");
+        let result =
+            super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
+                .await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("failed to parse"),
+            "expected parse error, got: {}",
+            err
+        );
+    }
+
+    // INV-CLI-CONTRACT: non-zero exit includes code + stderr.
+    #[tokio::test]
+    async fn test_cli_nonzero_exit() {
+        let (_dir, script_path) =
+            write_test_script("#!/bin/sh\necho >&2 'job not found'\nexit 42\n");
+        let result =
+            super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
+                .await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("job not found"),
+            "expected stderr in error, got: {}",
+            err
+        );
+    }
+
+    // INV-CLI-CONTRACT: handle without mast_conda:/// prefix is
+    // rejected with a clear error.
+    #[tokio::test]
+    async fn test_cli_missing_prefix() {
+        let result = super::try_resolve_mast_handle("bad_handle", Some(1729), "mast").await;
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("expected mast_conda:/// prefix"),
+            "expected prefix error, got: {}",
+            err
+        );
+    }
+
+    // INV-HEAD-HOSTNAME: a task group with zero attempts is skipped.
+    #[test]
+    fn test_head_hostname_empty_attempts_vec() {
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![], // no attempts in this group
+                )]),
+            },
+        };
+        assert!(super::head_hostname(&response).is_err());
+    }
+
+    // INV-HEAD-HOSTNAME: non-numeric task index keys sort last
+    // (i64::MAX fallback).
+    #[test]
+    fn test_head_hostname_non_numeric_index() {
+        let mut tasks = std::collections::HashMap::new();
+        tasks.insert(
+            "abc".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_abc".to_string()),
+            }],
+        );
+        tasks.insert(
+            "0".to_string(),
+            vec![super::MastTaskAttempt {
+                hostname: Some("host_0".to_string()),
+            }],
+        );
+        let response = super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: std::collections::HashMap::from([(
+                    "trainers".to_string(),
+                    vec![super::MastTaskGroup { tasks }],
+                )]),
+            },
+        };
+        let head = super::head_hostname(&response).unwrap();
+        assert_eq!(head, "host_0");
     }
 }
