@@ -284,6 +284,23 @@ impl ProcMesh {
                 parent_mesh_id,
                 parent_view_json,
             });
+
+            // Notify telemetry of each ProcAgent actor in this mesh.
+            // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
+            let now = RealClock.system_time_now();
+            for rank in current_ref.ranks.iter() {
+                let actor_id = rank.agent.actor_id();
+                let mut actor_hasher = DefaultHasher::new();
+                actor_id.hash(&mut actor_hasher);
+
+                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                    id: actor_hasher.finish(),
+                    timestamp: now,
+                    mesh_id: mesh_id_hash,
+                    rank: rank.create_rank as u64,
+                    full_name: actor_id.to_string(),
+                });
+            }
         }
 
         let mut proc_mesh = Self {
