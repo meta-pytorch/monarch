@@ -58,7 +58,7 @@ from monarch.actor import (
     endpoint,
     ProcMesh,
 )
-from monarch.config import configured, parametrize_config
+from monarch.config import configure, configured, parametrize_config
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
@@ -1080,6 +1080,7 @@ class LsActor(Actor):
 
 
 # Workspace sync test - requires rsync server infrastructure.
+@pytest.mark.oss_skip
 async def test_sync_workspace() -> None:
     # create two workspaces: one for local and one for remote
     with (
@@ -1189,9 +1190,12 @@ class SleepActor(Actor):
 
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_mesh_len():
+    configure(message_delivery_timeout="5s")
     proc_mesh = this_host().spawn_procs(per_host={"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
     assert 12 == len(s)
+    proc_mesh.stop().get()
+    time.sleep(5)
 
 
 @pytest.mark.oss_skip
