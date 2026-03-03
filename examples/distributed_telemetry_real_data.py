@@ -426,6 +426,9 @@ def main(summary: bool = False) -> None:
 
     run_workload(procs, summary, spawn_child=spawn_child)
 
+    # Clean up
+    hosts.shutdown().get()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
