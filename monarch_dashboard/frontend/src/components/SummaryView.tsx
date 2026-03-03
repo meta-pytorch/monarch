@@ -13,80 +13,13 @@ import { statusColor, formatTimestamp } from "../utils/status";
 import { StatusBadge } from "./StatusBadge";
 
 /* ------------------------------------------------------------------ */
-/* Health score helpers                                                */
-/* ------------------------------------------------------------------ */
-
-function healthLabel(score: number): string {
-  if (score >= 90) return "Excellent";
-  if (score >= 70) return "Good";
-  if (score >= 50) return "Degraded";
-  if (score >= 30) return "Poor";
-  return "Critical";
-}
-
-function healthColor(score: number): string {
-  if (score >= 90) return "var(--status-healthy)";
-  if (score >= 70) return "var(--status-processing)";
-  if (score >= 50) return "var(--status-transitional)";
-  return "var(--status-failed)";
-}
-
-/* ------------------------------------------------------------------ */
 /* Sub-components                                                      */
 /* ------------------------------------------------------------------ */
 
-function HealthGauge({ score }: { score: number }) {
-  const color = healthColor(score);
-  const circumference = 2 * Math.PI * 54;
-  const offset = circumference * (1 - score / 100);
-
-  return (
-    <div className="summary-health-gauge" data-testid="health-gauge">
-      <svg viewBox="0 0 120 120" width="120" height="120">
-        {/* Background ring */}
-        <circle
-          cx="60" cy="60" r="54"
-          fill="none"
-          stroke="var(--bg-tertiary)"
-          strokeWidth="8"
-        />
-        {/* Score arc */}
-        <circle
-          cx="60" cy="60" r="54"
-          fill="none"
-          stroke={color}
-          strokeWidth="8"
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          transform="rotate(-90 60 60)"
-          style={{ transition: "stroke-dashoffset 0.8s ease" }}
-        />
-        {/* Score text */}
-        <text
-          x="60" y="54" textAnchor="middle"
-          fill={color} fontSize="28" fontWeight="700"
-          fontFamily="var(--font-display)"
-        >
-          {score}
-        </text>
-        <text
-          x="60" y="74" textAnchor="middle"
-          fill="var(--text-muted)" fontSize="10"
-          fontFamily="var(--font-body)"
-        >
-          {healthLabel(score)}
-        </text>
-      </svg>
-    </div>
-  );
-}
-
 function OverviewCards({ data }: { data: Summary }) {
-  const hc = data.hierarchy_counts;
-  const totalEntities = hc.host_meshes + hc.proc_meshes + hc.actor_meshes;
   const cards = [
-    { label: "Entities", value: totalEntities, sub: "across hierarchy" },
+    { label: "Hosts", value: data.hierarchy_counts.host_meshes, sub: "host meshes" },
+    { label: "Procs", value: data.hierarchy_counts.proc_meshes, sub: "proc meshes" },
     { label: "Actors", value: data.actor_counts.total, sub: `${Object.keys(data.actor_counts.by_status).length} statuses` },
     { label: "Messages", value: data.message_counts.total, sub: `${(data.message_counts.delivery_rate * 100).toFixed(1)}% delivered` },
     { label: "Events", value: data.timeline.total_status_events + data.timeline.total_message_events, sub: "status + message" },
@@ -379,12 +312,8 @@ export function SummaryView() {
 
   return (
     <div className="summary-dashboard" data-testid="summary-dashboard">
-      {/* Top row: Health gauge + overview cards */}
+      {/* Top row: overview cards */}
       <div className="summary-top-row">
-        <div className="summary-health-card">
-          <h3 className="summary-section-title">System Health</h3>
-          <HealthGauge score={data.health_score} />
-        </div>
         <OverviewCards data={data} />
       </div>
 

@@ -100,25 +100,36 @@ describe("SummaryView", () => {
     });
   });
 
-  it("renders the health gauge", async () => {
+  it("renders overview cards with host and proc counts", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByTestId("health-gauge")).toBeInTheDocument();
+      expect(screen.getByText("Hosts")).toBeInTheDocument();
+      // "Procs" appears in both overview cards and hierarchy breakdown
+      expect(screen.getAllByText("Procs").length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  it("displays the health score value", async () => {
+  it("shows host unit count value", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByText("52")).toBeInTheDocument();
+      expect(screen.getByText("Hosts")).toBeInTheDocument();
     });
+    // host_units = 2 in mock data
+    const hostsCard = screen.getByText("Hosts").closest(".summary-card");
+    expect(hostsCard).toHaveTextContent("2");
   });
 
-  it("displays the health label", async () => {
+  it("shows proc count value", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByText("Degraded")).toBeInTheDocument();
+      expect(screen.getByTestId("overview-cards")).toBeInTheDocument();
     });
+    // procs = 4 in mock data; find "Procs" within the overview-cards section
+    const overviewCards = screen.getByTestId("overview-cards");
+    const procsLabels = overviewCards.querySelectorAll(".summary-card-label");
+    const procsCard = Array.from(procsLabels).find(el => el.textContent === "Procs")?.closest(".summary-card");
+    expect(procsCard).toBeTruthy();
+    expect(procsCard).toHaveTextContent("4");
   });
 
   it("renders overview cards", async () => {
@@ -128,10 +139,10 @@ describe("SummaryView", () => {
     });
   });
 
-  it("shows entities count", async () => {
+  it("shows hosts card in overview", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByText("Entities")).toBeInTheDocument();
+      expect(screen.getByText("Hosts")).toBeInTheDocument();
     });
   });
 
