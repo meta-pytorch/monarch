@@ -896,7 +896,7 @@ mod tests {
 
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let error_ttl = 66;
 

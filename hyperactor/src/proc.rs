@@ -3015,7 +3015,7 @@ mod tests {
         let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let root_1 = TestActor::spawn_child(&client, &root).await;
@@ -3104,7 +3104,7 @@ mod tests {
         let proc = Proc::local();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let (client, _handle) = proc.instance("client").unwrap();
         let actor_handle = proc.spawn("test", TestActor).unwrap();
@@ -3171,7 +3171,7 @@ mod tests {
 
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let reported_event = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
         let root_1_state = Arc::new(AtomicBool::new(false));
@@ -3466,7 +3466,7 @@ mod tests {
         let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let actor_handle = proc.spawn("test", TestActor).unwrap();
 

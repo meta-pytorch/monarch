@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use crate::Actor;
+use crate::ActorHandle;
 use crate::Context;
 use crate::Handler;
 use crate::proc::Proc;
@@ -35,13 +36,17 @@ pub struct ProcSupervisionCoordinator(ReportedEvent);
 
 impl ProcSupervisionCoordinator {
     /// Spawn a coordinator actor and set it as the coordinator for the given
-    /// proc.
-    pub async fn set(proc: &Proc) -> Result<ReportedEvent, anyhow::Error> {
+    /// proc. Returns the reported event state and the coordinator actor handle.
+    /// Callers should drain and stop the coordinator handle when the test is
+    /// done to avoid ASAN thread-leak errors.
+    pub async fn set(
+        proc: &Proc,
+    ) -> Result<(ReportedEvent, ActorHandle<ProcSupervisionCoordinator>), anyhow::Error> {
         let state = ReportedEvent::new();
         let actor = ProcSupervisionCoordinator(state.clone());
         let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
-        Ok(state)
+        Ok((state, coordinator))
     }
 }
 

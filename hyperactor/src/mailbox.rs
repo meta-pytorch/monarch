@@ -3309,7 +3309,7 @@ mod tests {
         ));
         let proc_id = test_proc_id("quux_0");
         let mut proc = Proc::new(proc_id.clone(), proc_forwarder);
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let (client, _) = proc.instance("client").unwrap();
 
         let foo = proc.spawn("foo", Foo).unwrap();
