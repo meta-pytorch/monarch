@@ -22,7 +22,6 @@ function OverviewCards({ data }: { data: Summary }) {
     { label: "Procs", value: data.hierarchy_counts.proc_meshes, sub: "proc meshes" },
     { label: "Actors", value: data.actor_counts.total, sub: `${Object.keys(data.actor_counts.by_status).length} statuses` },
     { label: "Messages", value: data.message_counts.total, sub: `${(data.message_counts.delivery_rate * 100).toFixed(1)}% delivered` },
-    { label: "Events", value: data.timeline.total_status_events + data.timeline.total_message_events, sub: "status + message" },
   ];
 
   return (
