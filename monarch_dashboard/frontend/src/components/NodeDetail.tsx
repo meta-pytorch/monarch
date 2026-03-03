@@ -8,9 +8,9 @@
 
 import React from "react";
 import { DagNode } from "../utils/dagLayout";
-import { Actor, ActorStatusEvent, Message } from "../types";
+import { Actor, ActorStatusEvent, Mesh, Message } from "../types";
 import { StatusBadge } from "./StatusBadge";
-import { formatTimestamp, formatShape } from "../utils/status";
+import { formatTimestamp } from "../utils/status";
 import { useApi } from "../hooks/useApi";
 
 interface NodeDetailProps {
@@ -41,10 +41,7 @@ export function NodeDetail({ node, onClose }: NodeDetailProps) {
       <div className="dag-detail-body">
         <div className="dag-detail-meta">
           <MetaRow label="ID" value={String(node.entityId)} />
-          <MetaRow label="Type" value={node.tier.replace("_", " ")} />
-          {node.meshClass && (
-            <MetaRow label="Class" value={node.meshClass} />
-          )}
+          <MetaRow label="Type" value={node.tier.replace(/_/g, " ")} />
           <div className="meta-row">
             <dt>Status</dt>
             <dd><StatusBadge status={node.status} /></dd>
@@ -81,7 +78,6 @@ function ActorDetails({ actorId }: { actorId: number }) {
 
   return (
     <>
-      {/* Status timeline */}
       <div className="dag-detail-section">
         <h3 className="dag-detail-section-title">
           Status Timeline
@@ -106,7 +102,6 @@ function ActorDetails({ actorId }: { actorId: number }) {
         </div>
       </div>
 
-      {/* Message summary */}
       <div className="dag-detail-section">
         <h3 className="dag-detail-section-title">
           Messages
@@ -153,10 +148,10 @@ function ActorDetails({ actorId }: { actorId: number }) {
   );
 }
 
-/** Mesh-specific details: shape, children count. */
+/** Mesh-specific details: show child meshes and actors. */
 function MeshDetails({ meshId }: { meshId: number }) {
-  const { data: mesh } = useApi<any>(`/meshes/${meshId}`);
-  const { data: children } = useApi<any[]>(`/meshes/${meshId}/children`);
+  const { data: mesh } = useApi<Mesh>(`/meshes/${meshId}`);
+  const { data: children } = useApi<Mesh[]>(`/meshes/${meshId}/children`);
   const { data: actors } = useApi<Actor[]>(`/actors?mesh_id=${meshId}`);
 
   return (
@@ -165,17 +160,17 @@ function MeshDetails({ meshId }: { meshId: number }) {
       <div className="dag-detail-meta">
         {mesh && (
           <>
-            <MetaRow label="Full Name" value={mesh.full_name} />
-            <MetaRow label="Shape" value={formatShape(mesh.shape_json)} />
+            <MetaRow label="Name" value={mesh.full_name} />
+            <MetaRow label="Class" value={mesh.class} />
           </>
         )}
         <MetaRow
-          label="Children"
-          value={`${children?.length ?? 0} meshes`}
+          label="Child Meshes"
+          value={`${children?.length ?? 0}`}
         />
         <MetaRow
           label="Actors"
-          value={`${actors?.length ?? 0} direct`}
+          value={`${actors?.length ?? 0}`}
         />
       </div>
     </div>
