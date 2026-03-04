@@ -95,18 +95,20 @@ export function DagNodeComponent({
       {/* Inner fill - subtle tinted background */}
       <circle r={r - 3} fill={color} opacity="0.08" />
 
-      {/* Status dot at top-right */}
-      <circle
-        cx={r * 0.65}
-        cy={-r * 0.65}
-        r={4}
-        fill={color}
-        className={
-          node.status === "processing" || node.status === "idle"
-            ? "dag-status-dot-pulse"
-            : ""
-        }
-      />
+      {/* Status dot at top-right (hidden for neutral n/a nodes) */}
+      {node.status !== "n/a" && (
+        <circle
+          cx={r * 0.65}
+          cy={-r * 0.65}
+          r={4}
+          fill={color}
+          className={
+            node.status === "processing" || node.status === "idle"
+              ? "dag-status-dot-pulse"
+              : ""
+          }
+        />
+      )}
 
       {/* Label */}
       <text
