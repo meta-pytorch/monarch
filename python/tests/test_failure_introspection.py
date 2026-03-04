@@ -22,6 +22,7 @@ import urllib.request
 
 import monarch.actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, endpoint
 from monarch.config import parametrize_config
@@ -59,6 +60,7 @@ def _encode(ref: str) -> str:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_failed_actor_has_failure_info() -> None:
     """After an actor crashes, its introspection payload has failure_info."""
@@ -130,6 +132,7 @@ async def test_failed_actor_has_failure_info() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_healthy_procs_not_poisoned() -> None:
     """Procs without failed actors should not be poisoned."""
