@@ -819,7 +819,6 @@ mod tests {
     use crate::clock::RealClock;
     use crate::config;
     use crate::context::Mailbox as _;
-    use crate::id;
     use crate::introspect::IntrospectMessage;
     use crate::introspect::IntrospectView;
     use crate::introspect::NodePayload;
@@ -832,9 +831,10 @@ mod tests {
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
     use crate::reference::Reference;
-    use crate::test_utils::pingpong::PingPongActor;
-    use crate::test_utils::pingpong::PingPongMessage;
-    use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
+    use crate::testing::ids::test_proc_id;
+    use crate::testing::pingpong::PingPongActor;
+    use crate::testing::pingpong::PingPongMessage;
+    use crate::testing::proc_supervison::ProcSupervisionCoordinator; // for macros
 
     #[derive(Debug)]
     struct EchoActor(PortRef<u64>);
@@ -896,7 +896,7 @@ mod tests {
 
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let error_ttl = 66;
 
@@ -1526,7 +1526,7 @@ mod tests {
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::new(
-            id!(remote[0]),
+            test_proc_id("remote_0"),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );
         let (remote_client, _) = remote_proc.instance("remote").unwrap();
@@ -1683,7 +1683,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = Reference::Actor(id!(nonexistent[0].child));
+        let child_ref = Reference::Actor(test_proc_id("nonexistent").actor_id("child", 0));
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
         PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
@@ -2073,7 +2073,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = Reference::Actor(id!(test[0].child));
+        let test_ref = Reference::Actor(test_proc_id("test").actor_id("child", 0));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.

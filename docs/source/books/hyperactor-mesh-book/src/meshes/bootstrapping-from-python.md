@@ -119,8 +119,7 @@ pub fn global_root_client() -> &'static Instance<()> {
             router::global().clone().boxed(),
         ).unwrap();
 
-        // 2. Register that proc in the *global* router so both direct and ranked
-        //    messages can reach it.
+        // 2. Register that proc in the *global* router so messages can reach it.
         router::global().bind(
             client_proc.proc_id().clone().into(),
             client_proc.clone(),

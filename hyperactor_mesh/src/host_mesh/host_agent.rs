@@ -476,13 +476,15 @@ impl Handler<resource::GetRankStatus> for HostAgent {
         use crate::StatusOverlay;
         use crate::resource::Status;
 
-        let host = self.host.as_ref().expect("host present");
         let (rank, status) = match self.created.get(&get_rank_status.name) {
             Some(ProcCreationState {
                 rank,
                 created: Ok((proc_id, _mesh_agent)),
             }) => {
-                let (status, _) = host.proc_status(proc_id).await;
+                let status = match self.host.as_ref() {
+                    Some(host) => host.proc_status(proc_id).await.0,
+                    None => Status::Stopped,
+                };
                 (*rank, status)
             }
             Some(ProcCreationState {
@@ -601,13 +603,18 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
         cx: &Context<Self>,
         get_state: resource::GetState<ProcState>,
     ) -> anyhow::Result<()> {
-        let host = self.host.as_ref().expect("host present");
         let state = match self.created.get(&get_state.name) {
             Some(ProcCreationState {
                 rank,
                 created: Ok((proc_id, mesh_agent)),
             }) => {
-                let (status, proc_status) = host.proc_status(proc_id).await;
+                let (status, proc_status, bootstrap_command) = match self.host.as_ref() {
+                    Some(host) => {
+                        let (status, proc_status) = host.proc_status(proc_id).await;
+                        (status, proc_status, host.bootstrap_command())
+                    }
+                    None => (resource::Status::Stopped, None, None),
+                };
                 resource::State {
                     name: get_state.name.clone(),
                     status,
@@ -615,7 +622,7 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                         proc_id: proc_id.clone(),
                         create_rank: *rank,
                         mesh_agent: mesh_agent.clone(),
-                        bootstrap_command: host.bootstrap_command(),
+                        bootstrap_command,
                         proc_status,
                     }),
                 }
@@ -932,8 +939,8 @@ mod tests {
                     ..
                 }),
             } if name == resource_name
-              && proc_id == ProcId::Direct(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId::Direct(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && proc_id == ProcId(host_addr.clone(), name.to_string())
+              && mesh_agent == ActorRef::attest(ProcId(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

@@ -81,6 +81,7 @@ def configure(
     actor_queue_dispatch: bool = ...,
     mesh_admin_addr: str = ...,
     mesh_attach_config_timeout: str = ...,
+    mesh_orphan_timeout: str = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.

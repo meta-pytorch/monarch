@@ -6,6 +6,10 @@
 
 # pyre-strict
 
+import os
+import subprocess
+import sys
+import tempfile
 import warnings
 from typing import Any, Awaitable, Callable, Dict, Literal, Optional, Tuple
 
@@ -18,12 +22,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyPr
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region
 from monarch._src.actor.actor_mesh import _Lazy, context
-from monarch._src.actor.allocator import (
-    AllocateMixin,
-    AllocHandle,
-    LocalAllocator,
-    ProcessAllocator,
-)
+from monarch._src.actor.allocator import AllocateMixin, AllocHandle, LocalAllocator
 from monarch._src.actor.future import Future
 from monarch._src.actor.proc_mesh import _get_bootstrap_args, ProcMesh
 from monarch._src.actor.shape import MeshTrait, NDSlice, Shape
@@ -355,10 +354,26 @@ def hosts_from_config(name: str) -> HostMesh:
     WARNING: This function is a standin so that our getting_started example code works. The real implementation
     needs an RFC design.
     """
+    num_hosts = 2
+    tmpdir = tempfile.mkdtemp(prefix="monarch_hosts_from_config_")
+    workers = []
+    for i in range(num_hosts):
+        addr = f"ipc://{tmpdir}/{name}_{i}"
+        env = {**os.environ}
+        cmd = [
+            sys.executable,
+            "-c",
+            "from monarch.actor import run_worker_loop_forever; "
+            f'run_worker_loop_forever(address="{addr}", '
+            'ca="trust_all_connections")',
+        ]
+        subprocess.Popen(cmd, env=env, start_new_session=True)
+        workers.append(addr)
 
-    return HostMesh.allocate_nonblocking(
-        name,
-        Extent(["hosts"], [2]),
-        ProcessAllocator(*_get_bootstrap_args()),
-        bootstrap_cmd=_bootstrap_cmd(),
+    from monarch._src.actor.bootstrap import attach_to_workers
+
+    return attach_to_workers(
+        name=name,
+        ca="trust_all_connections",
+        workers=workers,
     )

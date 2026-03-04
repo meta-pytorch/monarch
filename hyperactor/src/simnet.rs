@@ -864,15 +864,17 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::channel::ChannelAddr;
     use crate::channel::sim::SimAddr;
     use crate::clock::Clock;
     use crate::clock::RealClock;
     use crate::clock::SimClock;
-    use crate::id;
     use crate::simnet;
     use crate::simnet::Dispatcher;
     use crate::simnet::Event;
     use crate::simnet::SimNetError;
+    use crate::testing::ids::test_actor_id;
+    use crate::testing::ids::test_proc_id;
 
     #[derive(Debug)]
     struct MessageDeliveryEvent {
@@ -970,9 +972,9 @@ mod tests {
         // Tests that we can create a simnet, config latency between distances and sample latencies between procs.
         let ext = extent!(region = 1, dc = 2, zone = 2, rack = 4, host = 4, gpu = 8);
 
-        let alice = id!(world[0]);
-        let bob = id!(world[1]);
-        let charlie = id!(world[2]);
+        let alice = test_proc_id("world_0");
+        let bob = test_proc_id("world_1");
+        let charlie = test_proc_id("world_2");
 
         let config = LatencyConfig {
             inter_zone_distribution: LatencyDistribution::Beta(
@@ -1172,7 +1174,7 @@ mod tests {
                 tx,
                 args_string,
                 kwargs_string,
-                id!(mesh_0_worker[0].worker_0),
+                test_actor_id("mesh_0_worker_0", "worker_0"),
             ))
             .unwrap();
 
@@ -1184,14 +1186,23 @@ mod tests {
             .await
             .unwrap();
         let records = simnet_handle().unwrap().close().await;
-        let expected_record = SimulatorEventRecord {
-            summary:
-                "[mesh_0_worker[0].worker_0[0]] Torch Op: torch.ops.aten.ones.default(1, 2, a=2)"
-                    .to_string(),
-            start_at: 0,
-            end_at: 100,
-        };
-        assert!(records.as_ref().unwrap().len() == 1);
-        assert_eq!(records.unwrap().first().unwrap(), &expected_record);
+        let records = records.unwrap();
+        assert_eq!(records.len(), 1);
+        let record = records.first().unwrap();
+        // The actor id format is now direct-addressed: "{addr},{proc_name},{actor_name}[{pid}]"
+        assert!(
+            record
+                .summary
+                .contains("Torch Op: torch.ops.aten.ones.default(1, 2, a=2)"),
+            "unexpected summary: {}",
+            record.summary,
+        );
+        assert!(
+            record.summary.contains("mesh_0_worker_0,worker_0[0]"),
+            "unexpected summary: {}",
+            record.summary,
+        );
+        assert_eq!(record.start_at, 0);
+        assert_eq!(record.end_at, 100);
     }
 }

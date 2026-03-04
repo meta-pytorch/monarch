@@ -109,6 +109,9 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
     fn initialized(&self) -> PyResult<PyPythonTask> {
         PyPythonTask::new(async { Ok(None::<()>) })
     }
+
+    /// The name of the mesh.
+    fn name(&self) -> PyResult<PyPythonTask>;
 }
 
 pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
@@ -195,6 +198,10 @@ impl PythonActorMesh {
 
     fn initialized(&self) -> PyResult<PyPythonTask> {
         self.inner.initialized()
+    }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        self.inner.name()
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -379,6 +386,18 @@ impl ActorMeshProtocol for AsyncActorMesh {
             Ok(None::<()>)
         })
     }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let mesh = self.mesh.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.push(async move {
+            let result = async move { mesh.await?.name()?.take_task()?.await }.await;
+            if tx.send(result).is_err() {
+                panic!("oneshot failed");
+            }
+        });
+        PyPythonTask::new(async move { rx.await.map_err(anyhow::Error::from)? })
+    }
 }
 
 #[async_trait]
@@ -500,6 +519,11 @@ impl ActorMeshProtocol for PythonActorMeshImpl {
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
         self.mesh_ref().__reduce__(py)
     }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let name = self.mesh_ref().name().to_string();
+        PyPythonTask::new(async move { Ok(name) })
+    }
 }
 
 impl SupervisableActorMesh for PythonActorMeshImpl {
@@ -570,6 +594,11 @@ impl ActorMeshProtocol for ActorMeshRef<PythonActor> {
             .unwrap();
         let from_bytes = module.getattr("py_actor_mesh_from_bytes").unwrap();
         Ok((from_bytes, py_bytes))
+    }
+
+    fn name(&self) -> PyResult<PyPythonTask> {
+        let name = self.name().to_string();
+        PyPythonTask::new(async move { Ok(name) })
     }
 }
 
