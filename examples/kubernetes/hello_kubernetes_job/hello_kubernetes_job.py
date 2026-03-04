@@ -39,8 +39,17 @@ def main():
         action="store_true",
         help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
+    parser.add_argument(
+        "--kueue",
+        type=str,
+        default=None,
+        help="Kueue local queue name",
+    )
     args = parser.parse_args()
-
+ 
+    if args.volcano and args.kueue:
+        parser.error("Arguments --volcano and --kueue are mutually exclusive")
+ 
     job = KubernetesJob(namespace="monarch-tests")
     if args.volcano:
         # Volcano adds volcano.sh/job-name and volcano.sh/task-index labels to pods
@@ -60,11 +69,18 @@ def main():
         # Provision MonarchMesh CRDs directly from Python.
         # The Monarch operator (must be pre-installed) creates the
         # StatefulSets and headless Services automatically.
+        labels = {"kueue.x-k8s.io/queue-name": args.kueue} if args.kueue else None
         job.add_mesh(
-            "mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+            "mesh1",
+            2,
+            image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest"),
+            labels=labels,
         )
         job.add_mesh(
-            "mesh2", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
+            "mesh2",
+            2,
+            image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest"),
+            labels=labels,
         )
     else:
         job.add_mesh("mesh1", 2)
