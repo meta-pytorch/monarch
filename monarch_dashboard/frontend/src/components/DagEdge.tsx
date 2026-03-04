@@ -16,8 +16,8 @@ interface DagEdgeProps {
 
 /**
  * Renders an SVG path between two nodes.
- * Hierarchy edges: solid gray curves.
- * Message edges: dashed, colored, animated.
+ * Hierarchy edges: solid gray straight lines.
+ * Message edges: dashed, colored, curved.
  */
 export function DagEdgeComponent({ edge, nodes }: DagEdgeProps) {
   const source = nodes.get(edge.sourceId);
@@ -26,28 +26,25 @@ export function DagEdgeComponent({ edge, nodes }: DagEdgeProps) {
 
   const isMessage = edge.type === "message";
 
-  // Compute a smooth cubic bezier curve between source and target.
   const path = useMemo(() => {
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-
-    // Offset start/end to the edge of circles.
     const angle = Math.atan2(dy, dx);
     const sx = source.x + Math.cos(angle) * source.radius;
     const sy = source.y + Math.sin(angle) * source.radius;
     const tx = target.x - Math.cos(angle) * target.radius;
     const ty = target.y - Math.sin(angle) * target.radius;
 
-    // Control points for a gentle curve.
-    const cx = dist * 0.35;
-    const cp1x = sx + cx;
-    const cp1y = sy;
-    const cp2x = tx - cx;
-    const cp2y = ty;
+    if (isMessage) {
+      // Curved path for message edges.
+      const cx = dist * 0.35;
+      return `M ${sx} ${sy} C ${sx + cx} ${sy}, ${tx - cx} ${ty}, ${tx} ${ty}`;
+    }
 
-    return `M ${sx} ${sy} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${tx} ${ty}`;
-  }, [source, target]);
+    // Straight line for hierarchy edges.
+    return `M ${sx} ${sy} L ${tx} ${ty}`;
+  }, [source, target, isMessage]);
 
   if (isMessage) {
     return (

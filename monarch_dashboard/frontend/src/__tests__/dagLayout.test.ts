@@ -120,6 +120,21 @@ describe("computeLayout", () => {
     }
   });
 
+  it("positions tiers top to bottom", () => {
+    const hostMesh = graph.nodes.find((n) => n.tier === "host_mesh")!;
+    const procMesh = graph.nodes.find((n) => n.tier === "proc_mesh")!;
+    const actorMesh = graph.nodes.find((n) => n.tier === "actor_mesh")!;
+    const actor = graph.nodes.find((n) => n.tier === "actor")!;
+    expect(hostMesh.y).toBeLessThan(procMesh.y);
+    expect(procMesh.y).toBeLessThan(actorMesh.y);
+    expect(actorMesh.y).toBeLessThan(actor.y);
+  });
+
+  it("sets graph dimensions", () => {
+    expect(graph.width).toBeGreaterThan(0);
+    expect(graph.height).toBeGreaterThan(0);
+  });
+
   it("host_unit label shows host name without mesh", () => {
     const hu = graph.nodes.find((n) => n.id === "host_unit-1")!;
     expect(hu.label).toBe("host_0");
