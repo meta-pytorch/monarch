@@ -535,12 +535,28 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    /// Query the state of all actors in this mesh.
+    /// If keepalive is Some, use a message that indicates to the recipient
+    /// that the owner of the mesh is still alive, along with the expiry time
+    /// after which the actor should be considered orphaned. Else, use a normal
+    /// state query.
     #[allow(clippy::result_large_err)]
     pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
     ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
-        self.proc_mesh.actor_states(cx, self.name.clone()).await
+        self.actor_states_with_keepalive(cx, None).await
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(crate) async fn actor_states_with_keepalive(
+        &self,
+        cx: &impl context::Actor,
+        keepalive: Option<std::time::SystemTime>,
+    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
+        self.proc_mesh
+            .actor_states_with_keepalive(cx, self.name.clone(), keepalive)
+            .await
     }
 
     pub(crate) fn new(
@@ -1312,8 +1328,8 @@ mod tests {
     async fn test_undeliverable_message_return() {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;
-        use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongMessage;
+        use hyperactor::testing::pingpong::PingPongActor;
+        use hyperactor::testing::pingpong::PingPongMessage;
 
         hyperactor_telemetry::initialize_logging_for_test();
 

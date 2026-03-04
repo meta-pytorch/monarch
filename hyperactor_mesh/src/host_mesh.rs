@@ -118,12 +118,12 @@ impl HostRef {
 
     /// The ProcId for the proc with name `name` on this host.
     fn named_proc(&self, name: &Name) -> ProcId {
-        ProcId::Direct(self.0.clone(), name.to_string())
+        ProcId(self.0.clone(), name.to_string())
     }
 
     /// The service proc on this host.
     fn service_proc(&self) -> ProcId {
-        ProcId::Direct(self.0.clone(), "service".to_string())
+        ProcId(self.0.clone(), "service".to_string())
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -165,10 +165,7 @@ impl TryFrom<ActorRef<HostAgent>> for HostRef {
 
     fn try_from(value: ActorRef<HostAgent>) -> Result<Self, crate::Error> {
         let proc_id = value.actor_id().proc_id();
-        match proc_id.as_direct() {
-            Some((addr, _)) => Ok(HostRef(addr.clone())),
-            None => Err(crate::Error::RankedProc(proc_id.clone())),
-        }
+        Ok(HostRef(proc_id.addr().clone()))
     }
 }
 
@@ -536,14 +533,9 @@ impl HostMesh {
         for _rank in 0..extent.num_ranks() {
             let mesh_agent = mesh_agents_rx.recv().await?;
 
-            let Some((addr, _)) = mesh_agent.actor_id().proc_id().as_direct() else {
-                return Err(crate::Error::HostMeshAgentConfigurationError(
-                    mesh_agent.actor_id().clone(),
-                    "host mesh agent must be a direct actor".to_string(),
-                ));
-            };
+            let addr = mesh_agent.actor_id().proc_id().addr().clone();
 
-            let host_ref = HostRef(addr.clone());
+            let host_ref = HostRef(addr);
             if host_ref.mesh_agent() != mesh_agent {
                 return Err(crate::Error::HostMeshAgentConfigurationError(
                     mesh_agent.actor_id().clone(),
@@ -1295,12 +1287,7 @@ impl HostMeshRef {
             },
         );
         for proc_id in procs.into_iter() {
-            let Some((addr, proc_name)) = proc_id.as_direct() else {
-                return Err(anyhow::anyhow!(
-                    "host mesh proc {} must be direct addressed",
-                    proc_id,
-                ));
-            };
+            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
             // The name stored in HostAgent is not the same as the
             // one stored in the ProcMesh. We instead take each proc id
             // and map it to that particular agent.
@@ -1309,7 +1296,7 @@ impl HostMeshRef {
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr.clone());
+            let host = HostRef(addr);
             host.mesh_agent().send(
                 cx,
                 resource::Stop {
@@ -1408,16 +1395,11 @@ impl HostMeshRef {
         let mut proc_names = Vec::new();
         for proc_id in procs.iter() {
             num_ranks += 1;
-            let Some((addr, proc_name)) = proc_id.as_direct() else {
-                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
-                    "host mesh proc {} must be direct addressed",
-                    proc_id,
-                )));
-            };
+            let (addr, proc_name) = (proc_id.addr().clone(), proc_id.name().to_string());
 
             // Note that we don't send 1 message per host agent, we send 1 message
             // per proc.
-            let host = HostRef(addr.clone());
+            let host = HostRef(addr);
             let proc_name = proc_name.parse::<Name>()?;
             proc_names.push(proc_name.clone());
             let mut reply = tx.bind();

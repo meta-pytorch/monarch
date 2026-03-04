@@ -70,6 +70,7 @@ use crate::actor_local::ActorLocalStorage;
 use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelTransport;
 use crate::clock::Clock;
 use crate::clock::ClockKind;
 use crate::clock::RealClock;
@@ -109,7 +110,6 @@ use crate::reference::ActorId;
 use crate::reference::Index;
 use crate::reference::PortId;
 use crate::reference::ProcId;
-use crate::reference::id;
 use crate::supervision::ActorSupervisionEvent;
 
 /// This is used to mint new local ranks for [`Proc::local`].
@@ -206,7 +206,7 @@ impl Proc {
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcId::Direct(addr, name);
+        let proc_id = ProcId(addr, name);
         let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
         proc.clone().serve(rx);
         Ok(proc)
@@ -219,7 +219,7 @@ impl Proc {
         default: BoxedMailboxSender,
     ) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
-        let proc_id = ProcId::Direct(addr, name);
+        let proc_id = ProcId(addr, name);
         let proc = Self::new(
             proc_id,
             DialMailboxRouter::new_with_default(default).into_boxed(),
@@ -295,10 +295,9 @@ impl Proc {
     /// Create a new local-only proc. This proc is not allowed to forward messages
     /// outside of the proc itself.
     pub fn local() -> Self {
-        // TODO: name these something that is ~ globally unique, e.g., incorporate
-        // the hostname, some GUID, etc.
-        let proc_id = ProcId::Ranked(id!(local), NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed));
-        // TODO: make it so that local procs can talk to each other.
+        let rank = NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed);
+        let addr = ChannelAddr::any(ChannelTransport::Local);
+        let proc_id = ProcId(addr, format!("local_{}", rank));
         Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     }
 
@@ -327,7 +326,8 @@ impl Proc {
     pub(crate) fn runtime() -> &'static Proc {
         static RUNTIME_PROC: OnceLock<Proc> = OnceLock::new();
         RUNTIME_PROC.get_or_init(|| {
-            let proc_id = ProcId::Ranked(id!(hyperactor_runtime), 0);
+            let addr = ChannelAddr::any(ChannelTransport::Local);
+            let proc_id = ProcId(addr, "hyperactor_runtime".to_string());
             Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
         })
     }
@@ -2671,8 +2671,8 @@ mod tests {
     use crate::OncePortRef;
     use crate::PortRef;
     use crate::clock::RealClock;
-    use crate::test_utils::proc_supervison::ProcSupervisionCoordinator;
-    use crate::test_utils::process_assertion::assert_termination;
+    use crate::testing::proc_supervison::ProcSupervisionCoordinator;
+    use crate::testing::process_assertion::assert_termination;
 
     #[derive(Debug, Default)]
     #[export]
@@ -3015,7 +3015,7 @@ mod tests {
         let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
         let root_1 = TestActor::spawn_child(&client, &root).await;
@@ -3104,7 +3104,7 @@ mod tests {
         let proc = Proc::local();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let (client, _handle) = proc.instance("client").unwrap();
         let actor_handle = proc.spawn("test", TestActor).unwrap();
@@ -3171,7 +3171,7 @@ mod tests {
 
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let reported_event = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
         let root_1_state = Arc::new(AtomicBool::new(false));
@@ -3466,7 +3466,7 @@ mod tests {
         let (client, _) = proc.instance("client").unwrap();
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let actor_handle = proc.spawn("test", TestActor).unwrap();
 
