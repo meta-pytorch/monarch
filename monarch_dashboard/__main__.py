@@ -58,7 +58,7 @@ def start_dashboard(db_path, host="0.0.0.0", port=5000, rebuild=False):
     app.run(host=host, port=port)
 
 
-def _launch_simulator(db_path, interval, failure_at):
+def _launch_simulator(db_path, interval, failure_at, host_failure=False):
     """Launch fake_data/simulate.py as a background subprocess."""
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     sim_script = os.path.join(pkg_dir, "fake_data", "simulate.py")
@@ -72,6 +72,8 @@ def _launch_simulator(db_path, interval, failure_at):
         "--failure-at",
         str(failure_at),
     ]
+    if host_failure:
+        cmd.append("--host-failure")
     print(f">> Launching simulator (failure at {failure_at}s) ...")
     proc = subprocess.Popen(cmd)
 
@@ -115,11 +117,18 @@ if __name__ == "__main__":
         default=270.0,
         help="Seconds until simulator triggers a failure (default: 270)",
     )
+    parser.add_argument(
+        "--host-failure",
+        action="store_true",
+        help="Cascade failure to entire host mesh (downward propagation)",
+    )
     args = parser.parse_args()
 
     sim_proc = None
     if args.simulate:
-        sim_proc = _launch_simulator(args.db, args.interval, args.failure_at)
+        sim_proc = _launch_simulator(
+            args.db, args.interval, args.failure_at, args.host_failure
+        )
     elif not os.path.exists(args.db):
         print(f"Database not found: {args.db}")
         exit(1)
