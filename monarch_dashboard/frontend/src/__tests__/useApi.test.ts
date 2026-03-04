@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor, act } from "@testing-library/react";
 import { useApi } from "../hooks/useApi";
 
 describe("useApi", () => {
@@ -86,7 +86,9 @@ describe("useApi", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // Trigger refetch
-    result.current.refetch();
+    await act(async () => {
+      result.current.refetch();
+    });
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledTimes(2);

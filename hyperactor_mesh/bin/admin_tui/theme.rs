@@ -69,6 +69,11 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) admin_port: Option<u16>,
 
+    /// MAST resolution strategy: "thrift" (default at Meta) or
+    /// "cli" (INV-DISPATCH).
+    #[arg(long)]
+    pub(crate) mast_resolver: Option<String>,
+
     /// Refresh interval in milliseconds
     #[arg(long, default_value_t = 1000)]
     pub(crate) refresh_ms: u64,

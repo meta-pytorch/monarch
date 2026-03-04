@@ -1224,7 +1224,7 @@ class UndeliverableMessageSender(Actor):
     def send_undeliverable(self) -> None:
         actor_instance = context().actor_instance
         port_id = PortId(
-            actor_id=ActorId(world_name="bogus", rank=0, actor_name="bogus"),
+            actor_id=ActorId(addr="local:0", proc_name="bogus", actor_name="bogus"),
             port=1234,
         )
         port_ref = PortRef(port_id)
@@ -1396,6 +1396,65 @@ def test_simple_bootstrap():
         r = hello.doit.call().get()
         for _, v in r.items():
             assert v == "hello!"
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+
+
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+def test_config_propagates_to_host_agent():
+    """Verify that configure() overrides reach host agent OS processes
+    via the simple bootstrap (attach_to_workers) path.
+
+    Sets mesh_admin_addr on the client, attaches to workers (which
+    pushes config to host agents via SetClientConfig), then spawns
+    MeshAdminAgent on the host's system proc. MeshAdminAgent reads
+    MESH_ADMIN_ADDR from the host agent process's global config to
+    decide its bind address. If the client's config was propagated,
+    it binds to :9999 instead of the default :1729.
+
+    This specifically tests the host agent's own process config, NOT
+    child procs (which already receive config via ProcSpec/Bootstrap).
+    """
+    from monarch.config import configure
+
+    # Set a non-default admin address on the client side.
+    configure(mesh_admin_addr="[::]:9999")
+
+    with TemporaryDirectory() as d:
+        procs = []
+        workers = []
+
+        for i in range(1):
+            addr = f"ipc://{d}/{i}"
+            env = {**os.environ}
+            if "FB_XAR_INVOKED_NAME" in os.environ:
+                env["PYTHONPATH"] = ":".join(sys.path)
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    f'import sys; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")',
+                ],
+                env=env,
+            )
+            procs.append(proc)
+            workers.append(addr)
+
+        hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+
+        # _spawn_admin() sends SpawnMeshAdmin to the host agent, which
+        # spawns MeshAdminAgent on the host's system proc. The admin
+        # agent reads MESH_ADMIN_ADDR from the host process's config.
+        head = hosts.slice(hosts=0)
+        admin_addr = head._spawn_admin().get()
+
+        assert ":9999" in admin_addr, (
+            f"Expected :9999 in admin addr '{admin_addr}', "
+            "client config not propagated to host agent process"
+        )
+
         for proc in procs:
             proc.kill()
             proc.wait()

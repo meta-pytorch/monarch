@@ -38,6 +38,8 @@ pub struct Actor {
     pub rank: u64,
     /// Full hierarchical name of this actor
     pub full_name: String,
+    /// User-facing name for this actor
+    pub display_name: Option<String>,
 }
 
 /// Row data for the meshes table.
@@ -193,6 +195,7 @@ impl EntityEventDispatcher for EntityDispatcher {
                     mesh_id: actor_event.mesh_id,
                     rank: actor_event.rank,
                     full_name: actor_event.full_name,
+                    display_name: actor_event.display_name,
                 });
                 inner.flush_actors_if_full()?;
             }

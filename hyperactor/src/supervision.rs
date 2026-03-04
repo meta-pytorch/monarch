@@ -97,13 +97,10 @@ fn fmt_status<'a>(
 
     match status {
         ActorStatus::Stopped(_)
-            if actor_id.name() == "agent" || actor_id.name() == "proc_agent" =>
+            if actor_id.name() == "host_agent" || actor_id.name() == "proc_agent" =>
         {
             // Host agent stopped - use simplified message from D86984496
-            let name = match actor_id.proc_id() {
-                crate::reference::ProcId::Direct(addr, _) => addr.to_string(),
-                crate::reference::ProcId::Ranked(_, _) => actor_id.proc_id().to_string(),
-            };
+            let name = actor_id.proc_id().addr().to_string();
             write!(
                 f,
                 "The process {} owned by this actor became unresponsive and is assumed dead, check the log on the host for details",

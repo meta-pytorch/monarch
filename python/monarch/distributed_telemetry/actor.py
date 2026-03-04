@@ -55,14 +55,10 @@ def _scanner_startup() -> Optional[Callable[[], None]]:
 SetupActor.register_startup_function(_scanner_startup)
 
 
-def _register_scanner(use_fake_data: bool, batch_size: int) -> None:
+def _register_scanner(batch_size: int) -> None:
     global _scanner, _scanner_startup_impl, _spawn_callback_registered, _spawned_procs
-    _scanner = DatabaseScanner(
-        current_rank().rank, use_fake_data=use_fake_data, batch_size=batch_size
-    )
-    _scanner_startup_impl = functools.partial(
-        _register_scanner, use_fake_data=use_fake_data, batch_size=batch_size
-    )
+    _scanner = DatabaseScanner(current_rank().rank, batch_size=batch_size)
+    _scanner_startup_impl = functools.partial(_register_scanner, batch_size=batch_size)
     # Clear the spawned procs list when starting fresh
     _spawned_procs = []
     # Register the spawn callback once to record new ProcMeshes
@@ -146,20 +142,17 @@ class DistributedTelemetryActor(Actor):
         return total_count
 
 
-def start_telemetry(use_fake_data: bool = False, batch_size: int = 1000) -> QueryEngine:
+def start_telemetry(batch_size: int = 1000) -> QueryEngine:
     """
     Start the distributed telemetry system and return a QueryEngine.
 
     Args:
-        use_fake_data: If True, populate tables with fake demo data.
-                       If False (default), tables are populated from real
-                       tracing events via RecordBatchSink.
         batch_size: Number of rows to buffer before flushing to a RecordBatch.
 
     Returns:
         The QueryEngine for executing SQL queries.
     """
     # Reset if called again (e.g., in tests)
-    _register_scanner(use_fake_data, batch_size)
+    _register_scanner(batch_size)
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
     return QueryEngine(coordinator)

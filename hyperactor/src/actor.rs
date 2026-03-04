@@ -819,7 +819,6 @@ mod tests {
     use crate::clock::RealClock;
     use crate::config;
     use crate::context::Mailbox as _;
-    use crate::id;
     use crate::introspect::IntrospectMessage;
     use crate::introspect::IntrospectView;
     use crate::introspect::NodePayload;
@@ -832,9 +831,10 @@ mod tests {
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
     use crate::reference::Reference;
-    use crate::test_utils::pingpong::PingPongActor;
-    use crate::test_utils::pingpong::PingPongMessage;
-    use crate::test_utils::proc_supervison::ProcSupervisionCoordinator; // for macros
+    use crate::testing::ids::test_proc_id;
+    use crate::testing::pingpong::PingPongActor;
+    use crate::testing::pingpong::PingPongMessage;
+    use crate::testing::proc_supervison::ProcSupervisionCoordinator; // for macros
 
     #[derive(Debug)]
     struct EchoActor(PortRef<u64>);
@@ -896,7 +896,7 @@ mod tests {
 
         // Need to set a supervison coordinator for this Proc because there will
         // be actor failure(s) in this test which trigger supervision.
-        ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let error_ttl = 66;
 
@@ -1526,7 +1526,7 @@ mod tests {
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
         let remote_proc = Proc::new(
-            id!(remote[0]),
+            test_proc_id("remote_0"),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );
         let (remote_client, _) = remote_proc.instance("remote").unwrap();
@@ -1683,7 +1683,7 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = Reference::Actor(id!(nonexistent[0].child));
+        let child_ref = Reference::Actor(test_proc_id("nonexistent").actor_id("child", 0));
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
         PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
@@ -2073,7 +2073,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = Reference::Actor(id!(test[0].child));
+        let test_ref = Reference::Actor(test_proc_id("test").actor_id("child", 0));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
@@ -2286,5 +2286,135 @@ mod tests {
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
+    }
+
+    /// CI-1: `introspectable_instance` responds to
+    /// `IntrospectMessage::Query` with `NodeProperties::Actor` where
+    /// `actor_status` is `"client"` and `actor_type` is `"()"`.
+    ///
+    /// Unlike a plain `instance()`, which drops the introspect
+    /// receiver so queries are silently discarded, an
+    /// `introspectable_instance` has a live `serve_introspect` task
+    /// and is fully navigable in admin tooling.
+    #[tokio::test]
+    async fn test_introspectable_instance_responds_to_query() {
+        let proc = Proc::local();
+        let (bridge, handle) = proc.introspectable_instance("bridge").unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        let (reply_port, reply_rx) = bridge.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(&actor_id)
+            .send(
+                &bridge,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+        let payload = reply_rx.recv().await.unwrap();
+
+        assert_eq!(payload.identity, actor_id.to_string());
+        match &payload.properties {
+            NodeProperties::Actor {
+                actor_status,
+                actor_type,
+                ..
+            } => {
+                assert_eq!(
+                    actor_status, "client",
+                    "CI-1: actor_status must be \"client\""
+                );
+                assert_eq!(actor_type, "()", "CI-1: actor_type must be \"()\"");
+            }
+            other => panic!("expected NodeProperties::Actor, got {:?}", other),
+        }
+    }
+
+    /// Contrast with CI-1: a plain `instance()` does NOT respond to
+    /// `IntrospectMessage::Query`. Its introspect receiver is dropped
+    /// in `Proc::instance()`, so the message is silently discarded
+    /// and the reply port never receives a value.
+    ///
+    /// Callers that need TUI visibility must use
+    /// `introspectable_instance` instead.
+    #[tokio::test]
+    async fn test_instance_does_not_respond_to_query() {
+        let proc = Proc::local();
+        let (client, _client_handle) = proc.instance("client").unwrap();
+        let (_mailbox, mailbox_handle) = proc.instance("mailbox").unwrap();
+        let mailbox_id = mailbox_handle.actor_id().clone();
+
+        let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+        PortRef::<IntrospectMessage>::attest_message_port(&mailbox_id)
+            .send(
+                &client,
+                IntrospectMessage::Query {
+                    view: IntrospectView::Actor,
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+
+        // The introspect receiver was dropped in `instance()`, so the
+        // message is silently discarded and the reply never arrives.
+        let result = RealClock
+            .timeout(Duration::from_millis(100), reply_rx.recv())
+            .await;
+        assert!(
+            result.is_err(),
+            "instance() must not respond to IntrospectMessage (introspect receiver dropped)"
+        );
+    }
+
+    /// CI-2: dropping an `introspectable_instance` stores a
+    /// terminated snapshot in the proc.
+    ///
+    /// `InstanceState::drop` transitions status to `Stopped`.
+    /// `serve_introspect` observes the terminal status, calls
+    /// `live_actor_payload`, and stores the result via
+    /// `store_terminated_snapshot` before exiting — the same
+    /// post-mortem semantics as a regular actor.
+    #[tokio::test]
+    async fn test_introspectable_instance_snapshot_on_drop() {
+        let proc = Proc::local();
+        let (instance, handle) = proc.introspectable_instance("bridge").unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        assert!(
+            proc.all_actor_ids().contains(&actor_id),
+            "should appear in all_actor_ids while live"
+        );
+
+        // Dropping `instance` transitions status to Stopped, waking
+        // the serve_introspect task which stores the snapshot.
+        drop(instance);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if proc.terminated_snapshot(&actor_id).is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for terminated snapshot"
+            );
+            tokio::task::yield_now().await;
+        }
+
+        let snapshot = proc.terminated_snapshot(&actor_id).unwrap();
+        match &snapshot.properties {
+            NodeProperties::Actor { actor_status, .. } => {
+                assert!(
+                    actor_status.starts_with("stopped"),
+                    "CI-2: snapshot actor_status should be stopped, got: {}",
+                    actor_status
+                );
+            }
+            other => panic!(
+                "expected NodeProperties::Actor in snapshot, got {:?}",
+                other
+            ),
+        }
     }
 }

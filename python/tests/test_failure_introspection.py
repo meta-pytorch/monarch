@@ -17,6 +17,7 @@ Verifies that when an actor fails, the introspection API exposes:
 import asyncio
 import json
 import ssl
+import urllib.parse
 import urllib.request
 
 import monarch.actor
@@ -66,7 +67,7 @@ async def test_failed_actor_has_failure_info() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = await host._spawn_admin()
+        base = await host._spawn_admin(admin_addr="[::]:0")
 
         procs = host.spawn_procs(per_host={"replica": 2})
         workers = procs.spawn("worker", FailWorker)
@@ -137,7 +138,7 @@ async def test_healthy_procs_not_poisoned() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = await host._spawn_admin()
+        base = await host._spawn_admin(admin_addr="[::]:0")
 
         procs = host.spawn_procs(per_host={"replica": 3})
         workers = procs.spawn("worker", FailWorker)

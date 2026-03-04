@@ -10,33 +10,41 @@ import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "../App";
 
-const MOCK_HOST_MESHES = [
+const MOCK_MESHES = [
   {
     id: 1, timestamp_us: 1700000000000000, class: "Host",
-    given_name: "host_mesh_0", full_name: "/host_mesh_0",
-    shape_json: '{"dims": [2]}', parent_mesh_id: null, parent_view_json: null,
+    given_name: "host_mesh_0", full_name: "host_mesh_0",
+    shape_json: '{"dims": [1]}', parent_mesh_id: null, parent_view_json: null,
   },
 ];
 
-const MOCK_ALL_MESHES = [...MOCK_HOST_MESHES];
-const MOCK_CHILDREN: any[] = [];
+const MOCK_MESH_CHILDREN = [
+  {
+    id: 3, timestamp_us: 1700000000000000, class: "Proc",
+    given_name: "proc_mesh_0", full_name: "host_mesh_0/proc_mesh_0",
+    shape_json: '{"dims": [1]}', parent_mesh_id: 1,
+    parent_view_json: '{"offset": [0], "sizes": [1]}',
+  },
+];
+
 const MOCK_ACTORS = [
   {
-    id: 1, timestamp_us: 1700000000000000, mesh_id: 1,
-    rank: 0, full_name: "/host_mesh_0/HostMeshAgent[0]",
+    id: 1, timestamp_us: 1700000000000000,
+    mesh_id: 5, rank: 0, full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[0]",
   },
 ];
 
 const MOCK_ACTOR_DETAIL = {
   ...MOCK_ACTORS[0],
   latest_status: "idle",
-  latest_status_timestamp_us: 1700000015000000,
+  status_timestamp_us: 1700000015000000,
 };
 
 const MOCK_MESSAGES: any[] = [];
 
 const MOCK_SUMMARY = {
-  mesh_counts: { total: 10, by_class: { Host: 2, Proc: 4 } },
+  mesh_counts: { total: 10 },
+  hierarchy_counts: { host_meshes: 2, proc_meshes: 4, actor_meshes: 4 },
   actor_counts: { total: 10, by_status: { idle: 5, failed: 1, stopped: 4 } },
   message_counts: { total: 82, by_status: { delivered: 77 }, by_endpoint: { train_step: 18 }, delivery_rate: 0.939 },
   errors: { failed_actors: [], stopped_actors: [], failed_messages: 0 },
@@ -54,28 +62,22 @@ beforeEach(() => {
         json: async () => MOCK_SUMMARY,
       } as Response);
     }
-    if (path.includes("/meshes?class=Host")) {
-      return Promise.resolve({
-        ok: true,
-        json: async () => MOCK_HOST_MESHES,
-      } as Response);
-    }
     if (path.match(/\/meshes\/\d+\/children/)) {
       return Promise.resolve({
         ok: true,
-        json: async () => MOCK_CHILDREN,
+        json: async () => MOCK_MESH_CHILDREN,
       } as Response);
     }
     if (path.match(/\/meshes\/\d+$/)) {
       return Promise.resolve({
         ok: true,
-        json: async () => MOCK_HOST_MESHES[0],
+        json: async () => MOCK_MESHES[0],
       } as Response);
     }
-    if (path.match(/\/meshes$/)) {
+    if (path.includes("/meshes")) {
       return Promise.resolve({
         ok: true,
-        json: async () => MOCK_ALL_MESHES,
+        json: async () => MOCK_MESHES,
       } as Response);
     }
     if (path.match(/\/actors\/\d+$/)) {
@@ -133,11 +135,11 @@ describe("App", () => {
     expect(screen.getByText("Host Meshes")).toBeInTheDocument();
   });
 
-  test("shows host meshes table in Hierarchy tab", async () => {
+  test("shows meshes table in Hierarchy tab", async () => {
     render(<App />);
     fireEvent.click(screen.getByText("Hierarchy"));
     await waitFor(() => {
-      expect(screen.getByText("host_mesh_0")).toBeInTheDocument();
+      expect(screen.getAllByText("host_mesh_0").length).toBeGreaterThan(0);
     });
   });
 
@@ -147,7 +149,7 @@ describe("App", () => {
     await waitFor(() => {
       const loading = screen.queryByText("Loading DAG data...");
       const container = screen.queryByTestId("dag-container");
-      const empty = screen.queryByText("No mesh data available");
+      const empty = screen.queryByText("No data available");
       expect(loading || container || empty).toBeTruthy();
     });
   });

@@ -8,6 +8,8 @@
 
 /// Utilities to verify cancellation safety.
 pub mod cancel_safe;
+/// Standardized test ID constructors.
+pub mod ids;
 /// PingPongActor test util.
 pub mod pingpong;
 /// ProcSupervisionCoordinator test util.

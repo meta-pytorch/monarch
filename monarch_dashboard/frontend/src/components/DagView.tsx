@@ -7,9 +7,9 @@
  */
 
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { Mesh, Actor, Message } from "../types";
+import { Mesh, Actor, Message, Summary } from "../types";
 import { useApi } from "../hooks/useApi";
-import { computeLayout, DagNode, DagGraph } from "../utils/dagLayout";
+import { computeLayout, DagNode, DagGraph, TIER_X, TIER_LABELS, DagTier } from "../utils/dagLayout";
 import { DagNodeComponent } from "./DagNode";
 import { DagEdgeComponent } from "./DagEdge";
 import { DagLegend } from "./DagLegend";
@@ -23,23 +23,47 @@ interface Tooltip {
 }
 
 /**
- * Full DAG visualization of the Monarch mesh hierarchy.
+ * Full DAG visualization of the Monarch hierarchy.
  *
  * Renders an interactive SVG with zoom/pan, clickable nodes,
  * hover tooltips, and a slide-in detail panel.
  */
 export function DagView() {
   // Fetch all data needed for the graph.
-  const { data: meshes, loading: mLoading } = useApi<Mesh[]>("/meshes");
+  const { data: meshes, loading: meshLoading } = useApi<Mesh[]>("/meshes");
   const { data: actors, loading: aLoading } = useApi<Actor[]>("/actors");
   const { data: messages, loading: msgLoading } = useApi<Message[]>("/messages");
+  const { data: summary } = useApi<Summary>("/summary");
+
+  // Build per-actor status map.  The /actors list endpoint doesn't include
+  // latest_status (only the individual /actors/<id> endpoint does), so we
+  // enrich from the summary which lists failed and stopped actors by ID.
+  const actorStatuses: Record<number, string> = useMemo(() => {
+    const statuses: Record<number, string> = {};
+    if (!actors) return statuses;
+
+    for (const a of actors) {
+      statuses[a.id] = a.latest_status ?? "idle";
+    }
+
+    if (summary) {
+      for (const fa of summary.errors.failed_actors) {
+        statuses[fa.actor_id] = "failed";
+      }
+      for (const sa of summary.errors.stopped_actors) {
+        statuses[sa.actor_id] = "stopped";
+      }
+    }
+
+    return statuses;
+  }, [actors, summary]);
 
   // UI state.
   const [selectedNode, setSelectedNode] = useState<DagNode | null>(null);
   const [tooltip, setTooltip] = useState<Tooltip | null>(null);
 
   // Pan/zoom state.
-  const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: 1060, h: 800 });
+  const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: 1300, h: 800 });
   const svgRef = useRef<SVGSVGElement>(null);
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0, vx: 0, vy: 0 });
@@ -48,32 +72,39 @@ export function DagView() {
   const graph: DagGraph | null = useMemo(() => {
     if (!meshes || !actors) return null;
 
-    // Build actor status map from latest_status on actor objects.
-    const actorStatuses: Record<number, string> = {};
-    for (const a of actors) {
-      actorStatuses[a.id] = a.latest_status ?? "unknown";
-    }
-
-    // Build message pairs.
     const messagePairs: Array<[number, number]> = (messages ?? []).map((m) => [
       m.from_actor_id,
       m.to_actor_id,
     ]);
 
     return computeLayout(meshes, actors, actorStatuses, messagePairs);
-  }, [meshes, actors, messages]);
+  }, [meshes, actors, messages, actorStatuses]);
 
-  // Fit view on initial load.
+  // Set initial view on first load only — don't reset on data refresh.
+  const viewInitialized = useRef(false);
   useEffect(() => {
-    if (graph) {
+    if (graph && !viewInitialized.current) {
+      viewInitialized.current = true;
       setViewBox({
         x: -20,
         y: -20,
         w: graph.width + 40,
-        h: graph.height + 40,
+        h: Math.min(graph.height + 40, 800),
       });
     }
   }, [graph]);
+
+  // Keep selected node in sync with refreshed data.
+  useEffect(() => {
+    if (selectedNode && graph) {
+      const updated = graph.nodes.find((n) => n.id === selectedNode.id);
+      if (updated && updated !== selectedNode) {
+        setSelectedNode(updated);
+      } else if (!updated) {
+        setSelectedNode(null);
+      }
+    }
+  }, [graph, selectedNode]);
 
   // Node lookup map for edge rendering.
   const nodeMap = useMemo(() => {
@@ -158,24 +189,27 @@ export function DagView() {
         setTooltip(null);
         return;
       }
-      // Position tooltip relative to node.
       setTooltip({ node, x: node.x, y: node.y - node.radius - 14 });
     },
     []
   );
 
   // -- Loading / Error --
-  if (mLoading || aLoading || msgLoading) {
+  const loading = meshLoading || aLoading || msgLoading;
+  if (loading) {
     return <div className="loading-state">Loading DAG data...</div>;
   }
 
   if (!graph || graph.nodes.length === 0) {
-    return <div className="empty-state">No mesh data available</div>;
+    return <div className="empty-state">No data available</div>;
   }
 
   // Separate hierarchy and message edges for layering.
   const hierEdges = graph.edges.filter((e) => e.type === "hierarchy");
   const msgEdges = graph.edges.filter((e) => e.type === "message");
+
+  // Tier labels for the 4 columns.
+  const tierEntries = Object.entries(TIER_LABELS) as Array<[DagTier, string]>;
 
   return (
     <div className="dag-container" data-testid="dag-container">
@@ -192,7 +226,6 @@ export function DagView() {
           onMouseLeave={handleMouseUp}
         >
           <defs>
-            {/* Subtle grid pattern for background depth */}
             <pattern
               id="dag-grid"
               width="40"
@@ -208,7 +241,6 @@ export function DagView() {
               />
             </pattern>
 
-            {/* Glow filter for selected nodes */}
             <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
               <feGaussianBlur stdDeviation="3" result="blur" />
               <feMerge>
@@ -228,50 +260,20 @@ export function DagView() {
           />
 
           {/* Tier labels */}
-          <text
-            x={120}
-            y={30}
-            textAnchor="middle"
-            fill="var(--text-muted)"
-            fontSize="11"
-            fontFamily="var(--font-display)"
-            opacity="0.5"
-          >
-            HOST MESHES
-          </text>
-          <text
-            x={380}
-            y={30}
-            textAnchor="middle"
-            fill="var(--text-muted)"
-            fontSize="11"
-            fontFamily="var(--font-display)"
-            opacity="0.5"
-          >
-            PROC MESHES
-          </text>
-          <text
-            x={640}
-            y={30}
-            textAnchor="middle"
-            fill="var(--text-muted)"
-            fontSize="11"
-            fontFamily="var(--font-display)"
-            opacity="0.5"
-          >
-            ACTOR MESHES
-          </text>
-          <text
-            x={900}
-            y={30}
-            textAnchor="middle"
-            fill="var(--text-muted)"
-            fontSize="11"
-            fontFamily="var(--font-display)"
-            opacity="0.5"
-          >
-            ACTORS
-          </text>
+          {tierEntries.map(([tier, label]) => (
+            <text
+              key={tier}
+              x={TIER_X[tier]}
+              y={30}
+              textAnchor="middle"
+              fill="var(--text-muted)"
+              fontSize="11"
+              fontFamily="var(--font-display)"
+              opacity="0.5"
+            >
+              {label}
+            </text>
+          ))}
 
           {/* Edges: hierarchy first (below), messages on top */}
           <g className="dag-edges-hierarchy">
