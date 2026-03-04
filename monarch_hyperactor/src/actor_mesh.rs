@@ -329,6 +329,12 @@ impl ActorMeshProtocol for AsyncActorMesh {
             .await;
             if let (Some(mut port_ref), Err(pyerr)) = (port, result) {
                 let _ = monarch_with_gil(|py: Python<'_>| {
+                    let exception_str = crate::logging::format_traceback(py, &pyerr);
+                    tracing::error!(
+                        actor_id = instance.self_id().to_string(),
+                        "error occurred during cast unresolved: {}",
+                        exception_str
+                    );
                     let mut state =
                         crate::pickle::pickle(py, pyerr.into_value(py).into_any(), false, false)?;
                     port_ref
