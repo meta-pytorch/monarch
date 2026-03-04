@@ -15,7 +15,7 @@ interface DagEdgeProps {
 }
 
 /** Mesh tiers render as rects (half-height = r * 0.7). */
-const RECT_TIERS = new Set(["mesh", "proc_mesh", "actor_mesh"]);
+const RECT_TIERS = new Set(["host_mesh", "proc_mesh", "actor_mesh"]);
 
 function bottomY(node: DagNode): number {
   return node.y + (RECT_TIERS.has(node.tier) ? node.radius * 0.7 : node.radius);
@@ -48,7 +48,7 @@ export function DagEdgeComponent({ edge, nodes }: DagEdgeProps) {
       return `M ${sx} ${sy} C ${sx} ${sy + dy * 0.4}, ${tx} ${ty - dy * 0.4}, ${tx} ${ty}`;
     }
 
-    // Message: both nodes typically at the same Y row — arc below.
+    // Message: smooth rounded arc below the actor row.
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const angle = Math.atan2(dy, dx);
@@ -56,9 +56,9 @@ export function DagEdgeComponent({ edge, nodes }: DagEdgeProps) {
     const sy = source.y + Math.sin(angle) * source.radius;
     const tx = target.x - Math.cos(angle) * target.radius;
     const ty = target.y - Math.sin(angle) * target.radius;
-    const sag = Math.max(30, Math.abs(dx) * 0.25);
+    const sag = Math.max(40, Math.abs(dx) * 0.35);
     const belowY = Math.max(sy, ty) + sag;
-    return `M ${sx} ${sy} C ${sx} ${belowY}, ${tx} ${belowY}, ${tx} ${ty}`;
+    return `M ${sx} ${sy} Q ${(sx + tx) / 2} ${belowY}, ${tx} ${ty}`;
   }, [source, target, isMessage]);
 
   if (isMessage) {
