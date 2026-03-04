@@ -153,6 +153,12 @@ def test_actors_table(cleanup_callbacks) -> None:
         f"Expected to find 'test_worker' in actor names, got: {full_names}"
     )
 
+    # Verify that the bootstrap client actor is recorded with display_name "client"
+    display_names = result_dict.get("display_name", [])
+    assert "<root>" in display_names, (
+        f"Expected bootstrap client actor with display_name '<root>', got: {display_names}"
+    )
+
     # Clean up
     hosts.shutdown().get()
 
@@ -271,10 +277,11 @@ def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
     )
     result_dict = result.to_pydict()
 
-    # Verify our named proc mesh appears with the correct given_name
+    # Verify our named proc mesh appears with the correct given_name.
+    # The bootstrap path also emits a "local" proc mesh, so filter for ours.
     given_names = result_dict.get("given_name", [])
-    assert ["proc_mesh_test"] == given_names, (
-        f"Expected given_name to be 'proc_mesh_test', got: {given_names}"
+    assert "proc_mesh_test" in given_names, (
+        f"Expected 'proc_mesh_test' in given_names, got: {given_names}"
     )
 
     # Verify full_name differs from given_name (includes UUID suffix)
