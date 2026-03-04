@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { Mesh, Actor, Message } from "../types";
+import { Mesh, Actor, Message, Summary } from "../types";
 import { useApi } from "../hooks/useApi";
 import { computeLayout, DagNode, DagGraph, TIER_X, TIER_LABELS, DagTier } from "../utils/dagLayout";
 import { DagNodeComponent } from "./DagNode";
@@ -33,6 +33,30 @@ export function DagView() {
   const { data: meshes, loading: meshLoading } = useApi<Mesh[]>("/meshes");
   const { data: actors, loading: aLoading } = useApi<Actor[]>("/actors");
   const { data: messages, loading: msgLoading } = useApi<Message[]>("/messages");
+  const { data: summary } = useApi<Summary>("/summary");
+
+  // Build per-actor status map.  The /actors list endpoint doesn't include
+  // latest_status (only the individual /actors/<id> endpoint does), so we
+  // enrich from the summary which lists failed and stopped actors by ID.
+  const actorStatuses: Record<number, string> = useMemo(() => {
+    const statuses: Record<number, string> = {};
+    if (!actors) return statuses;
+
+    for (const a of actors) {
+      statuses[a.id] = a.latest_status ?? "idle";
+    }
+
+    if (summary) {
+      for (const fa of summary.errors.failed_actors) {
+        statuses[fa.actor_id] = "failed";
+      }
+      for (const sa of summary.errors.stopped_actors) {
+        statuses[sa.actor_id] = "stopped";
+      }
+    }
+
+    return statuses;
+  }, [actors, summary]);
 
   // UI state.
   const [selectedNode, setSelectedNode] = useState<DagNode | null>(null);
@@ -48,18 +72,13 @@ export function DagView() {
   const graph: DagGraph | null = useMemo(() => {
     if (!meshes || !actors) return null;
 
-    const actorStatuses: Record<number, string> = {};
-    for (const a of actors) {
-      actorStatuses[a.id] = a.latest_status ?? "unknown";
-    }
-
     const messagePairs: Array<[number, number]> = (messages ?? []).map((m) => [
       m.from_actor_id,
       m.to_actor_id,
     ]);
 
     return computeLayout(meshes, actors, actorStatuses, messagePairs);
-  }, [meshes, actors, messages]);
+  }, [meshes, actors, messages, actorStatuses]);
 
   // Set initial view on first load only — don't reset on data refresh.
   const viewInitialized = useRef(false);
