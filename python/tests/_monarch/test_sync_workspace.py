@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from typing import Generator
 
+import pytest
 from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
 from monarch._rust_bindings.monarch_hyperactor.channel import (
     ChannelAddr,
@@ -72,6 +73,7 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmpdir)
 
+    @pytest.mark.oss_skip  # pyre-ignore[56]: Pyre cannot infer the type of this pytest marker
     async def test_sync_workspace(self) -> None:
         local_workspace_dir = self.tmpdir / "local" / "github" / "torch"
         local_workspace_dir.mkdir(parents=True)
