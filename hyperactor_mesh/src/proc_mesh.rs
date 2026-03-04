@@ -255,6 +255,7 @@ impl ProcMesh {
                     mesh_id: mesh_id_hash,
                     rank: rank.create_rank as u64,
                     full_name: actor_id.to_string(),
+                    display_name: None,
                 });
             }
         }
@@ -1151,7 +1152,7 @@ impl ProcMeshRef {
             // mesh can be preserved.
             let controller: ActorMeshController<A> = ActorMeshController::new(
                 mesh.deref().clone(),
-                supervision_display_name,
+                supervision_display_name.clone(),
                 Some(cx.instance().port().bind()),
                 statuses,
             );
@@ -1197,12 +1198,17 @@ impl ProcMeshRef {
                 let mut actor_hasher = DefaultHasher::new();
                 actor_id.hash(&mut actor_hasher);
 
+                let display_name = supervision_display_name.as_ref().map(|sdn| {
+                    let point = self.region().extent().point_of_rank(rank).unwrap();
+                    crate::actor_display_name(sdn, &point)
+                });
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                     id: actor_hasher.finish(),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank as u64,
                     full_name: actor_id.to_string(),
+                    display_name,
                 });
             }
         }

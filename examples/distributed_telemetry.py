@@ -19,8 +19,8 @@ in queryable Arrow tables. Actor creation events are captured separately
 via the ActorEventSink.
 
 Usage:
-    buck2 run //monarch/examples:distributed_telemetry_real_data
-    buck2 run //monarch/examples:distributed_telemetry_real_data -- --summary
+    buck2 run //monarch/examples:distributed_telemetry
+    buck2 run //monarch/examples:distributed_telemetry -- --summary
 """
 
 import argparse
@@ -196,10 +196,18 @@ QUERIES = [
     ),
     # Actors by name pattern
     (
-        "Actors by name",
-        """SELECT full_name, rank
+        "Actors by full_name",
+        """SELECT full_name
            FROM actors
            ORDER BY full_name""",
+    ),
+    # Actors by name pattern
+    (
+        "Actors by display_name",
+        """SELECT display_name
+           FROM actors
+           WHERE display_name IS NOT NULL
+           ORDER BY display_name""",
     ),
     # Sample of meshes
     (

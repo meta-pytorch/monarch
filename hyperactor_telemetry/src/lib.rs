@@ -320,6 +320,8 @@ pub struct ActorEvent {
     pub rank: u64,
     /// Full hierarchical name of this actor
     pub full_name: String,
+    /// User-facing name for this actor
+    pub display_name: Option<String>,
 }
 
 /// Notify the registered dispatcher that an actor was created.

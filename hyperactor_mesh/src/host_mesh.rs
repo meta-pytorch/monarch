@@ -276,6 +276,7 @@ impl HostMesh {
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
                 full_name: actor_id.to_string(),
+                display_name: None,
             });
         }
     }

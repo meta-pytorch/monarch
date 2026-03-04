@@ -694,21 +694,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         status
                     ))),
                 };
-                let display_name = if !point.is_empty() {
-                    let coords_display = point.format_as_dict();
-                    if let Some(pos) = supervision_display_name.rfind('>') {
-                        format!(
-                            "{}{}{}",
-                            &supervision_display_name[..pos],
-                            coords_display,
-                            &supervision_display_name[pos..]
-                        )
-                    } else {
-                        format!("{}{}", supervision_display_name, coords_display)
-                    }
-                } else {
-                    supervision_display_name.clone()
-                };
+                let display_name = crate::actor_display_name(supervision_display_name, &point);
                 send_state_change(
                     cx,
                     point.rank(),

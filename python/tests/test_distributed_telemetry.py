@@ -123,7 +123,14 @@ def test_actors_table(cleanup_callbacks) -> None:
     assert actor_count > 0, f"Expected at least one actor, got {actor_count}"
 
     # Verify the schema has the expected columns
-    expected_columns = {"id", "timestamp_us", "mesh_id", "rank", "full_name"}
+    expected_columns = {
+        "id",
+        "timestamp_us",
+        "mesh_id",
+        "rank",
+        "full_name",
+        "display_name",
+    }
     actual_columns = set(result_dict.keys())
     assert expected_columns == actual_columns, (
         f"Expected columns {expected_columns}, got {actual_columns}"

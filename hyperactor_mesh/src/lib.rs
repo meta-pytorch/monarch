@@ -285,6 +285,22 @@ impl From<view::InvalidCardinality> for Error {
 /// The type of result used in `hyperactor_mesh`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Construct a per-actor display name from a mesh-level base name and a
+/// rank's coordinates. Inserts `point.format_as_dict()` before the last
+/// `>` in `base`, or appends it if no `>` is found. Returns `base`
+/// unchanged for scalar (empty) points.
+pub(crate) fn actor_display_name(base: &str, point: &view::Point) -> String {
+    if point.is_empty() {
+        return base.to_string();
+    }
+    let coords = point.format_as_dict();
+    if let Some(pos) = base.rfind('>') {
+        format!("{}{}{}", &base[..pos], coords, &base[pos..])
+    } else {
+        format!("{}{}", base, coords)
+    }
+}
+
 /// Names are used to identify objects in the system. They have a user-provided name,
 /// and a unique UUID.
 ///
