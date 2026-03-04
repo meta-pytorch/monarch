@@ -9,16 +9,41 @@
 use cxx::ExternType;
 use cxx::type_id;
 
-/// SAFETY: bindings
-unsafe impl ExternType for CUstream_st {
-    type Id = type_id!("CUstream_st");
-    type Kind = cxx::kind::Opaque;
+#[cfg(not(use_rocm))]
+mod extern_types {
+    use super::*;
+
+    /// SAFETY: bindings
+    unsafe impl ExternType for CUstream_st {
+        type Id = type_id!("CUstream_st");
+        type Kind = cxx::kind::Opaque;
+    }
+
+    /// SAFETY: bindings
+    unsafe impl ExternType for ncclComm {
+        type Id = type_id!("ncclComm");
+        type Kind = cxx::kind::Opaque;
+    }
 }
 
-/// SAFETY: bindings
-unsafe impl ExternType for ncclComm {
-    type Id = type_id!("ncclComm");
-    type Kind = cxx::kind::Opaque;
+#[cfg(use_rocm)]
+mod extern_types {
+    use super::inner::ihipStream_t;
+    use super::inner::ncclComm;
+    use super::*;
+
+    /// SAFETY: bindings
+    /// Note: HIP uses ihipStream_t as the opaque type behind hipStream_t pointer
+    unsafe impl ExternType for ihipStream_t {
+        type Id = type_id!("ihipStream_t");
+        type Kind = cxx::kind::Opaque;
+    }
+
+    /// SAFETY: bindings
+    unsafe impl ExternType for ncclComm {
+        type Id = type_id!("ncclComm");
+        type Kind = cxx::kind::Opaque;
+    }
 }
 
 // When building with cargo, this is actually the lib.rs file for a crate.
@@ -74,7 +99,33 @@ mod inner {
     }
 }
 
+// Export all inner bindings
+#[cfg(not(use_rocm))]
 pub use inner::*;
+
+// For ROCm: export inner bindings plus compatibility aliases
+#[cfg(use_rocm)]
+pub use inner::*;
+#[cfg(use_rocm)]
+pub use self::rocm_compat::*;
+
+#[cfg(use_rocm)]
+#[allow(non_camel_case_types)]
+mod rocm_compat {
+    use super::inner;
+
+    // ROCm/HIP compatibility layer
+    //
+    // Hipify converts CUDA APIs to HIP in C++ code, causing bindgen to generate HIP types.
+    // These aliases map CUDA names back to their HIP equivalents for Rust code compatibility.
+    pub type cudaError_t = inner::hipError_t;
+    pub type cudaStream_t = inner::hipStream_t;
+    pub type CUstream_st = inner::ihipStream_t;
+
+    // Function aliases - hipify converts cudaSetDevice -> hipSetDevice, etc.
+    pub use inner::hipSetDevice as cudaSetDevice;
+    pub use inner::hipStreamSynchronize as cudaStreamSynchronize;
+}
 
 #[cfg(test)]
 mod tests {
