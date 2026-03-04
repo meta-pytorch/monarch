@@ -286,7 +286,6 @@ fn main() {
         &compute_include_path,
         rdma_include,
         &source_dir,
-        &manifest_dir,
         &out_dir,
         is_rocm,
     );
@@ -360,7 +359,6 @@ fn compile_gpu_source(
     compute_include: &str,
     rdma_include: &str,
     source_dir: &Path,
-    manifest_dir: &str,
     out_dir: &str,
     is_rocm: bool,
 ) {
@@ -370,7 +368,7 @@ fn compile_gpu_source(
         format!("{}/bin/nvcc", compute_home)
     };
 
-    let gpu_build_dir = PathBuf::from(manifest_dir).join("target/gpu_build");
+    let gpu_build_dir = PathBuf::from(out_dir).join("gpu_build");
     std::fs::create_dir_all(&gpu_build_dir).expect("Failed to create GPU build directory");
 
     let obj_name = if is_rocm {
