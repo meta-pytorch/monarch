@@ -42,7 +42,7 @@ function dashArray(status: string): string | undefined {
 }
 
 /** Mesh tiers render as rounded rectangles; others as circles. */
-const RECT_TIERS = new Set(["mesh", "proc_mesh", "actor_mesh"]);
+const RECT_TIERS = new Set(["host_mesh", "proc_mesh", "actor_mesh"]);
 
 /** Single node rendered as an SVG group. */
 export function DagNodeComponent({
