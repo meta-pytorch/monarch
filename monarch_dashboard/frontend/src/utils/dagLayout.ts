@@ -8,7 +8,7 @@
 
 /**
  * Converts API data into positioned graph nodes and edges
- * for the DAG visualization. Uses a deterministic left-to-right
+ * for the DAG visualization. Uses a deterministic top-to-bottom
  * hierarchical layout with 6 tiers:
  * Host Mesh -> Host Unit -> Proc Mesh -> Proc Unit -> Actor Mesh -> Actor
  *
@@ -51,14 +51,14 @@ export interface DagGraph {
   height: number;
 }
 
-// Layout constants — 6 tiers spread left to right.
-const TIER_X: Record<DagTier, number> = {
-  host_mesh: 80,
-  host_unit: 230,
-  proc_mesh: 380,
-  proc_unit: 530,
-  actor_mesh: 680,
-  actor: 980,
+// Layout constants — 6 tiers spread top to bottom with even spacing.
+const TIER_Y: Record<DagTier, number> = {
+  host_mesh: 60,
+  host_unit: 180,
+  proc_mesh: 300,
+  proc_unit: 420,
+  actor_mesh: 540,
+  actor: 660,
 };
 
 const NODE_RADIUS: Record<DagTier, number> = {
@@ -71,16 +71,16 @@ const NODE_RADIUS: Record<DagTier, number> = {
 };
 
 const TIER_LABELS: Record<DagTier, string> = {
-  host_mesh: "HOST MESHES",
-  host_unit: "HOSTS",
-  proc_mesh: "PROC MESHES",
-  proc_unit: "PROCS",
-  actor_mesh: "ACTOR MESHES",
-  actor: "ACTORS",
+  host_mesh: "HOST MESH",
+  host_unit: "HOST",
+  proc_mesh: "PROC MESH",
+  proc_unit: "PROC",
+  actor_mesh: "ACTOR MESH",
+  actor: "ACTOR",
 };
 
-const VERTICAL_SPACING = 90;
-const PADDING_Y = 80;
+const HORIZONTAL_SPACING = 100;
+const PADDING_X = 160;
 
 const TERMINAL_STATUSES = new Set(["stopped", "failed", "stopping"]);
 
@@ -90,7 +90,7 @@ function shortName(name: string): string {
   return parts[parts.length - 1];
 }
 
-export { TIER_X, TIER_LABELS };
+export { TIER_Y, TIER_LABELS };
 
 /**
  * Compute a hierarchical DAG layout from meshes and actors.
@@ -174,73 +174,74 @@ export function computeLayout(
     return null;
   }
 
-  // Assign Y positions from leaf actors upward.
-  let nextY = PADDING_Y;
+  // Position leaf actors first (evenly spaced), then center parents above them.
+  let nextX = PADDING_X;
   const nodePositions: Record<string, { x: number; y: number }> = {};
 
   for (const hostMesh of hostMeshes) {
-    const hostAgents = hostAgentsByMesh[hostMesh.id] ?? [];
     const pms = meshChildren[hostMesh.id] ?? [];
-    const hostChildYs: number[] = [];
-
-    // Position host unit nodes (HostAgents).
-    for (const agent of hostAgents) {
-      const y = nextY;
-      nextY += VERTICAL_SPACING;
-      nodePositions[`host_unit-${agent.id}`] = { x: TIER_X.host_unit, y };
-      hostChildYs.push(y);
-    }
+    const allHostLeafXs: number[] = [];
 
     for (const pm of pms) {
-      const procAgents = procAgentsByMesh[pm.id] ?? [];
       const ams = meshChildren[pm.id] ?? [];
-      const pmChildYs: number[] = [];
-
-      // Position proc unit nodes (ProcAgents).
-      for (const agent of procAgents) {
-        const y = nextY;
-        nextY += VERTICAL_SPACING;
-        nodePositions[`proc_unit-${agent.id}`] = { x: TIER_X.proc_unit, y };
-        pmChildYs.push(y);
-      }
+      const allPmLeafXs: number[] = [];
 
       for (const am of ams) {
         const acts = meshActors[am.id] ?? [];
-        const amChildYs: number[] = [];
+        const amChildXs: number[] = [];
 
         for (const act of acts) {
-          const y = nextY;
-          nextY += VERTICAL_SPACING;
-          nodePositions[`actor-${act.id}`] = { x: TIER_X.actor, y };
-          amChildYs.push(y);
+          const x = nextX;
+          nextX += HORIZONTAL_SPACING;
+          nodePositions[`actor-${act.id}`] = { x, y: TIER_Y.actor };
+          amChildXs.push(x);
         }
 
-        const amY =
-          amChildYs.length > 0
-            ? (amChildYs[0] + amChildYs[amChildYs.length - 1]) / 2
-            : nextY;
-        if (amChildYs.length === 0) nextY += VERTICAL_SPACING;
-        nodePositions[`actor_mesh-${am.id}`] = { x: TIER_X.actor_mesh, y: amY };
-        pmChildYs.push(amY);
+        // Actor mesh centered over its actors.
+        const amX = amChildXs.length > 0
+          ? (amChildXs[0] + amChildXs[amChildXs.length - 1]) / 2
+          : nextX;
+        if (amChildXs.length === 0) nextX += HORIZONTAL_SPACING;
+        nodePositions[`actor_mesh-${am.id}`] = { x: amX, y: TIER_Y.actor_mesh };
+        allPmLeafXs.push(amX);
       }
 
-      const pmY =
-        pmChildYs.length > 0
-          ? (pmChildYs[0] + pmChildYs[pmChildYs.length - 1]) / 2
-          : nextY;
-      if (pmChildYs.length === 0) nextY += VERTICAL_SPACING;
-      nodePositions[`proc_mesh-${pm.id}`] = { x: TIER_X.proc_mesh, y: pmY };
-      hostChildYs.push(pmY);
+      // Proc unit centered over the proc mesh's actor meshes.
+      for (const agent of procAgentsByMesh[pm.id] ?? []) {
+        const puX = allPmLeafXs.length > 0
+          ? (allPmLeafXs[0] + allPmLeafXs[allPmLeafXs.length - 1]) / 2
+          : nextX;
+        nodePositions[`proc_unit-${agent.id}`] = { x: puX, y: TIER_Y.proc_unit };
+        allPmLeafXs.push(puX);
+      }
+
+      // Proc mesh centered over all its children (proc units + actor meshes).
+      const pmX = allPmLeafXs.length > 0
+        ? (allPmLeafXs[0] + allPmLeafXs[allPmLeafXs.length - 1]) / 2
+        : nextX;
+      if (allPmLeafXs.length === 0) nextX += HORIZONTAL_SPACING;
+      nodePositions[`proc_mesh-${pm.id}`] = { x: pmX, y: TIER_Y.proc_mesh };
+      allHostLeafXs.push(pmX);
     }
 
-    const hostY =
-      hostChildYs.length > 0
-        ? (hostChildYs[0] + hostChildYs[hostChildYs.length - 1]) / 2
-        : nextY;
-    if (hostChildYs.length === 0) nextY += VERTICAL_SPACING;
-    nodePositions[`host_mesh-${hostMesh.id}`] = { x: TIER_X.host_mesh, y: hostY };
+    // Host unit centered over the host mesh's proc meshes.
+    const hostAgents = hostAgentsByMesh[hostMesh.id] ?? [];
+    for (const agent of hostAgents) {
+      const huX = allHostLeafXs.length > 0
+        ? (allHostLeafXs[0] + allHostLeafXs[allHostLeafXs.length - 1]) / 2
+        : nextX;
+      nodePositions[`host_unit-${agent.id}`] = { x: huX, y: TIER_Y.host_unit };
+      allHostLeafXs.push(huX);
+    }
 
-    nextY += VERTICAL_SPACING * 0.5;
+    // Host mesh centered over everything.
+    const hostX = allHostLeafXs.length > 0
+      ? (allHostLeafXs[0] + allHostLeafXs[allHostLeafXs.length - 1]) / 2
+      : nextX;
+    if (allHostLeafXs.length === 0) nextX += HORIZONTAL_SPACING;
+    nodePositions[`host_mesh-${hostMesh.id}`] = { x: hostX, y: TIER_Y.host_mesh };
+
+    nextX += HORIZONTAL_SPACING * 0.5;
   }
 
   // -- Create DagNode objects --
@@ -431,8 +432,8 @@ export function computeLayout(
     });
   }
 
-  const totalHeight = nextY + PADDING_Y;
-  const totalWidth = TIER_X.actor + 160;
+  const totalWidth = nextX + PADDING_X;
+  const totalHeight = TIER_Y.actor + 120;
 
   return { nodes, edges, width: totalWidth, height: totalHeight };
 }
