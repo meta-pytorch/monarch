@@ -310,7 +310,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
     };
 
     PyPythonTask::new(async move {
-        let host_mesh_agent = host(
+        let (host_mesh_agent, _shutdown) = host(
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,

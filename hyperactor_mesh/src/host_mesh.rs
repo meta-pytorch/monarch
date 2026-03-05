@@ -333,7 +333,7 @@ impl HostMesh {
                 "host_agent",
                 HostAgent::new(HostAgentMode::Process {
                     host,
-                    exit_on_shutdown: false,
+                    shutdown_tx: None,
                 }),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;

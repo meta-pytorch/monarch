@@ -51,6 +51,7 @@ use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -281,6 +282,33 @@ async fn halt<R>() -> R {
     unreachable!()
 }
 
+/// A handle that waits for a host to finish shutting down.
+///
+/// Obtained from [`host`]. Awaiting [`HostShutdownHandle::join`] blocks until
+/// the [`ShutdownHost`] handler sends back the mailbox server handle, drains
+/// it, and (if `exit_on_shutdown`) calls `process::exit`.
+pub struct HostShutdownHandle {
+    rx: tokio::sync::oneshot::Receiver<MailboxServerHandle>,
+    exit_on_shutdown: bool,
+}
+
+impl HostShutdownHandle {
+    /// Wait for the host to finish shutting down, drain its mailbox server,
+    /// and optionally exit the process.
+    pub async fn join(self) {
+        match self.rx.await {
+            Ok(mailbox_handle) => {
+                mailbox_handle.stop("host shutting down");
+                let _ = mailbox_handle.await;
+            }
+            Err(_) => {} // sender dropped without sending — nothing to drain
+        }
+        if self.exit_on_shutdown {
+            std::process::exit(0);
+        }
+    }
+}
+
 /// Bootstrap a host in this process, returning a handle to the mesh agent.
 ///
 /// To obtain the local proc, use `GetLocalProc` on the returned host mesh agent,
@@ -289,13 +317,13 @@ async fn halt<R>() -> R {
 /// - `addr`: the listening address of the host; this is used to bind the frontend address;
 /// - `command`: optional bootstrap command to spawn procs, otherwise [`BootstrapProcManager::current`];
 /// - `config`: optional runtime config overlay.
-/// - `exit_on_shutdown`: if true, exit the process after handling a shutdown request.
+/// - `exit_on_shutdown`: if true, [`HostShutdownHandle::join`] will call `process::exit` after draining.
 pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
     exit_on_shutdown: bool,
-) -> anyhow::Result<ActorHandle<HostAgent>> {
+) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
         hyperactor_config::global::set(hyperactor_config::global::Source::Runtime, attrs);
         tracing::debug!("bootstrap: installed Runtime config snapshot (Host)");
@@ -310,15 +338,23 @@ pub async fn host(
     let manager = BootstrapProcManager::new(command)?;
 
     // REMOVE(V0): forward unknown destinations to the default sender.
-    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
-        .await?;
+    let host =
+        Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
+            .await?;
     let addr = host.addr().clone();
+
+    // The ShutdownHost handler will call host.serve() inside HostAgent::init
+    // (after this.bind::<Self>(), so the actor port is bound before the
+    // frontend starts routing messages), then send the resulting
+    // MailboxServerHandle back here for draining.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
+
     let system_proc = host.system_proc().clone();
     let host_mesh_agent = system_proc.spawn::<HostAgent>(
         "host_agent",
         HostAgent::new(HostAgentMode::Process {
             host,
-            exit_on_shutdown,
+            shutdown_tx: Some(shutdown_tx),
         }),
     )?;
 
@@ -328,7 +364,7 @@ pub async fn host(
         host_mesh_agent.bind::<HostAgent>()
     );
 
-    Ok(host_mesh_agent)
+    Ok((host_mesh_agent, HostShutdownHandle { rx: shutdown_rx, exit_on_shutdown }))
 }
 
 /// Bootstrap configures how a mesh process starts up.
@@ -560,7 +596,9 @@ impl Bootstrap {
                 config,
                 exit_on_shutdown,
             } => {
-                ok!(host(addr, command, config, exit_on_shutdown).await);
+                let (_agent_handle, shutdown) =
+                    ok!(host(addr, command, config, exit_on_shutdown).await);
+                shutdown.join().await;
                 halt().await
             }
             Bootstrap::V0ProcMesh { config } => bootstrap_v0_proc_mesh(config).await,
