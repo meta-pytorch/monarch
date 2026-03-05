@@ -20,9 +20,6 @@ const STATUS_COLORS: Record<string, string> = {
   stopped: "var(--status-stopped)",
   unknown: "var(--status-unknown)",
   client: "var(--status-unknown)",
-  "n/a": "var(--status-neutral)",
-  active: "var(--status-healthy)",
-  running: "var(--status-processing)",
 };
 
 /** Map a status string to its CSS color variable. */

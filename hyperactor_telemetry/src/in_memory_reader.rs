@@ -9,17 +9,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::time::Duration;
 
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::OTelSdkResult;
 use opentelemetry_sdk::metrics::InstrumentKind;
 use opentelemetry_sdk::metrics::ManualReader;
+use opentelemetry_sdk::metrics::MetricResult;
 use opentelemetry_sdk::metrics::Pipeline;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::metrics::Temporality;
-use opentelemetry_sdk::metrics::data::AggregatedMetrics;
-use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
+use opentelemetry_sdk::metrics::data::Sum;
 use opentelemetry_sdk::metrics::reader::MetricReader;
 
 // InMemoryReader that uses a shared ManualReader and implements MetricReader
@@ -36,24 +36,27 @@ impl InMemoryReader {
 
     // Get all counters from the shared ManualReader
     pub fn get_all_counters(&self) -> HashMap<String, i64> {
-        let mut rm = ResourceMetrics::default();
+        let mut rm = ResourceMetrics {
+            resource: Resource::builder_empty().build(),
+            scope_metrics: Vec::new(),
+        };
         let _ = self.manual_reader.collect(&mut rm);
 
         // Extract counters directly from the collected metrics
         let mut counters = HashMap::new();
-        for scope in rm.scope_metrics() {
-            for metric in scope.metrics() {
-                let data = metric.data();
+        for scope in &rm.scope_metrics {
+            for metric in &scope.metrics {
+                let data = metric.data.as_any();
 
-                if let AggregatedMetrics::U64(MetricData::Sum(sum_u64)) = data {
-                    for data_point in sum_u64.data_points() {
-                        let metric_name = metric.name().to_owned();
-                        counters.insert(metric_name, data_point.value() as i64);
+                if let Some(sum_u64) = data.downcast_ref::<Sum<u64>>() {
+                    for data_point in &sum_u64.data_points {
+                        let metric_name = metric.name.to_string();
+                        counters.insert(metric_name, data_point.value as i64);
                     }
-                } else if let AggregatedMetrics::I64(MetricData::Sum(sum_i64)) = data {
-                    for data_point in sum_i64.data_points() {
-                        let metric_name = metric.name().to_owned();
-                        counters.insert(metric_name, data_point.value());
+                } else if let Some(sum_i64) = data.downcast_ref::<Sum<i64>>() {
+                    for data_point in &sum_i64.data_points {
+                        let metric_name = metric.name.to_string();
+                        counters.insert(metric_name, data_point.value);
                     }
                 }
             }
@@ -67,7 +70,7 @@ impl MetricReader for InMemoryReader {
         self.manual_reader.register_pipeline(pipeline);
     }
 
-    fn collect(&self, rm: &mut ResourceMetrics) -> OTelSdkResult {
+    fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
         self.manual_reader.collect(rm)
     }
 
@@ -75,16 +78,12 @@ impl MetricReader for InMemoryReader {
         self.manual_reader.force_flush()
     }
 
-    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
-        self.manual_reader.shutdown_with_timeout(timeout)
+    fn shutdown(&self) -> OTelSdkResult {
+        self.manual_reader.shutdown()
     }
 
     fn temporality(&self, kind: InstrumentKind) -> Temporality {
         self.manual_reader.temporality(kind)
-    }
-
-    fn shutdown(&self) -> OTelSdkResult {
-        self.manual_reader.shutdown()
     }
 }
 
