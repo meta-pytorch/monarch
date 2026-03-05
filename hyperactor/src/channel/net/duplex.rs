@@ -147,6 +147,8 @@ impl<M: RemoteMessage> Rx<M> for DuplexRx<M> {
     fn addr(&self) -> ChannelAddr {
         self.1.clone()
     }
+
+    async fn join(self) {}
 }
 
 /// Sender half of a duplex channel.

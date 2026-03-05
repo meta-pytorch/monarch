@@ -552,6 +552,11 @@ impl PythonActor {
             .unwrap();
         let instance = root_client_instance.get().unwrap();
 
+        // The root client PythonActor uses a custom run loop that
+        // bypasses Actor::init, so mark it as system explicitly
+        // (matching GlobalClientActor::fresh_instance).
+        instance.set_system();
+
         // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
         // are bound.
         let _client_ref = handle.bind::<PythonActor>();

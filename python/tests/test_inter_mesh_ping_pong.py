@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, endpoint
 
@@ -134,6 +135,7 @@ async def test_inter_mesh_ping_pong() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 async def test_inter_mesh_ping_pong_multiple_ranks() -> None:
     """
     Test cross-mesh communication with multiple ranks per mesh.
