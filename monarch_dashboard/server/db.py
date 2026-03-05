@@ -96,14 +96,27 @@ def get_mesh_children(mesh_id: int) -> list[dict[str, Any]]:
 
 
 def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
-    """Return all actors, optionally filtered by mesh_id."""
+    """Return all actors with latest_status, optionally filtered by mesh_id."""
+    base = (
+        "SELECT a.*, latest.new_status AS latest_status, "
+        "latest.max_ts AS status_timestamp_us "
+        "FROM actors a LEFT JOIN ("
+        "  SELECT ase.actor_id, ase.new_status, sub.max_ts "
+        "  FROM actor_status_events ase "
+        "  INNER JOIN ("
+        "    SELECT actor_id, MAX(timestamp_us) AS max_ts "
+        "    FROM actor_status_events GROUP BY actor_id"
+        "  ) sub ON ase.actor_id = sub.actor_id "
+        "    AND ase.timestamp_us = sub.max_ts"
+        ") latest ON a.id = latest.actor_id"
+    )
     if mesh_id is not None:
-        return _query("SELECT * FROM actors WHERE mesh_id = ? ORDER BY id", (mesh_id,))
-    return _query("SELECT * FROM actors ORDER BY id")
+        return _query(f"{base} WHERE a.mesh_id = ? ORDER BY a.id", (mesh_id,))
+    return _query(f"{base} ORDER BY a.id")
 
 
 def get_actor(actor_id: int) -> dict[str, Any] | None:
-    """Return a single actor by id (without status)."""
+    """Return a single actor by id (base fields only, no status JOIN)."""
     return _query_one("SELECT * FROM actors WHERE id = ?", (actor_id,))
 
 

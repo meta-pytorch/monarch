@@ -144,6 +144,8 @@ describe("computeLayout", () => {
     const pu = graph.nodes.find((n) => n.id === "proc_unit-3")!;
     expect(pu.label).toBe("proc_0");
   });
+
+  it("handles empty input", () => {
     const empty = computeLayout([], [], {}, []);
     expect(empty.nodes.length).toBe(0);
     expect(empty.edges.length).toBe(0);

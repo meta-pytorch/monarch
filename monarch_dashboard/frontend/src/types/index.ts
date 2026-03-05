@@ -18,7 +18,6 @@ export interface Mesh {
   shape_json: string;
   parent_mesh_id: number | null;
   parent_view_json: string | null;
-  status?: string;
 }
 
 /** An actor (regular actors + system agents like HostAgent, ProcAgent). */
