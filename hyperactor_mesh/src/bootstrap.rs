@@ -338,9 +338,8 @@ pub async fn host(
     let manager = BootstrapProcManager::new(command)?;
 
     // REMOVE(V0): forward unknown destinations to the default sender.
-    let host =
-        Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
-            .await?;
+    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
+        .await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside HostAgent::init
@@ -364,7 +363,13 @@ pub async fn host(
         host_mesh_agent.bind::<HostAgent>()
     );
 
-    Ok((host_mesh_agent, HostShutdownHandle { rx: shutdown_rx, exit_on_shutdown }))
+    Ok((
+        host_mesh_agent,
+        HostShutdownHandle {
+            rx: shutdown_rx,
+            exit_on_shutdown,
+        },
+    ))
 }
 
 /// Bootstrap configures how a mesh process starts up.
