@@ -95,12 +95,18 @@ export { TIER_Y, TIER_LABELS };
 /**
  * Compute a hierarchical DAG layout from meshes and actors.
  *
+ * @param meshes     All meshes (Host, Proc, and actor meshes).
+ * @param actors     All actors including system agents (HostAgent, ProcAgent).
+ * @param actorStatuses  Map of actor id to latest status string (e.g. "idle",
+ *                       "failed"). Built by the caller from the API response.
+ * @param messagePairs   Array of [fromActorId, toActorId] for message edges.
+ *
  * HostAgent actors render as host_unit nodes (visible, with status).
  * ProcAgent actors render as proc_unit nodes (visible, with status).
  * Meshes are structural containers with status "n/a".
  *
- * Downward propagation: terminal host_unit → proc_units and actors
- * under that host inherit the terminal status.
+ * Downward propagation: terminal host_unit status (stopped/failed/stopping)
+ * is inherited by proc_units and actors under that host.
  */
 export function computeLayout(
   meshes: Mesh[],
