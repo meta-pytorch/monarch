@@ -9,11 +9,12 @@
 import React from "react";
 
 const LEGEND_ITEMS = [
-  { color: "var(--status-healthy)", label: "Idle" },
-  { color: "var(--status-processing)", label: "Processing" },
+  { color: "var(--status-healthy)", label: "Idle / Active" },
+  { color: "var(--status-processing)", label: "Processing / Running" },
   { color: "var(--status-transitional)", label: "Transitional" },
   { color: "var(--status-failed)", label: "Failed" },
   { color: "var(--status-stopped)", label: "Stopped" },
+  { color: "var(--status-unknown)", label: "Neutral (n/a)" },
 ];
 
 const TIER_ITEMS = [
