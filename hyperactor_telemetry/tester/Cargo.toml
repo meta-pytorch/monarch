@@ -13,7 +13,7 @@ path = "main.rs"
 
 [dependencies]
 hyperactor_telemetry = { version = "0.0.0", path = ".." }
-opentelemetry = "0.31"
+opentelemetry = "0.29"
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [lints]

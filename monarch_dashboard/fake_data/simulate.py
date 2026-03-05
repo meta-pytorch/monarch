@@ -10,9 +10,8 @@ Unlike ``generate.py`` which produces a static database with pre-computed
 timestamps, this script writes data with **real wall-clock timestamps** so
 the dashboard can display live-updating state.
 
-At a configurable time (default ~4.5 minutes) the designated host mesh
-terminates, demonstrating downward-only death propagation:
-  host mesh stops → proc meshes stop → actor meshes stop → actors stop/fail
+At a configurable time (default ~4.5 minutes) a failure event triggers on
+one host mesh, exercising the dashboard's error / degraded-health display.
 
 Usage:
     python fake_data/simulate.py [--db PATH] [--interval SECONDS] [--failure-at SECONDS]
@@ -76,8 +75,7 @@ def _build_hierarchy() -> dict:
     actor_to_host_mesh: dict[int, int] = {}
 
     failed_host_mesh_id: int | None = None
-    host_trigger_id: int | None = None
-    actor_trigger_id: int | None = None
+    trigger_actor_id: int | None = None
     failed_host_name: str = ""
 
     for h_idx in range(2):
@@ -115,8 +113,8 @@ def _build_hierarchy() -> dict:
         )
         actor_to_host_mesh[hma_id] = host_mesh_id
 
-        if host_mesh_id == failed_host_mesh_id and host_trigger_id is None:
-            host_trigger_id = hma_id
+        if host_mesh_id == failed_host_mesh_id and trigger_actor_id is None:
+            trigger_actor_id = hma_id
 
         # 2 proc meshes per host mesh.
         for pm_idx in range(2):
@@ -149,6 +147,9 @@ def _build_hierarchy() -> dict:
             )
             actor_to_host_mesh[pma_id] = host_mesh_id
 
+            if host_mesh_id == failed_host_mesh_id and trigger_actor_id is None:
+                trigger_actor_id = pma_id
+
             # 1 actor mesh per proc mesh.
             am_class = _ACTOR_MESH_CLASSES[pm_idx % len(_ACTOR_MESH_CLASSES)]
             actor_mesh_id = mesh_seq()
@@ -180,20 +181,18 @@ def _build_hierarchy() -> dict:
             )
             actor_to_host_mesh[aid] = host_mesh_id
 
-            if host_mesh_id == failed_host_mesh_id and actor_trigger_id is None:
-                actor_trigger_id = aid
+            if host_mesh_id == failed_host_mesh_id and trigger_actor_id is None:
+                trigger_actor_id = aid
 
     assert failed_host_mesh_id is not None
-    assert host_trigger_id is not None
-    assert actor_trigger_id is not None
+    assert trigger_actor_id is not None
 
     return {
         "meshes": meshes,
         "actors": actors,
         "actor_to_host_mesh": actor_to_host_mesh,
         "failed_host_mesh_id": failed_host_mesh_id,
-        "host_trigger_id": host_trigger_id,
-        "actor_trigger_id": actor_trigger_id,
+        "trigger_actor_id": trigger_actor_id,
         "failed_host_name": failed_host_name,
     }
 
@@ -207,15 +206,8 @@ def _run_simulation(
     db_path: str,
     interval: float,
     failure_at: float,
-    host_failure: bool = False,
 ) -> None:
-    """Run the continuous simulation until interrupted.
-
-    Failure modes:
-      - Default: trigger actor hits CUDA OOM → status = "failed" (actor only)
-      - --host-failure: additionally, all actors in the same host mesh get
-        "stopping" then "stopped" events (downward propagation from host)
-    """
+    """Run the continuous simulation until interrupted."""
 
     rng = random.Random()
 
@@ -225,12 +217,8 @@ def _run_simulation(
     actors = hierarchy["actors"]
     actor_to_host = hierarchy["actor_to_host_mesh"]
     failed_host_id = hierarchy["failed_host_mesh_id"]
+    trigger_actor_id = hierarchy["trigger_actor_id"]
     failed_host_name = hierarchy["failed_host_name"]
-
-    # Pick trigger: HostAgent for host failure, regular actor otherwise.
-    trigger_actor_id = (
-        hierarchy["host_trigger_id"] if host_failure else hierarchy["actor_trigger_id"]
-    )
 
     actor_ids = [a["id"] for a in actors]
 
@@ -334,11 +322,11 @@ def _run_simulation(
             new_msg_events: list[dict] = []
             new_sent: list[dict] = []
 
-            # -- Failure event ----------------------------------------------
+            # -- Failure event ------------------------------------------
             if not failure_triggered and elapsed >= failure_at:
                 failure_triggered = True
 
-                # 1. Trigger actor fails with CUDA OOM.
+                # Trigger actor fails.
                 new_events.append(
                     {
                         "id": event_seq(),
@@ -351,69 +339,64 @@ def _run_simulation(
                 actor_state[trigger_actor_id] = "failed"
                 dead_actors.add(trigger_actor_id)
 
-                # 2. If --host-failure: cascade downward through the host mesh.
-                #    All siblings in the same host mesh → stopping → stopped.
-                if host_failure:
-                    for aid in actor_ids:
-                        if aid == trigger_actor_id:
-                            continue
-                        if actor_to_host[aid] == failed_host_id:
-                            new_events.append(
-                                {
-                                    "id": event_seq(),
-                                    "timestamp_us": now + 100_000,
-                                    "actor_id": aid,
-                                    "new_status": "stopping",
-                                    "reason": f"death propagation from {failed_host_name}",
-                                }
-                            )
-                            new_events.append(
-                                {
-                                    "id": event_seq(),
-                                    "timestamp_us": now + 500_000,
-                                    "actor_id": aid,
-                                    "new_status": "stopped",
-                                    "reason": f"death propagation from {failed_host_name}",
-                                }
-                            )
-                            actor_state[aid] = "stopped"
-                            dead_actors.add(aid)
+                # Siblings in same host mesh -> stopping -> stopped.
+                for aid in actor_ids:
+                    if aid == trigger_actor_id:
+                        continue
+                    if actor_to_host[aid] == failed_host_id:
+                        new_events.append(
+                            {
+                                "id": event_seq(),
+                                "timestamp_us": now + 100_000,
+                                "actor_id": aid,
+                                "new_status": "stopping",
+                                "reason": f"death propagation from {failed_host_name}",
+                            }
+                        )
+                        new_events.append(
+                            {
+                                "id": event_seq(),
+                                "timestamp_us": now + 500_000,
+                                "actor_id": aid,
+                                "new_status": "stopped",
+                                "reason": f"death propagation from {failed_host_name}",
+                            }
+                        )
+                        actor_state[aid] = "stopped"
+                        dead_actors.add(aid)
 
-                mode = (
-                    "HOST FAILURE (downward propagation)"
-                    if host_failure
-                    else "ACTOR FAILURE (single actor)"
+                print(
+                    f"  [tick {tick}] FAILURE triggered — "
+                    f"{len(dead_actors)} actors dead"
                 )
-                print(f"  [tick {tick}] {mode} — {len(dead_actors)} actors dead")
 
             # -- Transition healthy actors ------------------------------
             live_actors = [a for a in actor_ids if a not in dead_actors]
 
-            if live_actors:
-                n_transitions = rng.randint(2, max(3, len(live_actors) // 3))
-                to_transition = rng.sample(
-                    live_actors, min(n_transitions, len(live_actors))
+            n_transitions = rng.randint(2, max(3, len(live_actors) // 3))
+            to_transition = rng.sample(
+                live_actors, min(n_transitions, len(live_actors))
+            )
+
+            for aid in to_transition:
+                cur = actor_state[aid]
+                if cur == "idle":
+                    new_status = "processing"
+                elif cur == "processing":
+                    new_status = "idle"
+                else:
+                    continue
+
+                actor_state[aid] = new_status
+                new_events.append(
+                    {
+                        "id": event_seq(),
+                        "timestamp_us": now + rng.randint(0, 100_000),
+                        "actor_id": aid,
+                        "new_status": new_status,
+                        "reason": None,
+                    }
                 )
-
-                for aid in to_transition:
-                    cur = actor_state[aid]
-                    if cur == "idle":
-                        new_status = "processing"
-                    elif cur == "processing":
-                        new_status = "idle"
-                    else:
-                        continue
-
-                    actor_state[aid] = new_status
-                    new_events.append(
-                        {
-                            "id": event_seq(),
-                            "timestamp_us": now + rng.randint(0, 100_000),
-                            "actor_id": aid,
-                            "new_status": new_status,
-                            "reason": None,
-                        }
-                    )
 
             # -- Generate messages between live actors ------------------
             if len(live_actors) >= 2:
@@ -513,13 +496,8 @@ def main() -> None:
         default=270.0,
         help="Seconds until failure event (default: 270 = 4.5 minutes)",
     )
-    parser.add_argument(
-        "--host-failure",
-        action="store_true",
-        help="Cascade failure to entire host mesh (downward propagation)",
-    )
     args = parser.parse_args()
-    _run_simulation(args.db, args.interval, args.failure_at, args.host_failure)
+    _run_simulation(args.db, args.interval, args.failure_at)
 
 
 if __name__ == "__main__":
