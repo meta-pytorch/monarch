@@ -3555,7 +3555,7 @@ mod tests {
         .await
         .unwrap();
 
-        let local_proc = handle.get_local_proc(&temp_instance).await.unwrap();
+        let local_proc = handle.0.get_local_proc(&temp_instance).await.unwrap();
         let _local_instance = local_proc
             .new_client_instance(&temp_instance)
             .await

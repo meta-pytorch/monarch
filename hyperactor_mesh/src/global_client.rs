@@ -386,9 +386,23 @@ fn fresh_instance() -> (
     (instance, handle)
 }
 
-/// Context use by root client to send messages.
-/// This mailbox allows us to open ports before we know which proc the
-/// messages will be sent to.
+/// Returns the process-global root client instance for **Rust
+/// programs**.
+///
+/// This lazily creates a dedicated `GlobalClientActor` on a
+/// standalone proc named `"mesh_root_client_proc"`. Rust examples and
+/// binaries pass this instance as `cx` to mesh operations
+/// (`spawn_admin`, `HostMesh::spawn`, `ProcMesh::spawn`,
+/// `ActorMesh::cast`, etc.) so that spawned controllers become
+/// children of this actor.
+///
+/// **Python programs do not use this.** The Python runtime has its
+/// own root client — a `RootClientActor` (`PythonActor`) whose
+/// instance is obtained via `context().actor_instance`. All Python
+/// entry points (`this_host()`, `MASTJob.state()`,
+/// `attach_to_workers()`) pass that instance as `cx`. Calling this
+/// function from a Python process would create a second, unrelated
+/// root client that nothing references.
 pub fn global_root_client() -> &'static Instance<GlobalClientActor> {
     static GLOBAL_INSTANCE: OnceLock<(
         &'static Instance<GlobalClientActor>,

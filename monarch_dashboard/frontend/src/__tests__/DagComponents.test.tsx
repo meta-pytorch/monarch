@@ -23,11 +23,12 @@ describe("DagLegend", () => {
 
   it("shows all status labels", () => {
     render(<DagLegend />);
-    expect(screen.getByText("Idle")).toBeInTheDocument();
-    expect(screen.getByText("Processing")).toBeInTheDocument();
+    expect(screen.getByText("Idle / Active")).toBeInTheDocument();
+    expect(screen.getByText("Processing / Running")).toBeInTheDocument();
     expect(screen.getByText("Failed")).toBeInTheDocument();
     expect(screen.getByText("Stopped")).toBeInTheDocument();
     expect(screen.getByText("Transitional")).toBeInTheDocument();
+    expect(screen.getByText("Neutral (n/a)")).toBeInTheDocument();
   });
 
   it("shows node type labels", () => {
