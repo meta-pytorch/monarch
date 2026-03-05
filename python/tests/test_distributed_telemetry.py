@@ -11,12 +11,15 @@
 import json
 import os
 
+from isolate_in_subprocess import isolate_in_subprocess
+
 # Enable the unified telemetry layer BEFORE importing monarch
 # This is required for the TraceEventDispatcher to be created, which processes sinks
 os.environ["USE_UNIFIED_LAYER"] = "1"
 
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
+from monarch._src.actor import proc_mesh
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
@@ -101,7 +104,8 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_actors_table(cleanup_callbacks) -> None:
+@isolate_in_subprocess
+def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
     engine = start_telemetry(batch_size=10)
@@ -148,7 +152,8 @@ def test_actors_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_meshes_table(cleanup_callbacks) -> None:
+@isolate_in_subprocess
+def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
     engine = start_telemetry(batch_size=10)
@@ -243,7 +248,8 @@ def test_meshes_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_proc_mesh_in_meshes_table(cleanup_callbacks) -> None:
+@isolate_in_subprocess
+def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
     engine = start_telemetry(batch_size=10)
 
@@ -487,7 +493,8 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_actor_status_events_table(cleanup_callbacks) -> None:
+@isolate_in_subprocess
+def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
     engine = start_telemetry(batch_size=10)
 

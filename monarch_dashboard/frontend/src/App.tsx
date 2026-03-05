@@ -30,6 +30,12 @@ const MESH_COLUMNS = [
   { key: "full_name", label: "Full Name" },
 ];
 
+const AGENT_COLUMNS = [
+  { key: "full_name", label: "Name" },
+  { key: "rank", label: "Rank" },
+  { key: "latest_status", label: "Status" },
+];
+
 function App() {
   const [activeTab, setActiveTab] = useState("summary");
   const [navStack, setNavStack] = useState<NavItem[]>([
@@ -52,8 +58,19 @@ function App() {
     (mesh: any) => {
       pushNav({
         label: mesh.given_name,
-        level: "proc_meshes",
+        level: "host_units",
         meshId: mesh.id,
+      });
+    },
+    [pushNav]
+  );
+
+  const handleHostUnitClick = useCallback(
+    (agent: any) => {
+      pushNav({
+        label: agent.full_name.split("/").pop() ?? "Host",
+        level: "proc_meshes",
+        meshId: agent.mesh_id,
       });
     },
     [pushNav]
@@ -63,8 +80,19 @@ function App() {
     (mesh: any) => {
       pushNav({
         label: mesh.given_name,
-        level: "actor_meshes",
+        level: "proc_units",
         meshId: mesh.id,
+      });
+    },
+    [pushNav]
+  );
+
+  const handleProcUnitClick = useCallback(
+    (agent: any) => {
+      pushNav({
+        label: agent.full_name.split("/").pop() ?? "Proc",
+        level: "actor_meshes",
+        meshId: agent.mesh_id,
       });
     },
     [pushNav]
@@ -108,6 +136,15 @@ function App() {
             title="Host Meshes"
           />
         );
+      case "host_units":
+        return (
+          <MeshTable
+            apiPath={`/actors?mesh_id=${currentNav.meshId}`}
+            columns={AGENT_COLUMNS}
+            onRowClick={handleHostUnitClick}
+            title="Host Units"
+          />
+        );
       case "proc_meshes":
         return (
           <MeshTable
@@ -115,6 +152,15 @@ function App() {
             columns={MESH_COLUMNS}
             onRowClick={handleProcMeshClick}
             title="Proc Meshes"
+          />
+        );
+      case "proc_units":
+        return (
+          <MeshTable
+            apiPath={`/actors?mesh_id=${currentNav.meshId}`}
+            columns={AGENT_COLUMNS}
+            onRowClick={handleProcUnitClick}
+            title="Proc Units"
           />
         );
       case "actor_meshes":
