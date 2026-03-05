@@ -1471,6 +1471,7 @@ async def test_actor_abort(reason) -> None:
 
 
 @pytest.mark.timeout(500)
+@isolate_in_subprocess
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.
 
@@ -1520,6 +1521,7 @@ async def test_gil_stall():
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_controller_controller_error():
     """Tests that errors on actors spawned from the ControllerController don't
     make it unavailable"""
