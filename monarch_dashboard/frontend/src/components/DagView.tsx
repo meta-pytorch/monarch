@@ -9,7 +9,7 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { Mesh, Actor, Message, Summary } from "../types";
 import { useApi } from "../hooks/useApi";
-import { computeLayout, DagNode, DagGraph, TIER_X, TIER_LABELS, DagTier } from "../utils/dagLayout";
+import { computeLayout, DagNode, DagGraph, TIER_Y, TIER_LABELS, DagTier } from "../utils/dagLayout";
 import { DagNodeComponent } from "./DagNode";
 import { DagEdgeComponent } from "./DagEdge";
 import { DagLegend } from "./DagLegend";
@@ -88,8 +88,8 @@ export function DagView() {
       setViewBox({
         x: -20,
         y: -20,
-        w: graph.width + 40,
-        h: Math.min(graph.height + 40, 800),
+        w: Math.min(graph.width + 40, 1200),
+        h: graph.height + 40,
       });
     }
   }, [graph]);
@@ -208,7 +208,7 @@ export function DagView() {
   const hierEdges = graph.edges.filter((e) => e.type === "hierarchy");
   const msgEdges = graph.edges.filter((e) => e.type === "message");
 
-  // Tier labels for the 4 columns.
+  // Tier labels for the 6 rows.
   const tierEntries = Object.entries(TIER_LABELS) as Array<[DagTier, string]>;
 
   return (
@@ -259,15 +259,16 @@ export function DagView() {
             fill="url(#dag-grid)"
           />
 
-          {/* Tier labels */}
+          {/* Tier labels — left margin, aligned with tier rows */}
           {tierEntries.map(([tier, label]) => (
             <text
               key={tier}
-              x={TIER_X[tier]}
-              y={30}
-              textAnchor="middle"
+              x={15}
+              y={TIER_Y[tier]}
+              textAnchor="start"
+              dominantBaseline="middle"
               fill="var(--text-muted)"
-              fontSize="11"
+              fontSize="10"
               fontFamily="var(--font-display)"
               opacity="0.5"
             >
