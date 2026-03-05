@@ -112,11 +112,18 @@ function renderCell(key: string, entity: any): React.ReactNode {
     case "shape_json":
       return <span className="mono-cell">{val}</span>;
     case "status":
+    case "latest_status":
       return <StatusBadge status={val} />;
     case "timestamp_us":
-      return <span className="mono-cell">{formatTimestamp(val)}</span>;
+    case "status_timestamp_us":
+      return (
+        <span className="mono-cell">
+          {val ? formatTimestamp(val) : "\u2014"}
+        </span>
+      );
     case "pid":
     case "id":
+    case "rank":
       return val;
     default:
       return val ?? "\u2014";

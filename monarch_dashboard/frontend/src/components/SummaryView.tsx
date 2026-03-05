@@ -9,7 +9,7 @@
 import React from "react";
 import { useApi } from "../hooks/useApi";
 import { Summary } from "../types";
-import { statusColor, formatTimestamp } from "../utils/status";
+import { statusColor, formatTimestamp, messageStatusColor } from "../utils/status";
 import { StatusBadge } from "./StatusBadge";
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +76,44 @@ function StatusBreakdown({ byStatus }: { byStatus: Record<string, number> }) {
   );
 }
 
+function ActorErrorGroup({
+  actors,
+  title,
+}: {
+  actors: Array<{
+    actor_id: number;
+    full_name: string;
+    reason: string | null;
+    timestamp_us: number;
+  }>;
+  title: string;
+}) {
+  if (actors.length === 0) return null;
+  return (
+    <div className="summary-error-group">
+      <h4 className="summary-error-heading">
+        {title}
+        <span className="count-badge">{actors.length}</span>
+      </h4>
+      {actors.map((a) => (
+        <div key={a.actor_id} className="summary-error-item">
+          <div className="summary-error-name">
+            {a.full_name.split("/").pop()}
+          </div>
+          <div className="summary-error-detail">
+            <span className="summary-error-reason">
+              {a.reason ?? title.toLowerCase().replace(" actors", "")}
+            </span>
+            <span className="summary-error-time">
+              {formatTimestamp(a.timestamp_us)}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ErrorPanel({ errors }: { errors: Summary["errors"] }) {
   const hasErrors =
     errors.failed_actors.length > 0 ||
@@ -100,47 +138,8 @@ function ErrorPanel({ errors }: { errors: Summary["errors"] }) {
         <div className="summary-empty">No errors detected</div>
       )}
 
-      {errors.failed_actors.length > 0 && (
-        <div className="summary-error-group">
-          <h4 className="summary-error-heading">Failed Actors</h4>
-          {errors.failed_actors.map((a) => (
-            <div key={a.actor_id} className="summary-error-item">
-              <div className="summary-error-name">
-                {a.full_name.split("/").pop()}
-              </div>
-              <div className="summary-error-detail">
-                <span className="summary-error-reason">
-                  {a.reason ?? "unknown reason"}
-                </span>
-                <span className="summary-error-time">
-                  {formatTimestamp(a.timestamp_us)}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {errors.stopped_actors.length > 0 && (
-        <div className="summary-error-group">
-          <h4 className="summary-error-heading">
-            Stopped Actors
-            <span className="count-badge">{errors.stopped_actors.length}</span>
-          </h4>
-          {errors.stopped_actors.map((a) => (
-            <div key={a.actor_id} className="summary-error-item">
-              <div className="summary-error-name">
-                {a.full_name.split("/").pop()}
-              </div>
-              <div className="summary-error-detail">
-                <span className="summary-error-reason">
-                  {a.reason ?? "stopped"}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <ActorErrorGroup actors={errors.failed_actors} title="Failed Actors" />
+      <ActorErrorGroup actors={errors.stopped_actors} title="Stopped Actors" />
 
       {errors.failed_messages > 0 && (
         <div className="summary-error-group">
@@ -185,7 +184,7 @@ function MessageTraffic({ counts }: { counts: Summary["message_counts"] }) {
           <div key={status} className="summary-msg-status-chip">
             <span
               className="status-dot"
-              style={{ background: statusColor(status === "delivered" ? "idle" : status === "sent" ? "processing" : status) }}
+              style={{ background: messageStatusColor(status) }}
             />
             <span>{status}</span>
             <span className="summary-msg-status-count">{count}</span>
