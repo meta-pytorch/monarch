@@ -29,9 +29,8 @@
   --status-processing: #3498db;
   --status-transitional: #f39c12;
   --status-failed: #e74c3c;
-  --status-stopped: #8e44ad;
+  --status-stopped: #95a5a6;
   --status-unknown: #7f8c8d;
-  --status-neutral: #5b7a99;
 
   /* Text */
   --text-primary: #e8eaed;

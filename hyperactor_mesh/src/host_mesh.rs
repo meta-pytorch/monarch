@@ -1256,7 +1256,7 @@ impl HostMeshRef {
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
-        let root_client_id = cx.mailbox().actor_id().clone();
+        let root_client_id = crate::global_root_client().self_id().clone();
 
         let head_agent = self.ranks[0].mesh_agent();
         let addr = head_agent
