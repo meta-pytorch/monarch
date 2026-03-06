@@ -98,6 +98,12 @@ beforeEach(() => {
         json: async () => MOCK_MESSAGES,
       } as Response);
     }
+    if (path.includes("/dag")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ nodes: [], edges: [] }),
+      } as Response);
+    }
     return Promise.resolve({
       ok: true,
       json: async () => [],

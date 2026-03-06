@@ -10,7 +10,7 @@ use hyperactor::ActorRef;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::reference::ProcId;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::resource::ListClient;
@@ -33,7 +33,8 @@ impl ListCommand {
             )
         })?;
 
-        let client = global_root_client();
+        let cx = context().await;
+        let client = cx.actor_instance;
 
         // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
         let agent: ActorRef<HostAgent> = ActorRef::attest(

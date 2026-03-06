@@ -203,7 +203,32 @@ impl<A: Actor> Handler<Undeliverable<MessageEnvelope>> for A {
         cx: &Context<Self>,
         message: Undeliverable<MessageEnvelope>,
     ) -> Result<(), anyhow::Error> {
-        self.handle_undeliverable_message(cx, message).await
+        let sender = message.0.sender().clone();
+        let dest = message.0.dest().clone();
+        let error = message.0.error_msg().unwrap_or(String::new());
+        match self.handle_undeliverable_message(cx, message).await {
+            Ok(_) => {
+                tracing::debug!(
+                    actor_id = %cx.self_id(),
+                    name = "undeliverable_message_handled",
+                    %sender,
+                    %dest,
+                    error,
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(
+                    actor_id = %cx.self_id(),
+                    name = "undeliverable_message",
+                    %sender,
+                    %dest,
+                    error,
+                    handler_error = %e,
+                );
+                Err(e)
+            }
+        }
     }
 }
 
