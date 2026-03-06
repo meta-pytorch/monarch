@@ -99,13 +99,10 @@ mod inner {
     }
 }
 
-// Export all inner bindings
-#[cfg(not(use_rocm))]
+// Export all inner bindings for both CUDA and ROCm builds
 pub use inner::*;
 
-// For ROCm: export inner bindings plus compatibility aliases
-#[cfg(use_rocm)]
-pub use inner::*;
+// For ROCm: also export compatibility aliases that map CUDA names to HIP
 #[cfg(use_rocm)]
 pub use self::rocm_compat::*;
 
