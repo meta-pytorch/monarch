@@ -73,7 +73,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ORPHAN_TIMEOUT".to_string()),
         Some("mesh_orphan_timeout".to_string()),
     ))
-    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(0);
+    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
