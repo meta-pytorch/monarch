@@ -1,0 +1,64 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+# Controller pod for running the OTEL collector example.
+# Includes RBAC for creating MonarchMesh CRDs and watching pods,
+# and sets OTEL_EXPORTER_OTLP_ENDPOINT so the controller process
+# also exports its own metrics to the collector.
+#
+# Prerequisites:
+# - monarch-tests namespace created
+# - otel-collector deployed (see otel-collector.yaml)
+# - Monarch operator installed
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-controller
+  namespace: monarch-tests
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: otel-controller
+  namespace: monarch-tests
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monarch.pytorch.org"]
+    resources: ["monarchmeshes"]
+    verbs: ["create", "get", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: otel-controller
+  namespace: monarch-tests
+subjects:
+  - kind: ServiceAccount
+    name: otel-controller
+    namespace: monarch-tests
+roleRef:
+  kind: Role
+  name: otel-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: otel-controller
+  namespace: monarch-tests
+spec:
+  serviceAccountName: otel-controller
+  containers:
+    - name: controller
+      image: ghcr.io/meta-pytorch/monarch:latest
+      command: ["sleep"]
+      args: ["infinity"]
+      env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector.monarch-tests.svc.cluster.local:4318"

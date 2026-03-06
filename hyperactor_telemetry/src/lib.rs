@@ -55,6 +55,7 @@ pub mod in_memory_reader;
 #[cfg(fbcode_build)]
 mod meta;
 mod otel;
+pub(crate) mod otlp;
 mod pool;
 mod rate_limit;
 pub mod recorder;
@@ -1223,6 +1224,8 @@ fn initialize_logging_with_log_prefix_impl(
                 tracing::debug!("logging already initialized for this process: {}", err);
             }
         }
+
+        otel::init_metrics();
 
         Box::new(EmptyTestHandle)
     }
