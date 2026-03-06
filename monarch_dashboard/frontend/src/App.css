@@ -1286,7 +1286,7 @@ button:focus:not(:focus-visible) {
   border-radius: 4px;
   overflow: visible;
   display: flex;
-  margin-bottom: var(--space-sm);
+  margin-bottom: var(--space-lg);
 }
 
 .summary-timeline-healthy {
@@ -1326,6 +1326,31 @@ button:focus:not(:focus-visible) {
 .summary-timeline-notch-stopped {
   background: var(--status-stopped);
   box-shadow: 0 0 4px var(--status-stopped);
+}
+
+.summary-timeline-notch-label {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.summary-timeline-notch:hover .summary-timeline-notch-label {
+  opacity: 1;
 }
 
 /* ---- Mesh breakdown ---- */
