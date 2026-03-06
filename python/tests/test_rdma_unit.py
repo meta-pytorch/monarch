@@ -85,7 +85,8 @@ import numpy as np
 import pytest
 import torch
 from monarch.actor import Actor, endpoint, this_host
-from monarch.rdma import is_rdma_available, RDMABuffer
+from monarch.config import configured
+from monarch.rdma import is_ibverbs_available, RDMABuffer
 
 
 TIMEOUT = 60  # 60 seconds
@@ -108,10 +109,13 @@ needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="CUDA not available",
 )
-needs_rdma = pytest.mark.skipif(
-    not is_rdma_available(),
-    reason="RDMA not available",
-)
+
+# Backend parametrization: ibverbs only collected when hardware is present;
+# TCP always runs.
+RDMA_BACKENDS = []
+if is_ibverbs_available():
+    RDMA_BACKENDS.append("ibverbs")
+RDMA_BACKENDS.append("tcp")
 
 
 def _assert_value_error(func) -> None:
@@ -520,62 +524,78 @@ CONTROLLER_DEVICES = ["cpu"]
 RECEIVER_DEVICES = ["cpu"]
 
 
-async def _do_test(func, dtype, data_getter, controller_device, receiver_device):
-    controller, receiver = await _spawn_controller_and_receiver(
-        controller_device=controller_device,
-        receiver_device=receiver_device,
-        data_getter=partial(data_getter, device=controller_device, dtype=dtype),
-        receiver_actor=None,
-    )
-    error = await func(controller)
-    if error is not None:
-        raise error
+async def _do_test(
+    func, dtype, data_getter, controller_device, receiver_device, rdma_backend
+):
+    if rdma_backend == "tcp":
+        cm = configured(rdma_disable_ibverbs=True)
+    else:
+        cm = configured(rdma_allow_tcp_fallback=False)
+    with cm:
+        controller, receiver = await _spawn_controller_and_receiver(
+            controller_device=controller_device,
+            receiver_device=receiver_device,
+            data_getter=partial(data_getter, device=controller_device, dtype=dtype),
+            receiver_actor=None,
+        )
+        error = await func(controller)
+        if error is not None:
+            raise error
 
 
 def _test_with_all_data(func):
     @needs_cuda
-    @needs_rdma
+    @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
     @pytest.mark.parametrize("dtype", TEST_DTYPES)
     @pytest.mark.parametrize("data_getter", [_nothing])
     @pytest.mark.parametrize("controller_device", CONTROLLER_DEVICES)
     @pytest.mark.parametrize("receiver_device", RECEIVER_DEVICES)
     @pytest.mark.asyncio
-    async def marked(dtype, data_getter, controller_device, receiver_device):
-        return await func(dtype, data_getter, controller_device, receiver_device)
+    async def marked(
+        dtype, data_getter, controller_device, receiver_device, rdma_backend
+    ):
+        return await func(
+            dtype, data_getter, controller_device, receiver_device, rdma_backend
+        )
 
     return marked
 
 
 def _test_with_no_data(func):
     @needs_cuda
-    @needs_rdma
+    @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
     @pytest.mark.parametrize("dtype", TEST_DTYPES)
     @pytest.mark.parametrize("data_getter", ALL_DATA_GETTERS)
     @pytest.mark.parametrize("controller_device", CONTROLLER_DEVICES)
     @pytest.mark.parametrize("receiver_device", RECEIVER_DEVICES)
     @pytest.mark.asyncio
-    async def marked(dtype, data_getter, controller_device, receiver_device):
-        return await func(dtype, data_getter, controller_device, receiver_device)
+    async def marked(
+        dtype, data_getter, controller_device, receiver_device, rdma_backend
+    ):
+        return await func(
+            dtype, data_getter, controller_device, receiver_device, rdma_backend
+        )
 
     return marked
 
 
 @_test_with_no_data
 async def test_rdma_buffer_init_with_zero_size_raises_error(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
-    _do_test(
+    await _do_test(
         lambda controller: controller.test_rdma_buffer_init_with_zero_size_raises_error.call_one(),
         dtype,
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_all_data
 async def test_rdma_buffer_init_with_memoryview(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     """Test that RDMABuffer initialization with memoryview works correctly."""
     await _do_test(
@@ -584,12 +604,13 @@ async def test_rdma_buffer_init_with_memoryview(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_no_data
 async def test_rdma_buffer_read_into_non_contiguous_tensor_raises_error(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_read_into_non_contiguous_tensor_raises_error.call_one(),
@@ -597,12 +618,13 @@ async def test_rdma_buffer_read_into_non_contiguous_tensor_raises_error(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_no_data
 async def test_rdma_buffer_write_from_non_contiguous_tensor_raises_error(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_write_from_non_contiguous_tensor_raises_error.call_one(),
@@ -610,12 +632,13 @@ async def test_rdma_buffer_write_from_non_contiguous_tensor_raises_error(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_no_data
 async def test_rdma_buffer_read_into_smaller_size_raises_error(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_read_into_smaller_size_raises_error.call_one(),
@@ -623,12 +646,13 @@ async def test_rdma_buffer_read_into_smaller_size_raises_error(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_no_data
 async def test_rdma_buffer_write_from_larger_size_raises_error(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_write_from_larger_size_raises_error.call_one(),
@@ -636,12 +660,13 @@ async def test_rdma_buffer_write_from_larger_size_raises_error(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_all_data
 async def test_rdma_buffer_write_from(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_write_from.call_one(),
@@ -649,12 +674,13 @@ async def test_rdma_buffer_write_from(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
 @_test_with_all_data
 async def test_rdma_buffer_read_into(
-    dtype, data_getter, controller_device, receiver_device
+    dtype, data_getter, controller_device, receiver_device, rdma_backend
 ):
     await _do_test(
         lambda controller: controller.test_rdma_buffer_read_into.call_one(),
@@ -662,6 +688,7 @@ async def test_rdma_buffer_read_into(
         data_getter,
         controller_device,
         receiver_device,
+        rdma_backend,
     )
 
 
