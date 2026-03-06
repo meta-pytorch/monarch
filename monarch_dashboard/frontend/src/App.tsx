@@ -50,9 +50,9 @@ const LEVELS: Partial<Record<NavItem["level"], {
   idKey: string;
 }>> = {
   host_meshes:  { next: "host_units",   label: (r) => r.given_name,                              idField: "meshId",  idKey: "id" },
-  host_units:   { next: "proc_meshes",  label: (r) => r.full_name?.split("/").pop() ?? "Host",   idField: "meshId",  idKey: "mesh_id" },
+  host_units:   { next: "proc_meshes",  label: (r) => r.mesh_name ?? "Host",                       idField: "meshId",  idKey: "mesh_id" },
   proc_meshes:  { next: "proc_units",   label: (r) => r.given_name,                              idField: "meshId",  idKey: "id" },
-  proc_units:   { next: "actor_meshes", label: (r) => r.full_name?.split("/").pop() ?? "Proc",   idField: "meshId",  idKey: "mesh_id" },
+  proc_units:   { next: "actor_meshes", label: (r) => r.mesh_name ?? "Proc",                     idField: "meshId",  idKey: "mesh_id" },
   actor_meshes: { next: "actors",       label: (r) => r.given_name,                              idField: "meshId",  idKey: "id" },
   actors:       { next: "actor_detail", label: (r) => r.full_name?.split("/").pop() ?? "Actor",  idField: "actorId", idKey: "id" },
 };

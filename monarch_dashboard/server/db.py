@@ -99,6 +99,7 @@ def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
     """Return all actors with latest_status and mesh_class, optionally filtered."""
     base = (
         "SELECT a.*, m.class AS mesh_class, "
+        "m.given_name AS mesh_name, "
         "latest.new_status AS latest_status, "
         "latest.max_ts AS status_timestamp_us "
         "FROM actors a "
@@ -349,7 +350,7 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"host_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "host_unit",
-                    "label": _short(hm["given_name"]).replace("_mesh", ""),
+                    "label": _short(agent["full_name"]),
                     "subtitle": "Host",
                     "status": actor_statuses.get(agent["id"], "unknown"),
                 }
@@ -377,7 +378,7 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"proc_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "proc_unit",
-                    "label": _short(pm["given_name"]).replace("_mesh", ""),
+                    "label": _short(agent["full_name"]),
                     "subtitle": "Proc",
                     "status": t_host if t_host else own,
                 }
