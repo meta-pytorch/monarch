@@ -52,7 +52,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-use crate::RdmaLocalMemory;
 use crate::RdmaManagerActor;
 use crate::RdmaOp;
 use crate::RdmaOpType;
@@ -62,6 +61,7 @@ use crate::backend::RdmaBackendContext;
 use crate::backend::ibverbs::IbvBuffer;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
+use crate::local_memory::RdmaLocalMemory;
 
 /// Lightweight handle representing a registered RDMA buffer.
 ///
