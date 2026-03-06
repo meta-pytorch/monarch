@@ -28,7 +28,7 @@ data:
       - name: Prometheus
         type: prometheus
         access: proxy
-        url: http://otel-collector.monarch-tests.svc.cluster.local:8889
+        url: http://prometheus.monarch-tests.svc.cluster.local:9090
         isDefault: true
         editable: true
       - name: Loki

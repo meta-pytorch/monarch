@@ -15,21 +15,21 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, Monarch's telemetry layer exports met
                         │ OTEL Collector │────▶│  stdout    │
                         │  (port 4318)   │     │  (debug)   │
                         └────────────────┘     └────────────┘
-┌──────────────┐             ▲           │     ┌────────────┐
-│  Worker pods │──OTLP/HTTP──┘           ├────▶│ Prometheus │
-│  (mesh)      │                         │     │ (port 8889)│
-└──────────────┘                         │     └────────────┘
-                                         │     ┌────────────┐
-                                         └────▶│   Loki     │
-                                               │ (port 3100)│
-                                               └────────────┘
-                                                     │
-                                         ┌───────────┴───────────┐
-                                         │       Grafana         │
-                                         │     (port 3000)       │
-                                         │  Prometheus + Loki    │
-                                         │    datasources        │
-                                         └───────────────────────┘
+┌──────────────┐             ▲           │     ┌────────────┐     ┌────────────┐
+│  Worker pods │──OTLP/HTTP──┘           ├────▶│ Prometheus │────▶│ Prometheus │
+│  (mesh)      │                         │     │  (scrape   │     │  (server   │
+└──────────────┘                         │     │  port 8889)│     │  port 9090)│
+                                         │     └────────────┘     └──────┬─────┘
+                                         │     ┌────────────┐            │
+                                         └────▶│   Loki     │            │
+                                               │ (port 3100)│            │
+                                               └──────┬─────┘            │
+                                                      │                  │
+                                         ┌────────────┴──────────────────┘
+                                         │       Grafana                 │
+                                         │     (port 3000)               │
+                                         │  Prometheus + Loki            │
+                                         └───────────────────────────────┘
 ```
 
 Both the controller and worker pods set `OTEL_EXPORTER_OTLP_ENDPOINT` pointing at the collector service. The collector receives OTLP metrics and logs and fans them out to:
@@ -63,6 +63,12 @@ kubectl apply -f manifests/otel-collector.yaml
 # Wait for the collector to be ready
 kubectl rollout status deployment/otel-collector -n monarch-tests
 
+# Deploy Prometheus (scrapes metrics from the collector)
+kubectl apply -f manifests/prometheus.yaml
+
+# Wait for Prometheus to be ready
+kubectl rollout status deployment/prometheus -n monarch-tests
+
 # Deploy Grafana (visualization)
 kubectl apply -f manifests/grafana.yaml
 
@@ -84,7 +90,7 @@ kubectl cp main.py monarch-tests/otel-controller:/tmp/main.py
 
 # Run the example
 kubectl exec -it otel-controller -n monarch-tests -- \
-  python /tmp/main.py --num-replicas=2 --iterations=5
+  python /tmp/main.py --num-replicas=2 --iterations=100
 ```
 
 The script provisions a MonarchMesh with `OTEL_EXPORTER_OTLP_ENDPOINT` set on worker pods, spawns actors, runs several rounds of work, then cleans up.
@@ -205,6 +211,7 @@ Done.
 ```bash
 kubectl delete -f manifests/controller.yaml
 kubectl delete -f manifests/grafana.yaml
+kubectl delete -f manifests/prometheus.yaml
 kubectl delete -f manifests/otel-collector.yaml
 kubectl delete -f manifests/loki.yaml
 kubectl delete namespace monarch-tests
