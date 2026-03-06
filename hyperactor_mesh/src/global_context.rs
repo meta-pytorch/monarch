@@ -6,13 +6,18 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Process-global root client actor and supervision bridge.
+//! Process-global context, root client actor, and supervision bridge.
 //!
-//! This module defines the *global root client*: a single,
-//! lazily-initialized actor used by driver processes (e.g. Python
-//! entrypoints) to inject messages into meshes. It runs in its own
-//! proc and can be used before any specific [`ProcMesh`] is fully
-//! constructed.
+//! This module provides the Rust equivalent of Python's `context()`,
+//! `this_host()`, and `this_proc()`. A singleton [`Host`] is lazily
+//! created with the [`GlobalClientActor`] on its `local_proc`:
+//!
+//! ```rust,ignore
+//! let cx = context().await;
+//! cx.actor_instance    // c.f. Python: context().actor_instance
+//! this_host().await    // c.f. Python: this_host()
+//! this_proc().await    // c.f Python: this_proc()
+//! ```
 //!
 //! ## Undeliverables → supervision
 //!
@@ -23,7 +28,7 @@
 //! active mesh supervision sink.
 //!
 //! **Invariant:** Any `Undeliverable<MessageEnvelope>` observed by
-//! [`global_root_client()`] must be reported as an
+//! the global root client must be reported as an
 //! [`ActorSupervisionEvent`] to the active `ProcMesh`, and handling
 //! that failure must never crash the global client. The root client
 //! acts as a monitor, not a participant: routing failures are treated
@@ -57,7 +62,8 @@ use hyperactor::actor::ActorError;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
-use hyperactor::mailbox::BoxableMailboxSender;
+use hyperactor::host::Host;
+use hyperactor::host::LocalProcManager;
 use hyperactor::mailbox::DeliveryError;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::PortReceiver;
@@ -69,14 +75,24 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::router;
+use crate::HostMeshRef;
+use crate::Name;
+use crate::host_mesh::host_agent::GetLocalProcClient;
+use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
+use crate::host_mesh::host_agent::HostAgent;
+use crate::host_mesh::host_agent::HostAgentMode;
+use crate::host_mesh::host_agent::ProcManagerSpawnFn;
+use crate::proc_agent::GetProcClient;
+use crate::proc_agent::ProcAgent;
+use crate::proc_mesh::ProcMeshRef;
+use crate::proc_mesh::ProcRef;
 use crate::supervision::MeshFailure;
 use crate::transport::default_bind_spec;
 
 /// Single, process-wide supervision sink storage.
 ///
 /// Routes undeliverables observed by the process-global root client
-/// (c.f. [`global_root_client`]) to the *currently active* `ProcMesh`'s
+/// (c.f. [`context()`]) to the *currently active* `ProcMesh`'s
 /// agent. Newer meshes override older ones ("last sink wins").
 ///
 /// Uses `PortRef` (not `PortHandle`) because the sink target
@@ -91,7 +107,7 @@ fn sink_cell() -> &'static RwLock<Option<PortRef<ActorSupervisionEvent>>> {
 }
 
 /// Install (or replace) the process-global supervision sink used by
-/// the [`global_root_client()`] undeliverable → supervision bridge.
+/// the [`context()`] undeliverable → supervision bridge.
 ///
 /// This uses **last-sink-wins** semantics: if multiple `ProcMesh`
 /// instances are created in the same process (e.g. controller meshes
@@ -116,7 +132,7 @@ pub(crate) fn set_global_supervision_sink(
 }
 
 /// Get the current process-global supervision sink used by the
-/// [`global_root_client()`] undeliverable → supervision bridge.
+/// [`context()`] undeliverable → supervision bridge.
 ///
 /// Returns `None` until some mesh creation path installs a sink
 /// (early/late binding). Callers should treat this as "no active mesh
@@ -132,11 +148,11 @@ fn get_global_supervision_sink() -> Option<PortRef<ActorSupervisionEvent>> {
 
 /// Process-global "root client" actor.
 ///
-/// This actor lives in a dedicated, lazily-initialized proc and is
-/// used by driver code (e.g. Python entrypoints) to inject messages
-/// into meshes before a specific [`ProcMesh`] is fully constructed.
+/// This actor lives on the `local_proc` of the singleton [`Host`]
+/// created by [`context()`], symmetric with Python's
+/// `RootClientActor` on `bootstrap_host()`'s local proc.
 ///
-/// It also acts as a *monitor* for routing failures observed at the
+/// It acts as a *monitor* for routing failures observed at the
 /// process boundary: undeliverable messages are treated as signals to
 /// be reported via mesh supervision (when a sink is installed), not
 /// as fatal errors.
@@ -151,7 +167,7 @@ fn get_global_supervision_sink() -> Option<PortRef<ActorSupervisionEvent>> {
 #[derive(Debug)]
 #[hyperactor::export(handlers = [MeshFailure])]
 pub struct GlobalClientActor {
-    /// Control signals for the actor’s proc (shutdown, etc.).
+    /// Control signals for the actor's proc (shutdown, etc.).
     signal_rx: PortReceiver<Signal>,
     /// Supervision events delivered to this actor instance.
     ///
@@ -303,112 +319,164 @@ impl Handler<MeshFailure> for GlobalClientActor {
     }
 }
 
-/// Lazily create (and start) the process-global root client actor
-/// instance.
-///
-/// This initializes the dedicated `mesh_root_client_proc`, creates
-/// the `GlobalClientActor` instance within it, binds the actor's
-/// well-known ports, and spawns the actor's run loop. The returned
-/// references are `'static` via a `OnceLock`, ensuring there is
-/// exactly one global root client per process.
-///
-/// The global root client is a monitor/entrypoint: it must not crash
-/// due to routing or delivery failures it observes. Undeliverables
-/// are handled non-fatally and (when a global supervision sink is
-/// installed) are converted into `ActorSupervisionEvent`s and
-/// forwarded to the active `ProcMesh`.
-fn fresh_instance() -> (
-    &'static Instance<GlobalClientActor>,
-    &'static ActorHandle<GlobalClientActor>,
-) {
-    static INSTANCE: OnceLock<(Instance<GlobalClientActor>, ActorHandle<GlobalClientActor>)> =
-        OnceLock::new();
-    let client_proc = Proc::direct_with_default(
-        default_bind_spec().binding_addr(),
-        "mesh_root_client_proc".into(),
-        router::global().clone().boxed(),
-    )
-    .unwrap();
+struct GlobalState {
+    actor_instance: &'static Instance<GlobalClientActor>,
+    host_mesh: HostMeshRef,
+    proc_mesh: ProcMeshRef,
+}
 
-    // Make this proc reachable through the global router, so that we can use the
-    // same client in both direct-addressed and ranked-addressed modes.
-    router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
+/// Process-global, lazily-initialized Monarch context.
+///
+/// Backed by a `tokio::sync::OnceCell` so initialization is async and
+/// runs at most once per process. The first caller bootstraps the
+/// singleton host and root client actor (mirroring Python's
+/// `bootstrap_host()` / `context()`), and subsequent callers reuse
+/// the same `GlobalState`.
+///
+/// This provides a stable root `actor_instance` plus `this_host()` /
+/// `this_proc()` accessors.
+static GLOBAL_CONTEXT: tokio::sync::OnceCell<GlobalState> = tokio::sync::OnceCell::const_new();
 
-    // Drive the global root client actor.
+/// Bootstrap the singleton Host and GlobalClientActor. Mirrors
+/// Python's `bootstrap_host()` (monarch_hyperactor/src/host_mesh.rs).
+async fn bootstrap_host() -> GlobalState {
+    // 1. Create Host with LocalProcManager. The spawn closure is the
+    // ProcAgent boot function, called by HostAgent on GetLocalProc.
+    let spawn: ProcManagerSpawnFn =
+        Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
+    let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
+    let host = Host::new(manager, default_bind_spec().binding_addr())
+        .await
+        .expect("failed to create global host");
+
+    // 2. Extract system_proc before moving Host into HostAgent.
+    let system_proc = host.system_proc().clone();
+
+    // 3. Spawn HostAgent on system_proc (takes ownership of Host).
+    let host_agent = system_proc
+        .spawn(
+            HOST_MESH_AGENT_ACTOR_NAME,
+            HostAgent::new(HostAgentMode::Local(host)),
+        )
+        .expect("failed to spawn host agent");
+
+    // 4. Build HostMeshRef.
+    let host_mesh =
+        HostMeshRef::from_host_agent(Name::new_reserved("local").unwrap(), host_agent.bind())
+            .expect("failed to create host mesh ref");
+
+    // 5. Get local_proc via HostAgent (lazily boots ProcAgent).
     //
-    // `work_rx` is the primary dispatch queue: messages received on
-    // bound ports are enqueued as work items and executed via
-    // `work.handle(..)`.
-    //
-    // `supervision_rx` carries supervision events delivered to this
-    // actor; we process them via
-    // `Instance::handle_supervision_event`. The global root client is
-    // a monitor and must not crash due to routing / delivery failures
-    // it observes; undeliverables are handled non-fatally.
-    let ai = client_proc
+    // We use a throwaway Proc::local() for the bootstrap request-reply
+    // calls, matching Python's bootstrap_host() (host_mesh.rs:330-333).
+    // This creates a temporary in-process-only proc context during init
+    // — intentionally acceptable for cross-language symmetry and easier
+    // reasoning about the bootstrap sequence.
+    let temp_proc = Proc::local();
+    let (bootstrap_cx, _guard) = temp_proc
+        .instance("bootstrap")
+        .expect("failed to create bootstrap instance");
+    let local_proc_agent: ActorHandle<ProcAgent> = host_agent
+        .get_local_proc(&bootstrap_cx)
+        .await
+        .expect("failed to get local proc agent");
+
+    // 6. Get the actual Proc object.
+    let local_proc = local_proc_agent
+        .get_proc(&bootstrap_cx)
+        .await
+        .expect("failed to get local proc");
+
+    // 7. Build ProcMeshRef.
+    let proc_mesh = ProcMeshRef::new_singleton(
+        Name::new_reserved("local").unwrap(),
+        ProcRef::new(
+            local_proc_agent.actor_id().proc_id().clone(),
+            0,
+            local_proc_agent.bind(),
+        ),
+    );
+    let actor_instance = local_proc
         .actor_instance::<GlobalClientActor>("client")
-        .expect("root instance create");
+        .expect("failed to create root client instance");
 
-    // Destructure eagerly to avoid partial-move issues.
     let hyperactor::proc::ActorInstance {
         instance: client_instance,
         handle,
         supervision,
         signal,
         work,
-    } = ai;
+    } = actor_instance;
 
-    // GlobalClientActor uses a custom run loop that bypasses the
-    // standard Actor::init lifecycle hook, so set_system() must be
-    // called here explicitly.
+    // GlobalClientActor uses a custom run loop that bypasses
+    // Actor::init, so set_system() must be called explicitly.
     client_instance.set_system();
-
-    // Bind the actor's well-known ports (Signal,
-    // Undeliverable<MessageEnvelope>, IntrospectMessage, and the
-    // MeshFailure handler). Undeliverable messages are routed to
-    // GlobalClientActor::handle_undeliverable_message, which converts
-    // them to ActorSupervisionEvents and forwards to the global
-    // supervision sink.
     handle.bind::<GlobalClientActor>();
 
-    // Use the OnceLock to get a 'static lifetime for the instance.
+    // Use a static OnceLock to get 'static lifetime for the instance.
+    static INSTANCE: OnceLock<(Instance<GlobalClientActor>, ActorHandle<GlobalClientActor>)> =
+        OnceLock::new();
     INSTANCE
         .set((client_instance, handle))
         .map_err(|_| "already initialized root client instance")
         .unwrap();
-    let (instance, handle) = INSTANCE.get().unwrap();
+    let (instance, _handle) = INSTANCE.get().unwrap();
+
     let client = GlobalClientActor {
         signal_rx: signal,
         supervision_rx: supervision,
         work_rx: work,
     };
     client.run(instance);
-    (instance, handle)
+
+    GlobalState {
+        actor_instance: instance,
+        host_mesh,
+        proc_mesh,
+    }
 }
 
-/// Returns the process-global root client instance for **Rust
-/// programs**.
+/// Process-global Monarch context for Rust programs. Symmetric with
+/// Python's `context()`.
+pub struct GlobalContext {
+    /// Consistent with Python's `context().actor_instance`
+    pub actor_instance: &'static Instance<GlobalClientActor>,
+    /// The singleton HostMesh. See also [`this_host()`].
+    pub host_mesh: &'static HostMeshRef,
+    /// The local ProcMesh. See also [`this_proc()`].
+    pub proc_mesh: &'static ProcMeshRef,
+}
+
+/// Returns the process-global Monarch context, lazily initialized.
 ///
-/// This lazily creates a dedicated `GlobalClientActor` on a
-/// standalone proc named `"mesh_root_client_proc"`. Rust examples and
-/// binaries pass this instance as `cx` to mesh operations
-/// (`spawn_admin`, `HostMesh::spawn`, `ProcMesh::spawn`,
-/// `ActorMesh::cast`, etc.) so that spawned controllers become
-/// children of this actor.
+/// On first call, creates a singleton [`Host`] and bootstraps
+/// [`GlobalClientActor`] on its `local_proc` — symmetric with
+/// Python's `bootstrap_host()`. Subsequent calls return immediately.
 ///
-/// **Python programs do not use this.** The Python runtime has its
-/// own root client — a `RootClientActor` (`PythonActor`) whose
-/// instance is obtained via `context().actor_instance`. All Python
-/// entry points (`this_host()`, `MASTJob.state()`,
-/// `attach_to_workers()`) pass that instance as `cx`. Calling this
-/// function from a Python process would create a second, unrelated
-/// root client that nothing references.
-pub fn global_root_client() -> &'static Instance<GlobalClientActor> {
-    static GLOBAL_INSTANCE: OnceLock<(
-        &'static Instance<GlobalClientActor>,
-        &'static ActorHandle<GlobalClientActor>,
-    )> = OnceLock::new();
-    GLOBAL_INSTANCE.get_or_init(fresh_instance).0
+/// ```rust,ignore
+/// let cx = context().await;
+/// cx.actor_instance    // c.f. Python: context().actor_instance
+/// ```
+///
+/// **Python programs do not use this.** Python has its own root
+/// client actor bootstrapped separately.
+pub async fn context() -> GlobalContext {
+    let state = GLOBAL_CONTEXT.get_or_init(bootstrap_host).await;
+    GlobalContext {
+        actor_instance: state.actor_instance,
+        host_mesh: &state.host_mesh,
+        proc_mesh: &state.proc_mesh,
+    }
+}
+
+/// Returns the singleton HostMesh c.f. Python's `this_host()`.
+pub async fn this_host() -> &'static HostMeshRef {
+    &GLOBAL_CONTEXT.get_or_init(bootstrap_host).await.host_mesh
+}
+
+/// Returns the local ProcMesh c.f Python's `this_proc()`.
+pub async fn this_proc() -> &'static ProcMeshRef {
+    &GLOBAL_CONTEXT.get_or_init(bootstrap_host).await.proc_mesh
 }
 
 #[cfg(test)]
@@ -476,7 +544,8 @@ mod tests {
     /// `ActorSupervisionEvent` arrives there.
     #[tokio::test]
     async fn test_undeliverable_forwarded_to_sink() {
-        let client = global_root_client();
+        let cx = context().await;
+        let client = cx.actor_instance;
 
         // Install a test sink we control.
         let (sink_handle, mut sink_rx) = client.open_port::<ActorSupervisionEvent>();
@@ -511,7 +580,8 @@ mod tests {
     /// sequence, only the second receives the forwarded event.
     #[tokio::test]
     async fn test_last_sink_wins() {
-        let client = global_root_client();
+        let cx = context().await;
+        let client = cx.actor_instance;
 
         // Install sink A.
         let (sink_a_handle, _sink_a_rx) = client.open_port::<ActorSupervisionEvent>();
@@ -545,7 +615,8 @@ mod tests {
     /// afterward.
     #[tokio::test]
     async fn test_no_crash_without_sink() {
-        let client = global_root_client();
+        let cx = context().await;
+        let client = cx.actor_instance;
 
         // Clear any previously installed sink.
         *sink_cell().write().unwrap() = None;

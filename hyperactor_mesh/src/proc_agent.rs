@@ -241,7 +241,7 @@ struct SelfCheck {}
 ///
 /// We **export** `ActorSupervisionEvent` as a handler so that other
 /// procs—most importantly the process-global root client created by
-/// `global_root_client()`—can forward undeliverables as supervision
+/// `context()`—can forward undeliverables as supervision
 /// events to the *currently active* mesh.
 ///
 /// Without exporting this handler, `ActorSupervisionEvent` cannot be
@@ -250,7 +250,7 @@ struct SelfCheck {}
 /// degrade to log-only behavior (events become undeliverable again or
 /// are dropped).
 ///
-/// See `global_client.rs` for the invariant and the forwarding path
+/// See `global_context.rs` for the invariant and the forwarding path
 /// ("last sink wins").
 #[hyperactor::export(
     handlers=[

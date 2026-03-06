@@ -66,10 +66,15 @@ pub mod trace;
 pub mod trace_dispatcher;
 
 // Re-export key types for external sink implementations
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -110,6 +115,13 @@ use crate::config::MONARCH_LOG_SUFFIX;
 use crate::config::USE_UNIFIED_LAYER;
 use crate::recorder::Recorder;
 use crate::sqlite::get_reloadable_sqlite_layer;
+
+/// Hash any hashable value to a u64 using DefaultHasher.
+pub fn hash_to_u64(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TelemetrySample {
@@ -383,16 +395,36 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
     dispatch_or_buffer(EntityEvent::ActorStatus(event));
 }
 
+/// Event fired when a message is sent (cast or point-to-point).
+#[derive(Debug, Clone)]
+pub struct SentMessageEvent {
+    pub timestamp: SystemTime,
+    pub sender_actor_id: u64,
+    pub actor_mesh_id: u64,
+    pub view_json: String,
+    pub shape_json: String,
+}
+
+/// Notify the registered dispatcher that a message was sent.
+/// If no dispatcher is registered yet, the event is buffered and will be
+/// replayed when `set_entity_dispatcher` is called.
+pub fn notify_sent_message(event: SentMessageEvent) {
+    dispatch_or_buffer(EntityEvent::SentMessage(event));
+}
+
+static SEND_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a globally unique SentMessage ID.
+pub fn generate_sent_message_id(sender_actor_id: u64) -> u64 {
+    let seq = SEND_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(sender_actor_id, seq))
+}
+
 /// Unified event enum for all entity lifecycle events.
 ///
 /// This enum wraps all entity events (actors, meshes, and future event types)
 /// into a single type. This enables a single sink to handle all entity events,
 /// simplifying the registration and notification infrastructure.
-///
-/// # Future Extensions
-/// Additional variants can be added for:
-/// - `Message(MessageEvent)` - message sends/receives
-/// - `SentMessage(SentMessageEvent)` - outgoing message tracking
 #[derive(Debug, Clone)]
 pub enum EntityEvent {
     /// An actor was created.
@@ -401,6 +433,8 @@ pub enum EntityEvent {
     Mesh(MeshEvent),
     /// An actor changed status.
     ActorStatus(ActorStatusEvent),
+    /// A message was sent.
+    SentMessage(SentMessageEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -424,6 +458,7 @@ pub enum EntityEvent {
 ///             EntityEvent::Actor(actor) => println!("Actor: {}", actor.full_name),
 ///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
 ///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
+///             EntityEvent::SentMessage(msg) => println!("Sent: {}", msg.id),
 ///         }
 ///         Ok(())
 ///     }

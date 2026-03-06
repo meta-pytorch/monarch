@@ -76,7 +76,7 @@ use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
 use monarch_rdma::RawLocalMemory;
@@ -717,7 +717,8 @@ pub async fn run() -> Result<(), anyhow::Error> {
         device_2_ibv_config = IbvConfig::default();
     }
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Setup host meshes and proc meshes
     let program =
