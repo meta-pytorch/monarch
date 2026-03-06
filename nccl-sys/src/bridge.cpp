@@ -125,20 +125,31 @@ NcclAPI create_nccl_api() {
   NcclAPI r{};
   r.init_result_ = ncclSuccess;
 
-  // Try to open libnccl.so - RTLD_NOLOAD means only succeed if already loaded
+#ifdef USE_ROCM
+  // For ROCm, try to open librccl.so
+  void* handle = dlopen("librccl.so", RTLD_LAZY | RTLD_NOLOAD);
+  if (!handle) {
+    handle = dlopen("librccl.so", RTLD_LAZY);
+  }
+  if (!handle) {
+    handle = dlopen("librccl.so.1", RTLD_LAZY);
+  }
+  const char* lib_name = "RCCL";
+#else
+  // For CUDA, try to open libnccl.so
   void* handle = dlopen("libnccl.so", RTLD_LAZY | RTLD_NOLOAD);
   if (!handle) {
     handle = dlopen("libnccl.so", RTLD_LAZY);
   }
-
-  // Try alternative names
   if (!handle) {
     handle = dlopen("libnccl.so.2", RTLD_LAZY);
   }
+  const char* lib_name = "NCCL";
+#endif
 
   if (!handle) {
-    std::cerr << "[NCCL-SYS] Warning: Can't open libnccl.so: " << dlerror()
-              << std::endl;
+    std::cerr << "[NCCL-SYS] Warning: Can't open " << lib_name
+              << " library: " << dlerror() << std::endl;
     r.init_result_ = ncclSystemError;
     return r;
   }
@@ -190,7 +201,8 @@ NcclAPI create_nccl_api() {
   int version = 0;
   ncclResult_t result = r.ncclGetVersion_(&version);
   if (result != ncclSuccess) {
-    std::cerr << "[NCCL-SYS] Warning: Failed to get NCCL version" << std::endl;
+    std::cerr << "[NCCL-SYS] Warning: Failed to get " << lib_name << " version"
+              << std::endl;
     r.init_result_ = ncclSystemError;
     return r;
   }
@@ -204,10 +216,10 @@ NcclAPI create_nccl_api() {
   }
 
   if (major != NCCL_MAJOR) {
-    std::cerr
-        << "[NCCL-SYS] Warning: NCCL version mismatch. Expected major version "
-        << NCCL_MAJOR << ", but got " << major << " (full version: " << version
-        << ")" << std::endl;
+    std::cerr << "[NCCL-SYS] Warning: " << lib_name
+              << " version mismatch. Expected major version " << NCCL_MAJOR
+              << ", but got " << major << " (full version: " << version << ")"
+              << std::endl;
     r.init_result_ = ncclSystemError;
     return r;
   }
@@ -263,8 +275,11 @@ const char* ncclGetLastError(ncclComm_t comm) {
 }
 
 // Communicator creation and management
-ncclResult_t
-ncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank) {
+ncclResult_t ncclCommInitRank(
+    ncclComm_t* comm,
+    int nranks,
+    ncclUniqueId commId,
+    int rank) {
   GET_NCCL_API(api);
   return api->ncclCommInitRank_(comm, nranks, commId, rank);
 }

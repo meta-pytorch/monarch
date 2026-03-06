@@ -170,3 +170,51 @@ fn find_python_interpreter() -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "python3".to_string())
 }
+
+/// Hipify CUDA source files to HIP
+///
+/// This is a convenience wrapper around `run_hipify_torch` that handles
+/// the common pattern of hipifying source files from a source directory.
+///
+/// # Arguments
+/// * `src_dir` - Directory containing CUDA source files
+/// * `filenames` - List of filenames to hipify (e.g., ["bridge.h", "bridge.cpp"])
+/// * `output_dir` - Directory to write hipified files
+/// * `manifest_dir` - CARGO_MANIFEST_DIR of the calling crate
+///
+/// # Example
+/// ```ignore
+/// build_utils::rocm::hipify_sources(
+///     &src_dir,
+///     &["bridge.h", "bridge.cpp"],
+///     &hip_dir,
+///     &manifest_dir,
+/// ).expect("hipify failed");
+/// ```
+pub fn hipify_sources(
+    src_dir: &Path,
+    filenames: &[&str],
+    output_dir: &Path,
+    manifest_dir: &str,
+) -> Result<(), BuildError> {
+    println!(
+        "cargo:warning=Hipifying CUDA sources to {:?}...",
+        output_dir
+    );
+
+    let source_files: Vec<PathBuf> = filenames
+        .iter()
+        .map(|f| src_dir.join(f))
+        .filter(|p| p.exists())
+        .collect();
+
+    let project_root = PathBuf::from(manifest_dir)
+        .parent()
+        .ok_or_else(|| BuildError::PathNotFound("Failed to find project root".to_string()))?
+        .to_path_buf();
+
+    run_hipify_torch(&project_root, &source_files, output_dir)?;
+
+    println!("cargo:warning=Hipification complete");
+    Ok(())
+}

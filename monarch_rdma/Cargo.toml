@@ -27,4 +27,5 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [features]
 cuda = []
+rocm = []
 default = ["cuda"]
