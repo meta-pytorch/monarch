@@ -24,13 +24,13 @@ const TABS = [
 
 const MESH_COLUMNS = [
   { key: "given_name", label: "Name" },
-  { key: "class", label: "Class" },
   { key: "shape_json", label: "Shape" },
   { key: "full_name", label: "Full Name" },
 ];
 
 const AGENT_COLUMNS = [
   { key: "full_name", label: "Name" },
+  { key: "mesh_class", label: "Class" },
   { key: "rank", label: "Rank" },
   { key: "latest_status", label: "Status" },
 ];
