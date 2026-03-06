@@ -75,6 +75,12 @@ use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::transport::DEFAULT_TRANSPORT;
 
+/// Actor name for `HostMeshController` when spawned as a named child.
+pub const HOST_MESH_CONTROLLER_NAME: &str = "host_mesh_controller";
+
+/// Actor name for `ProcMeshController` when spawned as a named child.
+pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
+
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
@@ -558,8 +564,11 @@ impl HostMesh {
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
         let controller = HostMeshController::new(mesh.deref().clone());
+        // AI-3: controller name must include mesh identity for
+        // proc-wide ActorId uniqueness.
+        let controller_name = format!("{}_{}", HOST_MESH_CONTROLLER_NAME, mesh.name());
         let controller_handle = controller
-            .spawn(cx)
+            .spawn_with_name(cx, &controller_name)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         // Bind the actor's well-known ports (Signal, IntrospectMessage,
         // Undeliverable). Without this, the controller's mailbox has no
@@ -1219,8 +1228,11 @@ impl HostMeshRef {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
+            // AI-3: controller name must include mesh identity for
+            // proc-wide ActorId uniqueness.
+            let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.name());
             let controller_handle = controller
-                .spawn(cx)
+                .spawn_with_name(cx, &controller_name)
                 .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no

@@ -104,6 +104,16 @@ pub trait Actor: Sized + Send + 'static {
         cx.instance().spawn(self)
     }
 
+    /// Spawn a named child actor. Same supervision semantics as
+    /// `spawn`, but the child gets `name` in its ActorId.
+    fn spawn_with_name(
+        self,
+        cx: &impl context::Actor,
+        name: &str,
+    ) -> anyhow::Result<ActorHandle<Self>> {
+        cx.instance().spawn_with_name(name, self)
+    }
+
     /// Spawns this actor in a detached state, handling its messages
     /// in a background task. The returned handle is used to control
     /// the actor's lifecycle and to interact with it.

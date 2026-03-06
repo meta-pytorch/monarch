@@ -58,6 +58,9 @@ use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
 
+/// Actor name for `ActorMeshController` when spawned as a named child.
+pub const ACTOR_MESH_CONTROLLER_NAME: &str = "actor_mesh_controller";
+
 declare_attrs! {
     /// Time between checks of actor states to create supervision events for
     /// owners. The longer this is, the longer it will take to detect a failure
