@@ -4,11 +4,12 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# OpenTelemetry Collector deployment for receiving Monarch metrics.
+# OpenTelemetry Collector deployment for receiving Monarch metrics and logs.
 #
 # Receives OTLP/HTTP on port 4318 and exports via:
-# - debug exporter (logs metrics to stdout for verification)
+# - debug exporter (logs metrics and log records to stdout for verification)
 # - prometheus exporter (exposes /metrics on port 8889 for scraping)
+# - otlphttp/loki exporter (forwards logs to Grafana Loki for aggregation)
 #
 # Prerequisites:
 # - monarch-tests namespace created
@@ -36,6 +37,8 @@ data:
         verbosity: detailed
       prometheus:
         endpoint: "0.0.0.0:8889"
+      otlphttp/loki:
+        endpoint: "http://loki.monarch-tests.svc.cluster.local:3100/otlp"
 
     service:
       pipelines:
@@ -43,6 +46,10 @@ data:
           receivers: [otlp]
           processors: [batch]
           exporters: [debug, prometheus]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug, otlphttp/loki]
 ---
 apiVersion: apps/v1
 kind: Deployment

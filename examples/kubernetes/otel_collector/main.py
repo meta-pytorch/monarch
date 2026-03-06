@@ -9,16 +9,18 @@
 OTEL Collector integration example for Monarch on Kubernetes.
 
 Demonstrates exporting Monarch's built-in actor metrics (mailbox posts,
-messages sent/received, queue sizes, etc.) to an OpenTelemetry Collector
-running in the same Kubernetes cluster.
+messages sent/received, queue sizes, etc.) and log events to an
+OpenTelemetry Collector running in the same Kubernetes cluster.
 
 The OTEL_EXPORTER_OTLP_ENDPOINT env var is set on both the controller
-and worker pods, enabling the OTLP/HTTP metric exporter in Monarch's
-telemetry layer. Metrics are pushed to the collector, which exports
-them via its debug exporter (stdout) and a Prometheus scrape endpoint.
+and worker pods, enabling the OTLP/HTTP metric and log exporters in
+Monarch's telemetry layer. Metrics and logs are pushed to the collector,
+which exports them via its debug exporter (stdout) and a Prometheus
+scrape endpoint (metrics only).
 """
 
 import argparse
+import logging
 import os
 import socket
 import textwrap
@@ -45,12 +47,16 @@ _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
 class WorkActor(Actor):
     """Actor that performs work to generate telemetry."""
 
+    logger = logging.getLogger("WorkActor")
+
     @endpoint
     def do_work(self, iterations: int) -> dict:
         """Run a loop to generate actor message metrics."""
+        self.logger.info("starting work with %d iterations", iterations)
         total = 0
         for i in range(iterations):
             total += i * i
+        self.logger.info("completed work: result=%d", total)
         return {
             "hostname": socket.gethostname(),
             "iterations": iterations,
@@ -59,6 +65,7 @@ class WorkActor(Actor):
 
     @endpoint
     def ping(self) -> str:
+        self.logger.info("received ping")
         return f"pong from {socket.gethostname()}"
 
 
@@ -69,12 +76,25 @@ def build_worker_pod_spec(port: int) -> client.V1PodSpec:
             client.V1Container(
                 name="worker",
                 image="ghcr.io/meta-pytorch/monarch:latest",
+                image_pull_policy="Always",
                 command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
                 env=[
                     client.V1EnvVar(name="MONARCH_PORT", value=str(port)),
                     client.V1EnvVar(
                         name="OTEL_EXPORTER_OTLP_ENDPOINT",
                         value=_OTEL_ENDPOINT,
+                    ),
+                    client.V1EnvVar(
+                        name="OTEL_SERVICE_NAME",
+                        value="monarch-worker",
+                    ),
+                    client.V1EnvVar(
+                        name="USE_UNIFIED_LAYER",
+                        value="true",
+                    ),
+                    client.V1EnvVar(
+                        name="MONARCH_FILE_LOG",
+                        value="trace",
                     ),
                 ],
             )
@@ -131,12 +151,12 @@ def main():
                 f"    {result['hostname']}: computed {result['iterations']} iterations"
             )
 
-    # Wait for the periodic metric reader to flush at least once.
-    print("Waiting for metrics to flush to collector...")
-    time.sleep(3)
+    # Wait for the periodic metric reader and log sink to flush.
+    print("Waiting for metrics and logs to flush to collector...")
+    time.sleep(10)
 
     print()
-    print("Verify metrics in the OTEL collector logs:")
+    print("Verify metrics and logs in the OTEL collector logs:")
     print("  kubectl logs -n monarch-tests deployment/otel-collector --tail=100")
     print()
     print("Scrape Prometheus endpoint:")

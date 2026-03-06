@@ -1006,7 +1006,6 @@ fn initialize_logging_with_log_prefix_impl(
             {
                 if hyperactor_config::global::get(ENABLE_OTEL_TRACING) {
                     use crate::meta;
-                    use crate::meta::get_tracing_targets;
                     use crate::meta::scuba_utils::LOG_ENTER_EXIT;
 
                     if mock_scuba {
@@ -1020,14 +1019,14 @@ fn initialize_logging_with_log_prefix_impl(
                                     _ => false,
                                 },
                             )
-                            .with_target_filter(get_tracing_targets()),
+                            .with_target_filter(crate::config::get_tracing_targets()),
                         ));
 
                         mock_scuba_client = Some(tracing_client);
                     } else {
                         sinks.push(Box::new(
                             meta::scuba_sink::ScubaSink::new(meta::tracing_resource())
-                                .with_target_filter(get_tracing_targets()),
+                                .with_target_filter(crate::config::get_tracing_targets()),
                         ));
                     }
                 }
@@ -1187,6 +1186,10 @@ fn initialize_logging_with_log_prefix_impl(
                 prefix_env_var.clone(),
                 file_log_level,
             )));
+
+            if let Some(log_sink) = otlp::otlp_log_sink() {
+                sinks.push(log_sink);
+            }
 
             let dispatcher = trace_dispatcher::TraceEventDispatcher::new(sinks);
 
