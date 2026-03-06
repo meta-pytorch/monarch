@@ -78,11 +78,11 @@ use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::context;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RawLocalMemory;
-use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::local_memory::RdmaLocalMemory;
+use monarch_rdma::local_memory::UnsafeLocalMemory;
 use ndslice::extent;
 use ndslice::view::Ranked;
 use serde::Deserialize;
@@ -176,7 +176,8 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
         if self.weights_handle.is_none() {
             let addr = self.weights_data.as_ptr() as usize;
             let size = self.weights_data.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> =
+                Arc::new(UnsafeLocalMemory::new(addr, size));
             let handle = self
                 .owner_ref
                 .downcast_handle(cx)
@@ -196,7 +197,7 @@ impl Handler<PsGetBuffers> for ParameterServerActor {
                 let addr = self.grad_buffer_data[rank].as_ptr() as usize;
                 let size = self.grad_buffer_data[rank].len();
                 let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(RawLocalMemory::new(addr, size));
+                    Arc::new(UnsafeLocalMemory::new(addr, size));
                 let handle = self
                     .owner_ref
                     .downcast_handle(cx)
@@ -362,7 +363,7 @@ impl Handler<WorkerStep> for WorkerActor {
             .ps_grad_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(
+        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(
             self.local_gradients.as_ptr() as usize,
             self.local_gradients.len(),
         ));
@@ -395,7 +396,7 @@ impl Handler<WorkerUpdate> for WorkerActor {
             .ps_weights_handle
             .as_ref()
             .expect("worker_actor should be initialized");
-        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(
+        let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(
             self.weights_data.as_ptr() as usize,
             self.weights_data.len(),
         ));

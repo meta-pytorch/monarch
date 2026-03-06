@@ -160,6 +160,8 @@ fn main() {
         .allowlist_type("rdmaxcel_segment_scanner_fn")
         // EFA types
         .allowlist_type("efadv_.*")
+        // CUDA types needed by monarch_rdma
+        .allowlist_type("CUmemorytype.*")
         // Vars
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")

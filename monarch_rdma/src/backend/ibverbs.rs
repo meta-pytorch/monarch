@@ -30,8 +30,8 @@ mod ibv_manager_actor_tests;
 #[cfg(test)]
 mod test_utils;
 
-use crate::RdmaLocalMemory;
 use crate::RdmaOpType;
+use crate::local_memory::RdmaLocalMemory;
 
 /// Lazily-initialized ibverbs transport details for a registered memory
 /// region. Retrieved on demand from the [`IbvManagerActor`] via
