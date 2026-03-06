@@ -27,10 +27,10 @@ use hyperactor::RemoteSpawn;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor_config::Flattrs;
-use hyperactor_mesh::global_root_client;
-use hyperactor_mesh::host_mesh::HostMesh;
+use hyperactor_mesh::context;
+use hyperactor_mesh::this_host;
+use hyperactor_mesh::this_proc;
 use ndslice::View;
-use ndslice::extent;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -137,11 +137,11 @@ async fn main() -> Result<ExitCode> {
     hyperactor::initialize_with_current_runtime();
     let args = Args::parse();
 
-    let mut host_mesh = HostMesh::local().await?;
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Start the mesh admin agent.
-    let mesh_admin_url = host_mesh.spawn_admin(instance, None).await?;
+    let mesh_admin_url = this_host().await.spawn_admin(instance, None).await?;
     let cacert = if mesh_admin_url.starts_with("https") {
         "--cacert /var/facebook/rootcanal/ca.pem "
     } else {
@@ -171,9 +171,7 @@ async fn main() -> Result<ExitCode> {
     RealClock.sleep(Duration::from_secs(5)).await;
     println!("Starting...");
 
-    let proc_mesh = host_mesh
-        .spawn(instance, "sieve", extent!(replica = 1))
-        .await?;
+    let proc_mesh = this_proc().await;
 
     let sieve_params = SieveParams { prime: 2 };
     let sieve_mesh: hyperactor_mesh::ActorMesh<SieveActor> =
@@ -230,11 +228,6 @@ async fn main() -> Result<ExitCode> {
     println!("Found {} primes: {:?}", primes.len(), primes);
     println!("Press Ctrl+C to exit.");
     tokio::signal::ctrl_c().await?;
-
-    // Clean shutdown: stop all hosts and child processes before
-    // exiting so that Drop has nothing left to do and C++ static
-    // destructors run in the right order.
-    host_mesh.shutdown(instance).await?;
 
     Ok(ExitCode::SUCCESS)
 }

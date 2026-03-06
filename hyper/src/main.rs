@@ -12,6 +12,12 @@ use clap::Parser;
 use clap::Subcommand;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+// tokio is used by #[tokio::main] in OSS builds
+// (cfg(not(fbcode_build))). In fbcode builds fbinit-tokio provides
+// the runtime, so the compiler doesn't see a direct reference. This
+// import suppresses the unused_extern warning while keeping tokio
+// explicit in the generated Cargo.toml.
+use tokio as _;
 
 use crate::commands::list::ListCommand;
 use crate::commands::resolve::ResolveCommand;

@@ -67,6 +67,16 @@
 //! - **Placeholder structural equivalence**: `placeholder_stopped`
 //!   is identical to `placeholder` except `stopped: true`. Stopped
 //!   is a rendering hint, not an expansion barrier.
+//! - **Failure propagation is upward and live**: a node's `failed`
+//!   flag is `is_failed_node(payload) || children.any(failed)`.
+//!   Host and root nodes have no intrinsic failure state — they
+//!   are failed only when a descendant is.
+//! - **Collapsed failure carry-forward**: when a node is collapsed,
+//!   its children are not fetched, so failure cannot be recomputed
+//!   from descendants. The prior `failed` state is carried forward
+//!   via `failed_keys` (mirroring `expanded_keys`). Expanded nodes
+//!   always recompute from live children. Consequence: a collapsed
+//!   node may remain red after recovery until expanded.
 //! - **System actor styling is dual-source (OR)**: `TreeNode.is_system`
 //!   is true if the cached payload reports `is_system: true` OR the
 //!   child ref appears in the parent's `system_children` list.
