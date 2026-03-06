@@ -212,12 +212,35 @@ function MessageTraffic({ counts }: { counts: Summary["message_counts"] }) {
   );
 }
 
-function TimelineBar({ timeline }: { timeline: Summary["timeline"] }) {
+function TimelineBar({
+  timeline,
+  errors,
+}: {
+  timeline: Summary["timeline"];
+  errors: Summary["errors"];
+}) {
   const duration = timeline.end_us - timeline.start_us;
-  const failurePct =
-    timeline.failure_onset_us != null
-      ? ((timeline.failure_onset_us - timeline.start_us) / duration) * 100
-      : null;
+
+  // Collect error events with their position on the timeline.
+  const notches: Array<{ pct: number; status: string; name: string; timestamp_us: number }> = [];
+  if (duration > 0) {
+    for (const a of errors.failed_actors) {
+      notches.push({
+        pct: ((a.timestamp_us - timeline.start_us) / duration) * 100,
+        status: "failed",
+        name: a.full_name.split("/").pop() ?? "actor",
+        timestamp_us: a.timestamp_us,
+      });
+    }
+    for (const a of errors.stopped_actors) {
+      notches.push({
+        pct: ((a.timestamp_us - timeline.start_us) / duration) * 100,
+        status: "stopped",
+        name: a.full_name.split("/").pop() ?? "actor",
+        timestamp_us: a.timestamp_us,
+      });
+    }
+  }
 
   return (
     <div className="summary-section" data-testid="timeline-bar">
@@ -230,34 +253,26 @@ function TimelineBar({ timeline }: { timeline: Summary["timeline"] }) {
       </div>
 
       <div className="summary-timeline-track">
-        {/* Healthy region */}
-        <div
-          className="summary-timeline-healthy"
-          style={{ width: failurePct != null ? `${failurePct}%` : "100%" }}
-        />
-        {/* Failure region */}
-        {failurePct != null && (
+        {/* Full healthy bar */}
+        <div className="summary-timeline-healthy" style={{ width: "100%" }} />
+
+        {/* Error notches overlaid on the bar */}
+        {notches.map((n, i) => (
           <div
-            className="summary-timeline-failed"
-            style={{ width: `${100 - failurePct}%` }}
+            key={`${n.status}-${i}`}
+            className={`summary-timeline-notch summary-timeline-notch-${n.status}`}
+            style={{ left: `${Math.min(Math.max(n.pct, 0.5), 99.5)}%` }}
+            title={`${n.name} ${n.status} at ${formatTimestamp(n.timestamp_us)}`}
           />
-        )}
-        {/* Failure marker */}
-        {failurePct != null && (
-          <div
-            className="summary-timeline-marker"
-            style={{ left: `${failurePct}%` }}
-            title={`Failure onset: ${formatTimestamp(timeline.failure_onset_us!)}`}
-          >
-            <div className="summary-timeline-marker-line" />
-            <div className="summary-timeline-marker-label">FAILURE</div>
-          </div>
-        )}
+        ))}
       </div>
 
       <div className="summary-timeline-stats">
         <span>{timeline.total_status_events} status events</span>
         <span>{timeline.total_message_events} message events</span>
+        {notches.length > 0 && (
+          <span>{notches.length} error{notches.length !== 1 ? "s" : ""}</span>
+        )}
       </div>
     </div>
   );
@@ -316,7 +331,7 @@ export function SummaryView() {
       </div>
 
       {/* Timeline */}
-      <TimelineBar timeline={data.timeline} />
+      <TimelineBar timeline={data.timeline} errors={data.errors} />
 
       {/* Main grid: status + errors */}
       <div className="summary-grid-2col">

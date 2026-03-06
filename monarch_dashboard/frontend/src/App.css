@@ -1292,40 +1292,8 @@ button:focus:not(:focus-visible) {
 .summary-timeline-healthy {
   height: 100%;
   background: linear-gradient(90deg, var(--status-healthy), rgba(46, 204, 113, 0.5));
-  border-radius: 4px 0 0 4px;
+  border-radius: 4px;
   opacity: 0.6;
-}
-
-.summary-timeline-failed {
-  height: 100%;
-  background: linear-gradient(90deg, rgba(231, 76, 60, 0.5), var(--status-failed));
-  border-radius: 0 4px 4px 0;
-  opacity: 0.6;
-}
-
-.summary-timeline-marker {
-  position: absolute;
-  top: -6px;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.summary-timeline-marker-line {
-  width: 2px;
-  height: 32px;
-  background: var(--status-failed);
-  box-shadow: 0 0 6px var(--status-failed);
-}
-
-.summary-timeline-marker-label {
-  font-family: var(--font-display);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--status-failed);
-  margin-top: 2px;
 }
 
 .summary-timeline-stats {
@@ -1334,6 +1302,30 @@ button:focus:not(:focus-visible) {
   font-family: var(--font-display);
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* ---- Timeline error notches ---- */
+
+.summary-timeline-notch {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 24px;
+  border-radius: 1px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: help;
+  z-index: 2;
+}
+
+.summary-timeline-notch-failed {
+  background: var(--status-failed);
+  box-shadow: 0 0 4px var(--status-failed);
+}
+
+.summary-timeline-notch-stopped {
+  background: var(--status-stopped);
+  box-shadow: 0 0 4px var(--status-stopped);
 }
 
 /* ---- Mesh breakdown ---- */
