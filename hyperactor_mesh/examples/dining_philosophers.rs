@@ -28,7 +28,7 @@ use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
 use ndslice::extent;
@@ -258,7 +258,8 @@ async fn main() -> Result<ExitCode> {
     };
 
     let group_size = 5;
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.

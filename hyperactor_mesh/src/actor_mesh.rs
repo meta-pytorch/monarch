@@ -460,6 +460,17 @@ impl<A: Referable> ActorMeshRef<A> {
             }
         }
 
+        hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
+            timestamp: RealClock.system_time_now(),
+            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_id()),
+            actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.name.to_string()),
+            view_json: serde_json::to_string(view::Ranked::region(self)).unwrap_or_default(),
+            shape_json: {
+                let shape: ndslice::Shape = view::Ranked::region(self).into();
+                serde_json::to_string(&shape).unwrap_or_default()
+            },
+        });
+
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             self.cast_v0(cx, message, sel, root_comm_actor)

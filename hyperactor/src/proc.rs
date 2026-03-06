@@ -1721,7 +1721,6 @@ impl<A: Actor> Instance<A> {
         }
     }
 
-    #[tracing::instrument(level = "debug", skip_all)]
     async unsafe fn handle_message<M: Message>(
         &self,
         actor: &mut A,
@@ -1737,14 +1736,31 @@ impl<A: Actor> Instance<A> {
             Some(info) => {
                 // SAFETY: The caller promises to pass the correct type info.
                 let arm = unsafe { info.arm_unchecked(&message as *const M as *const ()) };
-                Some(HandlerInfo::from_static(info.typename(), arm))
+                HandlerInfo::from_static(info.typename(), arm)
             }
             None => {
                 // Fall back to std::any::type_name (also static, zero-copy).
-                Some(HandlerInfo::from_static(std::any::type_name::<M>(), None))
+                HandlerInfo::from_static(std::any::type_name::<M>(), None)
             }
         };
+        // Use a helper function for a better instrument log.
+        self.handle_message_with_handler_info(actor, handler_info, headers, message)
+            .await
+    }
 
+    // Skip serializing all fields except HandlerInfo which includes the typename.
+    #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(actor_id = %self.self_id(), message_type = %handler_info))]
+    async fn handle_message_with_handler_info<M: Message>(
+        &self,
+        actor: &mut A,
+        handler_info: HandlerInfo,
+        headers: Flattrs,
+        message: M,
+    ) -> Result<(), anyhow::Error>
+    where
+        A: Handler<M>,
+    {
+        let handler_info = Some(handler_info);
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler_info.clone(),

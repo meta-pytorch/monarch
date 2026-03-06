@@ -6,114 +6,96 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { computeLayout, DagGraph } from "../utils/dagLayout";
-import { Mesh, Actor } from "../types";
+import { computeLayout, ApiDagData, DagGraph } from "../utils/dagLayout";
 
-const meshes: Mesh[] = [
-  { id: 1, timestamp_us: 0, class: "Host", given_name: "host_mesh_0", full_name: "host_mesh_0", shape_json: '{"dims": [1]}', parent_mesh_id: null, parent_view_json: null },
-  { id: 2, timestamp_us: 0, class: "Host", given_name: "host_mesh_1", full_name: "host_mesh_1", shape_json: '{"dims": [1]}', parent_mesh_id: null, parent_view_json: null },
-  { id: 3, timestamp_us: 0, class: "Proc", given_name: "proc_mesh_0", full_name: "host_mesh_0/proc_mesh_0", shape_json: '{"dims": [1]}', parent_mesh_id: 1, parent_view_json: '{"offset": [0], "sizes": [1]}' },
-  { id: 4, timestamp_us: 0, class: "Proc", given_name: "proc_mesh_0", full_name: "host_mesh_1/proc_mesh_0", shape_json: '{"dims": [1]}', parent_mesh_id: 2, parent_view_json: '{"offset": [0], "sizes": [1]}' },
-  { id: 5, timestamp_us: 0, class: "Python<Trainer>", given_name: "Python<Trainer>", full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>", shape_json: '{"dims": [2]}', parent_mesh_id: 3, parent_view_json: '{"offset": [0], "sizes": [1]}' },
-  { id: 6, timestamp_us: 0, class: "Python<Trainer>", given_name: "Python<Trainer>", full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>", shape_json: '{"dims": [2]}', parent_mesh_id: 4, parent_view_json: '{"offset": [0], "sizes": [1]}' },
-];
-
-const actors: Actor[] = [
-  // System agents — rendered as host_unit / proc_unit nodes.
-  { id: 1, timestamp_us: 0, mesh_id: 1, rank: 0, full_name: "host_mesh_0/HostAgent[0]" },
-  { id: 2, timestamp_us: 0, mesh_id: 2, rank: 0, full_name: "host_mesh_1/HostAgent[0]" },
-  { id: 3, timestamp_us: 0, mesh_id: 3, rank: 0, full_name: "host_mesh_0/proc_mesh_0/ProcAgent[0]" },
-  { id: 4, timestamp_us: 0, mesh_id: 4, rank: 0, full_name: "host_mesh_1/proc_mesh_0/ProcAgent[0]" },
-  // Regular actors.
-  { id: 5, timestamp_us: 0, mesh_id: 5, rank: 0, full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[0]" },
-  { id: 6, timestamp_us: 0, mesh_id: 5, rank: 1, full_name: "host_mesh_0/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[1]" },
-  { id: 7, timestamp_us: 0, mesh_id: 6, rank: 0, full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[0]" },
-  { id: 8, timestamp_us: 0, mesh_id: 6, rank: 1, full_name: "host_mesh_1/proc_mesh_0/Python<Trainer>/PythonActor<Trainer>[1]" },
-];
-
-const statuses: Record<number, string> = {
-  1: "idle",       // HostAgent host_mesh_0
-  2: "failed",     // HostAgent host_mesh_1 (terminal)
-  3: "idle",       // ProcAgent under host_mesh_0
-  4: "idle",       // ProcAgent under host_mesh_1
-  5: "idle",
-  6: "processing",
-  7: "idle",
-  8: "idle",
+/** Pre-classified test data matching the /api/dag response shape. */
+const dagData: ApiDagData = {
+  nodes: [
+    { id: "host_mesh-1", entity_id: 1, tier: "host_mesh", label: "host_0", subtitle: "Host Mesh", status: "n/a" },
+    { id: "host_mesh-2", entity_id: 2, tier: "host_mesh", label: "host_1", subtitle: "Host Mesh", status: "n/a" },
+    { id: "host_unit-1", entity_id: 1, tier: "host_unit", label: "host_0", subtitle: "Host", status: "idle" },
+    { id: "host_unit-2", entity_id: 2, tier: "host_unit", label: "host_1", subtitle: "Host", status: "failed" },
+    { id: "proc_mesh-3", entity_id: 3, tier: "proc_mesh", label: "proc_0", subtitle: "Proc Mesh", status: "n/a" },
+    { id: "proc_mesh-4", entity_id: 4, tier: "proc_mesh", label: "proc_0", subtitle: "Proc Mesh", status: "n/a" },
+    { id: "proc_unit-3", entity_id: 3, tier: "proc_unit", label: "proc_0", subtitle: "Proc", status: "idle" },
+    { id: "proc_unit-4", entity_id: 4, tier: "proc_unit", label: "proc_0", subtitle: "Proc", status: "failed" },
+    { id: "actor_mesh-5", entity_id: 5, tier: "actor_mesh", label: "Python<Trainer>", subtitle: "Actor Mesh", status: "n/a" },
+    { id: "actor_mesh-6", entity_id: 6, tier: "actor_mesh", label: "Python<Trainer>", subtitle: "Actor Mesh", status: "n/a" },
+    { id: "actor-5", entity_id: 5, tier: "actor", label: "PythonActor<Trainer>[0]", subtitle: "rank 0", status: "idle" },
+    { id: "actor-6", entity_id: 6, tier: "actor", label: "PythonActor<Trainer>[1]", subtitle: "rank 1", status: "processing" },
+    { id: "actor-7", entity_id: 7, tier: "actor", label: "PythonActor<Trainer>[0]", subtitle: "rank 0", status: "failed" },
+    { id: "actor-8", entity_id: 8, tier: "actor", label: "PythonActor<Trainer>[1]", subtitle: "rank 1", status: "failed" },
+  ],
+  edges: [
+    { id: "h1", source_id: "host_mesh-1", target_id: "host_unit-1", type: "hierarchy" },
+    { id: "h2", source_id: "host_mesh-2", target_id: "host_unit-2", type: "hierarchy" },
+    { id: "h3", source_id: "host_unit-1", target_id: "proc_mesh-3", type: "hierarchy" },
+    { id: "h4", source_id: "host_unit-2", target_id: "proc_mesh-4", type: "hierarchy" },
+    { id: "h5", source_id: "proc_mesh-3", target_id: "proc_unit-3", type: "hierarchy" },
+    { id: "h6", source_id: "proc_mesh-4", target_id: "proc_unit-4", type: "hierarchy" },
+    { id: "h7", source_id: "proc_unit-3", target_id: "actor_mesh-5", type: "hierarchy" },
+    { id: "h8", source_id: "proc_unit-4", target_id: "actor_mesh-6", type: "hierarchy" },
+    { id: "h9", source_id: "actor_mesh-5", target_id: "actor-5", type: "hierarchy" },
+    { id: "h10", source_id: "actor_mesh-5", target_id: "actor-6", type: "hierarchy" },
+    { id: "h11", source_id: "actor_mesh-6", target_id: "actor-7", type: "hierarchy" },
+    { id: "h12", source_id: "actor_mesh-6", target_id: "actor-8", type: "hierarchy" },
+    { id: "m1", source_id: "actor-6", target_id: "actor-8", type: "message" },
+    { id: "m2", source_id: "actor-8", target_id: "actor-6", type: "message" },
+  ],
 };
-
-const messagePairs: Array<[number, number]> = [
-  [6, 8],
-  [8, 6],
-  [6, 8], // duplicate
-];
 
 describe("computeLayout", () => {
   let graph: DagGraph;
 
   beforeAll(() => {
-    graph = computeLayout(meshes, actors, statuses, messagePairs);
+    graph = computeLayout(dagData);
   });
 
-  it("creates correct total node count", () => {
-    // 2 host meshes + 2 host units + 2 proc meshes + 2 proc units
-    // + 2 actor meshes + 4 regular actors = 14
+  it("creates nodes for all entities", () => {
     expect(graph.nodes.length).toBe(14);
   });
 
-  it("creates host_unit and proc_unit nodes", () => {
-    expect(graph.nodes.filter((n) => n.tier === "host_unit").length).toBe(2);
-    expect(graph.nodes.filter((n) => n.tier === "proc_unit").length).toBe(2);
-  });
-
-  it("creates mesh nodes", () => {
+  it("creates nodes with correct tiers", () => {
     expect(graph.nodes.filter((n) => n.tier === "host_mesh").length).toBe(2);
+    expect(graph.nodes.filter((n) => n.tier === "host_unit").length).toBe(2);
     expect(graph.nodes.filter((n) => n.tier === "proc_mesh").length).toBe(2);
+    expect(graph.nodes.filter((n) => n.tier === "proc_unit").length).toBe(2);
     expect(graph.nodes.filter((n) => n.tier === "actor_mesh").length).toBe(2);
-  });
-
-  it("creates actor nodes for regular actors only", () => {
     expect(graph.nodes.filter((n) => n.tier === "actor").length).toBe(4);
   });
 
-  it("meshes have n/a status", () => {
-    const meshNodes = graph.nodes.filter(
-      (n) => n.tier === "host_mesh" || n.tier === "proc_mesh"
-    );
-    for (const n of meshNodes) {
-      expect(n.status).toBe("n/a");
-    }
-  });
-
-  it("host_unit status comes from HostAgent", () => {
+  it("preserves status from server", () => {
     expect(graph.nodes.find((n) => n.id === "host_unit-1")!.status).toBe("idle");
     expect(graph.nodes.find((n) => n.id === "host_unit-2")!.status).toBe("failed");
   });
 
-  it("propagates terminal host down to proc_unit", () => {
-    expect(graph.nodes.find((n) => n.id === "proc_unit-4")!.status).toBe("failed");
-    expect(graph.nodes.find((n) => n.id === "proc_unit-3")!.status).toBe("idle");
+  it("preserves labels from server", () => {
+    const hm = graph.nodes.find((n) => n.id === "host_mesh-1")!;
+    expect(hm.label).toBe("host_0");
+    expect(hm.subtitle).toBe("Host Mesh");
   });
 
-  it("propagates terminal host down to actors", () => {
-    expect(graph.nodes.find((n) => n.id === "actor-7")!.status).toBe("failed");
-    expect(graph.nodes.find((n) => n.id === "actor-8")!.status).toBe("failed");
-    expect(graph.nodes.find((n) => n.id === "actor-5")!.status).toBe("idle");
+  it("host mesh nodes have largest radius", () => {
+    const hostMesh = graph.nodes.find((n) => n.tier === "host_mesh")!;
+    const actor = graph.nodes.find((n) => n.tier === "actor")!;
+    expect(hostMesh.radius).toBeGreaterThan(actor.radius);
   });
 
-  it("creates hierarchy edges flowing through units", () => {
-    const hierEdges = graph.edges.filter((e) => e.type === "hierarchy");
-    // 2 host_mesh->host_unit + 2 host_unit->proc_mesh
-    // + 2 proc_mesh->proc_unit + 2 proc_unit->actor_mesh
-    // + 4 actor_mesh->actor = 12
-    expect(hierEdges.length).toBe(12);
+  it("creates hierarchy edges", () => {
+    expect(graph.edges.filter((e) => e.type === "hierarchy").length).toBe(12);
   });
 
-  it("creates deduplicated message edges", () => {
+  it("creates message edges", () => {
     expect(graph.edges.filter((e) => e.type === "message").length).toBe(2);
   });
 
-  it("assigns positive coordinates", () => {
+  it("maps edge keys to camelCase", () => {
+    const edge = graph.edges[0];
+    expect(edge.sourceId).toBeDefined();
+    expect(edge.targetId).toBeDefined();
+  });
+
+  it("assigns positive coordinates to all nodes", () => {
     for (const n of graph.nodes) {
       expect(n.x).toBeGreaterThan(0);
       expect(n.y).toBeGreaterThan(0);
@@ -121,13 +103,17 @@ describe("computeLayout", () => {
   });
 
   it("positions tiers top to bottom", () => {
-    const hostMesh = graph.nodes.find((n) => n.tier === "host_mesh")!;
-    const procMesh = graph.nodes.find((n) => n.tier === "proc_mesh")!;
-    const actorMesh = graph.nodes.find((n) => n.tier === "actor_mesh")!;
-    const actor = graph.nodes.find((n) => n.tier === "actor")!;
-    expect(hostMesh.y).toBeLessThan(procMesh.y);
-    expect(procMesh.y).toBeLessThan(actorMesh.y);
-    expect(actorMesh.y).toBeLessThan(actor.y);
+    const hm = graph.nodes.find((n) => n.tier === "host_mesh")!;
+    const hu = graph.nodes.find((n) => n.tier === "host_unit")!;
+    const pm = graph.nodes.find((n) => n.tier === "proc_mesh")!;
+    const pu = graph.nodes.find((n) => n.tier === "proc_unit")!;
+    const am = graph.nodes.find((n) => n.tier === "actor_mesh")!;
+    const a = graph.nodes.find((n) => n.tier === "actor")!;
+    expect(hm.y).toBeLessThan(hu.y);
+    expect(hu.y).toBeLessThan(pm.y);
+    expect(pm.y).toBeLessThan(pu.y);
+    expect(pu.y).toBeLessThan(am.y);
+    expect(am.y).toBeLessThan(a.y);
   });
 
   it("sets graph dimensions", () => {
@@ -135,16 +121,8 @@ describe("computeLayout", () => {
     expect(graph.height).toBeGreaterThan(0);
   });
 
-  it("host_unit label shows host name without mesh", () => {
-    const hu = graph.nodes.find((n) => n.id === "host_unit-1")!;
-    expect(hu.label).toBe("host_0");
-  });
-
-  it("proc_unit label shows proc name without mesh", () => {
-    const pu = graph.nodes.find((n) => n.id === "proc_unit-3")!;
-    expect(pu.label).toBe("proc_0");
-  });
-    const empty = computeLayout([], [], {}, []);
+  it("handles empty input", () => {
+    const empty = computeLayout({ nodes: [], edges: [] });
     expect(empty.nodes.length).toBe(0);
     expect(empty.edges.length).toBe(0);
   });

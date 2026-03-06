@@ -8,7 +8,6 @@
 
 import {
   statusColor,
-  worstStatus,
   formatTimestamp,
   formatShape,
   messageStatusColor,
@@ -40,32 +39,6 @@ describe("statusColor", () => {
   test("returns muted for null/undefined", () => {
     expect(statusColor(null)).toBe("var(--text-muted)");
     expect(statusColor(undefined)).toBe("var(--text-muted)");
-  });
-});
-
-describe("worstStatus", () => {
-  test("returns failed when present", () => {
-    expect(worstStatus(["idle", "processing", "failed"])).toBe("failed");
-  });
-
-  test("returns stopped over idle", () => {
-    expect(worstStatus(["idle", "stopped"])).toBe("stopped");
-  });
-
-  test("returns idle for single idle", () => {
-    expect(worstStatus(["idle"])).toBe("idle");
-  });
-
-  test("handles nulls gracefully", () => {
-    expect(worstStatus([null, "idle", undefined])).toBe("idle");
-  });
-
-  test("returns idle for empty array", () => {
-    expect(worstStatus([])).toBe("idle");
-  });
-
-  test("stopping is worse than processing", () => {
-    expect(worstStatus(["processing", "stopping"])).toBe("stopping");
   });
 });
 

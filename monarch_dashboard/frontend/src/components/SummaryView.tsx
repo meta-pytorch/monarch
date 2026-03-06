@@ -9,7 +9,7 @@
 import React from "react";
 import { useApi } from "../hooks/useApi";
 import { Summary } from "../types";
-import { statusColor, formatTimestamp } from "../utils/status";
+import { statusColor, formatTimestamp, messageStatusColor } from "../utils/status";
 import { StatusBadge } from "./StatusBadge";
 
 /* ------------------------------------------------------------------ */
@@ -76,6 +76,44 @@ function StatusBreakdown({ byStatus }: { byStatus: Record<string, number> }) {
   );
 }
 
+function ActorErrorGroup({
+  actors,
+  title,
+}: {
+  actors: Array<{
+    actor_id: number;
+    full_name: string;
+    reason: string | null;
+    timestamp_us: number;
+  }>;
+  title: string;
+}) {
+  if (actors.length === 0) return null;
+  return (
+    <div className="summary-error-group">
+      <h4 className="summary-error-heading">
+        {title}
+        <span className="count-badge">{actors.length}</span>
+      </h4>
+      {actors.map((a) => (
+        <div key={a.actor_id} className="summary-error-item">
+          <div className="summary-error-name">
+            {a.full_name.split("/").pop()}
+          </div>
+          <div className="summary-error-detail">
+            <span className="summary-error-reason">
+              {a.reason ?? title.toLowerCase().replace(" actors", "")}
+            </span>
+            <span className="summary-error-time">
+              {formatTimestamp(a.timestamp_us)}
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ErrorPanel({ errors }: { errors: Summary["errors"] }) {
   const hasErrors =
     errors.failed_actors.length > 0 ||
@@ -100,47 +138,8 @@ function ErrorPanel({ errors }: { errors: Summary["errors"] }) {
         <div className="summary-empty">No errors detected</div>
       )}
 
-      {errors.failed_actors.length > 0 && (
-        <div className="summary-error-group">
-          <h4 className="summary-error-heading">Failed Actors</h4>
-          {errors.failed_actors.map((a) => (
-            <div key={a.actor_id} className="summary-error-item">
-              <div className="summary-error-name">
-                {a.full_name.split("/").pop()}
-              </div>
-              <div className="summary-error-detail">
-                <span className="summary-error-reason">
-                  {a.reason ?? "unknown reason"}
-                </span>
-                <span className="summary-error-time">
-                  {formatTimestamp(a.timestamp_us)}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {errors.stopped_actors.length > 0 && (
-        <div className="summary-error-group">
-          <h4 className="summary-error-heading">
-            Stopped Actors
-            <span className="count-badge">{errors.stopped_actors.length}</span>
-          </h4>
-          {errors.stopped_actors.map((a) => (
-            <div key={a.actor_id} className="summary-error-item">
-              <div className="summary-error-name">
-                {a.full_name.split("/").pop()}
-              </div>
-              <div className="summary-error-detail">
-                <span className="summary-error-reason">
-                  {a.reason ?? "stopped"}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <ActorErrorGroup actors={errors.failed_actors} title="Failed Actors" />
+      <ActorErrorGroup actors={errors.stopped_actors} title="Stopped Actors" />
 
       {errors.failed_messages > 0 && (
         <div className="summary-error-group">
@@ -185,7 +184,7 @@ function MessageTraffic({ counts }: { counts: Summary["message_counts"] }) {
           <div key={status} className="summary-msg-status-chip">
             <span
               className="status-dot"
-              style={{ background: statusColor(status === "delivered" ? "idle" : status === "sent" ? "processing" : status) }}
+              style={{ background: messageStatusColor(status) }}
             />
             <span>{status}</span>
             <span className="summary-msg-status-count">{count}</span>
@@ -213,12 +212,33 @@ function MessageTraffic({ counts }: { counts: Summary["message_counts"] }) {
   );
 }
 
-function TimelineBar({ timeline }: { timeline: Summary["timeline"] }) {
+function TimelineBar({
+  timeline,
+  errors,
+}: {
+  timeline: Summary["timeline"];
+  errors: Summary["errors"];
+}) {
   const duration = timeline.end_us - timeline.start_us;
-  const failurePct =
-    timeline.failure_onset_us != null
-      ? ((timeline.failure_onset_us - timeline.start_us) / duration) * 100
-      : null;
+
+  // Collect error events with their position on the timeline.
+  const toNotch = (a: { full_name: string; timestamp_us: number }, status: string) => {
+    const name = a.full_name.split("/").pop() ?? "actor";
+    return {
+      pct: ((a.timestamp_us - timeline.start_us) / duration) * 100,
+      status,
+      name,
+      shortName: notchLabel(name),
+      timestamp_us: a.timestamp_us,
+    };
+  };
+
+  const notches = duration > 0
+    ? [
+        ...errors.failed_actors.map((a) => toNotch(a, "failed")),
+        ...errors.stopped_actors.map((a) => toNotch(a, "stopped")),
+      ]
+    : [];
 
   return (
     <div className="summary-section" data-testid="timeline-bar">
@@ -231,37 +251,44 @@ function TimelineBar({ timeline }: { timeline: Summary["timeline"] }) {
       </div>
 
       <div className="summary-timeline-track">
-        {/* Healthy region */}
-        <div
-          className="summary-timeline-healthy"
-          style={{ width: failurePct != null ? `${failurePct}%` : "100%" }}
-        />
-        {/* Failure region */}
-        {failurePct != null && (
+        {/* Full healthy bar */}
+        <div className="summary-timeline-healthy" style={{ width: "100%" }} />
+
+        {/* Error notches overlaid on the bar */}
+        {notches.map((n, i) => (
           <div
-            className="summary-timeline-failed"
-            style={{ width: `${100 - failurePct}%` }}
-          />
-        )}
-        {/* Failure marker */}
-        {failurePct != null && (
-          <div
-            className="summary-timeline-marker"
-            style={{ left: `${failurePct}%` }}
-            title={`Failure onset: ${formatTimestamp(timeline.failure_onset_us!)}`}
+            key={`${n.status}-${i}`}
+            className={`summary-timeline-notch summary-timeline-notch-${n.status}`}
+            style={{ left: `${Math.min(Math.max(n.pct, 0.5), 99.5)}%` }}
           >
-            <div className="summary-timeline-marker-line" />
-            <div className="summary-timeline-marker-label">FAILURE</div>
+            <span className="summary-timeline-notch-label">
+              {n.shortName} {n.status}
+            </span>
           </div>
-        )}
+        ))}
       </div>
 
       <div className="summary-timeline-stats">
         <span>{timeline.total_status_events} status events</span>
         <span>{timeline.total_message_events} message events</span>
+        {notches.length > 0 && (
+          <span>{notches.length} error{notches.length !== 1 ? "s" : ""}</span>
+        )}
       </div>
     </div>
   );
+}
+
+/** Extract a compact label from an actor name for timeline notches.
+ *  "PythonActor<Trainer>[0]" → "Trainer[0]"
+ *  "HostAgent[0]" → "Host[0]"
+ */
+function notchLabel(name: string): string {
+  const m = name.match(/<([^>]+)>\[(\d+)\]$/);
+  if (m) return `${m[1]}[${m[2]}]`;
+  const a = name.match(/^(\w+)Agent\[(\d+)\]$/);
+  if (a) return `${a[1]}[${a[2]}]`;
+  return name.length > 12 ? name.slice(0, 10) + "\u2026" : name;
 }
 
 function HierarchyBreakdown({ counts }: { counts: Summary["hierarchy_counts"] }) {
@@ -317,7 +344,7 @@ export function SummaryView() {
       </div>
 
       {/* Timeline */}
-      <TimelineBar timeline={data.timeline} />
+      <TimelineBar timeline={data.timeline} errors={data.errors} />
 
       {/* Main grid: status + errors */}
       <div className="summary-grid-2col">

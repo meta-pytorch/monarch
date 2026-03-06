@@ -76,7 +76,7 @@ use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use monarch_rdma::IbvConfig;
 use monarch_rdma::RawLocalMemory;
 use monarch_rdma::RdmaLocalMemory;
@@ -460,7 +460,8 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // As normal, create a proc mesh for the parameter server.
     tracing::info!("creating parameter server proc mesh...");
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     let mut command = Command::new(
         buck_resources::get("monarch/monarch_rdma/examples/parameter_server/bootstrap").unwrap(),
