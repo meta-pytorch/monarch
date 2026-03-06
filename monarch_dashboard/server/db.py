@@ -96,11 +96,14 @@ def get_mesh_children(mesh_id: int) -> list[dict[str, Any]]:
 
 
 def list_actors(mesh_id: int | None = None) -> list[dict[str, Any]]:
-    """Return all actors with latest_status, optionally filtered by mesh_id."""
+    """Return all actors with latest_status and mesh_class, optionally filtered."""
     base = (
-        "SELECT a.*, latest.new_status AS latest_status, "
+        "SELECT a.*, m.class AS mesh_class, "
+        "latest.new_status AS latest_status, "
         "latest.max_ts AS status_timestamp_us "
-        "FROM actors a LEFT JOIN ("
+        "FROM actors a "
+        "LEFT JOIN meshes m ON a.mesh_id = m.id "
+        "LEFT JOIN ("
         "  SELECT ase.actor_id, ase.new_status, sub.max_ts "
         "  FROM actor_status_events ase "
         "  INNER JOIN ("
