@@ -79,13 +79,13 @@ use hyperactor_mesh::ProcMesh;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RawLocalMemory;
-use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use monarch_rdma::cu_check;
+use monarch_rdma::local_memory::RdmaLocalMemory;
+use monarch_rdma::local_memory::UnsafeLocalMemory;
 use ndslice::Extent;
 use ndslice::ViewExt;
 use serde::Deserialize;
@@ -429,7 +429,8 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         if self.rdma_buffer_handle.is_none() {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> =
+                Arc::new(UnsafeLocalMemory::new(addr, size));
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)
@@ -500,8 +501,14 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
 
         // Resolve IbvManagerActor refs and IbvBuffers from backends
-        let (local_ibv_manager, local_ibv) = local_buffer.resolve_ibv(cx).await?;
-        let (remote_ibv_manager, remote_ibv) = remote_buffer.resolve_ibv(cx).await?;
+        let (local_ibv_manager, local_ibv) = local_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))??;
+        let (remote_ibv_manager, remote_ibv) = remote_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))??;
 
         let qp = local_ibv_manager
             .request_queue_pair(

@@ -1115,7 +1115,10 @@ impl RdmaBackend for ActorHandle<IbvManagerActor> {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_ibv_mgr, remote_ibv_buffer) = op.remote.resolve_ibv(cx).await?;
+            let (remote_ibv_mgr, remote_ibv_buffer) =
+                op.remote.resolve_ibv(cx).await.ok_or_else(|| {
+                    anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
+                })??;
 
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,
