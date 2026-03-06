@@ -25,9 +25,7 @@ use crate::supervision::MeshFailure;
 pub mod host_agent;
 
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -248,9 +246,7 @@ impl HostMesh {
     /// Emit a telemetry event for this host mesh creation.
     fn notify_created(&self) {
         let name_str = self.name.to_string();
-        let mut mesh_hasher = DefaultHasher::new();
-        name_str.hash(&mut mesh_hasher);
-        let mesh_id_hash = mesh_hasher.finish();
+        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
         hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
             id: mesh_id_hash,
@@ -267,16 +263,13 @@ impl HostMesh {
         // These are skipped in Proc::spawn_inner. mesh_id directly points to host mesh.
         let now = RealClock.system_time_now();
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
-            let actor_id = host.mesh_agent().actor_id().clone();
-            let mut actor_hasher = DefaultHasher::new();
-            actor_id.hash(&mut actor_hasher);
-
+            let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: actor_hasher.finish(),
+                id: hyperactor_telemetry::hash_to_u64(actor.actor_id()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
-                full_name: actor_id.to_string(),
+                full_name: actor.actor_id().to_string(),
                 display_name: None,
             });
         }

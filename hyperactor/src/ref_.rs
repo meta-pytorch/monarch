@@ -153,13 +153,13 @@ impl FromStr for ProcRef {
 
 /// An actor identifier paired with a network location.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ActorRef_ {
+pub struct ActorRef {
     id: ActorId,
     location: Location,
 }
 
-impl ActorRef_ {
-    /// Create a new [`ActorRef_`].
+impl ActorRef {
+    /// Create a new [`ActorRef`].
     pub fn new(id: ActorId, location: Location) -> Self {
         Self { id, location }
     }
@@ -175,28 +175,28 @@ impl ActorRef_ {
     }
 }
 
-impl PartialEq for ActorRef_ {
+impl PartialEq for ActorRef {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.location == other.location
     }
 }
 
-impl Eq for ActorRef_ {}
+impl Eq for ActorRef {}
 
-impl std::hash::Hash for ActorRef_ {
+impl std::hash::Hash for ActorRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
         self.location.hash(state);
     }
 }
 
-impl PartialOrd for ActorRef_ {
+impl PartialOrd for ActorRef {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for ActorRef_ {
+impl Ord for ActorRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.id
             .cmp(&other.id)
@@ -204,13 +204,13 @@ impl Ord for ActorRef_ {
     }
 }
 
-impl fmt::Display for ActorRef_ {
+impl fmt::Display for ActorRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}@{}", self.id, self.location)
     }
 }
 
-impl fmt::Debug for ActorRef_ {
+impl fmt::Debug for ActorRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.id.label(), self.id.proc_id().label()) {
             (Some(actor_label), Some(proc_label)) => {
@@ -233,7 +233,7 @@ impl fmt::Debug for ActorRef_ {
     }
 }
 
-impl FromStr for ActorRef_ {
+impl FromStr for ActorRef {
     type Err = RefParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -350,7 +350,7 @@ mod tests {
             Some(Label::new("my-actor").unwrap()),
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         assert_eq!(
             aref.to_string(),
             "0000000000abc123.0000000000def456@inproc://42"
@@ -368,7 +368,7 @@ mod tests {
             Some(Label::new("my-actor").unwrap()),
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
             "<'my-actor.my-proc' 0000000000abc123.0000000000def456@inproc://42>"
@@ -383,7 +383,7 @@ mod tests {
             None,
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
             "<0000000000abc123.0000000000def456@inproc://42>"
@@ -398,7 +398,7 @@ mod tests {
             Some(Label::new("my-actor").unwrap()),
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
             "<'my-actor' 0000000000abc123.0000000000def456@inproc://42>"
@@ -416,7 +416,7 @@ mod tests {
             None,
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         assert_eq!(
             format!("{:?}", aref),
             "<'.my-proc' 0000000000abc123.0000000000def456@inproc://42>"
@@ -434,16 +434,16 @@ mod tests {
             Some(Label::new("my-actor").unwrap()),
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         let s = aref.to_string();
-        let parsed: ActorRef_ = s.parse().unwrap();
+        let parsed: ActorRef = s.parse().unwrap();
         assert_eq!(aref, parsed);
     }
 
     #[test]
     fn test_actor_ref_fromstr_missing_separator() {
         let err = "0000000000abc123.0000000000def456"
-            .parse::<ActorRef_>()
+            .parse::<ActorRef>()
             .unwrap_err();
         assert!(matches!(err, RefParseError::MissingSeparator));
     }
@@ -486,11 +486,11 @@ mod tests {
             Some(Label::new("actor").unwrap()),
         );
         let loc: Location = ChannelAddr::Local(1).into();
-        let a = ActorRef_::new(aid.clone(), loc.clone());
-        let b = ActorRef_::new(aid, loc);
+        let a = ActorRef::new(aid.clone(), loc.clone());
+        let b = ActorRef::new(aid, loc);
         assert_eq!(a, b);
 
-        let hash = |r: &ActorRef_| {
+        let hash = |r: &ActorRef| {
             let mut h = DefaultHasher::new();
             r.hash(&mut h);
             h.finish()
@@ -544,9 +544,9 @@ mod tests {
             Some(Label::new("my-actor").unwrap()),
         );
         let loc: Location = ChannelAddr::Local(42).into();
-        let aref = ActorRef_::new(aid, loc);
+        let aref = ActorRef::new(aid, loc);
         let json = serde_json::to_string(&aref).unwrap();
-        let parsed: ActorRef_ = serde_json::from_str(&json).unwrap();
+        let parsed: ActorRef = serde_json::from_str(&json).unwrap();
         assert_eq!(aref, parsed);
     }
 

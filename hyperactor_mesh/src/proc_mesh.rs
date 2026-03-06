@@ -9,10 +9,8 @@
 use std::any::type_name;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -193,7 +191,7 @@ impl ProcMesh {
         // supervision event handler. Last-mesh-wins semantics: if a
         // previous mesh installed a sink, it is replaced.
         if let Some(first) = ranks.first() {
-            crate::global_client::set_global_supervision_sink(
+            crate::global_context::set_global_supervision_sink(
                 first.agent.port::<ActorSupervisionEvent>(),
             );
         }
@@ -220,19 +218,13 @@ impl ProcMesh {
         // Notify telemetry that the ProcAgent mesh was created.
         {
             let name_str = name.to_string();
-            let mut mesh_hasher = DefaultHasher::new();
-            name_str.hash(&mut mesh_hasher);
-            let mesh_id_hash = mesh_hasher.finish();
+            let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
             let (parent_mesh_id, parent_view_json) = match host_mesh {
-                Some(hm) => {
-                    let mut parent_hasher = DefaultHasher::new();
-                    hm.name().to_string().hash(&mut parent_hasher);
-                    (
-                        Some(parent_hasher.finish()),
-                        serde_json::to_string(hm.region()).ok(),
-                    )
-                }
+                Some(hm) => (
+                    Some(hyperactor_telemetry::hash_to_u64(&hm.name().to_string())),
+                    serde_json::to_string(hm.region()).ok(),
+                ),
                 None => (None, None),
             };
 
@@ -252,11 +244,9 @@ impl ProcMesh {
             let now = RealClock.system_time_now();
             for rank in current_ref.ranks.iter() {
                 let actor_id = rank.agent.actor_id();
-                let mut actor_hasher = DefaultHasher::new();
-                actor_id.hash(&mut actor_hasher);
 
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: actor_hasher.finish(),
+                    id: hyperactor_telemetry::hash_to_u64(actor_id),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank.create_rank as u64,
@@ -1175,14 +1165,10 @@ impl ProcMeshRef {
 
             // Hash the actor mesh name. This is used as mesh_id for both
             // the MeshEvent and the per-actor ActorEvents below.
-            let mut mesh_hasher = DefaultHasher::new();
-            name_str.hash(&mut mesh_hasher);
-            let mesh_id_hash = mesh_hasher.finish();
+            let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
             // Hash the proc mesh name for parent_mesh_id.
-            let mut parent_hasher = DefaultHasher::new();
-            self.name().to_string().hash(&mut parent_hasher);
-            let parent_mesh_id_hash = parent_hasher.finish();
+            let parent_mesh_id_hash = hyperactor_telemetry::hash_to_u64(&self.name().to_string());
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -1200,16 +1186,13 @@ impl ProcMeshRef {
             // create_rank, which reflects the original unsliced mesh).
             let now = RealClock.system_time_now();
             for (rank, proc_ref) in self.ranks.iter().enumerate() {
-                let actor_id = proc_ref.actor_id(&name);
-                let mut actor_hasher = DefaultHasher::new();
-                actor_id.hash(&mut actor_hasher);
-
                 let display_name = supervision_display_name.as_ref().map(|sdn| {
                     let point = self.region().extent().point_of_rank(rank).unwrap();
                     crate::actor_display_name(sdn, &point)
                 });
+                let actor_id = proc_ref.actor_id(&name);
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                    id: actor_hasher.finish(),
+                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank as u64,

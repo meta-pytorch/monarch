@@ -242,6 +242,26 @@ pub(crate) fn collect_expanded_refs(
     out.extend(refs);
 }
 
+/// Collect (reference, depth) pairs of all failed nodes.
+///
+/// Mirrors `collect_expanded_refs`. Used to carry forward failure
+/// state across tree rebuilds for collapsed nodes whose children
+/// are not recomputed.
+pub(crate) fn collect_failed_refs(
+    node: &TreeNode,
+    depth: usize,
+    out: &mut HashSet<(String, usize)>,
+) {
+    let refs = fold_tree_with_depth(node, depth, &|n, d, child_results| {
+        let mut result: HashSet<(String, usize)> = child_results.into_iter().flatten().collect();
+        if n.failed {
+            result.insert((n.reference.clone(), d));
+        }
+        result
+    });
+    out.extend(refs);
+}
+
 /// Collapse all nodes using fold-based traversal.
 pub(crate) fn collapse_all(node: &mut TreeNode) {
     use std::ops::ControlFlow;
@@ -1950,5 +1970,115 @@ mod tests {
         let manual_result = manual_count(&tree);
         assert_eq!(fold_result, manual_result);
         assert_eq!(fold_result, 1001);
+    }
+
+    #[test]
+    fn failed_tracking_uses_depth_pairs() {
+        // Mirrors expansion_tracking_uses_depth_pairs but for failed state.
+        let tree = TreeNode {
+            reference: "root".into(),
+            label: "Root".into(),
+            node_type: NodeType::Root,
+            expanded: true,
+            fetched: true,
+            has_children: true,
+            stopped: false,
+            failed: false,
+            is_system: false,
+            children: vec![
+                TreeNode {
+                    reference: "proc1".into(),
+                    label: "Proc 1".into(),
+                    node_type: NodeType::Proc,
+                    expanded: true,
+                    fetched: true,
+                    has_children: true,
+                    stopped: false,
+                    failed: true, // failed proc
+                    is_system: false,
+                    children: vec![TreeNode {
+                        reference: "actor1".into(),
+                        label: "Actor 1".into(),
+                        node_type: NodeType::Actor,
+                        expanded: false,
+                        fetched: true,
+                        has_children: false,
+                        stopped: false,
+                        failed: true, // failed actor
+                        is_system: false,
+                        children: vec![],
+                    }],
+                },
+                TreeNode {
+                    reference: "actor1".into(),
+                    label: "Actor 1 (flat)".into(),
+                    node_type: NodeType::Actor,
+                    expanded: false,
+                    fetched: true,
+                    has_children: false,
+                    stopped: false,
+                    failed: false, // same ref, not failed at this depth
+                    is_system: false,
+                    children: vec![],
+                },
+            ],
+        };
+        let mut failed_keys = HashSet::new();
+        for child in &tree.children {
+            collect_failed_refs(child, 0, &mut failed_keys);
+        }
+        // proc1 at depth 0 is failed.
+        assert!(failed_keys.contains(&("proc1".to_string(), 0)));
+        // actor1 at depth 1 (under proc1) is failed.
+        assert!(failed_keys.contains(&("actor1".to_string(), 1)));
+        // actor1 at depth 0 (flat list) is NOT failed.
+        assert!(!failed_keys.contains(&("actor1".to_string(), 0)));
+    }
+
+    #[test]
+    fn failed_propagates_from_child_to_parent() {
+        // A host with a failed child proc should appear in failed_keys
+        // only if the host itself is marked failed (propagation happens
+        // at build time, not in collect_failed_refs).
+        let tree = TreeNode {
+            reference: "root".into(),
+            label: "Root".into(),
+            node_type: NodeType::Root,
+            expanded: true,
+            fetched: true,
+            has_children: true,
+            stopped: false,
+            failed: false,
+            is_system: false,
+            children: vec![TreeNode {
+                reference: "host1".into(),
+                label: "Host 1".into(),
+                node_type: NodeType::Host,
+                expanded: true,
+                fetched: true,
+                has_children: true,
+                stopped: false,
+                failed: true, // propagated from child at build time
+                is_system: false,
+                children: vec![TreeNode {
+                    reference: "proc1".into(),
+                    label: "Proc 1".into(),
+                    node_type: NodeType::Proc,
+                    expanded: false,
+                    fetched: true,
+                    has_children: false,
+                    stopped: false,
+                    failed: true,
+                    is_system: false,
+                    children: vec![],
+                }],
+            }],
+        };
+        let mut failed_keys = HashSet::new();
+        for child in &tree.children {
+            collect_failed_refs(child, 0, &mut failed_keys);
+        }
+        assert!(failed_keys.contains(&("host1".to_string(), 0)));
+        assert!(failed_keys.contains(&("proc1".to_string(), 1)));
     }
 }

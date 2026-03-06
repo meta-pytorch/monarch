@@ -1286,46 +1286,14 @@ button:focus:not(:focus-visible) {
   border-radius: 4px;
   overflow: visible;
   display: flex;
-  margin-bottom: var(--space-sm);
+  margin-bottom: var(--space-lg);
 }
 
 .summary-timeline-healthy {
   height: 100%;
   background: linear-gradient(90deg, var(--status-healthy), rgba(46, 204, 113, 0.5));
-  border-radius: 4px 0 0 4px;
+  border-radius: 4px;
   opacity: 0.6;
-}
-
-.summary-timeline-failed {
-  height: 100%;
-  background: linear-gradient(90deg, rgba(231, 76, 60, 0.5), var(--status-failed));
-  border-radius: 0 4px 4px 0;
-  opacity: 0.6;
-}
-
-.summary-timeline-marker {
-  position: absolute;
-  top: -6px;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.summary-timeline-marker-line {
-  width: 2px;
-  height: 32px;
-  background: var(--status-failed);
-  box-shadow: 0 0 6px var(--status-failed);
-}
-
-.summary-timeline-marker-label {
-  font-family: var(--font-display);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--status-failed);
-  margin-top: 2px;
 }
 
 .summary-timeline-stats {
@@ -1334,6 +1302,55 @@ button:focus:not(:focus-visible) {
   font-family: var(--font-display);
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* ---- Timeline error notches ---- */
+
+.summary-timeline-notch {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 24px;
+  border-radius: 1px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  cursor: help;
+  z-index: 2;
+}
+
+.summary-timeline-notch-failed {
+  background: var(--status-failed);
+  box-shadow: 0 0 4px var(--status-failed);
+}
+
+.summary-timeline-notch-stopped {
+  background: var(--status-stopped);
+  box-shadow: 0 0 4px var(--status-stopped);
+}
+
+.summary-timeline-notch-label {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.summary-timeline-notch:hover .summary-timeline-notch-label {
+  opacity: 1;
 }
 
 /* ---- Mesh breakdown ---- */

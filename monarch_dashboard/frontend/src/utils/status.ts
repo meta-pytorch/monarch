@@ -31,36 +31,6 @@ export function statusColor(status: string | null | undefined): string {
   return STATUS_COLORS[status.toLowerCase()] ?? "var(--text-muted)";
 }
 
-/** Status priority for "worst status" aggregation. Higher = worse. */
-const STATUS_PRIORITY: Record<string, number> = {
-  idle: 0,
-  processing: 1,
-  client: 2,
-  unknown: 3,
-  created: 4,
-  initializing: 4,
-  saving: 4,
-  loading: 4,
-  stopping: 5,
-  stopped: 6,
-  failed: 7,
-};
-
-/** Return the worst (highest priority) status from a list. */
-export function worstStatus(statuses: (string | null | undefined)[]): string {
-  let worst = "idle";
-  let worstPri = -1;
-  for (const s of statuses) {
-    if (!s) continue;
-    const pri = STATUS_PRIORITY[s.toLowerCase()] ?? 3;
-    if (pri > worstPri) {
-      worstPri = pri;
-      worst = s.toLowerCase();
-    }
-  }
-  return worst;
-}
-
 /** Format a microsecond timestamp to a readable string. */
 export function formatTimestamp(us: number): string {
   const ms = us / 1000;

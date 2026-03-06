@@ -35,6 +35,12 @@ def summary():
     return jsonify(db.get_summary())
 
 
+@api.route("/dag")
+def dag():
+    """Classified nodes and edges for the DAG visualization."""
+    return jsonify(db.get_dag_data())
+
+
 # ---------------------------------------------------------------------------
 # Meshes
 # ---------------------------------------------------------------------------
