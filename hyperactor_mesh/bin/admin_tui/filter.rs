@@ -32,14 +32,13 @@ pub(crate) fn is_failed_node(properties: &NodeProperties) -> bool {
     )
 }
 
-/// Returns true if the node properties indicate a system actor or proc.
+/// Returns true if the node properties indicate a system actor.
 pub(crate) fn is_system_node(properties: &NodeProperties) -> bool {
+    // Procs are never system — only actors are. Procs are always
+    // visible regardless of the 's' toggle.
     matches!(
         properties,
-        NodeProperties::Proc {
-            is_system: true,
-            ..
-        } | NodeProperties::Actor {
+        NodeProperties::Actor {
             is_system: true,
             ..
         }
