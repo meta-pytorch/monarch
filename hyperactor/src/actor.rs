@@ -104,6 +104,16 @@ pub trait Actor: Sized + Send + 'static {
         cx.instance().spawn(self)
     }
 
+    /// Spawn a named child actor. Same supervision semantics as
+    /// `spawn`, but the child gets `name` in its ActorId.
+    fn spawn_with_name(
+        self,
+        cx: &impl context::Actor,
+        name: &str,
+    ) -> anyhow::Result<ActorHandle<Self>> {
+        cx.instance().spawn_with_name(name, self)
+    }
+
     /// Spawns this actor in a detached state, handling its messages
     /// in a background task. The returned handle is used to control
     /// the actor's lifecycle and to interact with it.
@@ -2072,7 +2082,6 @@ mod tests {
             .set_published_properties(PublishedPropertiesKind::Proc {
                 proc_name: "my_proc".into(),
                 num_actors: 7,
-                is_system: false,
                 children: vec!["actor_a".into()],
                 system_children: Vec::new(),
                 stopped_children: Vec::new(),
@@ -2109,7 +2118,6 @@ mod tests {
                 properties: NodeProperties::Proc {
                     proc_name: "test_proc".into(),
                     num_actors: 42,
-                    is_system: true,
                     system_children: Vec::new(),
                     stopped_children: Vec::new(),
                     stopped_retention_cap: 0,
@@ -2131,12 +2139,10 @@ mod tests {
             NodeProperties::Proc {
                 proc_name,
                 num_actors,
-                is_system,
                 ..
             } => {
                 assert_eq!(proc_name, "test_proc");
                 assert_eq!(*num_actors, 42);
-                assert!(*is_system);
             }
             other => panic!("expected Proc, got {:?}", other),
         }

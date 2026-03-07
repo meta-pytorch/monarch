@@ -479,6 +479,29 @@ pub async fn this_proc() -> &'static ProcMeshRef {
     &GLOBAL_CONTEXT.get_or_init(bootstrap_host).await.proc_mesh
 }
 
+/// Separate storage for client host registered by non-Rust runtimes
+/// (e.g. Python's `bootstrap_host()`). Checked by `try_this_host()`
+/// alongside `GLOBAL_CONTEXT`.
+static REGISTERED_CLIENT_HOST: std::sync::OnceLock<HostMeshRef> = std::sync::OnceLock::new();
+
+/// Register the client host mesh from an external runtime (Python).
+/// Called by Python's `bootstrap_host()` so that `try_this_host()`
+/// can discover C for the A/C invariant.
+pub fn register_client_host(host_mesh: HostMeshRef) {
+    let _ = REGISTERED_CLIENT_HOST.set(host_mesh);
+}
+
+/// Returns the client host mesh if available, without triggering
+/// lazy bootstrap. Checks both the Rust global context and the
+/// external registration (Python). Used by `MeshAdminAgent` to
+/// discover C at query time (A/C invariant).
+pub fn try_this_host() -> Option<&'static HostMeshRef> {
+    GLOBAL_CONTEXT
+        .get()
+        .map(|state| &state.host_mesh)
+        .or_else(|| REGISTERED_CLIENT_HOST.get())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

@@ -16,14 +16,17 @@ use monarch_hyperactor::proc_mesh::PyProcMesh;
 use monarch_hyperactor::pytokio::PyPythonTask;
 use monarch_hyperactor::runtime::monarch_with_gil_blocking;
 use monarch_hyperactor::runtime::signal_safe_block_on;
-use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
+use monarch_rdma::local_memory::Keepalive;
+use monarch_rdma::local_memory::KeepaliveLocalMemory;
+use monarch_rdma::local_memory::RdmaLocalMemory;
 use monarch_rdma::rdma_supported;
 use monarch_rdma::register_segment_scanner;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
@@ -115,61 +118,63 @@ unsafe extern "C" fn pytorch_segment_scanner(
     }
 }
 
-/// A handle to a region of local memory that prevents the backing Python
-/// object from being garbage-collected while RDMA operations are in flight.
+/// Wrapper implementing [`Keepalive`] for a Python object reference.
+///
+/// Prevents garbage collection of the backing Python object while RDMA
+/// operations are in flight.
+struct PyKeepalive(#[allow(dead_code)] Py<PyAny>);
+
+impl Keepalive for PyKeepalive {}
+
+/// Local memory handle exposed to Python.
+///
+/// Wraps a [`KeepaliveLocalMemory`] whose keepalive guard is a Python
+/// object reference, preventing the backing allocation from being
+/// garbage-collected.
 #[pyclass(name = "_LocalMemoryHandle", module = "monarch._rust_bindings.rdma")]
 #[derive(Clone)]
 pub struct PyLocalMemoryHandle {
-    addr: usize,
-    size: usize,
-    _obj: Py<PyAny>,
-}
-
-impl std::fmt::Debug for PyLocalMemoryHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PyLocalMemoryHandle")
-            .field("addr", &self.addr)
-            .field("size", &self.size)
-            .finish_non_exhaustive()
-    }
-}
-
-impl RdmaLocalMemory for PyLocalMemoryHandle {
-    fn addr(&self) -> usize {
-        self.addr
-    }
-
-    fn size(&self) -> usize {
-        self.size
-    }
+    inner: KeepaliveLocalMemory,
 }
 
 #[pymethods]
 impl PyLocalMemoryHandle {
     #[new]
     fn new(obj: Py<PyAny>, addr: usize, size: usize) -> Self {
+        let keepalive: Arc<dyn Keepalive> = Arc::new(PyKeepalive(obj));
         Self {
-            addr,
-            size,
-            _obj: obj,
+            inner: KeepaliveLocalMemory::new(addr, size, keepalive),
         }
     }
 
     #[getter]
     fn addr(&self) -> usize {
-        self.addr
+        self.inner.addr()
     }
 
     #[getter]
     fn size(&self) -> usize {
-        self.size
+        self.inner.size()
+    }
+
+    fn read_at(&self, offset: usize, size: usize) -> PyResult<Vec<u8>> {
+        let mut buf = vec![0u8; size];
+        RdmaLocalMemory::read_at(&self.inner, offset, &mut buf)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(buf)
+    }
+
+    fn write_at(&self, offset: usize, data: &[u8]) -> PyResult<()> {
+        RdmaLocalMemory::write_at(&self.inner, offset, data)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     #[pyo3(name = "__repr__")]
     fn repr(&self) -> String {
         format!(
             "<LocalMemoryHandle addr={:#x} size={}>",
-            self.addr, self.size
+            self.inner.addr(),
+            self.inner.size()
         )
     }
 }
@@ -186,7 +191,7 @@ async fn create_rdma_buffer(
 ) -> PyResult<PyRdmaBuffer> {
     let owner_handle = RdmaManagerActor::local_handle(client.deref());
 
-    let local: Arc<dyn RdmaLocalMemory> = Arc::new(local);
+    let local: Arc<dyn RdmaLocalMemory> = Arc::new(local.inner);
     let buffer = owner_handle
         .request_buffer(client.deref(), local)
         .await
@@ -249,7 +254,7 @@ impl PyRdmaBuffer {
         let buffer = self.buffer.clone();
 
         PyPythonTask::new(async move {
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(dst);
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(dst.inner);
 
             buffer
                 .read_into_local(client.deref(), local_memory, timeout)
@@ -276,7 +281,7 @@ impl PyRdmaBuffer {
         let buffer = self.buffer.clone();
 
         PyPythonTask::new(async move {
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(src);
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(src.inner);
 
             buffer
                 .write_from_local(client.deref(), local_memory, timeout)

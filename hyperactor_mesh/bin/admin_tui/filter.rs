@@ -61,8 +61,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: None,
+            is_system: false,
         };
         assert!(is_stopped_node(&props));
     }
@@ -77,8 +78,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: None,
+            is_system: false,
         };
         assert!(is_stopped_node(&props));
     }
@@ -93,8 +95,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: None,
+            is_system: false,
         };
         assert!(!is_stopped_node(&props));
     }
@@ -109,8 +112,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: None,
+            is_system: false,
         };
         assert!(!is_stopped_node(&props));
 
@@ -122,8 +126,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: None,
+            is_system: false,
         };
         assert!(!is_stopped_node(&props2));
     }
@@ -148,7 +153,7 @@ mod tests {
         let proc_props = NodeProperties::Proc {
             proc_name: "proc".to_string(),
             num_actors: 0,
-            is_system: false,
+
             system_children: vec![],
             stopped_children: vec![],
             stopped_retention_cap: 0,
@@ -168,7 +173,7 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: Some(FailureInfo {
                 error_message: "boom".to_string(),
                 root_cause_actor: "a[0]".to_string(),
@@ -176,6 +181,7 @@ mod tests {
                 occurred_at: "2025-01-01T00:00:00Z".to_string(),
                 is_propagated: false,
             }),
+            is_system: false,
         };
         assert!(is_failed_node(&props));
     }
@@ -190,8 +196,9 @@ mod tests {
             last_message_handler: None,
             total_processing_time_us: 0,
             flight_recorder: None,
-            is_system: false,
+
             failure_info: None,
+            is_system: false,
         };
         assert!(!is_failed_node(&props));
     }
@@ -201,7 +208,7 @@ mod tests {
         let props = NodeProperties::Proc {
             proc_name: "myproc".to_string(),
             num_actors: 1,
-            is_system: false,
+
             system_children: vec![],
             stopped_children: vec![],
             stopped_retention_cap: 0,
@@ -216,7 +223,7 @@ mod tests {
         let props = NodeProperties::Proc {
             proc_name: "myproc".to_string(),
             num_actors: 1,
-            is_system: false,
+
             system_children: vec![],
             stopped_children: vec![],
             stopped_retention_cap: 0,

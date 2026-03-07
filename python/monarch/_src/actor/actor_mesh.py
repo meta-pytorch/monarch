@@ -264,6 +264,11 @@ class Instance(abc.ABC):
         """
         ...
 
+    @abstractmethod
+    def set_system(self) -> None:
+        """Mark this actor as system/infrastructure."""
+        ...
+
     def _stop_instance(self, reason: Optional[str] = None) -> None:
         """Deprecated: use stop() instead."""
         return self.stop(reason)
@@ -1184,6 +1189,12 @@ class _Actor:
                             ins._mock_tensor_engine_factory = (
                                 lambda proc_mesh: mock_factory(proc_mesh)
                             )
+                        # PY-SYS-2: If Class._is_system_actor is true,
+                        # ins.set_system() must run during
+                        # MethodSpecifier::Init before first
+                        # introspection publish.
+                        if getattr(Class, "_is_system_actor", False):
+                            ins.set_system()
                         self._maybe_exit_debugger()
                     except Exception as e:
                         self._saved_error = ActorError(

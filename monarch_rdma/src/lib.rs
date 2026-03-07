@@ -9,20 +9,21 @@
 // RDMA requires frequent unsafe code blocks
 #![allow(clippy::undocumented_unsafe_blocks)]
 
-use std::fmt::Debug;
 use std::sync::Arc;
 
+use local_memory::RdmaLocalMemory;
 use serde::Deserialize;
 use serde::Serialize;
+
+#[macro_use]
+mod macros;
 
 pub mod backend;
 pub mod device_selection;
 pub mod efa;
+pub mod local_memory;
 mod rdma_components;
 mod rdma_manager_actor;
-
-#[macro_use]
-mod macros;
 
 pub use backend::ibverbs::primitives::*;
 pub use rdma_components::RdmaRemoteBuffer;
@@ -34,42 +35,6 @@ pub use rdma_manager_actor::*;
 // Re-export rdmaxcel_sys for extension crate to access types
 pub use rdmaxcel_sys;
 pub use test_utils::is_cuda_available;
-
-/// Handle to a contiguous region of local memory.
-///
-/// Implementations must guarantee the underlying allocation is valid for the
-/// lifetime of the implementor.
-pub trait RdmaLocalMemory: Send + Sync + Debug {
-    /// Starting virtual address of the memory region.
-    fn addr(&self) -> usize;
-    /// Size of the memory region in bytes.
-    fn size(&self) -> usize;
-}
-
-/// Raw pointer-based local memory handle.
-///
-/// Wraps a virtual address and size. The caller is responsible for
-/// ensuring the underlying allocation outlives this handle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawLocalMemory {
-    pub addr: usize,
-    pub size: usize,
-}
-
-impl RawLocalMemory {
-    pub fn new(addr: usize, size: usize) -> Self {
-        Self { addr, size }
-    }
-}
-
-impl RdmaLocalMemory for RawLocalMemory {
-    fn addr(&self) -> usize {
-        self.addr
-    }
-    fn size(&self) -> usize {
-        self.size
-    }
-}
 
 /// Type of RDMA operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

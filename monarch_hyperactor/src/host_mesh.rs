@@ -312,7 +312,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
     };
 
     PyPythonTask::new(async move {
-        let host_mesh_agent = host(
+        let (host_mesh_agent, _shutdown) = host(
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
@@ -327,6 +327,10 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        // Register C so MeshAdminAgent can discover it ("A/C
+        // invariant" - hyperactor_mesh/src/mesh_admin.rs).
+        hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
 
         // We require a temporary instance to make a call to the host/proc agent.
         let temp_proc = Proc::local();
