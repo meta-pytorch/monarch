@@ -819,6 +819,9 @@ class ProcMesh(MeshTrait):
 
 
 class _ControllerController(Actor):
+    # PY-SYS-2 marker consumed by actor init path (actor_mesh.py).
+    _is_system_actor: bool = True
+
     def __init__(self) -> None:
         # Store failed actors in the dict so we can forward their failures to
         # the user.
