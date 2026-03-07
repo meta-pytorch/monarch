@@ -150,7 +150,7 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
             Span::styled(&node.label, app.theme.scheme.stat_selection),
         ]);
 
-        // Classification tag only for actors (system/failed/stopped/live)
+        // Classification tag only for actors (failed/stopped/system/user)
         if matches!(node.node_type, NodeType::Actor) {
             let (class_label, class_style) = if node.failed {
                 ("failed", app.theme.scheme.node_failed)
@@ -159,7 +159,7 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
             } else if node.is_system {
                 ("system", app.theme.scheme.node_system_actor)
             } else {
-                ("live", type_style)
+                ("user", app.theme.scheme.node_user_actor)
             };
             line2_spans.extend(vec![
                 Span::styled(" [", app.theme.scheme.header_class_bracket),

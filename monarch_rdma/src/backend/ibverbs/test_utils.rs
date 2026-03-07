@@ -32,11 +32,10 @@ use super::manager_actor::IbvManagerMessageClient;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollTarget;
 use crate::IbvConfig;
-use crate::RawLocalMemory;
-use crate::RdmaLocalMemory;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
-use crate::cu_check;
+use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::UnsafeLocalMemory;
 use crate::rdma_manager_actor::RdmaManagerActor;
 use crate::validate_execution_context;
 
@@ -197,7 +196,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                 // Register via RdmaManagerActor request_buffer; the ibverbs MR
                 // will be registered lazily by resolve_ibv().
                 let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(RawLocalMemory::new(dptr as usize, padded_size));
+                    Arc::new(UnsafeLocalMemory::new(dptr as usize, padded_size));
                 let handle = rdma_actor
                     .downcast_handle(cx)
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -568,7 +567,7 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_1 = Arc::new(RawLocalMemory::new(ptr as usize, buffer_size));
+            local_memory_1 = Arc::new(UnsafeLocalMemory::new(ptr as usize, buffer_size));
             let handle_1 = actor_1
                 .downcast_handle(&instance_1)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -586,7 +585,7 @@ impl IbvTestEnv {
                 .await?;
             rdma_handle_1 = rdma_buf;
             device_ptr_1 = Some(dev_ptr);
-            local_memory_1 = Arc::new(RawLocalMemory::new(dev_ptr, buffer_size));
+            local_memory_1 = Arc::new(UnsafeLocalMemory::new(dev_ptr, buffer_size));
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,
@@ -605,7 +604,7 @@ impl IbvTestEnv {
                 len: buffer.len(),
                 cpu_ref: Some(buffer),
             });
-            local_memory_2 = Arc::new(RawLocalMemory::new(ptr as usize, buffer_size));
+            local_memory_2 = Arc::new(UnsafeLocalMemory::new(ptr as usize, buffer_size));
             let handle_2 = actor_2
                 .downcast_handle(&instance_2)
                 .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
@@ -623,7 +622,7 @@ impl IbvTestEnv {
                 .await?;
             rdma_handle_2 = rdma_buf;
             device_ptr_2 = Some(dev_ptr);
-            local_memory_2 = Arc::new(RawLocalMemory::new(dev_ptr, buffer_size));
+            local_memory_2 = Arc::new(UnsafeLocalMemory::new(dev_ptr, buffer_size));
 
             buf_vec.push(Buffer {
                 ptr: dev_ptr as u64,

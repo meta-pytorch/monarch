@@ -75,7 +75,7 @@ pub(crate) struct Args {
     pub(crate) mast_resolver: Option<String>,
 
     /// Refresh interval in milliseconds
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 2000)]
     pub(crate) refresh_ms: u64,
 
     /// Color theme
@@ -405,6 +405,7 @@ pub(crate) struct ColorScheme {
     pub(crate) node_actor: Style,
     pub(crate) node_failed: Style,
     pub(crate) node_system_actor: Style,
+    pub(crate) node_user_actor: Style,
 
     // Semantic states
     pub(crate) error: Style,
@@ -468,6 +469,7 @@ impl ColorScheme {
             node_actor: Style::default().fg(frost_blue),
             node_failed: Style::default().fg(aurora_red),
             node_system_actor: Style::default().fg(frost_dark),
+            node_user_actor: Style::default().fg(aurora_green),
 
             // Semantic states
             error: Style::default().fg(aurora_red),
@@ -529,6 +531,7 @@ impl ColorScheme {
             node_actor: Style::default().fg(blue),
             node_failed: Style::default().fg(red),
             node_system_actor: Style::default().fg(orange),
+            node_user_actor: Style::default().fg(green),
 
             // Semantic states
             error: Style::default().fg(red),

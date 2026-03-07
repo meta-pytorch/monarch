@@ -90,9 +90,7 @@
 //! error payloads (`ResolveReferenceResponse(Err(..))`,
 //! `NodeProperties::Error`, etc.) rather than propagating panics or
 //! unwinding. Failed reply sends (the caller went away) are silently
-//! swallowed. This is critical because the admin agent is
-//! co-located with the mesh coordinator — an unhandled panic would
-//! tear down the entire mesh.
+//! swallowed.
 //!
 //! ## TLS transport invariant
 //!
@@ -106,6 +104,40 @@
 //! `http://host:port`, never a bare `host:port`. All callers (Rust
 //! examples, Python examples, TUI, tests) receive and use this full
 //! URL directly.
+//!
+//! ## Client host invariant (A/C)
+//!
+//! Let **A** denote the observed host mesh (the host mesh for which
+//! this `MeshAdminAgent` was spawned), and let **C** denote the
+//! process-global singleton client host mesh in the caller process
+//! (whose local proc hosts the root client actor).
+//!
+//! C may or may not be a member of A:
+//!
+//! - **C ∈ A:** The client host is already one of A's hosts. It
+//!   appears exactly once in the admin host list (deduplicated by
+//!   `HostAgent` `ActorId` identity).
+//! - **C ∉ A:** The client host is separate from A.
+//!   [`HostMeshRef::spawn_admin`] includes C alongside A's hosts so
+//!   the admin introspects C as a normal host subtree (`host -> proc
+//!   -> actors`), not as a standalone proc.
+//!
+//! In both cases, the root client actor is reachable through the
+//! standard host -> proc -> actor walk.
+//!
+//! **Ordering invariant:** `spawn_admin` requires `cx: &impl
+//! context::Actor` (the caller's root client instance). Constructing
+//! that instance initializes C (Rust: `context().await`; Python:
+//! bootstrap path). Therefore C is available when `spawn_admin`
+//! executes. Any refactor must preserve this ordering: creating `cx`
+//! initializes C, and `spawn_admin` consumes `cx`.
+//!
+//! **Mechanism:** [`HostMeshRef::spawn_admin`] reads C from the
+//! caller process (via `try_this_host()`), merges it with A's host
+//! list, deduplicates by `HostAgent` `ActorId`, and sends the merged
+//! list in `SpawnMeshAdmin`. This works for same-process and
+//! cross-process setups because merge+dedeup happens in the caller
+//! process before sending the spawn request.
 
 use std::collections::HashMap;
 use std::io;
@@ -343,7 +375,7 @@ wirevalue::register_type!(ResolveReferenceMessage);
 #[hyperactor::export(handlers = [MeshAdminMessage, ResolveReferenceMessage])]
 pub struct MeshAdminAgent {
     /// Map of host address string → `HostAgent` reference used to
-    /// fan out or target admin queries.
+    /// fan out our target admin queries.
     hosts: HashMap<String, ActorRef<HostAgent>>,
 
     /// Reverse index: `HostAgent` `ActorId` → host address
@@ -781,8 +813,11 @@ impl MeshAdminAgent {
     /// managed by any host but whose actors are routable and
     /// introspectable. Each proc appears as a root child; the
     /// actor is the "anchor" used to discover the proc's contents.
+    ///
+    /// The root client is no longer standalone: spawn_admin registers
+    /// C (the bootstrap host) as a normal host entry (A/C invariant).
     fn standalone_proc_actors(&self) -> impl Iterator<Item = &ActorId> {
-        self.root_client_actor_id.iter()
+        std::iter::empty()
     }
 
     /// If `proc_id` belongs to a standalone proc, return the anchor
@@ -805,17 +840,11 @@ impl MeshAdminAgent {
     /// `HostAgent` actor IDs (as reference strings) plus any
     /// standalone procs (root client proc, admin proc).
     fn build_root_payload(&self) -> NodePayload {
-        let mut children: Vec<String> = self
+        let children: Vec<String> = self
             .hosts
             .values()
             .map(|agent| HostId(agent.actor_id().clone()).to_string())
             .collect();
-        // Standalone procs are visible at root level but not hidden
-        // as system — procs are never system, only actors are.
-        for actor_id in self.standalone_proc_actors() {
-            let proc_ref = actor_id.proc_id().to_string();
-            children.push(proc_ref);
-        }
         let system_children: Vec<String> = Vec::new();
         NodePayload {
             identity: "root".to_string(),
@@ -1045,15 +1074,11 @@ impl MeshAdminAgent {
 
         let proc_name = proc_id.name().to_string();
 
-        // Procs are never system.
-        let is_system = false;
-
         Ok(NodePayload {
             identity: proc_id.to_string(),
             properties: NodeProperties::Proc {
                 proc_name,
                 num_actors: children.len(),
-                is_system,
                 system_children,
                 stopped_children: vec![],
                 stopped_retention_cap: 0,
@@ -1929,14 +1954,11 @@ mod tests {
             .await
             .unwrap();
         let proc_node = proc_resp.0.unwrap();
-        if let NodeProperties::Proc { is_system, .. } = &proc_node.properties {
-            assert!(
-                !is_system,
-                "procs are never system; is_system should be false"
-            );
-        } else {
-            panic!("expected Proc properties, got {:?}", proc_node.properties);
-        }
+        assert!(
+            matches!(proc_node.properties, NodeProperties::Proc { .. }),
+            "expected Proc properties, got {:?}",
+            proc_node.properties
+        );
         assert_eq!(proc_node.parent, Some(host_child_ref_str.clone()));
         // The system proc should have at least the "host_agent" actor.
         assert!(
@@ -1977,13 +1999,12 @@ mod tests {
         );
     }
 
-    // Verifies MeshAdminAgent::resolve correctly sets
-    // NodeProperties::Proc.is_system=false for all procs. Procs are
-    // never system; only actors can be. Spawns a user proc via
+    // Verifies MeshAdminAgent::resolve returns NodeProperties::Proc
+    // for all proc children. Spawns a user proc via
     // CreateOrUpdate<ProcSpec>, resolves all host proc-children, and
-    // asserts every proc reports is_system=false.
+    // asserts every proc returns Proc properties.
     #[tokio::test]
-    async fn test_is_system_flag_false_for_all_procs() {
+    async fn test_proc_properties_for_all_procs() {
         use std::time::Duration;
 
         use hyperactor::Proc;
@@ -2069,7 +2090,7 @@ mod tests {
             host_node.children.len()
         );
 
-        // Resolve each proc child and verify is_system.
+        // Resolve each proc child and verify it has Proc properties.
         let user_proc_name_str = user_proc_name.to_string();
         let mut found_system = false;
         let mut found_user = false;
@@ -2079,17 +2100,7 @@ mod tests {
                 .await
                 .unwrap();
             let node = resp.0.unwrap();
-            if let NodeProperties::Proc {
-                is_system,
-                proc_name,
-                ..
-            } = &node.properties
-            {
-                assert!(
-                    !is_system,
-                    "proc '{}' should have is_system=false; procs are never system",
-                    proc_name
-                );
+            if let NodeProperties::Proc { proc_name, .. } = &node.properties {
                 if proc_name.contains(&user_proc_name_str) {
                     found_user = true;
                 } else {
@@ -2106,9 +2117,9 @@ mod tests {
         assert!(found_user, "should have resolved the user proc");
     }
 
-    // Verifies that build_root_payload includes the root client proc
-    // ID in the children list when provided, alongside the host
-    // children.
+    // Verifies that build_root_payload lists only the host as a
+    // child. The root client is visible under its host's local proc,
+    // not at root level.
     #[test]
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
@@ -2116,8 +2127,6 @@ mod tests {
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
         let ref1: ActorRef<HostAgent> = ActorRef::attest(actor_id1.clone());
 
-        // The root client now lives on the Host's "local" proc, not a
-        // standalone "mesh_root_client_proc". Using "local" here to match.
         let client_proc_id = ProcId(ChannelAddr::Tcp(addr1), "local".to_string());
         let client_actor_id = client_proc_id.actor_id("client", 0);
 
@@ -2132,23 +2141,20 @@ mod tests {
             payload.properties,
             NodeProperties::Root { num_hosts: 1, .. }
         ));
-        // Should have 2 children: one host + one root client proc.
-        assert_eq!(payload.children.len(), 2);
+        // Only the host; root client is under host → local proc.
+        assert_eq!(payload.children.len(), 1);
         assert!(
             payload
                 .children
                 .contains(&HostId(actor_id1.clone()).to_string())
         );
-        assert!(payload.children.contains(&client_proc_id.to_string()));
     }
 
-    // Verifies that resolving the root client ActorId via the
-    // resolver returns a NodePayload with parent = "root",
-    // confirming that the root client is treated as a first-class
-    // child of root.
+    // Verifies that the root client actor is visible through the
+    // host → local proc → actor path, not as a standalone child of
+    // root.
     #[tokio::test]
     async fn test_resolve_root_client_actor() {
-        use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
@@ -2167,6 +2173,15 @@ mod tests {
                 .unwrap();
         let host_addr = host.addr().clone();
         let system_proc = host.system_proc().clone();
+
+        // Spawn the root client on the host's local proc (before
+        // moving the host into HostAgentMode).
+        let local_proc = host.local_proc();
+        let local_proc_id = local_proc.proc_id().clone();
+        let root_client_handle = local_proc.spawn("client", TestIntrospectableActor).unwrap();
+        let root_client_ref: ActorRef<TestIntrospectableActor> = root_client_handle.bind();
+        let root_client_actor_id = root_client_ref.actor_id().clone();
+
         let host_agent_handle = system_proc
             .spawn(
                 crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME,
@@ -2176,22 +2191,9 @@ mod tests {
         let host_agent_ref: ActorRef<HostAgent> = host_agent_handle.bind();
         let host_addr_str = host_addr.to_string();
 
-        // Create a genuinely introspectable root client actor.
-        // proc.spawn() starts the message loop; handle.bind()
-        // registers the IntrospectMessage port for remote delivery.
-        let root_client_proc =
-            Proc::direct(ChannelTransport::Unix.any(), "root_client".to_string()).unwrap();
-        let _root_client_supervision = ProcSupervisionCoordinator::set(&root_client_proc)
-            .await
-            .unwrap();
-        let root_client_handle = root_client_proc
-            .spawn("client", TestIntrospectableActor)
-            .unwrap();
-        let root_client_ref: ActorRef<TestIntrospectableActor> = root_client_handle.bind();
-        let root_client_actor_id = root_client_ref.actor_id().clone();
-
         // Spawn MeshAdminAgent with the root client ActorId.
-        let admin_proc = Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
+        let admin_proc =
+            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "admin".to_string()).unwrap();
         use hyperactor::testing::proc_supervison::ProcSupervisionCoordinator;
         let _supervision = ProcSupervisionCoordinator::set(&admin_proc).await.unwrap();
         let admin_handle = admin_proc
@@ -2207,27 +2209,41 @@ mod tests {
         let admin_ref: ActorRef<MeshAdminAgent> = admin_handle.bind();
 
         // Client for sending messages.
-        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let client_proc =
+            hyperactor::Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _handle) = client_proc.instance("client").unwrap();
 
-        // Resolve "root" — should include the root client proc in children.
+        // Resolve "root" — should contain only the host.
         let root_resp = admin_ref
             .resolve(&client, "root".to_string())
             .await
             .unwrap();
         let root = root_resp.0.unwrap();
-        let root_client_proc_id = root_client_actor_id.proc_id().to_string();
+        let host_id_str = HostId(host_agent_ref.actor_id().clone()).to_string();
         assert!(
-            root.children.contains(&root_client_proc_id),
-            "root children {:?} should contain root client proc {}",
+            root.children.contains(&host_id_str),
+            "root children {:?} should contain host {}",
             root.children,
-            root_client_proc_id
+            host_id_str
         );
 
-        // Resolve the root client proc — should return Proc properties
-        // with parent = "root" and the root client actor as a child.
+        // Resolve the host — should list the local proc in children.
+        let host_resp = admin_ref
+            .resolve(&client, host_id_str.clone())
+            .await
+            .unwrap();
+        let host_node = host_resp.0.unwrap();
+        let local_proc_str = local_proc_id.to_string();
+        assert!(
+            host_node.children.contains(&local_proc_str),
+            "host children {:?} should contain local proc {}",
+            host_node.children,
+            local_proc_str
+        );
+
+        // Resolve the local proc — should contain the root client actor.
         let proc_resp = admin_ref
-            .resolve(&client, root_client_proc_id.clone())
+            .resolve(&client, local_proc_str.clone())
             .await
             .unwrap();
         let proc_node = proc_resp.0.unwrap();
@@ -2236,22 +2252,16 @@ mod tests {
             "expected Proc properties, got {:?}",
             proc_node.properties
         );
-        assert_eq!(
-            proc_node.parent,
-            Some("root".to_string()),
-            "root client proc parent should be 'root'"
-        );
         assert!(
             proc_node
                 .children
                 .contains(&root_client_actor_id.to_string()),
-            "proc children {:?} should contain root client actor {}",
+            "local proc children {:?} should contain root client actor {}",
             proc_node.children,
             root_client_actor_id
         );
 
-        // Resolve the root client ActorId — should return Actor
-        // properties with parent = the proc.
+        // Resolve the root client actor — parent should be the local proc.
         let client_resp = admin_ref
             .resolve(&client, root_client_actor_id.to_string())
             .await
@@ -2264,8 +2274,8 @@ mod tests {
         );
         assert_eq!(
             client_node.parent,
-            Some(root_client_proc_id),
-            "root client parent should be the proc"
+            Some(local_proc_str),
+            "root client parent should be the local proc"
         );
     }
 
@@ -2407,7 +2417,7 @@ mod tests {
     //
     // 1. The identity of the resolved system proc matches the plain
     //    ProcId reference from the host's system_children list.
-    // 2. The properties are NodeProperties::Proc with is_system=false.
+    // 2. The properties are NodeProperties::Proc.
     // 3. The parent is set to the HostId format ("host:<actor_id>").
     // 4. The as_of field is present and non-empty.
     #[tokio::test]
@@ -2495,7 +2505,7 @@ mod tests {
             expected_system_ref
         );
 
-        // -- 7. Resolve a proc child and verify is_system=false --
+        // -- 7. Resolve a proc child and verify it has Proc properties --
         let proc_child_ref = &host_node.children[0];
         let proc_resp = admin_ref
             .resolve(&client, proc_child_ref.clone())
@@ -2508,25 +2518,11 @@ mod tests {
             "identity must match the proc ref from the host's children list"
         );
 
-        match &proc_node.properties {
-            NodeProperties::Proc {
-                is_system,
-                proc_name,
-                ..
-            } => {
-                assert!(
-                    !is_system,
-                    "proc '{}' should have is_system=false; procs are never system",
-                    proc_name
-                );
-            }
-            other => {
-                panic!(
-                    "expected NodeProperties::Proc with is_system=false, got {:?}",
-                    other
-                );
-            }
-        }
+        assert!(
+            matches!(proc_node.properties, NodeProperties::Proc { .. }),
+            "expected NodeProperties::Proc, got {:?}",
+            proc_node.properties
+        );
 
         assert_eq!(
             proc_node.parent,
