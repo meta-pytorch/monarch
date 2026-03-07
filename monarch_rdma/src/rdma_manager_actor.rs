@@ -45,11 +45,11 @@ use serde::Serialize;
 use tokio::sync::OnceCell;
 use typeuri::Named;
 
-use crate::RdmaLocalMemory;
 use crate::backend::RdmaBackendContext;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use crate::backend::ibverbs::primitives::IbvConfig;
+use crate::local_memory::RdmaLocalMemory;
 use crate::rdma_components::RdmaRemoteBuffer;
 
 /// Helper function to get detailed error messages from RDMAXCEL error codes

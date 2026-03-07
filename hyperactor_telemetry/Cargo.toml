@@ -18,6 +18,7 @@ hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 lazy_static = "1.5"
 libc = "0.2.139"
 opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "logs", "metrics", "reqwest-blocking-client", "trace", "zstd-tonic"], default-features = false }
 opentelemetry_sdk = { version = "0.31", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }
 prost = { version = "0.14.3", default-features = false }
 rand = { version = "0.9", features = ["small_rng"] }

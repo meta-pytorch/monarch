@@ -1152,8 +1152,17 @@ impl ProcMeshRef {
                 Some(cx.instance().port().bind()),
                 statuses,
             );
+            // AI-3: controller name must include mesh identity for
+            // proc-wide ActorId uniqueness. A fixed base name alone
+            // collides across parents because pid allocation is
+            // parent-scoped.
+            let controller_name = format!(
+                "{}_{}",
+                crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
+                mesh.name()
+            );
             let controller = controller
-                .spawn(cx)
+                .spawn_with_name(cx, &controller_name)
                 .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
             // Controller and ActorMesh both depend on references from each other, break
             // the cycle by setting the controller after the fact.

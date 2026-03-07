@@ -71,7 +71,7 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
             } else if node.is_system {
                 scheme.node_system_actor
             } else {
-                scheme.node_style(node.node_type)
+                scheme.node_user_actor
             };
 
             // Hide the selection caret while the pane is inactive.
