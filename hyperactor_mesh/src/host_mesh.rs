@@ -75,6 +75,12 @@ use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::transport::DEFAULT_TRANSPORT;
 
+/// Actor name for `HostMeshController` when spawned as a named child.
+pub const HOST_MESH_CONTROLLER_NAME: &str = "host_mesh_controller";
+
+/// Actor name for `ProcMeshController` when spawned as a named child.
+pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
+
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
@@ -326,7 +332,7 @@ impl HostMesh {
                 "host_agent",
                 HostAgent::new(HostAgentMode::Process {
                     host,
-                    exit_on_shutdown: false,
+                    shutdown_tx: None,
                 }),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
@@ -558,8 +564,11 @@ impl HostMesh {
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
         let controller = HostMeshController::new(mesh.deref().clone());
+        // AI-3: controller name must include mesh identity for
+        // proc-wide ActorId uniqueness.
+        let controller_name = format!("{}_{}", HOST_MESH_CONTROLLER_NAME, mesh.name());
         let controller_handle = controller
-            .spawn(cx)
+            .spawn_with_name(cx, &controller_name)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         // Bind the actor's well-known ports (Signal, IntrospectMessage,
         // Undeliverable). Without this, the controller's mailbox has no
@@ -903,6 +912,16 @@ impl HostMeshRef {
         })
     }
 
+    /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
+    /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
+    /// admin's host list (A/C invariant).
+    pub(crate) fn host_entries(&self) -> Vec<(String, ActorRef<HostAgent>)> {
+        self.ranks
+            .iter()
+            .map(|h| (h.0.to_string(), h.mesh_agent()))
+            .collect()
+    }
+
     /// Push client config to all host agents in this mesh, in parallel.
     ///
     /// Each host installs the attrs as `Source::ClientOverride`.
@@ -1209,8 +1228,11 @@ impl HostMeshRef {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
+            // AI-3: controller name must include mesh identity for
+            // proc-wide ActorId uniqueness.
+            let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.name());
             let controller_handle = controller
-                .spawn(cx)
+                .spawn_with_name(cx, &controller_name)
                 .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
@@ -1244,11 +1266,29 @@ impl HostMeshRef {
         cx: &impl hyperactor::context::Actor,
         admin_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<String> {
-        let hosts: Vec<(String, ActorRef<HostAgent>)> = self
+        let mut hosts: Vec<(String, ActorRef<HostAgent>)> = self
             .ranks
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
+
+        // A/C invariant: include C (the client host) so the admin
+        // can introspect it as a normal host subtree. Dedup by
+        // HostAgent ActorId for C ∈ A. Works for both same-process
+        // and cross-process (MAST) because we read C here on the
+        // caller's process and send it in the message.
+        if let Some(client_host) = crate::global_context::try_this_host() {
+            for (addr, agent_ref) in client_host.host_entries() {
+                let agent_id = agent_ref.actor_id();
+                if !hosts
+                    .iter()
+                    .any(|(_, existing)| existing.actor_id() == agent_id)
+                {
+                    hosts.push((addr, agent_ref));
+                }
+            }
+        }
+
         let root_client_id = cx.mailbox().actor_id().clone();
 
         let head_agent = self.ranks[0].mesh_agent();

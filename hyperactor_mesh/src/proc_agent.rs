@@ -411,7 +411,6 @@ impl ProcAgent {
             .publish_properties(PublishedPropertiesKind::Proc {
                 proc_name: self.proc.proc_id().to_string(),
                 num_actors: num_live,
-                is_system: false,
                 children,
                 system_children,
                 stopped_children,
@@ -508,7 +507,6 @@ impl Actor for ProcAgent {
                         properties: NodeProperties::Proc {
                             proc_name: proc_id.to_string(),
                             num_actors: num_live,
-                            is_system: false,
                             system_children,
                             stopped_children,
                             stopped_retention_cap,

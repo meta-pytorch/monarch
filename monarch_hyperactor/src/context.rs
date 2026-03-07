@@ -102,6 +102,15 @@ impl PyInstance {
     fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
         self.stop(reason)
     }
+
+    /// Mark this actor as system/infrastructure.
+    ///
+    /// **PY-SYS-2:** Python actors use the `_is_system_actor = True`
+    /// class attribute so that this is called during actor init,
+    /// before ProcAgent publishes its first introspection snapshot.
+    fn set_system(&self) {
+        self.inner.set_system();
+    }
 }
 
 impl PyInstance {
