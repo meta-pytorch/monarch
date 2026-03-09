@@ -504,19 +504,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<(DuplexTx<Out>, DuplexRx<In>), ClientError> {
-    Ok(match addr {
-        ChannelAddr::Tcp(socket_addr) => spawn(super::tcp::link(socket_addr)),
-        ChannelAddr::Unix(ref unix_addr) => spawn(super::unix::link(unix_addr.clone())),
-        ChannelAddr::Tls(tls_addr) => spawn(super::tls::link(tls_addr)?),
-        ChannelAddr::MetaTls(meta_addr) => spawn(super::meta::link(meta_addr)?),
-        other => {
-            return Err(ClientError::Connect(
-                other,
-                io::Error::other("duplex not supported for this transport"),
-                "unsupported transport".into(),
-            ));
-        }
-    })
+    Ok(spawn(super::link(addr)?))
 }
 
 #[cfg(test)]
