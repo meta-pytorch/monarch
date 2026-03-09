@@ -5,6 +5,22 @@ Base URL: `{base}`
 This server exposes a reference-walking introspection API for a mesh.
 Start at `root`, resolve it, then follow `children` to traverse topology.
 
+## One-shot diagnostic (recommended starting point)
+
+Run this first to get a structured JSON health report of the full mesh
+(root → hosts → service proc actors → every user proc → user actors).
+Exit code 0 = healthy, 1 = any failure.
+
+```
+cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- \
+  --addr {base} --diagnose
+```
+
+Each entry in `checks[]` includes `reference` (the exact ref that
+failed), `note` (role), `phase` (AdminInfra or Mesh), and `outcome`
+(Pass/Slow/Fail with `elapsed_ms` and `error`). Use failing
+`reference` values to probe further with the endpoints below.
+
 ## Endpoints
 
 - `GET {base}/v1/root`

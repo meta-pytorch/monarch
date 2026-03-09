@@ -520,7 +520,7 @@ pub async fn code_sync_mesh(
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
-    use hyperactor_mesh::global_root_client;
+    use hyperactor_mesh::context;
     use hyperactor_mesh::test_utils;
     use ndslice::shape;
     use tempfile::TempDir;
@@ -609,7 +609,8 @@ mod tests {
 
         // TODO: thread through context, or access the actual python context;
         // for now this is basically equivalent (arguably better) to using the proc mesh client.
-        let instance = global_root_client();
+        let cx = context().await;
+        let instance = cx.actor_instance;
         // Set up actor mesh with CodeSyncManager actors
         let mut host_mesh = test_utils::local_host_mesh(2).await;
         let proc_mesh = host_mesh

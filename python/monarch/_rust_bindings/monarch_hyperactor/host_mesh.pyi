@@ -54,22 +54,22 @@ class HostMesh:
     def _spawn_admin(
         self,
         instance: Instance,
-        admin_port: int | None = None,
+        admin_addr: str | None = None,
     ) -> PythonTask[str]:
         """
         Spawn a MeshAdminAgent on the head host's system proc and
         return its HTTP URL (including scheme).
 
         The admin agent aggregates topology across all hosts and
-        serves an HTTP API. When ``admin_port`` is provided, the
-        server binds to that fixed port; otherwise an ephemeral port
-        is chosen.
+        serves an HTTP API. When ``admin_addr`` is provided, the
+        server binds to that socket address; otherwise it reads
+        ``MESH_ADMIN_ADDR`` from config.
 
         Arguments:
 
         - `instance`: The actor instance used to spawn the admin
             agent.
-        - `admin_port`: Optional fixed port for the admin HTTP server.
+        - `admin_addr`: Optional socket address (e.g. ``"[::]:1729"``).
 
         """
         ...

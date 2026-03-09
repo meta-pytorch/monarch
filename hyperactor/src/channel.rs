@@ -43,6 +43,15 @@ pub use net::try_tls_acceptor;
 pub use net::try_tls_connector;
 pub use net::try_tls_pem_bundle;
 
+/// Duplex channel API: a single connection carries messages in both directions.
+pub mod duplex {
+    pub use super::net::duplex::DuplexRx;
+    pub use super::net::duplex::DuplexServer;
+    pub use super::net::duplex::DuplexTx;
+    pub use super::net::duplex::dial;
+    pub use super::net::duplex::serve;
+}
+
 /// The type of error that can occur on channel operations.
 #[derive(thiserror::Error, Debug)]
 pub enum ChannelError {
@@ -171,6 +180,13 @@ pub trait Rx<M: RemoteMessage> {
 
     /// The channel address from which this Rx is receiving.
     fn addr(&self) -> ChannelAddr;
+
+    /// Gracefully shut down the channel receiver, flushing any pending
+    /// acks before returning. Implementations must ensure all pending
+    /// acks are sent before this method returns.
+    async fn join(self)
+    where
+        Self: Sized;
 }
 
 #[allow(dead_code)] // Not used outside tests.
@@ -258,6 +274,8 @@ impl<M: RemoteMessage> Rx<M> for MpscRx<M> {
     fn addr(&self) -> ChannelAddr {
         self.addr.clone()
     }
+
+    async fn join(self) {}
 }
 
 /// The hostname to use for TLS connections.
@@ -1055,6 +1073,17 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::Tls(rx) => rx.addr(),
             ChannelRxKind::Sim(rx) => rx.addr(),
             ChannelRxKind::Unix(rx) => rx.addr(),
+        }
+    }
+
+    async fn join(self) {
+        match self.inner {
+            ChannelRxKind::Local(rx) => rx.join().await,
+            ChannelRxKind::Tcp(rx) => rx.join().await,
+            ChannelRxKind::MetaTls(rx) => rx.join().await,
+            ChannelRxKind::Tls(rx) => rx.join().await,
+            ChannelRxKind::Unix(rx) => rx.join().await,
+            ChannelRxKind::Sim(rx) => rx.join().await,
         }
     }
 }

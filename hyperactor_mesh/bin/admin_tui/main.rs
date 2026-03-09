@@ -67,6 +67,16 @@
 //! - **Placeholder structural equivalence**: `placeholder_stopped`
 //!   is identical to `placeholder` except `stopped: true`. Stopped
 //!   is a rendering hint, not an expansion barrier.
+//! - **Failure propagation is upward and live**: a node's `failed`
+//!   flag is `is_failed_node(payload) || children.any(failed)`.
+//!   Host and root nodes have no intrinsic failure state — they
+//!   are failed only when a descendant is.
+//! - **Collapsed failure carry-forward**: when a node is collapsed,
+//!   its children are not fetched, so failure cannot be recomputed
+//!   from descendants. The prior `failed` state is carried forward
+//!   via `failed_keys` (mirroring `expanded_keys`). Expanded nodes
+//!   always recompute from live children. Consequence: a collapsed
+//!   node may remain red after recovery until expanded.
 //! - **System actor styling is dual-source (OR)**: `TreeNode.is_system`
 //!   is true if the cached payload reports `is_system: true` OR the
 //!   child ref appears in the parent's `system_children` list.
@@ -108,6 +118,7 @@
 mod actions;
 mod app;
 mod client;
+mod diagnostics;
 mod fetch;
 mod filter;
 mod format;
@@ -183,18 +194,89 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 
 // Main loop
 
+#[cfg(fbcode_build)]
+#[fbinit::main]
+async fn main(fb: fbinit::FacebookInit) -> io::Result<()> {
+    run(Some(fb)).await
+}
+
+#[cfg(not(fbcode_build))]
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let args = Args::parse();
+    run(None).await
+}
 
-    if !io::stdout().is_terminal() {
-        eprintln!("This TUI requires a real terminal.");
-        return Ok(());
+async fn run_diagnose(client: reqwest::Client, base_url: String) -> io::Result<()> {
+    use crate::diagnostics::DiagSummary;
+    use crate::diagnostics::run_diagnostics;
+
+    // Global timeout: prevents hanging if the server is unreachable or
+    // per-probe timeouts interact badly with very large meshes.
+    const GLOBAL_TIMEOUT_SECS: u64 = 120;
+
+    let mut rx = run_diagnostics(client, base_url);
+    let mut results = Vec::new();
+
+    let timed_out = RealClock
+        .timeout(Duration::from_secs(GLOBAL_TIMEOUT_SECS), async {
+            while let Some(r) = rx.recv().await {
+                results.push(r);
+            }
+        })
+        .await
+        .is_err();
+
+    let s = DiagSummary::from_results(&results);
+    let healthy = s.passed == s.total && !timed_out;
+
+    let report = serde_json::json!({
+        "checks": results,
+        "timed_out": timed_out,
+        "summary": {
+            "total": s.total,
+            "passed": s.passed,
+            "failed": s.total - s.passed,
+            "admin_infra_passed": s.admin_passed,
+            "admin_infra_total": s.admin_total,
+            "mesh_passed": s.mesh_passed,
+            "mesh_total": s.mesh_total,
+            "healthy": healthy,
+        }
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
+    );
+
+    if !healthy {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
+    let mut args = Args::parse();
+
+    // Resolve mast_conda:/// handles to https://fqdn:port before
+    // building the HTTP client (INV-DISPATCH).
+    if args.addr.starts_with("mast_conda:///") {
+        let resolver = client::MastResolver::new(fb, args.mast_resolver.as_deref());
+        args.addr = client::resolve_mast_addr(&resolver, &args.addr, args.admin_port).await;
     }
 
     // Build the HTTP client and base URL, configuring TLS when
     // certificates are available.
     let (base_url, client) = client::build_client(&args);
+
+    if args.diagnose {
+        return run_diagnose(client, base_url).await;
+    }
+
+    if !io::stdout().is_terminal() {
+        eprintln!("This TUI requires a real terminal.");
+        return Ok(());
+    }
 
     // Show an indicatif spinner on stderr while fetching initial data.
     // This runs before the alternate screen so it's visible as a normal

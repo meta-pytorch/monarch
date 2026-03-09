@@ -55,11 +55,11 @@ use crate::casting;
 use crate::comm::multicast;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
-use crate::mesh_agent::ActorState;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
+use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::reference::ActorMeshId;
 use crate::resource;
@@ -95,7 +95,7 @@ pub struct ActorMesh<A: Referable> {
     /// the mesh is stopped when the actor owning it is stopped, and can provide
     /// supervision events via subscribing.
     /// It may not be present for some types of actors, typically system actors
-    /// such as ProcMeshAgent or CommActor.
+    /// such as ProcAgent or CommActor.
     controller: Option<ActorRef<ActorMeshController<A>>>,
 }
 
@@ -460,6 +460,17 @@ impl<A: Referable> ActorMeshRef<A> {
             }
         }
 
+        hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
+            timestamp: RealClock.system_time_now(),
+            sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_id()),
+            actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.name.to_string()),
+            view_json: serde_json::to_string(view::Ranked::region(self)).unwrap_or_default(),
+            shape_json: {
+                let shape: ndslice::Shape = view::Ranked::region(self).into();
+                serde_json::to_string(&shape).unwrap_or_default()
+            },
+        });
+
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             self.cast_v0(cx, message, sel, root_comm_actor)
@@ -535,12 +546,28 @@ impl<A: Referable> ActorMeshRef<A> {
         }
     }
 
+    /// Query the state of all actors in this mesh.
+    /// If keepalive is Some, use a message that indicates to the recipient
+    /// that the owner of the mesh is still alive, along with the expiry time
+    /// after which the actor should be considered orphaned. Else, use a normal
+    /// state query.
     #[allow(clippy::result_large_err)]
     pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
     ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
-        self.proc_mesh.actor_states(cx, self.name.clone()).await
+        self.actor_states_with_keepalive(cx, None).await
+    }
+
+    #[allow(clippy::result_large_err)]
+    pub(crate) async fn actor_states_with_keepalive(
+        &self,
+        cx: &impl context::Actor,
+        keepalive: Option<std::time::SystemTime>,
+    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
+        self.proc_mesh
+            .actor_states_with_keepalive(cx, self.name.clone(), keepalive)
+            .await
     }
 
     pub(crate) fn new(
@@ -1312,8 +1339,8 @@ mod tests {
     async fn test_undeliverable_message_return() {
         use hyperactor::mailbox::MessageEnvelope;
         use hyperactor::mailbox::Undeliverable;
-        use hyperactor::test_utils::pingpong::PingPongActor;
-        use hyperactor::test_utils::pingpong::PingPongMessage;
+        use hyperactor::testing::pingpong::PingPongActor;
+        use hyperactor::testing::pingpong::PingPongMessage;
 
         hyperactor_telemetry::initialize_logging_for_test();
 

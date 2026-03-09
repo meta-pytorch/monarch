@@ -15,9 +15,7 @@ use std::mem::take;
 use std::task::Poll;
 
 use bytes::Buf;
-use bytes::BufMut;
 use bytes::Bytes;
-use bytes::BytesMut;
 use enum_as_inner::EnumAsInner;
 use futures::future::poll_fn;
 use tokio::io::AsyncRead;
@@ -34,10 +32,10 @@ pub struct FrameReader<R> {
 }
 
 enum FrameReaderState {
-    /// Accumulating 8-byte length prefix.
+    /// Accumulating 8-byte header: `[tag: 1B][len: 7B BE]`.
     ReadLen { buf: [u8; 8], off: usize },
     /// Accumulating body of exactly `len` bytes.
-    ReadBody { buf: Vec<u8>, len: usize }, // buf.len() <= len
+    ReadBody { tag: u8, buf: Vec<u8>, len: usize }, // buf.len() <= len
 }
 
 impl<R: AsyncRead + Unpin> FrameReader<R> {
@@ -68,7 +66,14 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     ///   `max_frame_length`. **This error is fatal:** once returned,
     ///   the `FrameReader` must be dropped; the underlying connection
     ///   is no longer valid.
-    pub async fn next(&mut self) -> io::Result<Option<Bytes>> {
+    ///
+    /// # Header format
+    ///
+    /// The 8-byte header is interpreted as `[tag: 1B][len: 7B BE]`.
+    /// The tag byte is returned alongside the frame body. Simplex
+    /// connections write `tag = 0` and ignore it on read; duplex
+    /// connections use the tag to distinguish logical channels.
+    pub async fn next(&mut self) -> io::Result<Option<(u8, Bytes)>> {
         loop {
             match &mut self.state {
                 FrameReaderState::ReadLen { buf, off } if *off < 8 => {
@@ -94,17 +99,20 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
 
                 FrameReaderState::ReadLen { buf, off } => {
                     assert_eq!(*off, 8);
-                    let len = (&buf[..]).get_u64() as usize;
+                    let tag = buf[0];
+                    buf[0] = 0;
+                    let len = u64::from_be_bytes(*buf) as usize;
                     if len > self.max_frame_length {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
                     self.state = FrameReaderState::ReadBody {
+                        tag,
                         buf: Vec::with_capacity(len),
                         len,
                     };
                 }
 
-                FrameReaderState::ReadBody { buf, len } if buf.len() < *len => {
+                FrameReaderState::ReadBody { buf, len, .. } if buf.len() < *len => {
                     let num_to_read = *len - buf.len();
 
                     let num_read = poll_fn(|cx| {
@@ -131,14 +139,15 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                     }
                 }
 
-                FrameReaderState::ReadBody { buf, len } => {
+                FrameReaderState::ReadBody { tag, buf, len } => {
                     assert_eq!(buf.len(), *len);
+                    let tag = *tag;
                     let frame = take(buf).into();
                     self.state = FrameReaderState::ReadLen {
                         buf: [0; 8],
                         off: 0,
                     };
-                    return Ok(Some(frame));
+                    return Ok(Some((tag, frame)));
                 }
             }
         }
@@ -167,7 +176,8 @@ impl<W, B: Buf> fmt::Debug for FrameWrite<W, B> {
 impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// Create a new frame writer, writing `body` to `writer`.
     ///
-    /// The frame is length-prefixed with an 8-byte big-endian `u64`.
+    /// The 8-byte header is `[tag: 1B][len: 7B BE]`. Simplex
+    /// connections pass `tag = 0`.
     ///
     /// # Arguments
     ///
@@ -175,6 +185,7 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// * `body` — the serialized frame body to send.
     /// * `max_len` — maximum allowed frame length; frames larger than this
     ///   yield an `io::ErrorKind::InvalidData`.
+    /// * `tag` — the tag byte written into the first byte of the header.
     ///
     /// # Returns
     ///
@@ -182,24 +193,7 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// `body`.
     /// On error, returns the I/O error if the frame length exceeds
     /// `max_len`.
-    /// frame length exceeds `max_len`.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use bytes::Bytes;
-    /// use hyperactor::channel::net::framed::FrameWrite;
-    ///
-    /// // `writer` is any AsyncWrite + Unpin (e.g. a tokio `WriteHalf`)
-    /// let mut fw = FrameWrite::new(writer, Bytes::from_static(b"hello"), 1024)?;
-    /// fw.send().await?;
-    /// let writer = fw.complete();
-    /// ```
-    ///
-    /// # See also
-    ///
-    /// For a one-shot convenience wrapper, see [`write_frame`].
-    pub fn new(writer: W, body: B, max_len: usize) -> Result<Self, (W, io::Error)> {
+    pub fn new(writer: W, body: B, max_len: usize, tag: u8) -> Result<Self, (W, io::Error)> {
         let len = body.remaining();
         if len > max_len {
             return Err((
@@ -210,9 +204,21 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
                 ),
             ));
         }
-        let mut len_buf = BytesMut::with_capacity(8);
-        len_buf.put_u64(len as u64);
-        let len_buf = len_buf.freeze();
+        if len > (1 << 56) - 1 {
+            return Err((
+                writer,
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("frame length {} exceeds 7-byte maximum", len),
+                ),
+            ));
+        }
+        let mut len_buf = [0u8; 8];
+        len_buf[0] = tag;
+        // Encode length as 7-byte big-endian in bytes [1..8].
+        let len_be = (len as u64).to_be_bytes();
+        len_buf[1..8].copy_from_slice(&len_be[1..8]);
+        let len_buf = Bytes::copy_from_slice(&len_buf);
         Ok(Self {
             writer,
             len_buf,
@@ -305,8 +311,8 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
     /// let writer = FrameWrite::write_frame(writer, Bytes::from_static(b"hello"), 10usize).await?;
     /// ```
     #[allow(dead_code)] // Not used outside tests.
-    pub async fn write_frame(writer: W, buf: B, max: usize) -> Result<W, (W, io::Error)> {
-        let mut fw = FrameWrite::new(writer, buf, max)?;
+    pub async fn write_frame(writer: W, buf: B, max: usize, tag: u8) -> Result<W, (W, io::Error)> {
+        let mut fw = FrameWrite::new(writer, buf, max, tag)?;
         let res = fw.send().await;
         let writer = fw.complete();
         match res {
@@ -925,13 +931,13 @@ mod tests {
 
         for _ in 0..1024 {
             let body = random_buffer(MAX_LEN);
-            let mut frame_write = FrameWrite::new(writer.take().unwrap(), body.clone(), MAX_LEN)
+            let mut frame_write = FrameWrite::new(writer.take().unwrap(), body.clone(), MAX_LEN, 0)
                 .map_err(|(_, e)| e)
                 .unwrap();
             frame_write.send().await.unwrap();
             writer = Some(frame_write.complete());
 
-            let frame = reader.next().await.unwrap().unwrap();
+            let (_, frame) = reader.next().await.unwrap().unwrap();
             assert_eq!(frame, body);
         }
     }
@@ -947,20 +953,20 @@ mod tests {
         let mut reader = FrameReader::new(r, MAX_LEN);
 
         eprintln!("write 1");
-        let w = FrameWrite::write_frame(w, Bytes::from_static(b"hello"), MAX_LEN)
+        let w = FrameWrite::write_frame(w, Bytes::from_static(b"hello"), MAX_LEN, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
         eprintln!("write 2");
-        let _ = FrameWrite::write_frame(w, Bytes::from_static(b"world"), MAX_LEN)
+        let _ = FrameWrite::write_frame(w, Bytes::from_static(b"world"), MAX_LEN, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
 
         eprintln!("read 1");
-        let f1 = reader.next().await.unwrap().unwrap();
+        let (_, f1) = reader.next().await.unwrap().unwrap();
         eprintln!("read 2");
-        let f2 = reader.next().await.unwrap().unwrap();
+        let (_, f2) = reader.next().await.unwrap().unwrap();
 
         assert_eq!(f1.as_ref(), b"hello");
         assert_eq!(f2.as_ref(), b"world");
@@ -976,7 +982,7 @@ mod tests {
         let mut reader = FrameReader::new(r, 1024);
 
         // Write a complete frame.
-        w = FrameWrite::write_frame(w, Bytes::from_static(b"done"), MAX_LEN)
+        w = FrameWrite::write_frame(w, Bytes::from_static(b"done"), MAX_LEN, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
@@ -985,7 +991,7 @@ mod tests {
         drop(w);
         assert_eq!(
             reader.next().await.unwrap(),
-            Some(Bytes::from_static(b"done"))
+            Some((0, Bytes::from_static(b"done")))
         );
         // Boundary EOF.
         assert!(reader.next().await.unwrap().is_none());
@@ -1000,10 +1006,12 @@ mod tests {
         let (_ru, mut w) = tokio::io::split(b);
         let mut reader = FrameReader::new(r, MAX_LEN);
 
-        // Start a frame of length 5.
-        let mut len = bytes::BytesMut::with_capacity(8);
-        len.put_u64(5);
-        w.write_all(&len.freeze()).await.unwrap();
+        // Start a frame: [tag=0, len=5 as 7-byte BE].
+        let mut hdr = [0u8; 8];
+        hdr[0] = 0; // tag
+        let len_be = 5u64.to_be_bytes();
+        hdr[1..8].copy_from_slice(&len_be[1..8]);
+        w.write_all(&hdr).await.unwrap();
         // Write only 2 bytes of the body.
         w.write_all(b"he").await.unwrap();
         // Shutdown the writer so there's an EOF mid frame.
@@ -1027,7 +1035,7 @@ mod tests {
         // 256 bytes, all = 0x2A ('*'), "the answer"
         let body = Bytes::from_static(&[42u8; 256]);
         let mut reader = FrameReader::new(r, MAX_LEN);
-        let mut fw = FrameWrite::new(w, body.clone(), MAX_LEN)
+        let mut fw = FrameWrite::new(w, body.clone(), MAX_LEN, 0)
             .map_err(|(_, e)| e)
             .unwrap();
 
@@ -1053,7 +1061,7 @@ mod tests {
         fw.writer.set_budget(usize::MAX);
         fw.send().await.unwrap();
         let mut w = fw.complete();
-        let got = reader.next().await.unwrap().unwrap();
+        let (_, got) = reader.next().await.unwrap().unwrap();
         assert_eq!(got, body);
 
         // Shutdown and test for EOF on boundary.
@@ -1071,12 +1079,12 @@ mod tests {
         let mut reader = FrameReader::new(r, MAX);
 
         let bytes_written = Bytes::from(vec![0xAB; MAX]);
-        w = FrameWrite::write_frame(w, bytes_written.clone(), MAX)
+        w = FrameWrite::write_frame(w, bytes_written.clone(), MAX, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
 
-        let bytes_read = reader.next().await.unwrap().unwrap();
+        let (_, bytes_read) = reader.next().await.unwrap().unwrap();
         assert_eq!(bytes_read.len(), MAX);
         assert_eq!(bytes_read, bytes_written);
 
@@ -1094,7 +1102,7 @@ mod tests {
         let mut reader = FrameReader::new(r, MAX - 1);
 
         let bytes_written = Bytes::from(vec![0xAB; MAX]);
-        w = FrameWrite::write_frame(w, bytes_written, MAX)
+        w = FrameWrite::write_frame(w, bytes_written, MAX, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
@@ -1120,16 +1128,16 @@ mod tests {
         let (_ru, mut w) = tokio::io::split(b);
         let mut reader = FrameReader::new(r, MAX);
 
-        w = FrameWrite::write_frame(w, Bytes::new(), 0)
+        w = FrameWrite::write_frame(w, Bytes::new(), 0, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
-        assert_eq!(reader.next().await.unwrap().unwrap().len(), 0);
-        w = FrameWrite::write_frame(w, Bytes::new(), 0)
+        assert_eq!(reader.next().await.unwrap().unwrap().1.len(), 0);
+        w = FrameWrite::write_frame(w, Bytes::new(), 0, 0)
             .await
             .map_err(|(_, e)| e)
             .unwrap();
-        assert_eq!(reader.next().await.unwrap().unwrap().len(), 0);
+        assert_eq!(reader.next().await.unwrap().unwrap().1.len(), 0);
 
         w.shutdown().await.unwrap();
         assert!(reader.next().await.unwrap().is_none());
@@ -1282,7 +1290,7 @@ mod property_tests {
                         //   `PartialEq`).
                         {
                             let bw = BudgetedWriter::new(shared.clone(), gate.clone());
-                            let mut fw = FrameWrite::new(bw, body.clone(), 1024).map_err(|(_, e)| e).unwrap();
+                            let mut fw = FrameWrite::new(bw, body.clone(), 1024, 0).map_err(|(_, e)| e).unwrap();
                             async move { fw.send().await.map_err(|_| ()) }
                         },
                         Ok(()),
@@ -1323,7 +1331,7 @@ mod property_tests {
                     // written to the wire. Verifying that the next
                     // read yields exactly `body` checks the
                     // postcondition of `send()`.
-                    let got = reader.next().await.unwrap().unwrap();
+                    let (_, got) = reader.next().await.unwrap().unwrap();
                     assert_eq!(got, body);
                 }
                 ).await.expect("cancel-safety run timed out");
@@ -1409,7 +1417,7 @@ mod property_tests {
                         {
                             let bw = BudgetedWriter::new(shared.clone(), make_gate.clone());
                             let body = msg.clone().framed(); // multipart → vectored path
-                            let mut fw = FrameWrite::new(bw, body, MB).map_err(|(_, e)| e).unwrap();
+                            let mut fw = FrameWrite::new(bw, body, MB, 0).map_err(|(_, e)| e).unwrap();
                             async move { fw.send().await.map_err(|_| ()) }
                         },
                         Ok(()),
@@ -1447,7 +1455,7 @@ mod property_tests {
                     // read yields exactly `expected_body` checks the
                     // postcondition of `send()` (the reader sees the
                     // body bytes, with the length prefix stripped).
-                    let got = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next())
+                    let (_, got) = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next())
                         .await.expect("reader stalled").unwrap().unwrap();
                     assert_eq!(got, expected_body);
                 }).await.expect("strict multipart cancel-safety run timed out");
@@ -1524,7 +1532,7 @@ mod property_tests {
                         {
                             let bw = BudgetedWriter::new(shared.clone(), make_gate.clone());
                             let body = msg.clone().framed(); // may or may not be multipart
-                            let mut fw = FrameWrite::new(bw, body, MB).map_err(|(_, e)| e).unwrap();
+                            let mut fw = FrameWrite::new(bw, body, MB, 0).map_err(|(_, e)| e).unwrap();
                             async move { fw.send().await.map_err(|_| ()) }
                         },
                         Ok(()),
@@ -1553,7 +1561,7 @@ mod property_tests {
                     // must be fully written to the wire. Verifying that the next read
                     // yields exactly `expected_body` checks the postcondition of `send()`
                     // (the reader sees the body bytes, with the length prefix stripped).
-                    let got = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next())
+                    let (_, got) = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next())
                         .await.expect("reader stalled").unwrap().unwrap();
                     assert_eq!(got, expected_body);
                 }).await.expect("unipart/multipart cancel-safety run timed out");
