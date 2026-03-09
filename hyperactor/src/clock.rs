@@ -10,35 +10,11 @@
 
 use std::error::Error;
 use std::fmt;
-use std::sync::LazyLock;
-use std::sync::Mutex;
 use std::time::SystemTime;
 
-use futures::pin_mut;
 use hyperactor_telemetry::TelemetryClock;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::oneshot;
-
-use crate::channel::ChannelAddr;
-use crate::simnet::SleepEvent;
-use crate::simnet::simnet_handle;
-
-struct SimTime {
-    start: tokio::time::Instant,
-    now: Mutex<tokio::time::Instant>,
-    system_start: SystemTime,
-}
-
-#[allow(clippy::disallowed_methods)]
-static SIM_TIME: LazyLock<SimTime> = LazyLock::new(|| {
-    let now = tokio::time::Instant::now();
-    SimTime {
-        start: now,
-        now: Mutex::new(now),
-        system_start: SystemTime::now(),
-    }
-});
 
 #[derive(Debug)]
 /// Errors returned by `Timeout`.
@@ -89,12 +65,9 @@ pub trait Clock {
         F: std::future::Future<Output = T> + Send;
 }
 
-/// An adapter that allows us to control the behaviour of sleep between performing a real sleep
-/// and a sleep on the simnet
+/// An adapter that allows us to control the behaviour of sleep
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClockKind {
-    /// Simulates a clock that uses the simnet's current time as the source of truth
-    Sim(SimClock),
     /// Represents a real clock using tokio's sleep functionality for production use.
     Real(RealClock),
 }
@@ -102,31 +75,26 @@ pub enum ClockKind {
 impl Clock for ClockKind {
     async fn sleep(&self, duration: tokio::time::Duration) {
         match self {
-            Self::Sim(clock) => clock.sleep(duration).await,
             Self::Real(clock) => clock.sleep(duration).await,
         }
     }
     async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
         match self {
-            Self::Sim(clock) => clock.non_advancing_sleep(duration).await,
             Self::Real(clock) => clock.non_advancing_sleep(duration).await,
         }
     }
     async fn sleep_until(&self, deadline: tokio::time::Instant) {
         match self {
-            Self::Sim(clock) => clock.sleep_until(deadline).await,
             Self::Real(clock) => clock.sleep_until(deadline).await,
         }
     }
     fn now(&self) -> tokio::time::Instant {
         match self {
-            Self::Sim(clock) => clock.now(),
             Self::Real(clock) => clock.now(),
         }
     }
     fn system_time_now(&self) -> SystemTime {
         match self {
-            Self::Sim(clock) => clock.system_time_now(),
             Self::Real(clock) => clock.system_time_now(),
         }
     }
@@ -135,7 +103,6 @@ impl Clock for ClockKind {
         F: std::future::Future<Output = T> + Send,
     {
         match self {
-            Self::Sim(clock) => clock.timeout(duration, f).await,
             Self::Real(clock) => clock.timeout(duration, f).await,
         }
     }
@@ -144,14 +111,12 @@ impl Clock for ClockKind {
 impl TelemetryClock for ClockKind {
     fn now(&self) -> tokio::time::Instant {
         match self {
-            Self::Sim(clock) => clock.now(),
             Self::Real(clock) => clock.now(),
         }
     }
 
     fn system_time_now(&self) -> std::time::SystemTime {
         match self {
-            Self::Sim(clock) => clock.system_time_now(),
             Self::Real(clock) => clock.system_time_now(),
         }
     }
@@ -160,103 +125,6 @@ impl TelemetryClock for ClockKind {
 impl Default for ClockKind {
     fn default() -> Self {
         Self::Real(RealClock)
-    }
-}
-
-impl ClockKind {
-    /// Returns the appropriate clock given the channel address kind
-    /// a proc is being served on
-    pub fn for_channel_addr(channel_addr: &ChannelAddr) -> Self {
-        match channel_addr {
-            ChannelAddr::Sim(_) => Self::Sim(SimClock),
-            _ => Self::Real(RealClock),
-        }
-    }
-}
-
-/// Clock to be used in simulator runs that allows the simnet to create a scheduled event for.
-/// When the wakeup event becomes the next earliest scheduled event, the simnet will advance it's
-/// time to the wakeup time and use the transmitter to wake up this green thread
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimClock;
-
-impl Clock for SimClock {
-    /// Tell the simnet to wake up this green thread after the specified duration has pass on the simnet
-    async fn sleep(&self, duration: tokio::time::Duration) {
-        let (tx, rx) = oneshot::channel();
-
-        simnet_handle()
-            .unwrap()
-            .send_event(SleepEvent::new(tx, duration))
-            .unwrap();
-        rx.await.unwrap();
-    }
-
-    async fn non_advancing_sleep(&self, duration: tokio::time::Duration) {
-        let (tx, rx) = oneshot::channel();
-
-        simnet_handle()
-            .unwrap()
-            .send_nonadvanceable_event(SleepEvent::new(tx, duration))
-            .unwrap();
-        rx.await.unwrap();
-    }
-
-    async fn sleep_until(&self, deadline: tokio::time::Instant) {
-        let now = self.now();
-        if deadline <= now {
-            return;
-        }
-        self.sleep(deadline - now).await;
-    }
-    /// Get the current time according to the simnet
-    fn now(&self) -> tokio::time::Instant {
-        *SIM_TIME.now.lock().unwrap()
-    }
-
-    fn system_time_now(&self) -> SystemTime {
-        SIM_TIME.system_start + self.now().duration_since(SIM_TIME.start)
-    }
-
-    #[allow(clippy::disallowed_methods)]
-    async fn timeout<F, T>(&self, duration: tokio::time::Duration, f: F) -> Result<T, TimeoutError>
-    where
-        F: std::future::Future<Output = T>,
-    {
-        let (tx, deadline_rx) = oneshot::channel();
-
-        simnet_handle()
-            .unwrap()
-            .send_event(SleepEvent::new(tx, duration))
-            .unwrap();
-
-        let fut = f;
-        pin_mut!(fut);
-
-        tokio::select! {
-            _ = deadline_rx => {
-                Err(TimeoutError)
-            }
-            res = &mut fut => Ok(res)
-        }
-    }
-}
-
-impl SimClock {
-    /// Advance the sumulator's time to the specified instant
-    pub fn advance_to(&self, time: tokio::time::Instant) {
-        let mut guard = SIM_TIME.now.lock().unwrap();
-        *guard = time;
-    }
-
-    /// Get the number of milliseconds elapsed since the start of the simulation
-    pub fn duration_since_start(&self, instant: tokio::time::Instant) -> tokio::time::Duration {
-        instant.duration_since(SIM_TIME.start)
-    }
-
-    /// Instant marking the start of the simulation
-    pub fn start(&self) -> tokio::time::Instant {
-        SIM_TIME.start
     }
 }
 
@@ -293,63 +161,5 @@ impl Clock for RealClock {
         tokio::time::timeout(duration, f)
             .await
             .map_err(|_| TimeoutError)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use crate::clock::Clock;
-    use crate::clock::SimClock;
-    use crate::simnet;
-
-    #[tokio::test]
-    async fn test_sim_clock_simple() {
-        let start = SimClock.now();
-        assert_eq!(
-            SimClock.duration_since_start(start),
-            tokio::time::Duration::ZERO
-        );
-        SimClock.advance_to(SimClock.start() + tokio::time::Duration::from_millis(10000));
-        let end = SimClock.now();
-        assert_eq!(
-            SimClock.duration_since_start(end),
-            tokio::time::Duration::from_millis(10000)
-        );
-        assert_eq!(
-            end.duration_since(start),
-            tokio::time::Duration::from_secs(10)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_sim_clock_system_time() {
-        let start = SimClock.system_time_now();
-        SimClock.advance_to(SimClock.start() + tokio::time::Duration::from_millis(10000));
-        let end = SimClock.system_time_now();
-        assert_eq!(
-            end.duration_since(start).unwrap(),
-            tokio::time::Duration::from_secs(10)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_sim_timeout() {
-        simnet::start();
-        let res = SimClock
-            .timeout(tokio::time::Duration::from_secs(10), async {
-                SimClock.sleep(tokio::time::Duration::from_secs(5)).await;
-                5
-            })
-            .await;
-        assert_eq!(res.unwrap(), 5);
-
-        let res = SimClock
-            .timeout(tokio::time::Duration::from_secs(10), async {
-                SimClock.sleep(tokio::time::Duration::from_secs(15)).await;
-                5
-            })
-            .await;
-        assert!(res.is_err());
     }
 }
