@@ -603,10 +603,10 @@ mod tests {
     #[test]
     fn from_payload_sets_is_system_for_system_actor() {
         let payload = NodePayload {
-            identity: "agent[0]".to_string(),
+            identity: "host_agent[0]".to_string(),
             properties: NodeProperties::Actor {
                 actor_status: "idle".to_string(),
-                actor_type: "hyperactor_mesh::mesh_agent::ProcMeshAgent".to_string(),
+                actor_type: "hyperactor_mesh::proc_agent::ProcAgent".to_string(),
                 messages_processed: 10,
                 created_at: "".to_string(),
                 last_message_handler: None,
@@ -619,7 +619,7 @@ mod tests {
             parent: None,
             as_of: "".to_string(),
         };
-        let node = TreeNode::from_payload("agent[0]".to_string(), &payload);
+        let node = TreeNode::from_payload("host_agent[0]".to_string(), &payload);
         assert!(node.is_system);
         assert!(!node.stopped);
     }
@@ -638,7 +638,6 @@ mod tests {
             properties: NodeProperties::Proc {
                 proc_name: "proc1".to_string(),
                 num_actors: 0,
-                is_system: false,
                 system_children: vec![],
                 stopped_children: vec!["x".to_string()],
                 stopped_retention_cap: 10,

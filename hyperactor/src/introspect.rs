@@ -139,7 +139,7 @@ pub enum NodeProperties {
         system_children: Vec<String>,
     },
 
-    /// A host in the mesh, represented by its `HostMeshAgent`.
+    /// A host in the mesh, represented by its `HostAgent`.
     Host {
         /// Host address (e.g. `127.0.0.1:12345`).
         addr: String,
@@ -156,9 +156,6 @@ pub enum NodeProperties {
         proc_name: String,
         /// Number of actors currently hosted by this proc.
         num_actors: usize,
-        /// Whether this proc is infrastructure-owned rather than
-        /// user-created.
-        is_system: bool,
         /// References of children that are system/infrastructure
         /// actors. Allows the TUI to filter lazily without fetching
         /// each child individually.
@@ -200,7 +197,7 @@ pub enum NodeProperties {
         /// enabled/available.
         flight_recorder: Option<String>,
         /// Whether this actor is infrastructure-owned (e.g.
-        /// ProcMeshAgent, HostMeshAgent) rather than user-created.
+        /// ProcAgent, HostAgent) rather than user-created.
         is_system: bool,
         /// Structured failure information, present only for failed
         /// actors. `None` for running or cleanly stopped actors.
@@ -244,7 +241,7 @@ wirevalue::register_type!(NodePayload);
 /// Context for introspection query - what aspect of the actor to
 /// describe.
 ///
-/// Infrastructure actors (e.g., ProcMeshAgent, HostMeshAgent)
+/// Infrastructure actors (e.g., ProcAgent, HostAgent)
 /// have dual nature: they manage entities (Proc, Host) while also
 /// being actors themselves. IntrospectView allows callers to
 /// specify which aspect to query.
@@ -309,7 +306,7 @@ pub struct RecordedEvent {
 
 /// Domain-specific properties an actor may publish for introspection.
 ///
-/// Infrastructure actors (HostMeshAgent, ProcMeshAgent) push these to
+/// Infrastructure actors (HostAgent, ProcAgent) push these to
 /// make their managed-entity metadata available to the introspection
 /// runtime without going through the actor's message handler. The
 /// runtime handler reads the last-published value and merges it into
@@ -350,8 +347,6 @@ pub enum PublishedPropertiesKind {
         proc_name: String,
         /// Number of actors currently hosted by this proc.
         num_actors: usize,
-        /// Whether this proc is infrastructure-owned.
-        is_system: bool,
         /// Custom children list (all actors in the proc).
         children: Vec<String>,
         /// Children that are system/infrastructure actors, reported
@@ -547,7 +542,6 @@ pub async fn serve_introspect(
                                 PublishedPropertiesKind::Proc {
                                     proc_name,
                                     num_actors,
-                                    is_system,
                                     system_children,
                                     stopped_children,
                                     stopped_retention_cap,
@@ -557,7 +551,6 @@ pub async fn serve_introspect(
                                 } => NodeProperties::Proc {
                                     proc_name,
                                     num_actors,
-                                    is_system,
                                     system_children,
                                     stopped_children,
                                     stopped_retention_cap,

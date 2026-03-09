@@ -1,0 +1,832 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Tests for the RDMA Manager Actor
+//!
+//! This module contains tests for the RDMA Manager Actor functionality.
+//! Tests are split into two categories:
+//! 1. CPU-only tests that don't require CUDA
+//! 2. CUDA tests that require GPU access
+
+#[cfg(test)]
+mod tests {
+    use super::super::PollTarget;
+    use super::super::manager_actor::IbvManagerMessageClient;
+    use super::super::primitives::IbvQpType;
+    use super::super::primitives::get_all_devices;
+    use super::super::test_utils::IbvTestEnv;
+    use super::super::test_utils::*;
+    use crate::rdma_components::validate_execution_context;
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_loopback() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+
+        // Poll for completion
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
+
+        env.ibv_actor_1
+            .release_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                qp_1,
+            )
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_loopback() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
+
+        env.ibv_actor_1
+            .release_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                qp_1,
+            )
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    // Test that RDMA read can be performed between two actors on separate devices.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_separate_devices() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 4 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+
+        // Poll for completion
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    // Test that RDMA write can be performed between two actors on separate devices.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_separate_devices() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 2).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_recv_separate_devices() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 1024 * 1024;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let mut qp_2 = env
+            .ibv_actor_2
+            .request_queue_pair(
+                &env.client_2,
+                env.ibv_actor_1.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+            )
+            .await?;
+        qp_1.recv(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        let wr_id = qp_2.put_with_recv(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
+        wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
+    async fn test_rdma_write_separate_devices_db() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 1024;
+        let devices = get_all_devices();
+        if devices.len() < 4 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        qp_1.ring_doorbell()?;
+        // Poll for completion
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
+    async fn test_rdma_read_separate_devices_db_check() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 1024;
+        let devices = get_all_devices();
+        if devices.len() < 4 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        let mut qp_2 = env
+            .ibv_actor_2
+            .request_queue_pair(
+                &env.client_2,
+                env.ibv_actor_1.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_2.enqueue_get(env.ibv_buffer_2.clone(), env.ibv_buffer_1.clone())?;
+        qp_2.ring_doorbell()?;
+        // Poll for completion
+        wait_for_completion(&mut qp_2, PollTarget::Send, &wr_id, 5).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    // Tests RdmaBuffer's `read_into` API
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_cpu_vs_cpu() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    // Tests RdmaBuffer's `write_from` API
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_cpu_vs_cpu() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:1").await?;
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    // CUDA tests that require GPU access
+
+    // Helper function to check if we're running in CPU-only mode
+    fn is_cpu_only_mode() -> bool {
+        !crate::is_cuda_available()
+    }
+
+    // Helper function to check if GPU supports P2P
+    async fn does_gpu_support_p2p() -> bool {
+        validate_execution_context().await.is_ok()
+    }
+
+    // Test that RDMA write can be performed between two actors on separate devices with CUDA.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        if !does_gpu_support_p2p().await {
+            println!("Skipping test: GPU P2P not supported");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024;
+        let devices = get_all_devices();
+        if devices.len() < 4 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        qp_1.enqueue_put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        ring_db_gpu(&qp_1).await?;
+        // Poll for completion
+        wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    // Test that RDMA read can be performed between two actors on separate devices with CUDA.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
+    async fn test_rdma_read_separate_devices_db_device_trigger() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        if !does_gpu_support_p2p().await {
+            println!("Skipping test: GPU P2P not supported");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024;
+        let devices = get_all_devices();
+        if devices.len() < 4 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        qp_1.enqueue_get(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+        ring_db_gpu(&qp_1).await?;
+        // Poll for completion
+        wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 5).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    #[ignore = "This test needed to be run in isolation"]
+    async fn test_rdma_write_recv_separate_devices_db_trigger() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        if !does_gpu_support_p2p().await {
+            println!("Skipping test: GPU P2P not supported");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024;
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let mut qp_2 = env
+            .ibv_actor_2
+            .request_queue_pair(
+                &env.client_2,
+                env.ibv_actor_1.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+            )
+            .await?;
+        recv_wqe_gpu(
+            &mut qp_1,
+            &env.ibv_buffer_1,
+            &env.ibv_buffer_2,
+            rdmaxcel_sys::ibv_wc_opcode::IBV_WC_RECV,
+        )
+        .await?;
+        send_wqe_gpu(
+            &mut qp_2,
+            &env.ibv_buffer_2,
+            &env.ibv_buffer_1,
+            rdmaxcel_sys::MLX5_OPCODE_RDMA_WRITE_IMM,
+        )
+        .await?;
+        ring_db_gpu(&qp_2).await?;
+        wait_for_completion_gpu(&mut qp_1, PollTarget::Send, 10).await?;
+        wait_for_completion_gpu(&mut qp_2, PollTarget::Send, 10).await?;
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    // Test that RDMA write can be performed between two actors on separate devices.
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_rdma_write_separate_devices_cuda_vs_cpu() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cpu:1").await?;
+        // Pre-initialize comms, and wait for hardware to transition to send state
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    // Test that RDMA write can be performed between two actors on separate devices.
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_rdma_write_separate_devices_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        // Pre-initialize comms, and wait for hardware to transition to send state
+        let mut qp_1 = env
+            .ibv_actor_1
+            .request_queue_pair(
+                &env.client_1,
+                env.ibv_actor_2.clone(),
+                env.ibv_buffer_1.device_name.clone(),
+                env.ibv_buffer_2.device_name.clone(),
+            )
+            .await?;
+        let wr_id = qp_1.put(env.ibv_buffer_1.clone(), env.ibv_buffer_2.clone())?;
+
+        wait_for_completion(&mut qp_1, PollTarget::Send, &wr_id, 5).await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_cuda_vs_cpu() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cpu:0").await?;
+
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_cpu_vs_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cuda:1").await?;
+
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_rdma_read_into_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_cuda_vs_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 2 * 1024 * 1024; // minimum size for cuda
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "skipping this test as it is only configured on H100 nodes with backend network"
+            );
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_concurrent_send_to_same_target() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 2 * 1024 * 1024;
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        let rdma_handle_2 = env.rdma_handle_2.clone();
+        let rdma_handle_4 = env.rdma_handle_2.clone();
+        let rdma_handle_6 = env.rdma_handle_2.clone();
+        let local_memory_1 = env.local_memory_1.clone();
+        let local_memory_3 = env.local_memory_1.clone();
+        let local_memory_5 = env.local_memory_1.clone();
+        let client = &env.client_1;
+
+        let task1 = async {
+            rdma_handle_2
+                .read_into_local(client, local_memory_1.clone(), 2)
+                .await
+        };
+
+        let task2 = async {
+            rdma_handle_4
+                .read_into_local(client, local_memory_3.clone(), 2)
+                .await
+        };
+
+        let task3 = async {
+            rdma_handle_6
+                .read_into_local(client, local_memory_5.clone(), 2)
+                .await
+        };
+        let (_result1, _result2, _result3) = tokio::join!(task1, task2, task3);
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_standard_qp() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cpu:0", "cpu:0", IbvQpType::Standard).await?;
+
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_standard_qp() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 32;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cpu:0", "cpu:0", IbvQpType::Standard).await?;
+
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 2)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_standard_qp_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 16 * 1024 * 1024;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cuda:0", "cuda:1", IbvQpType::Standard).await?;
+
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_standard_qp_cuda() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        const BSIZE: usize = 16 * 1024 * 1024;
+        // Skip test if RDMA devices are not available
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+
+        let env =
+            IbvTestEnv::setup_with_qp_type(BSIZE, "cuda:0", "cuda:1", IbvQpType::Standard).await?;
+
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 120)]
+    async fn test_rdma_read_chunk() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        // 2GB tensor size
+        const BSIZE: usize = 2 * 1024 * 1024 * 1024;
+        const CHUNK_SIZE: usize = 2 * 1024 * 1024; // 2MB
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "Skipping test: requires H100 nodes with backend network (found {} devices)",
+                devices.len()
+            );
+            return Ok(());
+        }
+
+        println!("Setting up 2GB CUDA tensors for RDMA read test...");
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        println!("Performing RDMA read operation on 2GB tensor...");
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 30)
+            .await?;
+
+        println!("Verifying first 2MB...");
+        env.verify_buffers(CHUNK_SIZE, 0).await?;
+
+        println!("Verifying last 2MB...");
+        env.verify_buffers(CHUNK_SIZE, BSIZE - CHUNK_SIZE).await?;
+
+        println!("Cleaning up...");
+        env.cleanup().await?;
+
+        println!("2GB RDMA read test completed successfully");
+        Ok(())
+    }
+
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_chunk() -> Result<(), anyhow::Error> {
+        if is_cpu_only_mode() {
+            println!("Skipping CUDA test in CPU-only mode");
+            return Ok(());
+        }
+        // 2GB tensor size
+        const BSIZE: usize = 2 * 1024 * 1024 * 1024;
+        const CHUNK_SIZE: usize = 2 * 1024 * 1024; // 2MB
+        let devices = get_all_devices();
+        if devices.len() < 5 {
+            println!(
+                "Skipping test: requires H100 nodes with backend network (found {} devices)",
+                devices.len()
+            );
+            return Ok(());
+        }
+
+        println!("Setting up 2GB CUDA tensors for RDMA write test...");
+        let env = IbvTestEnv::setup(BSIZE, "cuda:0", "cuda:1").await?;
+
+        println!("Performing RDMA write operation on 2GB tensor...");
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 30)
+            .await?;
+
+        println!("Verifying first 2MB...");
+        env.verify_buffers(CHUNK_SIZE, 0).await?;
+
+        println!("Verifying last 2MB...");
+        env.verify_buffers(CHUNK_SIZE, BSIZE - CHUNK_SIZE).await?;
+
+        println!("Cleaning up...");
+        env.cleanup().await?;
+
+        println!("2GB RDMA write test completed successfully");
+        Ok(())
+    }
+}
