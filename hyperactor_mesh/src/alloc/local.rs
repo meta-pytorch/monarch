@@ -12,14 +12,18 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor::ActorRef;
+use hyperactor::ProcId;
+use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::host::Host;
-use hyperactor::host::LocalProcManager;
+use hyperactor::mailbox::MailboxServer;
+use hyperactor::mailbox::MailboxServerHandle;
+use hyperactor::proc::Proc;
 use ndslice::view::Extent;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 
 use super::ProcStopReason;
 use crate::alloc::Alloc;
@@ -28,10 +32,6 @@ use crate::alloc::AllocSpec;
 use crate::alloc::Allocator;
 use crate::alloc::AllocatorError;
 use crate::alloc::ProcState;
-use crate::host_mesh::host_agent;
-use crate::host_mesh::host_agent::HostAgent;
-use crate::host_mesh::host_agent::HostAgentMode;
-use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::proc_agent::ProcAgent;
 use crate::shortuuid::ShortUuid;
 
@@ -64,9 +64,10 @@ impl Allocator for LocalAllocator {
 }
 
 struct LocalProc {
+    proc: Proc,
     create_key: ShortUuid,
-    host_addr: ChannelAddr,
-    host_agent: ActorRef<HostAgent>,
+    addr: ChannelAddr,
+    handle: MailboxServerHandle,
 }
 
 /// A local allocation. It is a collection of procs that are running in the local process.
@@ -151,18 +152,36 @@ impl Alloc for LocalAlloc {
 
             match self.todo_rx.recv().await? {
                 Action::Start(rank) => {
-                    let addr = ChannelAddr::any(self.transport());
+                    let (addr, proc_rx) = loop {
+                        match channel::serve(ChannelAddr::any(self.transport())) {
+                            Ok(addr_and_proc_rx) => break addr_and_proc_rx,
+                            Err(err) => {
+                                tracing::error!(
+                                    "failed to create channel for rank {}: {}",
+                                    rank,
+                                    err
+                                );
+                                #[allow(clippy::disallowed_methods)]
+                                sleep(Duration::from_secs(1)).await;
+                                continue;
+                            }
+                        }
+                    };
 
-                    // Create an in-process Host with a ProcAgent boot function.
-                    let spawn: ProcManagerSpawnFn =
-                        Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
-                    let manager = LocalProcManager::new(spawn);
-                    let host = match Host::new(manager, addr).await {
-                        Ok(host) => host,
+                    let proc_name = match &self.spec.proc_name {
+                        Some(name) => name.clone(),
+                        None => format!("{}_{}", self.alloc_name.name(), rank),
+                    };
+                    let proc_id = ProcId::with_name(addr.clone(), proc_name);
+
+                    let bspan = tracing::info_span!("mesh_agent_bootstrap");
+                    let (proc, mesh_agent) = match ProcAgent::bootstrap(proc_id.clone()).await {
+                        Ok(proc_and_agent) => proc_and_agent,
                         Err(err) => {
-                            let message =
-                                format!("failed to create host for rank {}: {}", rank, err);
+                            let message = format!("failed spawn mesh agent for {}: {}", rank, err);
                             tracing::error!(message);
+                            // It's unclear if this is actually recoverable in a practical sense,
+                            // so we give up.
                             self.failed = true;
                             break Some(ProcState::Failed {
                                 alloc_name: self.alloc_name.clone(),
@@ -170,34 +189,20 @@ impl Alloc for LocalAlloc {
                             });
                         }
                     };
-                    let host_addr = host.addr().clone();
-                    let system_proc = host.system_proc().clone();
-                    let host_mesh_agent = match system_proc.spawn(
-                        host_agent::HOST_MESH_AGENT_ACTOR_NAME,
-                        HostAgent::new(HostAgentMode::Local(host)),
-                    ) {
-                        Ok(handle) => handle,
-                        Err(err) => {
-                            let message =
-                                format!("failed to spawn host agent for rank {}: {}", rank, err);
-                            tracing::error!(message);
-                            self.failed = true;
-                            break Some(ProcState::Failed {
-                                alloc_name: self.alloc_name.clone(),
-                                description: message,
-                            });
-                        }
-                    };
-                    let host_agent_ref = host_mesh_agent.bind::<HostAgent>();
+                    drop(bspan);
+
+                    // Undeliverable messages get forwarded to the mesh agent.
+                    let handle = proc.clone().serve(proc_rx);
 
                     let create_key = ShortUuid::generate();
 
                     self.procs.insert(
                         rank,
                         LocalProc {
+                            proc,
                             create_key: create_key.clone(),
-                            host_addr: host_addr.clone(),
-                            host_agent: host_agent_ref.clone(),
+                            addr: addr.clone(),
+                            handle,
                         },
                     );
 
@@ -215,15 +220,31 @@ impl Alloc for LocalAlloc {
                     };
                     self.queue.push_back(ProcState::Running {
                         create_key,
-                        host_addr,
-                        host_agent: host_agent_ref,
+                        proc_id,
+                        mesh_agent: mesh_agent.bind(),
+                        addr,
                     });
                     break Some(created);
                 }
                 Action::Stop(rank, reason) => {
-                    let Some(proc_to_stop) = self.procs.remove(&rank) else {
+                    let Some(mut proc_to_stop) = self.procs.remove(&rank) else {
                         continue;
                     };
+
+                    // Stop serving the mailbox.
+                    proc_to_stop.handle.stop("received Action::Stop");
+
+                    if let Err(err) = proc_to_stop
+                        .proc
+                        .destroy_and_wait::<()>(
+                            Duration::from_millis(10),
+                            None,
+                            &reason.to_string(),
+                        )
+                        .await
+                    {
+                        tracing::error!("error while stopping proc {}: {}", rank, err);
+                    }
                     break Some(ProcState::Stopped {
                         reason,
                         create_key: proc_to_stop.create_key.clone(),

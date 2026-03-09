@@ -25,6 +25,7 @@ use std::fmt;
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
+use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TlsAddr;
@@ -45,7 +46,7 @@ use typeuri::Named;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::assign::Ranks;
-use crate::host_mesh::host_agent::HostAgent;
+use crate::proc_agent::ProcAgent;
 use crate::shortuuid::ShortUuid;
 
 /// A name uniquely identifying an allocation.
@@ -180,14 +181,18 @@ pub enum ProcState {
         /// The system process ID of the created child process.
         pid: u32,
     },
-    /// A host was started.
+    /// A proc was started.
     Running {
-        /// The key used to identify the created proc/host.
+        /// The key used to identify the created proc.
         create_key: ShortUuid,
-        /// The address the host is serving on.
-        host_addr: ChannelAddr,
-        /// Reference to this host's mesh agent.
-        host_agent: ActorRef<HostAgent>,
+        /// The proc's assigned ID.
+        proc_id: ProcId,
+        /// Reference to this proc's mesh agent. In the future, we'll reserve a
+        /// 'well known' PID (0) for this purpose.
+        mesh_agent: ActorRef<ProcAgent>,
+        /// The address of this proc. The endpoint of this address is
+        /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
+        addr: ChannelAddr,
     },
     /// A proc was stopped.
     Stopped {
@@ -219,12 +224,8 @@ impl fmt::Display for ProcState {
             } => {
                 write!(f, "{}: created at ({}) with PID {}", create_key, point, pid)
             }
-            ProcState::Running {
-                host_addr,
-                host_agent,
-                ..
-            } => {
-                write!(f, "{}: running at {}", host_agent.actor_id(), host_addr)
+            ProcState::Running { proc_id, addr, .. } => {
+                write!(f, "{}: running at {}", proc_id, addr)
             }
             ProcState::Stopped { create_key, reason } => {
                 write!(f, "{}: stopped: {}", create_key, reason)
@@ -347,25 +348,35 @@ pub trait Alloc {
     }
 }
 
-/// Allocated host information returned by [`AllocHostExt::initialize_hosts`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct AllocatedHost {
+pub(crate) struct AllocatedProc {
     pub create_key: ShortUuid,
-    pub host_addr: ChannelAddr,
-    pub host_agent: ActorRef<HostAgent>,
+    pub proc_id: ProcId,
+    pub addr: ChannelAddr,
+    pub mesh_agent: ActorRef<ProcAgent>,
 }
 
-/// Extension trait that drives an [`Alloc`] to collect host information.
-#[async_trait]
-pub(crate) trait AllocHostExt {
-    /// Drive the alloc through Created → Running states, collecting
-    /// host addresses and agent refs.
-    async fn initialize_hosts(&mut self) -> Result<Vec<AllocatedHost>, AllocatorError>;
+impl fmt::Display for AllocatedProc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "AllocatedProc {{ create_key: {}, proc_id: {}, addr: {}, mesh_agent: {} }}",
+            self.create_key, self.proc_id, self.addr, self.mesh_agent
+        )
+    }
 }
 
 #[async_trait]
-impl<A: ?Sized + Send + Alloc> AllocHostExt for A {
-    async fn initialize_hosts(&mut self) -> Result<Vec<AllocatedHost>, AllocatorError> {
+pub(crate) trait AllocExt {
+    /// Perform initial allocation, consuming events until the alloc is fully
+    /// running. Returns the ranked procs.
+    async fn initialize(&mut self) -> Result<Vec<AllocatedProc>, AllocatorError>;
+}
+
+#[async_trait]
+impl<A: ?Sized + Send + Alloc> AllocExt for A {
+    async fn initialize(&mut self) -> Result<Vec<AllocatedProc>, AllocatorError> {
+        // We wait for the full allocation to be running before returning the mesh.
         let shape = self.shape().clone();
 
         let mut created = Ranks::new(shape.slice().len());
@@ -373,13 +384,14 @@ impl<A: ?Sized + Send + Alloc> AllocHostExt for A {
 
         while !running.is_full() {
             let Some(state) = self.next().await else {
+                // Alloc finished before it was fully allocated.
                 return Err(AllocatorError::Incomplete(self.extent().clone()));
             };
 
             let name = tracing::Span::current()
                 .metadata()
                 .map(|m| m.name())
-                .unwrap_or("initialize_hosts");
+                .unwrap_or("initialize");
             let status = format!("ProcState:{}", state.arm().unwrap_or("unknown"));
 
             match state {
@@ -399,46 +411,63 @@ impl<A: ?Sized + Send + Alloc> AllocHostExt for A {
                         name,
                         status,
                         rank,
-                        "host with create key {}, rank {}: created",
+                        "proc with create key {}, rank {}: created",
                         create_key,
                         rank
                     );
                 }
                 ProcState::Running {
                     create_key,
-                    host_addr,
-                    host_agent,
+                    proc_id,
+                    mesh_agent,
+                    addr,
                 } => {
                     let Some(rank) = created.rank(&create_key) else {
                         tracing::warn!(
                             name,
+                            %proc_id,
                             status,
-                            "host with create key {create_key} \
+                            "proc id {proc_id} with create key {create_key} \
                             is running, but was not created"
                         );
                         continue;
                     };
 
-                    let allocated = AllocatedHost {
+                    let allocated_proc = AllocatedProc {
                         create_key,
-                        host_addr: host_addr.clone(),
-                        host_agent: host_agent.clone(),
+                        proc_id: proc_id.clone(),
+                        addr: addr.clone(),
+                        mesh_agent: mesh_agent.clone(),
                     };
-                    if running.insert(*rank, allocated).is_some() {
+                    if let Some(old_allocated_proc) = running.insert(*rank, allocated_proc.clone())
+                    {
                         tracing::warn!(
                             name,
+                            %proc_id,
                             status,
                             rank,
-                            "duplicate running notifications for rank {rank}"
+                            "duplicate running notifications for {rank}: \
+                            old:{old_allocated_proc}; \
+                            new:{allocated_proc}"
                         )
                     }
-                    tracing::info!(name, status, "host rank {}: running at {host_addr}", rank);
+                    tracing::info!(
+                        name,
+                        %proc_id,
+                        status,
+                        "proc {} rank {}: running at addr:{addr} mesh_agent:{mesh_agent}",
+                        proc_id,
+                        rank
+                    );
                 }
+                // TODO: We should push responsibility to the allocator, which
+                // can choose to either provide a new proc or emit a
+                // ProcState::Failed to fail the whole allocation.
                 ProcState::Stopped { create_key, reason } => {
                     tracing::error!(
                         name,
                         status,
-                        "allocation failed for host with create key {}: {}",
+                        "allocation failed for proc with create key {}: {}",
                         create_key,
                         reason
                     );
@@ -460,6 +489,8 @@ impl<A: ?Sized + Send + Alloc> AllocHostExt for A {
             }
         }
 
+        // We collect all the ranks at this point of completion, so that we can
+        // avoid holding Rcs across awaits.
         Ok(running.into_iter().map(Option::unwrap).collect())
     }
 }
@@ -604,10 +635,28 @@ pub(crate) mod testing {
     use core::panic;
     use std::collections::HashMap;
     use std::collections::HashSet;
+    use std::time::Duration;
 
+    use hyperactor::Instance;
+    use hyperactor::actor::remote::Remote;
+    use hyperactor::channel;
+    use hyperactor::context;
+    use hyperactor::mailbox;
+    use hyperactor::mailbox::BoxedMailboxSender;
+    use hyperactor::mailbox::DialMailboxRouter;
+    use hyperactor::mailbox::IntoBoxedMailboxSender;
+    use hyperactor::mailbox::MailboxServer;
+    use hyperactor::mailbox::UndeliverableMailboxSender;
+    use hyperactor::proc::Proc;
+    use hyperactor::reference::Reference;
     use ndslice::extent;
+    use tokio::process::Command;
 
     use super::*;
+    use crate::alloc::test_utils::TestActor;
+    use crate::alloc::test_utils::Wait;
+    use crate::proc_agent::GspawnResult;
+    use crate::proc_agent::MeshAgentMessageClient;
     use crate::transport::default_transport;
 
     #[macro_export]
@@ -633,7 +682,9 @@ pub(crate) mod testing {
             .await
             .unwrap();
 
-        // Get everything up into running state.
+        // Get everything up into running state. We require that we get
+        // procs 0..4.
+        let mut procs = HashMap::new();
         let mut created = HashMap::new();
         let mut running = HashSet::new();
         while running.len() != 4 {
@@ -643,21 +694,39 @@ pub(crate) mod testing {
                 } => {
                     created.insert(create_key, point);
                 }
-                ProcState::Running { create_key, .. } => {
+                ProcState::Running {
+                    create_key,
+                    proc_id,
+                    ..
+                } => {
                     assert!(running.insert(create_key.clone()));
-                    assert!(created.contains_key(&create_key));
+                    procs.insert(proc_id, created.remove(&create_key).unwrap());
                 }
                 event => panic!("unexpected event: {:?}", event),
             }
         }
 
         // We should have complete coverage of all points.
-        let points: HashSet<_> = created.values().collect();
+        let points: HashSet<_> = procs.values().collect();
         for x in 0..4 {
             assert!(points.contains(&extent.point(vec![x]).unwrap()));
         }
 
+        // Every proc should belong to the same "alloc" (have the same prefix).
+        // Proc names are formatted as "{alloc_name}_{rank}"
+        let alloc_names: HashSet<_> = procs
+            .keys()
+            .filter_map(|proc_id| {
+                proc_id
+                    .name()
+                    .rsplit_once('_')
+                    .map(|(prefix, _)| prefix.to_string())
+            })
+            .collect();
+        assert_eq!(alloc_names.len(), 1);
+
         // Now, stop the alloc and make sure it shuts down cleanly.
+
         alloc.stop().await.unwrap();
         let mut stopped = HashSet::new();
         while let Some(ProcState::Stopped {
@@ -665,6 +734,160 @@ pub(crate) mod testing {
         }) = alloc.next().await
         {
             assert_eq!(reason, ProcStopReason::Stopped);
+            stopped.insert(create_key);
+        }
+        assert!(alloc.next().await.is_none());
+        assert_eq!(stopped, running);
+    }
+
+    async fn spawn_proc(
+        transport: ChannelTransport,
+    ) -> (DialMailboxRouter, Instance<()>, Proc, ChannelAddr) {
+        let (router_channel_addr, router_rx) =
+            channel::serve(ChannelAddr::any(transport.clone())).unwrap();
+        let router =
+            DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
+        router.clone().serve(router_rx);
+
+        let client_proc_id =
+            ProcId::with_name(ChannelAddr::any(ChannelTransport::Local), "test_stuck_0");
+        let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
+        let client_proc = Proc::new(
+            client_proc_id.clone(),
+            BoxedMailboxSender::new(router.clone()),
+        );
+        client_proc.clone().serve(client_rx);
+        router.bind(client_proc_id.clone().into(), client_proc_addr);
+        (
+            router,
+            client_proc.instance("test_proc").unwrap().0,
+            client_proc,
+            router_channel_addr,
+        )
+    }
+
+    async fn spawn_test_actor(
+        rank: usize,
+        client_proc: &Proc,
+        cx: &impl context::Actor,
+        router_channel_addr: ChannelAddr,
+        mesh_agent: ActorRef<ProcAgent>,
+    ) -> ActorRef<TestActor> {
+        let (supervisor, _supervisor_handle) = client_proc.instance("supervisor").unwrap();
+        let (supervison_port, _) = supervisor.open_port();
+        let (config_handle, _) = cx.mailbox().open_port();
+        mesh_agent
+            .configure(
+                cx,
+                rank,
+                router_channel_addr,
+                Some(supervison_port.bind()),
+                HashMap::new(),
+                config_handle.bind(),
+                false,
+            )
+            .await
+            .unwrap();
+        let remote = Remote::collect();
+        let actor_type = remote
+            .name_of::<TestActor>()
+            .ok_or(anyhow::anyhow!("actor not registered"))
+            .unwrap()
+            .to_string();
+        let params = &();
+        let (completed_handle, mut completed_receiver) = mailbox::open_port(cx);
+        // gspawn actor
+        mesh_agent
+            .gspawn(
+                cx,
+                actor_type,
+                "Stuck".to_string(),
+                bincode::serialize(params).unwrap(),
+                completed_handle.bind(),
+            )
+            .await
+            .unwrap();
+        let result = completed_receiver.recv().await.unwrap();
+        match result {
+            GspawnResult::Success { actor_id, .. } => ActorRef::attest(actor_id),
+            GspawnResult::Error(error_msg) => {
+                panic!("gspawn failed: {}", error_msg);
+            }
+        }
+    }
+
+    /// In order to simulate stuckness, we have to do two things:
+    /// An actor that is blocked forever AND
+    /// a proc that does not time out when it is asked to wait for
+    /// a stuck actor.
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_allocator_stuck_task() {
+        // Override config.
+        // Use temporary config for this test
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(
+            hyperactor::config::PROCESS_EXIT_TIMEOUT,
+            Duration::from_secs(1),
+        );
+
+        let command = Command::new(crate::testresource::get(
+            "monarch/hyperactor_mesh/bootstrap",
+        ));
+        let mut allocator = ProcessAllocator::new(command);
+        let mut alloc = allocator
+            .allocate(AllocSpec {
+                extent: extent! { replica = 1 },
+                constraints: Default::default(),
+                proc_name: None,
+                transport: ChannelTransport::Unix,
+                proc_allocation_mode: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Get everything up into running state. We require that we get
+        let mut procs = HashMap::new();
+        let mut running = HashSet::new();
+        let mut actor_ref = None;
+        let (router, client, client_proc, router_addr) = spawn_proc(alloc.transport()).await;
+        while running.is_empty() {
+            match alloc.next().await.unwrap() {
+                ProcState::Created {
+                    create_key, point, ..
+                } => {
+                    procs.insert(create_key, point);
+                }
+                ProcState::Running {
+                    create_key,
+                    proc_id,
+                    mesh_agent,
+                    addr,
+                } => {
+                    router.bind(Reference::Proc(proc_id.clone()), addr.clone());
+
+                    assert!(procs.contains_key(&create_key));
+                    assert!(!running.contains(&create_key));
+
+                    actor_ref = Some(
+                        spawn_test_actor(0, &client_proc, &client, router_addr, mesh_agent).await,
+                    );
+                    running.insert(create_key.clone());
+                    break;
+                }
+                event => panic!("unexpected event: {:?}", event),
+            }
+        }
+        assert!(actor_ref.unwrap().send(&client, Wait).is_ok());
+
+        // There is a stuck actor! We should get a watchdog failure.
+        alloc.stop().await.unwrap();
+        let mut stopped = HashSet::new();
+        while let Some(ProcState::Stopped {
+            create_key, reason, ..
+        }) = alloc.next().await
+        {
+            assert_eq!(reason, ProcStopReason::Watchdog);
             stopped.insert(create_key);
         }
         assert!(alloc.next().await.is_none());
