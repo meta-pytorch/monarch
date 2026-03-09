@@ -642,11 +642,7 @@ impl<A: Referable> ActorMeshRef<A> {
                     .expect("rank replacement should not fail");
 
                 let mut rank_headers = headers.clone();
-                multicast::set_cast_info_on_headers(
-                    &mut rank_headers,
-                    cast_point,
-                    sender.clone(),
-                );
+                multicast::set_cast_info_on_headers(&mut rank_headers, cast_point, sender.clone());
 
                 let port_id = actor_ids
                     .get(rank)
@@ -1483,8 +1479,7 @@ mod tests {
     #[cfg(fbcode_build)]
     async fn test_cast_p2p() {
         let config = hyperactor_config::global::lock();
-        let _guard =
-            config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        let _guard = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
         execute_cast(&config).await;
     }
 

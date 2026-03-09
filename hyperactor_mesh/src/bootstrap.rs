@@ -53,6 +53,7 @@ use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
@@ -207,7 +208,11 @@ pub(crate) enum Process2AllocatorMessage {
     /// served at the provided channel address. Procs are started
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
-    StartedProc(ProcId, ActorRef<ProcAgent>, ChannelAddr),
+    StartedProc(
+        ProcId,
+        hyperactor_reference::ActorRef<ProcAgent>,
+        ChannelAddr,
+    ),
 
     Heartbeat,
 }
