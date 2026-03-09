@@ -18,7 +18,7 @@
 //! ## Channel muxing
 //!
 //! A [`Host`] maintains a single frontend address, through which all procs are accessible
-//! through direct addressing: the id of each proc is the `ProcId::Direct(frontend_addr, proc_name)`.
+//! through direct addressing: the id of each proc is the `ProcId(frontend_addr, proc_name)`.
 //! In the following, the frontend address is denoted by `*`. The host listens on `*` and
 //! multiplexes messages based on the proc name. When spawning procs, the host maintains
 //! backend channels with separate addresses. In the diagram `#` is the backend address of
@@ -86,6 +86,29 @@ use crate::mailbox::MailboxServer;
 use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
+
+/// Name of the system service proc on a host — hosts the admin actor
+/// layer (HostMeshAgent, MeshAdminAgent, bridge).
+pub const SERVICE_PROC_NAME: &str = "service";
+
+/// Name of the local client proc on a host.
+///
+/// # Invariant LP-1 — Local proc lazy activation
+///
+/// The local proc always exists as a `ProcId::Direct(addr,
+/// LOCAL_PROC_NAME)` and is forwarded in-process by the host's mailbox
+/// muxer. However it starts with zero actors. A `ProcAgent` and root
+/// client actor are added only when
+/// `HostMeshAgent::handle(GetLocalProc)` is first called — which
+/// happens exactly once, lazily, via
+/// `monarch_hyperactor::bootstrap_host` (the Rust entry-point for
+/// Python's `this_proc()` / `this_host()`).
+///
+/// In pure-Rust programs (e.g. sieve, dining_philosophers)
+/// `GetLocalProc` is never sent, so the local proc remains empty
+/// throughout the program's lifetime. Code that inspects the local
+/// proc's actors must not assume they exist.
+pub const LOCAL_PROC_NAME: &str = "local";
 
 /// The type of error produced by host operations.
 #[derive(Debug, thiserror::Error)]
@@ -163,10 +186,10 @@ impl<M: ProcManager> Host<M> {
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
         // Set up a system proc. This is often used to manage the host itself.
-        let service_proc_id = ProcId::Direct(frontend_addr.clone(), "service".to_string());
+        let service_proc_id = ProcId(frontend_addr.clone(), SERVICE_PROC_NAME.to_string());
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId::Direct(frontend_addr.clone(), "local".to_string());
+        let local_proc_id = ProcId(frontend_addr.clone(), LOCAL_PROC_NAME.to_string());
         let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
@@ -216,8 +239,10 @@ impl<M: ProcManager> Host<M> {
         &self.service_proc
     }
 
-    /// The local proc associated with this host.
-    /// This is the local proc used in processes that are also hosts.
+    /// The local proc associated with this host (`LOCAL_PROC_NAME`).
+    ///
+    /// Starts with zero actors; see invariant LP-1 on
+    /// [`LOCAL_PROC_NAME`] for activation semantics.
     pub fn local_proc(&self) -> &Proc {
         &self.local_proc
     }
@@ -225,7 +250,7 @@ impl<M: ProcManager> Host<M> {
     /// Spawn a new process with the given `name`. On success, the
     /// proc has been spawned, and is reachable through the returned,
     /// direct-addressed ProcId, which will be
-    /// `ProcId::Direct(self.addr(), name)`.
+    /// `ProcId(self.addr(), name)`.
     pub async fn spawn(
         &mut self,
         name: String,
@@ -235,7 +260,7 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = ProcId::Direct(self.frontend_addr.clone(), name.clone());
+        let proc_id = ProcId(self.frontend_addr.clone(), name.clone());
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
@@ -739,6 +764,18 @@ pub trait ProcManager {
 /// ```
 pub type ManagerAgent<M> = <<M as ProcManager>::Handle as ProcHandle>::Agent; // rust issue #112792
 
+/// Lifecycle status for procs managed by [`LocalProcManager`].
+///
+/// Used by [`LocalProcManager::request_stop`] to track background
+/// teardown progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalProcStatus {
+    /// A stop has been requested but teardown is still in progress.
+    Stopping,
+    /// Teardown completed.
+    Stopped,
+}
+
 /// A ProcManager that spawns **in-process** procs (test-only).
 ///
 /// The proc runs inside this same OS process; there is **no** child
@@ -753,6 +790,7 @@ pub type ManagerAgent<M> = <<M as ProcManager>::Handle as ProcHandle>::Agent; //
 ///   No OS signals are sent or required.
 pub struct LocalProcManager<S> {
     procs: Arc<Mutex<HashMap<ProcId, Proc>>>,
+    stopping: Arc<Mutex<HashMap<ProcId, LocalProcStatus>>>,
     spawn: S,
 }
 
@@ -762,8 +800,61 @@ impl<S> LocalProcManager<S> {
     pub fn new(spawn: S) -> Self {
         Self {
             procs: Arc::new(Mutex::new(HashMap::new())),
+            stopping: Arc::new(Mutex::new(HashMap::new())),
             spawn,
         }
+    }
+
+    /// Non-blocking stop: remove the proc and spawn a background task
+    /// that tears it down.
+    ///
+    /// Status transitions through `Stopping` -> `Stopped` and is
+    /// observable via [`local_proc_status`]. Idempotent: no-ops if
+    /// the proc is already stopping or stopped.
+    pub async fn request_stop(&self, proc: &ProcId, timeout: Duration, reason: &str) {
+        {
+            let guard = self.stopping.lock().await;
+            if guard.contains_key(proc) {
+                return;
+            }
+        }
+
+        let mut proc_handle = {
+            let mut guard = self.procs.lock().await;
+            match guard.remove(proc) {
+                Some(p) => p,
+                None => return,
+            }
+        };
+
+        let proc_id = proc_handle.proc_id().clone();
+        self.stopping
+            .lock()
+            .await
+            .insert(proc_id.clone(), LocalProcStatus::Stopping);
+
+        let stopping = Arc::clone(&self.stopping);
+        let reason = reason.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = proc_handle
+                .destroy_and_wait::<()>(timeout, None, &reason)
+                .await
+            {
+                tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
+            }
+            stopping
+                .lock()
+                .await
+                .insert(proc_id, LocalProcStatus::Stopped);
+        });
+    }
+
+    /// Query the lifecycle status of a proc that was stopped via
+    /// [`request_stop`].
+    ///
+    /// Returns `None` if the proc was never stopped through this path.
+    pub async fn local_proc_status(&self, proc: &ProcId) -> Option<LocalProcStatus> {
+        self.stopping.lock().await.get(proc).copied()
     }
 }
 
@@ -1337,17 +1428,14 @@ mod tests {
     #[tokio::test]
     async fn test_basic() {
         let proc_manager =
-            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("agent", ()) });
+            LocalProcManager::new(|proc: Proc| async move { proc.spawn::<()>("host_agent", ()) });
         let procs = Arc::clone(&proc_manager.procs);
         let mut host = Host::new(proc_manager, ChannelAddr::any(ChannelTransport::Local))
             .await
             .unwrap();
 
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
-        assert_eq!(
-            proc_id1,
-            ProcId::Direct(host.addr().clone(), "proc1".to_string())
-        );
+        assert_eq!(proc_id1, ProcId(host.addr().clone(), "proc1".to_string()));
         assert!(procs.lock().await.contains_key(&proc_id1));
 
         let (proc_id2, _ref) = host.spawn("proc2".to_string(), ()).await.unwrap();
@@ -1403,7 +1491,7 @@ mod tests {
     async fn test_process_proc_manager() {
         hyperactor_telemetry::initialize_logging(crate::clock::ClockKind::default());
 
-        // EchoActor is "agent" used to test connectivity.
+        // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
             buck_resources::get("monarch/hyperactor/bootstrap").unwrap(),
         );
@@ -1488,8 +1576,8 @@ mod tests {
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = ProcId::Direct(addr.clone(), "p".into());
-        let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
+        let proc_id = ProcId(addr.clone(), "p".into());
+        let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
         let h = LocalHandle::<()> {
             proc_id,
             addr,
@@ -1619,7 +1707,7 @@ mod tests {
             forwarder_addr: ChannelAddr,
             _config: (),
         ) -> Result<Self::Handle, HostError> {
-            let agent = ActorRef::<()>::attest(proc_id.actor_id("agent", 0));
+            let agent = ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
             Ok(TestHandle {
                 id: proc_id,
                 addr: forwarder_addr,

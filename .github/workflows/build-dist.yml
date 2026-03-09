@@ -66,9 +66,11 @@ jobs:
         else
           export MONARCH_VERSION=0.4.0.dev$(date +'%Y%m%d')
         fi
-        export MONARCH_BUILD_MESH_ONLY=0
-
         python setup.py bdist_wheel
+
+        echo "=== sccache stats ==="
+        sccache --show-stats
+        echo "=== end sccache stats ==="
 
         # Rename to manylinux2014 for PyPI compatibility
         find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;

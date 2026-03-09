@@ -9,10 +9,8 @@
 use std::any::type_name;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::ops::Deref;
 use std::panic::Location;
 use std::sync::Arc;
@@ -68,14 +66,14 @@ use crate::alloc::AllocExt;
 use crate::alloc::AllocatedProc;
 use crate::assign::Ranks;
 use crate::comm::CommMeshConfig;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
-use crate::mesh_agent;
-use crate::mesh_agent::ActorState;
-use crate::mesh_agent::MeshAgentMessageClient;
-use crate::mesh_agent::ProcMeshAgent;
-use crate::mesh_agent::ReconfigurableMailboxSender;
 use crate::mesh_controller::ActorMeshController;
+use crate::proc_agent;
+use crate::proc_agent::ActorState;
+use crate::proc_agent::MeshAgentMessageClient;
+use crate::proc_agent::ProcAgent;
+use crate::proc_agent::ReconfigurableMailboxSender;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
@@ -91,13 +89,19 @@ declare_attrs! {
     pub attr ACTOR_SPAWN_MAX_IDLE: Duration = Duration::from_secs(30);
 
     /// The maximum idle time between updates while waiting for a response to GetState
-    /// from ProcMeshAgent.
+    /// from ProcAgent.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_GET_ACTOR_STATE_MAX_IDLE".to_string()),
         Some("get_actor_state_max_idle".to_string()),
     ))
     pub attr GET_ACTOR_STATE_MAX_IDLE: Duration = Duration::from_secs(30);
 }
+
+/// Name used for the mesh communication actor spawned on each user proc.
+///
+/// The `CommActor` enables proc-to-proc mesh messaging and is always
+/// present as a system actor (`system_children`) on every proc mesh member.
+pub const COMM_ACTOR_NAME: &str = "comm";
 
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -106,12 +110,12 @@ pub struct ProcRef {
     /// The rank of this proc at creation.
     create_rank: usize,
     /// The agent managing this proc.
-    agent: ActorRef<ProcMeshAgent>,
+    agent: ActorRef<ProcAgent>,
 }
 
 impl ProcRef {
     /// Create a new proc ref from the provided id, create rank and agent.
-    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcMeshAgent>) -> Self {
+    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcAgent>) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -135,50 +139,6 @@ impl ProcRef {
             if rank == self.create_rank {
                 break Ok(status);
             }
-        }
-    }
-
-    /// Get the supervision events for one actor with the given name.
-    #[allow(dead_code)]
-    async fn actor_state(
-        &self,
-        cx: &impl context::Actor,
-        name: Name,
-    ) -> crate::Result<resource::State<ActorState>> {
-        let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
-        self.agent
-            .send(
-                cx,
-                resource::GetState::<ActorState> {
-                    name: name.clone(),
-                    reply: port.bind(),
-                },
-            )
-            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
-        let state = rx
-            .recv()
-            .await
-            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
-        if let Some(ref inner) = state.state {
-            let rank = inner.create_rank;
-            if rank == self.create_rank {
-                Ok(state)
-            } else {
-                Err(Error::CallError(
-                    self.agent.actor_id().clone(),
-                    anyhow::anyhow!(
-                        "Rank on mesh agent not matching for Actor {}: returned {}, expected {}",
-                        name,
-                        rank,
-                        self.create_rank
-                    ),
-                ))
-            }
-        } else {
-            Err(Error::CallError(
-                self.agent.actor_id().clone(),
-                anyhow::anyhow!("Actor {} does not exist", name),
-            ))
         }
     }
 
@@ -219,7 +179,7 @@ impl ProcMesh {
         C::A: Handler<MeshFailure>,
     {
         let comm_actor_name = if spawn_comm_actor {
-            Some(Name::new("comm").unwrap())
+            Some(Name::new(COMM_ACTOR_NAME).unwrap())
         } else {
             None
         };
@@ -227,11 +187,11 @@ impl ProcMesh {
         let region = allocation.extent().clone().into();
         let ranks = allocation.ranks();
 
-        // Set the global supervision sink to the first ProcMeshAgent's
+        // Set the global supervision sink to the first ProcAgent's
         // supervision event handler. Last-mesh-wins semantics: if a
         // previous mesh installed a sink, it is replaced.
         if let Some(first) = ranks.first() {
-            crate::global_client::set_global_supervision_sink(
+            crate::global_context::set_global_supervision_sink(
                 first.agent.port::<ActorSupervisionEvent>(),
             );
         }
@@ -255,22 +215,16 @@ impl ProcMesh {
         )
         .unwrap();
 
-        // Notify telemetry that the ProcMeshAgent mesh was created.
+        // Notify telemetry that the ProcAgent mesh was created.
         {
             let name_str = name.to_string();
-            let mut mesh_hasher = DefaultHasher::new();
-            name_str.hash(&mut mesh_hasher);
-            let mesh_id_hash = mesh_hasher.finish();
+            let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
             let (parent_mesh_id, parent_view_json) = match host_mesh {
-                Some(hm) => {
-                    let mut parent_hasher = DefaultHasher::new();
-                    hm.name().to_string().hash(&mut parent_hasher);
-                    (
-                        Some(parent_hasher.finish()),
-                        serde_json::to_string(hm.region()).ok(),
-                    )
-                }
+                Some(hm) => (
+                    Some(hyperactor_telemetry::hash_to_u64(&hm.name().to_string())),
+                    serde_json::to_string(hm.region()).ok(),
+                ),
                 None => (None, None),
             };
 
@@ -284,6 +238,22 @@ impl ProcMesh {
                 parent_mesh_id,
                 parent_view_json,
             });
+
+            // Notify telemetry of each ProcAgent actor in this mesh.
+            // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
+            let now = RealClock.system_time_now();
+            for rank in current_ref.ranks.iter() {
+                let actor_id = rank.agent.actor_id();
+
+                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                    id: hyperactor_telemetry::hash_to_u64(actor_id),
+                    timestamp: now,
+                    mesh_id: mesh_id_hash,
+                    rank: rank.create_rank as u64,
+                    full_name: actor_id.to_string(),
+                    display_name: None,
+                });
+            }
         }
 
         let mut proc_mesh = Self {
@@ -416,12 +386,16 @@ impl ProcMesh {
         };
 
         let bind_allocated_procs = |router: &DialMailboxRouter| {
-            // Route all of the allocated procs:
+            // Bind procs whose ProcId address differs from their mailbox
+            // serving address. In the v0 bootstrap path, the ProcId embeds
+            // the bootstrap channel address while the proc's mailbox is
+            // served on a separate address. Without an explicit binding the
+            // DialMailboxRouter would direct-dial the bootstrap channel
+            // (which expects Allocator2Process, not MessageEnvelope).
             for AllocatedProc { proc_id, addr, .. } in running.iter() {
-                if proc_id.is_direct() {
-                    continue;
+                if proc_id.addr() != addr {
+                    router.bind(proc_id.clone().into(), addr.clone());
                 }
-                router.bind(proc_id.clone().into(), addr.clone());
             }
         };
 
@@ -497,7 +471,7 @@ impl ProcMesh {
 
         let stop = Arc::new(Notify::new());
         let extent = alloc.extent().clone();
-        let alloc_name = alloc.world_id().to_string();
+        let alloc_name = alloc.alloc_name().to_string();
 
         let alloc_task = {
             let stop = Arc::clone(&stop);
@@ -511,7 +485,7 @@ impl ProcMesh {
                                 if let Err(error) = alloc.stop_and_wait().await {
                                     tracing::error!(
                                         name = "ProcMeshStatus",
-                                        alloc_name = %alloc.world_id(),
+                                        alloc_name = %alloc.alloc_name(),
                                         status = "FailedToStopAlloc",
                                         %error,
                                     );
@@ -525,7 +499,7 @@ impl ProcMesh {
                                     None => break,
                                     Some(proc_state) => {
                                         tracing::debug!(
-                                            alloc_name = %alloc.world_id(),
+                                            alloc_name = %alloc.alloc_name(),
                                             "unmonitored allocation event: {}", proc_state);
                                     }
                                 }
@@ -803,31 +777,53 @@ impl ProcMeshRef {
         vm.join().await.transpose()
     }
 
-    pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcMeshAgent> {
+    pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcAgent> {
         let agent_name = self.ranks.first().unwrap().agent.actor_id().name();
-        // This name must match the ProcMeshAgent name, which can change depending on the allocator.
+        // This name must match the ProcAgent name, which can change depending on the allocator.
         // Since we control the agent_name, it is guaranteed to be a valid mesh identifier.
-        // No controller for the ProcMeshAgent mesh.
+        // No controller for the ProcAgent mesh.
         ActorMeshRef::new(Name::new_reserved(agent_name).unwrap(), self.clone(), None)
     }
 
-    /// The supervision events of procs in this mesh.
+    /// Query the state of all actors in this mesh matching "name".
     pub async fn actor_states(
         &self,
         cx: &impl context::Actor,
         name: Name,
     ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
+        self.actor_states_with_keepalive(cx, name, None).await
+    }
+
+    /// Query the state of all actors in this mesh matching "name".
+    /// If keepalive is Some, use a message that indicates to the recipient
+    /// that the owner of the mesh is still alive, along with the expiry time
+    /// after which the actor should be considered orphaned. Else, use a normal
+    /// state query.
+    pub(crate) async fn actor_states_with_keepalive(
+        &self,
+        cx: &impl context::Actor,
+        name: Name,
+        keepalive: Option<std::time::SystemTime>,
+    ) -> crate::Result<ValueMesh<resource::State<ActorState>>> {
         let agent_mesh = self.agent_mesh();
         let (port, mut rx) = cx.mailbox().open_port::<resource::State<ActorState>>();
         // TODO: Use accumulation to get back a single value (representing whether
         // *any* of the actors failed) instead of a mesh.
-        agent_mesh.cast(
-            cx,
-            resource::GetState::<ActorState> {
-                name: name.clone(),
-                reply: port.bind(),
-            },
-        )?;
+        let get_state = resource::GetState::<ActorState> {
+            name: name.clone(),
+            reply: port.bind(),
+        };
+        if let Some(expires_after) = keepalive {
+            agent_mesh.cast(
+                cx,
+                resource::KeepaliveGetState {
+                    expires_after,
+                    get_state,
+                },
+            )?;
+        } else {
+            agent_mesh.cast(cx, get_state)?;
+        }
         let expected = self.ranks.len();
         let mut states = Vec::with_capacity(expected);
         let timeout = hyperactor_config::global::get(GET_ACTOR_STATE_MAX_IDLE);
@@ -1054,10 +1050,10 @@ impl ProcMeshRef {
 
         agent_mesh.cast(
             cx,
-            resource::CreateOrUpdate::<mesh_agent::ActorSpec> {
+            resource::CreateOrUpdate::<proc_agent::ActorSpec> {
                 name: name.clone(),
                 rank: Default::default(),
-                spec: mesh_agent::ActorSpec {
+                spec: proc_agent::ActorSpec {
                     actor_type: actor_type.clone(),
                     params_data: serialized_params.clone(),
                 },
@@ -1122,7 +1118,7 @@ impl ProcMeshRef {
                 // `first_terminating().is_none()` semantics.
                 let has_terminating = statuses.values().any(|s| s.is_terminating());
                 if !has_terminating {
-                    Ok((statuses, ActorMesh::new(self.clone(), name, None)))
+                    Ok((statuses, ActorMesh::new(self.clone(), name.clone(), None)))
                 } else {
                     let legacy = mesh_to_rankedvalues_with_default(
                         &statuses,
@@ -1152,12 +1148,21 @@ impl ProcMeshRef {
             // mesh can be preserved.
             let controller: ActorMeshController<A> = ActorMeshController::new(
                 mesh.deref().clone(),
-                supervision_display_name,
+                supervision_display_name.clone(),
                 Some(cx.instance().port().bind()),
                 statuses,
             );
+            // AI-3: controller name must include mesh identity for
+            // proc-wide ActorId uniqueness. A fixed base name alone
+            // collides across parents because pid allocation is
+            // parent-scoped.
+            let controller_name = format!(
+                "{}_{}",
+                crate::mesh_controller::ACTOR_MESH_CONTROLLER_NAME,
+                mesh.name()
+            );
             let controller = controller
-                .spawn(cx)
+                .spawn_with_name(cx, &controller_name)
                 .map_err(|e| Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
             // Controller and ActorMesh both depend on references from each other, break
             // the cycle by setting the controller after the fact.
@@ -1167,17 +1172,12 @@ impl ProcMeshRef {
         {
             let name_str = mesh.name().to_string();
 
-            // Hash the actor mesh name -- must match the mesh_id hash in
-            // hyperactor::proc::Proc::spawn_actor (which hashes actor_id.name(),
-            // i.e. the same Name::to_string()).
-            let mut mesh_hasher = DefaultHasher::new();
-            name_str.hash(&mut mesh_hasher);
-            let mesh_id_hash = mesh_hasher.finish();
+            // Hash the actor mesh name. This is used as mesh_id for both
+            // the MeshEvent and the per-actor ActorEvents below.
+            let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
             // Hash the proc mesh name for parent_mesh_id.
-            let mut parent_hasher = DefaultHasher::new();
-            self.name().to_string().hash(&mut parent_hasher);
-            let parent_mesh_id_hash = parent_hasher.finish();
+            let parent_mesh_id_hash = hyperactor_telemetry::hash_to_u64(&self.name().to_string());
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
@@ -1189,6 +1189,26 @@ impl ProcMeshRef {
                 parent_mesh_id: Some(parent_mesh_id_hash),
                 parent_view_json: serde_json::to_string(self.region()).ok(),
             });
+
+            // Notify telemetry of each actor in this mesh. The rank is
+            // the actor's position within the actor mesh (not the proc's
+            // create_rank, which reflects the original unsliced mesh).
+            let now = RealClock.system_time_now();
+            for (rank, proc_ref) in self.ranks.iter().enumerate() {
+                let display_name = supervision_display_name.as_ref().map(|sdn| {
+                    let point = self.region().extent().point_of_rank(rank).unwrap();
+                    crate::actor_display_name(sdn, &point)
+                });
+                let actor_id = proc_ref.actor_id(&name);
+                hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                    id: hyperactor_telemetry::hash_to_u64(&actor_id),
+                    timestamp: now,
+                    mesh_id: mesh_id_hash,
+                    rank: rank as u64,
+                    full_name: actor_id.to_string(),
+                    display_name,
+                });
+            }
         }
 
         Ok(mesh)
@@ -1366,10 +1386,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proc_mesh_allocate() {
-        let (mesh, actor, router) = testing::local_proc_mesh(extent!(replica = 4)).await;
+        let (mesh, actor, _router) = testing::local_proc_mesh(extent!(replica = 4)).await;
         assert_eq!(mesh.extent(), extent!(replica = 4));
         assert_eq!(mesh.ranks.len(), 4);
-        assert!(!router.prefixes().is_empty());
 
         // All of the agents are alive, and reachable (both ways).
         for proc_ref in mesh.values() {

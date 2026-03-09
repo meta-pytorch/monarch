@@ -279,7 +279,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 ) as host2,
             ):
                 allocator = RemoteAllocator(
-                    world_id="test_remote_allocator",
+                    alloc_name="test_remote_allocator",
                     initializer=StaticRemoteAllocInitializer(host1, host2),
                 )
                 alloc = allocator.allocate(spec)
@@ -307,7 +307,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             initializer = DeletingAllocInitializer(host1, host2)
 
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=initializer,
             )
 
@@ -335,7 +335,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             RuntimeError, r"initializer must return non-empty list of addresses"
         ):
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=empty_initializer,
             )
             await allocator.allocate(
@@ -352,7 +352,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
             )
             proc_mesh = proc_mesh_from_alloc(allocator, spec)
@@ -369,7 +369,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         spec = AllocSpec(AllocConstraints(), host=2, gpu=4)
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
             )
 
@@ -394,7 +394,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         with remote_process_allocator():
             wrong_host = ChannelAddr.any(ChannelTransport.Unix)
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(wrong_host),
             )
             alloc = allocator.allocate(spec)
@@ -444,7 +444,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 remote_process_allocator() as host2,
             ):
                 allocator = RemoteAllocator(
-                    world_id="helloworld",
+                    alloc_name="helloworld",
                     initializer=StaticRemoteAllocInitializer(host1, host2),
                 )
                 spec = AllocSpec(AllocConstraints(), host=2, gpu=2)
@@ -465,7 +465,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
             )
             proc_mesh = proc_mesh_from_alloc(allocator, spec)
@@ -490,7 +490,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
             )
             proc_mesh = proc_mesh_from_alloc(allocator, spec)
@@ -524,7 +524,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
             )
             proc_mesh = proc_mesh_from_alloc(allocator, spec, setup=setup_env_vars)
@@ -550,7 +550,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         # create 2x process-allocators (on their own bind addresses) to simulate 2 hosts
         with remote_process_allocator() as host1, remote_process_allocator() as host2:
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1, host2),
             )
             proc_mesh = proc_mesh_from_alloc(allocator, spec)
@@ -579,7 +579,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             # Wait 3 seconds without making any processes, make sure it dies.
             await asyncio.sleep(3)
             allocator = RemoteAllocator(
-                world_id="test_remote_allocator",
+                alloc_name="test_remote_allocator",
                 initializer=StaticRemoteAllocInitializer(host1),
             )
             with self.assertRaisesRegex(
@@ -597,11 +597,11 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             remote_process_allocator() as host1_b,
         ):
             allocator_a = RemoteAllocator(
-                world_id="a",
+                alloc_name="a",
                 initializer=StaticRemoteAllocInitializer(host1_a),
             )
             allocator_b = RemoteAllocator(
-                world_id="b",
+                alloc_name="b",
                 initializer=StaticRemoteAllocInitializer(host1_b),
             )
 
@@ -627,7 +627,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
     async def test_torchx_remote_alloc_initializer_no_server(self) -> None:
         with mock.patch(SERVER_READY, return_value=None):
             initializer = TorchXRemoteAllocInitializer("slurm:///123")
-            allocator = RemoteAllocator(world_id="test", initializer=initializer)
+            allocator = RemoteAllocator(alloc_name="test", initializer=initializer)
 
             with self.assertRaisesRegex(
                 RuntimeError,
@@ -652,7 +652,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch(SERVER_READY, return_value=server):
             initializer = TorchXRemoteAllocInitializer("slurm:///123")
-            allocator = RemoteAllocator(world_id="test", initializer=initializer)
+            allocator = RemoteAllocator(alloc_name="test", initializer=initializer)
 
             with self.assertRaisesRegex(
                 RuntimeError,
@@ -686,7 +686,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
                 allocator = RemoteAllocator(
-                    world_id="test",
+                    alloc_name="test",
                     initializer=initializer,
                 )
                 spec = AllocSpec(AllocConstraints(), host=1, gpu=4)
@@ -721,7 +721,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
             with mock.patch(SERVER_READY, return_value=server):
                 initializer = TorchXRemoteAllocInitializer("local:///test", port=port)
                 allocator = RemoteAllocator(
-                    world_id="test",
+                    alloc_name="test",
                     initializer=initializer,
                 )
                 spec = AllocSpec(
@@ -758,7 +758,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
         with mock.patch(SERVER_READY, return_value=server):
             with self.assertRaisesRegex(RuntimeError, r"'y' not found in job: test"):
                 initializer = TorchXRemoteAllocInitializer("local:///test")
-                allocator = RemoteAllocator(world_id="test", initializer=initializer)
+                allocator = RemoteAllocator(alloc_name="test", initializer=initializer)
                 spec = AllocSpec(
                     AllocConstraints(match_labels={ALLOC_LABEL_PROC_MESH_NAME: "y"}),
                     host=1,
@@ -773,7 +773,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
 
         with remote_process_allocator() as host:
             allocator = RemoteAllocator(
-                world_id="test_actor_logger",
+                alloc_name="test_actor_logger",
                 initializer=StaticRemoteAllocInitializer(host),
             )
 
