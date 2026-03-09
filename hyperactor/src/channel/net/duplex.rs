@@ -26,7 +26,6 @@
 //! - `INITIATOR_TO_ACCEPTOR = 0x00`
 //! - `ACCEPTOR_TO_INITIATOR = 0x01`
 
-use std::io;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -34,7 +33,6 @@ use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
-use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -52,13 +50,16 @@ use super::session::Session;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
+use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::SendError;
 use crate::channel::Tx;
 use crate::channel::TxStatus;
+use crate::channel::net::Stream;
+use crate::channel::net::meta;
+use crate::channel::net::tls;
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::config;
 use crate::metrics;
 use crate::sync::mvar::MVar;
 
@@ -158,74 +159,68 @@ impl<M: RemoteMessage> Clone for DuplexTx<M> {
 pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     addr: ChannelAddr,
 ) -> Result<DuplexServer<In, Out>, ServerError> {
-    match addr {
-        ChannelAddr::Tcp(socket_addr) => {
-            let std_listener = std::net::TcpListener::bind(socket_addr)
-                .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(socket_addr), err))?;
-            std_listener
-                .set_nonblocking(true)
-                .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(socket_addr), e))?;
-            let tokio_listener = tokio::net::TcpListener::from_std(std_listener)
-                .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(socket_addr), e))?;
-            let local_addr = tokio_listener
-                .local_addr()
-                .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(socket_addr), err))?;
+    let (mut listener, channel_addr) = super::listen(addr)?;
 
-            let listener = super::tcp::TcpSocketListener {
-                inner: tokio_listener,
-                addr: local_addr,
-            };
-            let channel_addr = ChannelAddr::Tcp(local_addr);
-            serve_with_listener(listener, channel_addr)
-        }
-        ChannelAddr::Unix(ref unix_addr) => {
-            use std::os::unix::net::UnixDatagram as StdUnixDatagram;
-            use std::os::unix::net::UnixListener as StdUnixListener;
-
-            let caddr = addr.clone();
-            let maybe_listener = match unix_addr {
-                super::unix::SocketAddr::Bound(sock_addr) => StdUnixListener::bind_addr(sock_addr),
-                super::unix::SocketAddr::Unbound => StdUnixDatagram::unbound()
-                    .and_then(|u| u.local_addr())
-                    .and_then(|uaddr| StdUnixListener::bind_addr(&uaddr)),
-            };
-            let std_listener =
-                maybe_listener.map_err(|err| ServerError::Listen(caddr.clone(), err))?;
-            std_listener
-                .set_nonblocking(true)
-                .map_err(|err| ServerError::Listen(caddr.clone(), err))?;
-            let local_addr = std_listener
-                .local_addr()
-                .map_err(|err| ServerError::Resolve(caddr.clone(), err))?;
-            let tokio_listener = tokio::net::UnixListener::from_std(std_listener)
-                .map_err(|err| ServerError::Io(caddr, err))?;
-            let bound_addr = super::unix::SocketAddr::new(local_addr);
-            let listener = super::unix::UnixSocketListener {
-                inner: tokio_listener,
-                addr: bound_addr.clone(),
-            };
-            let channel_addr = ChannelAddr::Unix(bound_addr);
-            serve_with_listener(listener, channel_addr)
-        }
-        _ => Err(ServerError::Listen(
-            addr.clone(),
-            io::Error::other(format!("duplex not supported for transport: {}", addr)),
-        )),
-    }
-}
-
-/// Generic helper that wires a listener to the duplex listen loop.
-fn serve_with_listener<In: RemoteMessage, Out: RemoteMessage, L: super::Listener>(
-    listener: L,
-    channel_addr: ChannelAddr,
-) -> Result<DuplexServer<In, Out>, ServerError> {
     let (accept_tx, accept_rx) = mpsc::channel(16);
-
     let cancel_token = CancellationToken::new();
     let child_token = cancel_token.child_token();
+
+    let is_tls = matches!(
+        channel_addr.transport(),
+        ChannelTransport::Tls | ChannelTransport::MetaTls(_)
+    );
+    let dest = channel_addr.clone();
+    let prepare = move |stream: Box<dyn Stream>, source: ChannelAddr| {
+        let dest = dest.clone();
+        async move {
+            if is_tls {
+                let tls_acceptor = match dest.transport() {
+                    ChannelTransport::Tls => tls::tls_acceptor()?,
+                    _ => meta::tls_acceptor(true)?,
+                };
+                let mut tls_stream = tls_acceptor.accept(stream).await?;
+                let session_id = read_link_init(&mut tls_stream)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                Ok((session_id, Box::new(tls_stream) as Box<dyn Stream>))
+            } else {
+                let mut stream = stream;
+                let session_id = read_link_init(&mut stream)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                Ok((session_id, stream))
+            }
+        }
+    };
+
+    let sessions: Arc<DashMap<SessionId, MVar<Box<dyn Stream>>>> = Arc::new(DashMap::new());
+    let child_cancel = CancellationToken::new();
+    let dispatch_dest = channel_addr.clone();
+    let dispatch = {
+        let sessions = Arc::clone(&sessions);
+        let accept_tx = accept_tx.clone();
+        let child_cancel = child_cancel.clone();
+        let dest = dispatch_dest;
+        move |session_id: SessionId, stream: Box<dyn Stream>| {
+            let sessions = Arc::clone(&sessions);
+            let accept_tx = accept_tx.clone();
+            let cancel = child_cancel.child_token();
+            let dest = dest.clone();
+            async move {
+                dispatch_duplex_stream::<In, Out>(
+                    session_id, stream, &sessions, dest, &accept_tx, cancel,
+                )
+                .await;
+            }
+        }
+    };
+
     let ca = channel_addr.clone();
     let join_handle = tokio::spawn(async move {
-        duplex_listen::<In, Out, L>(listener, ca, accept_tx, child_token).await
+        let result =
+            super::server::accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
+        child_cancel.cancel();
+        result
     });
 
     let server_handle = ServerHandle::new(join_handle, cancel_token, channel_addr.clone());
@@ -245,10 +240,10 @@ enum Either {
 
 /// Dispatch a stream to the appropriate duplex session, creating one
 /// if this is the first connection for the given session ID.
-async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage, S: super::Stream>(
+async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
     session_id: SessionId,
-    stream: S,
-    sessions: &DashMap<SessionId, MVar<S>>,
+    stream: Box<dyn Stream>,
+    sessions: &DashMap<SessionId, MVar<Box<dyn Stream>>>,
     addr: ChannelAddr,
     accept_tx: &mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>,
     cancel: CancellationToken,
@@ -258,7 +253,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage, S: super:
         match entry {
             dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                let mvar: MVar<S> = MVar::empty();
+                let mvar: MVar<Box<dyn Stream>> = MVar::empty();
                 let link = AcceptorLink {
                     dest: addr.clone(),
                     session_id,
@@ -343,62 +338,6 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage, S: super:
     };
 
     mvar.put(stream).await;
-}
-
-/// Main listen loop for duplex connections. Uses AcceptorLink +
-/// Session with acquire/release per session.
-async fn duplex_listen<In: RemoteMessage, Out: RemoteMessage, L: super::Listener>(
-    mut listener: L,
-    listener_addr: ChannelAddr,
-    accept_tx: mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>,
-    cancel_token: CancellationToken,
-) -> Result<(), ServerError> {
-    let child_cancel_token = CancellationToken::new();
-    let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
-    let mut connections: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
-
-    let result: Result<(), ServerError> = loop {
-        tokio::select! {
-            result = listener.accept() => {
-                match result {
-                    Ok((mut stream, _peer_addr)) => {
-                        let sessions = Arc::clone(&sessions);
-                        let accept_tx = accept_tx.clone();
-                        let ct = child_cancel_token.child_token();
-                        let addr = listener_addr.clone();
-
-                        connections.spawn(async move {
-                            let session_id = read_link_init(&mut stream).await
-                                .map_err(|e| anyhow::anyhow!("LinkInit read failed: {e}"))?;
-
-                            dispatch_duplex_stream::<In, Out, _>(
-                                session_id, stream, &sessions, addr, &accept_tx, ct,
-                            )
-                            .await;
-                            Ok(())
-                        });
-                    }
-                    Err(err) => {
-                        tracing::info!(error = %err, "duplex accept error");
-                    }
-                }
-            }
-
-            _ = cancel_token.cancelled() => {
-                break Ok(());
-            }
-
-            result = session::join_nonempty(&mut connections) => {
-                if let Err(err) = result {
-                    tracing::info!(error = %err, "duplex connection task join error");
-                }
-            }
-        }
-    };
-
-    child_cancel_token.cancel();
-    while connections.join_next().await.is_some() {}
-    result
 }
 
 /// Establish a duplex (bidirectional) session over the given link.

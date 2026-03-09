@@ -73,10 +73,9 @@ use crate::clock::RealClock;
 
 pub mod duplex;
 mod framed;
-mod server;
+pub(super) mod server;
 pub(super) mod session;
 pub use server::ServerHandle;
-use server::serve;
 
 pub(crate) trait Stream:
     AsyncRead + AsyncWrite + Unpin + Send + Sync + Debug + 'static
@@ -416,6 +415,138 @@ pub(crate) trait Listener: Send + Unpin + 'static {
     async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError>;
 }
 
+/// Transport-agnostic listener that dispatches to the appropriate
+/// transport based on the channel address. TLS has no variant — it
+/// uses `Tcp` under the hood (the TLS handshake happens in `prepare`,
+/// not the listener).
+#[derive(Debug)]
+pub(crate) enum NetListener {
+    Tcp(tcp::TcpSocketListener),
+    Unix(unix::UnixSocketListener),
+}
+
+#[async_trait]
+impl Listener for NetListener {
+    type Stream = Box<dyn Stream>;
+
+    async fn accept(&mut self) -> Result<(Box<dyn Stream>, ChannelAddr), ServerError> {
+        match self {
+            Self::Tcp(l) => {
+                let (stream, addr) = l.accept().await?;
+                Ok((Box::new(stream), addr))
+            }
+            Self::Unix(l) => {
+                let (stream, addr) = l.accept().await?;
+                Ok((Box::new(stream), addr))
+            }
+        }
+    }
+}
+
+/// Bind a listener for the given channel address. Returns the listener
+/// and the canonical address callers should advertise (which encodes
+/// the transport — e.g. `ChannelAddr::Tls` for TLS).
+pub(crate) fn listen(addr: ChannelAddr) -> Result<(NetListener, ChannelAddr), ServerError> {
+    match addr {
+        ChannelAddr::Tcp(socket_addr) => {
+            let std_listener = std::net::TcpListener::bind(socket_addr)
+                .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(socket_addr), err))?;
+            std_listener
+                .set_nonblocking(true)
+                .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(socket_addr), e))?;
+            let tokio_listener = tokio::net::TcpListener::from_std(std_listener)
+                .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(socket_addr), e))?;
+            let local_addr = tokio_listener
+                .local_addr()
+                .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(socket_addr), err))?;
+            let listener = tcp::TcpSocketListener {
+                inner: tokio_listener,
+                addr: local_addr,
+            };
+            Ok((NetListener::Tcp(listener), ChannelAddr::Tcp(local_addr)))
+        }
+        ChannelAddr::Unix(ref unix_addr) => {
+            use std::os::unix::net::UnixDatagram as StdUnixDatagram;
+            use std::os::unix::net::UnixListener as StdUnixListener;
+
+            let caddr = addr.clone();
+            let maybe_listener = match unix_addr {
+                unix::SocketAddr::Bound(sock_addr) => StdUnixListener::bind_addr(sock_addr),
+                unix::SocketAddr::Unbound => StdUnixDatagram::unbound()
+                    .and_then(|u| u.local_addr())
+                    .and_then(|uaddr| StdUnixListener::bind_addr(&uaddr)),
+            };
+            let std_listener =
+                maybe_listener.map_err(|err| ServerError::Listen(caddr.clone(), err))?;
+            std_listener
+                .set_nonblocking(true)
+                .map_err(|err| ServerError::Listen(caddr.clone(), err))?;
+            let local_addr = std_listener
+                .local_addr()
+                .map_err(|err| ServerError::Resolve(caddr.clone(), err))?;
+            let tokio_listener = tokio::net::UnixListener::from_std(std_listener)
+                .map_err(|err| ServerError::Io(caddr, err))?;
+            let bound_addr = unix::SocketAddr::new(local_addr);
+            let listener = unix::UnixSocketListener {
+                inner: tokio_listener,
+                addr: bound_addr.clone(),
+            };
+            Ok((NetListener::Unix(listener), ChannelAddr::Unix(bound_addr)))
+        }
+        addr @ (ChannelAddr::Tls(_) | ChannelAddr::MetaTls(_)) => {
+            let is_meta = matches!(addr, ChannelAddr::MetaTls(_));
+            let tls_addr = match addr {
+                ChannelAddr::Tls(a) | ChannelAddr::MetaTls(a) => a,
+                _ => unreachable!(),
+            };
+            let TlsAddr { hostname, port } = tls_addr;
+            let make_channel_addr = |h: &str, p: Port| {
+                if is_meta {
+                    ChannelAddr::MetaTls(TlsAddr::new(h, p))
+                } else {
+                    ChannelAddr::Tls(TlsAddr::new(h, p))
+                }
+            };
+
+            let addrs: Vec<core::net::SocketAddr> = (hostname.as_ref(), port)
+                .to_socket_addrs()
+                .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
+                .collect();
+
+            if addrs.is_empty() {
+                return Err(ServerError::Resolve(
+                    make_channel_addr(&hostname, port),
+                    std::io::Error::other("no available socket addr"),
+                ));
+            }
+
+            let channel_addr = make_channel_addr(&hostname, port);
+            let std_listener = std::net::TcpListener::bind(&addrs[..])
+                .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
+            std_listener
+                .set_nonblocking(true)
+                .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
+            let tokio_listener = tokio::net::TcpListener::from_std(std_listener)
+                .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
+            let local_addr = tokio_listener
+                .local_addr()
+                .map_err(|err| ServerError::Resolve(channel_addr, err))?;
+            let listener = tcp::TcpSocketListener {
+                inner: tokio_listener,
+                addr: local_addr,
+            };
+            Ok((
+                NetListener::Tcp(listener),
+                make_channel_addr(&hostname, local_addr.port()),
+            ))
+        }
+        other => Err(ServerError::Listen(
+            other.clone(),
+            std::io::Error::other(format!("unsupported transport: {}", other)),
+        )),
+    }
+}
+
 /// Frames are the messages sent between clients and servers over sessions.
 #[derive(Debug, Serialize, Deserialize, EnumAsInner, PartialEq)]
 pub(super) enum Frame<M> {
@@ -556,8 +687,6 @@ pub(crate) mod unix {
 
     use core::str;
     use std::os::unix::net::SocketAddr as StdSocketAddr;
-    use std::os::unix::net::UnixDatagram as StdUnixDatagram;
-    use std::os::unix::net::UnixListener as StdUnixListener;
     use std::os::unix::net::UnixStream as StdUnixStream;
 
     use rand::Rng;
@@ -566,7 +695,6 @@ pub(crate) mod unix {
     use tokio::net::UnixStream;
 
     use super::*;
-    use crate::RemoteMessage;
 
     #[derive(Debug)]
     pub(crate) struct UnixLink {
@@ -652,37 +780,6 @@ pub(crate) mod unix {
             addr,
             session_id: SessionId::random(),
         }
-    }
-
-    /// Listen and serve connections on this socket address.
-    /// This function panics if thread-local tokio runtime is not set.
-    pub fn serve<M: RemoteMessage>(
-        addr: SocketAddr,
-    ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        let caddr = ChannelAddr::Unix(addr.clone());
-        let maybe_listener = match &addr {
-            SocketAddr::Bound(sock_addr) => StdUnixListener::bind_addr(sock_addr),
-            SocketAddr::Unbound => StdUnixDatagram::unbound()
-                .and_then(|u| u.local_addr())
-                .and_then(|uaddr| StdUnixListener::bind_addr(&uaddr)),
-        };
-        let std_listener = maybe_listener
-            .map_err(|err| ServerError::Listen(ChannelAddr::Unix(addr.clone()), err))?;
-
-        std_listener
-            .set_nonblocking(true)
-            .map_err(|err| ServerError::Listen(caddr.clone(), err))?;
-        let local_addr = std_listener
-            .local_addr()
-            .map_err(|err| ServerError::Resolve(caddr.clone(), err))?;
-        let tokio_listener: UnixListener = UnixListener::from_std(std_listener)
-            .map_err(|err| ServerError::Io(caddr.clone(), err))?;
-        let bound_addr = SocketAddr::new(local_addr);
-        let listener = UnixSocketListener {
-            inner: tokio_listener,
-            addr: bound_addr.clone(),
-        };
-        super::serve(listener, ChannelAddr::Unix(bound_addr), false)
     }
 
     /// Wrapper around std-lib's unix::SocketAddr that lets us implement equality functions
@@ -889,7 +986,6 @@ pub(crate) mod tcp {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::RemoteMessage;
 
     #[derive(Debug)]
     pub(crate) struct TcpLink {
@@ -975,30 +1071,6 @@ pub(crate) mod tcp {
             session_id: SessionId::random(),
         }
     }
-
-    /// Serve the given address. Supports both v4 and v6 address. If port 0 is provided as
-    /// dynamic port will be resolved and is available on the returned ServerHandle.
-    pub fn serve<M: RemoteMessage>(
-        addr: SocketAddr,
-    ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        // Construct our own std TcpListener to avoid having to await, making this function
-        // non-async.
-        let std_listener = std::net::TcpListener::bind(addr)
-            .map_err(|err| ServerError::Listen(ChannelAddr::Tcp(addr), err))?;
-        std_listener
-            .set_nonblocking(true)
-            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
-        let tokio_listener = TcpListener::from_std(std_listener)
-            .map_err(|e| ServerError::Listen(ChannelAddr::Tcp(addr), e))?;
-        let local_addr = tokio_listener
-            .local_addr()
-            .map_err(|err| ServerError::Resolve(ChannelAddr::Tcp(addr), err))?;
-        let listener = TcpSocketListener {
-            inner: tokio_listener,
-            addr: local_addr,
-        };
-        super::serve(listener, ChannelAddr::Tcp(local_addr), false)
-    }
 }
 
 // TODO: Try to simplify the TLS creation T208304433
@@ -1012,7 +1084,6 @@ pub(crate) mod meta {
     use tokio_rustls::TlsConnector;
 
     use super::*;
-    use crate::RemoteMessage;
     use crate::config::Pem;
     use crate::config::PemBundle;
 
@@ -1128,13 +1199,6 @@ pub(crate) mod meta {
             session_id: SessionId::random(),
         })
     }
-
-    /// Serve the given address. If port 0 is provided in a Host address,
-    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
-    /// For Host addresses, binds to all resolved socket addresses.
-    pub fn serve<M: RemoteMessage>(addr: TlsAddr) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        tls::serve_with_acceptor(addr, tls::TlsAddrType::MetaTls)
-    }
 }
 
 /// TLS transport module using configurable certificates via hyperactor config attributes.
@@ -1149,14 +1213,12 @@ pub(crate) mod tls {
     use rustls::pki_types::CertificateDer;
     use rustls::pki_types::PrivateKeyDer;
     use rustls::pki_types::ServerName;
-    use tokio::net::TcpListener;
     use tokio::net::TcpStream;
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::TlsConnector;
     use tokio_rustls::client::TlsStream;
 
     use super::*;
-    use crate::RemoteMessage;
     use crate::channel::TlsAddr;
     use crate::config::Pem;
     use crate::config::PemBundle;
@@ -1396,69 +1458,13 @@ pub(crate) mod tls {
         })
     }
 
-    /// Shared serve helper for TLS transports.
-    pub(super) fn serve_with_acceptor<M: RemoteMessage>(
-        addr: TlsAddr,
-        addr_type: TlsAddrType,
-    ) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        let TlsAddr { hostname, port } = addr;
-
-        // Resolve all addresses for the hostname
-        let make_channel_addr = |h: &str, p: Port| match addr_type {
-            TlsAddrType::Tls => ChannelAddr::Tls(TlsAddr::new(h, p)),
-            TlsAddrType::MetaTls => ChannelAddr::MetaTls(TlsAddr::new(h, p)),
-        };
-
-        let addrs: Vec<SocketAddr> = (hostname.as_ref(), port)
-            .to_socket_addrs()
-            .map_err(|err| ServerError::Resolve(make_channel_addr(&hostname, port), err))?
-            .collect();
-
-        if addrs.is_empty() {
-            return Err(ServerError::Resolve(
-                make_channel_addr(&hostname, port),
-                io::Error::other("no available socket addr"),
-            ));
-        }
-
-        let channel_addr = make_channel_addr(&hostname, port);
-
-        // Bind to all resolved addresses
-        let std_listener = std::net::TcpListener::bind(&addrs[..])
-            .map_err(|err| ServerError::Listen(channel_addr.clone(), err))?;
-        std_listener
-            .set_nonblocking(true)
-            .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-        let tokio_listener = TcpListener::from_std(std_listener)
-            .map_err(|e| ServerError::Listen(channel_addr.clone(), e))?;
-
-        let local_addr = tokio_listener
-            .local_addr()
-            .map_err(|err| ServerError::Resolve(channel_addr, err))?;
-        let listener = super::tcp::TcpSocketListener {
-            inner: tokio_listener,
-            addr: local_addr,
-        };
-        super::serve(
-            listener,
-            make_channel_addr(&hostname, local_addr.port()),
-            true,
-        )
-    }
-
-    /// Serve the given address. If port 0 is provided in a Host address,
-    /// a dynamic port will be resolved and is available in the returned ChannelAddr.
-    /// For Host addresses, binds to all resolved socket addresses.
-    pub fn serve<M: RemoteMessage>(addr: TlsAddr) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
-        serve_with_acceptor(addr, TlsAddrType::Tls)
-    }
-
     #[cfg(test)]
     mod tests {
         use timed_test::async_timed_test;
 
         use super::*;
         use crate::channel::Rx;
+        use crate::channel::net::server;
         use crate::config::Pem;
         use crate::config::TLS_CA;
         use crate::config::TLS_CERT;
@@ -1558,7 +1564,8 @@ u19txmtkiMEH+aNmekk=
             // Create a TLS server bound to localhost with dynamic port
             let addr = TlsAddr::new("localhost", 0);
 
-            let (local_addr, mut rx) = serve::<u64>(addr).expect("failed to serve");
+            let (local_addr, mut rx) =
+                server::serve::<u64>(ChannelAddr::Tls(addr)).expect("failed to serve");
 
             // Dial the server
             let tx: super::NetTx<u64> = super::spawn(
@@ -1592,7 +1599,8 @@ u19txmtkiMEH+aNmekk=
 
             let addr = TlsAddr::new("localhost", 0);
 
-            let (local_addr, mut rx) = serve::<String>(addr).expect("failed to serve");
+            let (local_addr, mut rx) =
+                server::serve::<String>(ChannelAddr::Tls(addr)).expect("failed to serve");
             let tx: super::NetTx<String> = super::spawn(
                 link(match &local_addr {
                     ChannelAddr::Tls(addr) => addr.clone(),
@@ -1811,6 +1819,7 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
+    use super::server;
     use super::*;
     use crate::channel;
     use crate::channel::net::framed::FrameReader;
@@ -1844,9 +1853,10 @@ mod tests {
             .as_nanos();
         let unique_address = format!("test_unix_basic_{}", timestamp);
 
-        let (addr, mut rx) =
-            net::unix::serve::<u64>(unix::SocketAddr::from_abstract_name(&unique_address)?)
-                .unwrap();
+        let (addr, mut rx) = server::serve::<u64>(ChannelAddr::Unix(
+            unix::SocketAddr::from_abstract_name(&unique_address)?,
+        ))
+        .unwrap();
 
         // It is important to keep Tx alive until all expected messages are
         // received. Otherwise, the channel would be closed when Tx is dropped.
@@ -1909,7 +1919,7 @@ mod tests {
         let tx = crate::channel::dial::<u64>(addr.clone()).unwrap();
         tx.post(123);
 
-        let (_, mut rx) = net::unix::serve::<u64>(socket_addr).unwrap();
+        let (_, mut rx) = server::serve::<u64>(ChannelAddr::Unix(socket_addr)).unwrap();
         assert_eq!(rx.recv().await.unwrap(), 123);
 
         tx.post(321);
@@ -1928,7 +1938,8 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: Listen(Tcp([::1]:0), Os { code: 99, kind: AddrNotAvailable, message: "Cannot assign requested address" })
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_tcp_basic() {
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) =
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
         {
             let tx = channel::dial::<u64>(addr.clone()).unwrap();
             tx.post(123);
@@ -1974,7 +1985,8 @@ mod tests {
         let _guard1 = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(1));
         let _guard2 = config.override_key(config::CODEC_MAX_FRAME_LENGTH, default_size_in_bytes);
 
-        let (addr, mut rx) = tcp::serve::<String>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) =
+            server::serve::<String>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
 
         let tx = channel::dial::<String>(addr.clone()).unwrap();
         // Default size is okay
@@ -2006,7 +2018,8 @@ mod tests {
         let _guard_delivery_timeout =
             config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_secs(5));
 
-        let (addr, mut net_rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut net_rx) =
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
         let net_tx = channel::dial::<u64>(addr.clone()).unwrap();
         let (tx, rx) = oneshot::channel();
         net_tx.try_post(1, tx);
@@ -2028,7 +2041,7 @@ mod tests {
             ChannelAddr::MetaTls(meta_addr) => meta_addr,
             _ => panic!("expected MetaTls address"),
         };
-        let (local_addr, mut rx) = net::meta::serve::<u64>(meta_addr).unwrap();
+        let (local_addr, mut rx) = server::serve::<u64>(ChannelAddr::MetaTls(meta_addr)).unwrap();
         {
             let tx = channel::dial::<u64>(local_addr.clone()).unwrap();
             tx.post(123);
@@ -3111,7 +3124,7 @@ mod tests {
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.channel_addr.clone();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
-            super::serve(listener, local_addr, false).unwrap();
+            super::server::serve_with_listener(listener, local_addr).unwrap();
         let tx = spawn::<u64>(link);
         let messages: Vec<_> = (0..10001).collect();
         let messages_clone = messages.clone();
@@ -3190,7 +3203,7 @@ mod tests {
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
         let local_addr = listener.channel_addr.clone();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
-            super::serve(listener, local_addr, false).unwrap();
+            super::server::serve_with_listener(listener, local_addr).unwrap();
         let tx = spawn::<u64>(link);
         let messages: Vec<_> = (0..20001).collect();
         let messages_clone = messages.clone();
@@ -3254,7 +3267,7 @@ mod tests {
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
 
         let socket_addr: SocketAddr = "[::1]:0".parse().unwrap();
-        let (local_addr, mut rx) = tcp::serve::<String>(socket_addr).unwrap();
+        let (local_addr, mut rx) = server::serve::<String>(ChannelAddr::Tcp(socket_addr)).unwrap();
 
         // Test with 10 connections (senders), each sends 500K messages, 5M messages in total.
         let total_num_msgs = 500000;
@@ -3361,7 +3374,8 @@ mod tests {
 
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_DELIVERY_TIMEOUT, Duration::from_mins(5));
-        let (addr, mut rx) = tcp::serve::<u64>("[::1]:0".parse().unwrap()).unwrap();
+        let (addr, mut rx) =
+            server::serve::<u64>(ChannelAddr::Tcp("[::1]:0".parse().unwrap())).unwrap();
         let socket_addr = match addr {
             ChannelAddr::Tcp(a) => a,
             _ => panic!("unexpected channel type"),
