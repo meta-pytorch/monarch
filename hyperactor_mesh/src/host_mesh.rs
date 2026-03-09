@@ -123,12 +123,12 @@ impl HostRef {
 
     /// The ProcId for the proc with name `name` on this host.
     fn named_proc(&self, name: &Name) -> ProcId {
-        ProcId(self.0.clone(), name.to_string())
+        ProcId::with_name(self.0.clone(), name.to_string())
     }
 
     /// The service proc on this host.
     fn service_proc(&self) -> ProcId {
-        ProcId(self.0.clone(), SERVICE_PROC_NAME.to_string())
+        ProcId::with_name(self.0.clone(), SERVICE_PROC_NAME)
     }
 
     /// Request an orderly teardown of this host and all procs it

@@ -957,8 +957,8 @@ mod tests {
                     ..
                 }),
             } if name == resource_name
-              && proc_id == ProcId(host_addr.clone(), name.to_string())
-              && mesh_agent == ActorRef::attest(ProcId(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
+              && proc_id == ProcId::with_name(host_addr.clone(), name.to_string())
+              && mesh_agent == ActorRef::attest(ProcId::with_name(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
               && mesh_agent == proc_status_mesh_agent
         );
     }

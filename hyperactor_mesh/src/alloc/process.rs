@@ -538,8 +538,10 @@ impl ProcessAlloc {
                         // For spawned processes, we use a temporary placeholder ProcId.
                         // The actual ProcId will be set when the process calls Hello with its address.
                         let temp_addr = ChannelAddr::any(ChannelTransport::Local);
-                        let proc_id =
-                            ProcId(temp_addr, format!("{}_{}", self.alloc_name.name(), rank));
+                        let proc_id = ProcId::with_name(
+                            temp_addr,
+                            format!("{}_{}", self.alloc_name.name(), rank),
+                        );
                         let (handle, monitor) =
                             Child::monitored(rank, process, log_channel, tail_size, proc_id);
 
@@ -610,7 +612,7 @@ impl Alloc for ProcessAlloc {
                                 None => format!("{}_{}", self.name, index),
                             };
                             child.post(Allocator2Process::StartProc(
-                                ProcId(addr.clone(), proc_name),
+                                ProcId::with_name(addr.clone(), proc_name),
                                 transport,
                             ));
                         }

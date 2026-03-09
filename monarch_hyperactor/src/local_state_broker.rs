@@ -90,7 +90,7 @@ impl BrokerId {
         use std::time::Duration;
 
         let broker_name = format!("{:?}", self);
-        let actor_id = ActorId(cx.proc().proc_id().clone(), self.0, self.1);
+        let actor_id = ActorId::new(cx.proc().proc_id().clone(), self.0.clone(), self.1);
         let actor_ref: ActorRef<LocalStateBrokerActor> = ActorRef::attest(actor_id);
 
         let mut delay_ms = 1;

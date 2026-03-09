@@ -172,7 +172,7 @@ impl Alloc for LocalAlloc {
                         Some(name) => name.clone(),
                         None => format!("{}_{}", self.alloc_name.name(), rank),
                     };
-                    let proc_id = ProcId(addr.clone(), proc_name);
+                    let proc_id = ProcId::with_name(addr.clone(), proc_name);
 
                     let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match ProcAgent::bootstrap(proc_id.clone()).await {

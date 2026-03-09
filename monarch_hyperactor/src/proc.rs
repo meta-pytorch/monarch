@@ -167,11 +167,7 @@ impl PyActorId {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: ActorId(
-                ProcId(addr, proc_name.to_string()),
-                actor_name.to_string(),
-                pid,
-            ),
+            inner: ActorId::new(ProcId::with_name(addr, proc_name), actor_name, pid),
         })
     }
 
