@@ -80,6 +80,7 @@ pub mod port;
 pub mod proc;
 pub mod ref_;
 pub mod reference;
+pub mod remote;
 mod signal_handler;
 pub mod simnet;
 mod stdio_redirect;
@@ -111,6 +112,7 @@ pub use actor::ActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
+pub use remote::Accepts;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;
 #[doc(inline)]
