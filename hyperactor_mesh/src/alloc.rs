@@ -749,10 +749,8 @@ pub(crate) mod testing {
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
-        let client_proc_id = ProcId(
-            ChannelAddr::any(ChannelTransport::Local),
-            "test_stuck_0".to_string(),
-        );
+        let client_proc_id =
+            ProcId::with_name(ChannelAddr::any(ChannelTransport::Local), "test_stuck_0");
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
         let client_proc = Proc::new(
             client_proc_id.clone(),

@@ -1191,7 +1191,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let proc_id = ProcId(any_unix_addr(), "env-vars".into());
+        let proc_id = ProcId::with_name(any_unix_addr(), "env-vars");
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
         let opts = LaunchOptions {
@@ -1290,7 +1290,7 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId(any_unix_addr(), "exit-7".into());
+        let proc_id = ProcId::with_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1332,7 +1332,7 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId(any_unix_addr(), "killed".into());
+        let proc_id = ProcId::with_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1394,7 +1394,7 @@ mod tests {
 
         // v0 bootstrap by default but it doesn't matter here.
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId(any_unix_addr(), "terminated".into());
+        let proc_id = ProcId::with_name(any_unix_addr(), "terminated");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1438,7 +1438,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let unknown_proc_id = ProcId(any_unix_addr(), "unknown".into());
+        let unknown_proc_id = ProcId::with_name(any_unix_addr(), "unknown");
 
         let result = launcher
             .terminate(&unknown_proc_id, Duration::from_secs(1))
@@ -1460,7 +1460,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let unknown_proc_id = ProcId(any_unix_addr(), "unknown".into());
+        let unknown_proc_id = ProcId::with_name(any_unix_addr(), "unknown");
 
         let result = launcher.kill(&unknown_proc_id).await;
 
@@ -1564,7 +1564,7 @@ mod tests {
         );
 
         let bootstrap = Bootstrap::default();
-        let proc_id = ProcId(any_unix_addr(), "drop-cleanup-test".into());
+        let proc_id = ProcId::with_name(any_unix_addr(), "drop-cleanup-test");
 
         let exit_rx;
 
@@ -1663,7 +1663,7 @@ mod tests {
 
         let launcher = SystemdProcLauncher::new();
 
-        let proc_id = ProcId(any_unix_addr(), "long-running".into());
+        let proc_id = ProcId::with_name(any_unix_addr(), "long-running");
         let bootstrap = Bootstrap::default();
         let opts = LaunchOptions {
             command: with_sh("sleep 60"),

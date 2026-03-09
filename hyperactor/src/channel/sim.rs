@@ -301,7 +301,10 @@ impl<M: RemoteMessage + Any> Tx<M> for SimTx<M> {
             .downcast_ref::<MessageEnvelope>()
             .expect("RemoteMessage should always be a MessageEnvelope");
 
-        let (sender, dest) = (envelope.sender().clone(), envelope.dest().0.clone());
+        let (sender, dest) = (
+            envelope.sender().clone(),
+            envelope.dest().actor_id().clone(),
+        );
 
         match simnet_handle() {
             Ok(handle) => {
@@ -467,7 +470,8 @@ mod tests {
                 ext.point(vec![0, 0, 0, 1, 0]).unwrap(),
             );
 
-            let msg = MessageEnvelope::new(sender, PortId(dest, 0), data.clone(), Flattrs::new());
+            let msg =
+                MessageEnvelope::new(sender, PortId::new(dest, 0), data.clone(), Flattrs::new());
             tx.post(msg);
             assert_eq!(*rx.recv().await.unwrap().data(), data);
         }
@@ -549,7 +553,7 @@ mod tests {
         // This message will be delievered at simulator time = 100 seconds
         tx.post(MessageEnvelope::new(
             controller,
-            PortId(dest, 0),
+            PortId::new(dest, 0),
             wirevalue::Any::serialize(&456).unwrap(),
             Flattrs::new(),
         ));
@@ -630,14 +634,14 @@ mod tests {
             // Send client message
             client_tx.post(MessageEnvelope::new(
                 client.clone(),
-                PortId(dest.clone(), 0),
+                PortId::new(dest.clone(), 0),
                 wirevalue::Any::serialize(&456).unwrap(),
                 Flattrs::new(),
             ));
             // Send system message
             controller_tx.post(MessageEnvelope::new(
                 controller.clone(),
-                PortId(dest.clone(), 0),
+                PortId::new(dest.clone(), 0),
                 wirevalue::Any::serialize(&456).unwrap(),
                 Flattrs::new(),
             ));

@@ -150,8 +150,8 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let proc_id = client.mailbox().actor_id().0.clone();
-        let actor_ref = ActorRef::attest(ActorId(proc_id, "rdma_manager".to_string(), 0));
+        let proc_id = client.mailbox().actor_id().proc_id().clone();
+        let actor_ref = ActorRef::attest(ActorId::new(proc_id, "rdma_manager", 0));
         actor_ref
             .downcast_handle(client)
             .expect("RdmaManagerActor is not in the local process")

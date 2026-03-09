@@ -185,7 +185,7 @@ impl PyPortId {
     #[pyo3(signature = (*, actor_id, port))]
     fn new(actor_id: &PyActorId, port: u64) -> Self {
         Self {
-            inner: PortId(actor_id.inner.clone(), port),
+            inner: PortId::new(actor_id.inner.clone(), port),
         }
     }
 

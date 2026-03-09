@@ -144,10 +144,12 @@ mod tests {
         // These proc names must match the socket file names on disk, so we
         // construct the IDs directly rather than via test_proc_id.
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
-        let first_actor_id = ProcId(local_addr.clone(), first.to_string()).actor_id("actor", 0);
-        let second_actor_id = ProcId(local_addr.clone(), second.to_string()).actor_id("actor", 0);
+        let first_actor_id =
+            ProcId::with_name(local_addr.clone(), first.to_string()).actor_id("actor", 0);
+        let second_actor_id =
+            ProcId::with_name(local_addr.clone(), second.to_string()).actor_id("actor", 0);
         let third_notexist_actor_id =
-            ProcId(local_addr.clone(), third.to_string()).actor_id("actor", 0);
+            ProcId::with_name(local_addr.clone(), third.to_string()).actor_id("actor", 0);
         let proc_dialer = LocalProcDialer::new(
             local_addr.clone(),
             dir.path().to_owned(),
@@ -161,7 +163,7 @@ mod tests {
         // Existing address on the host:
         let envelope = MessageEnvelope::new(
             third_notexist_actor_id.clone(),
-            PortId(first_actor_id.clone(), 0),
+            PortId::new(first_actor_id.clone(), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -174,7 +176,7 @@ mod tests {
         // Nonexistant address on the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId(third_notexist_actor_id.clone(), 0),
+            PortId::new(third_notexist_actor_id.clone(), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -187,7 +189,7 @@ mod tests {
         // Outside the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId(test_actor_id("external_0", "actor"), 0),
+            PortId::new(test_actor_id("external_0", "actor"), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -195,10 +197,11 @@ mod tests {
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
 
         // System proc on the host (name must be exactly "system"):
-        let system_actor_id = ProcId(local_addr.clone(), "system".to_string()).actor_id("actor", 0);
+        let system_actor_id =
+            ProcId::with_name(local_addr.clone(), "system".to_string()).actor_id("actor", 0);
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId(system_actor_id, 0),
+            PortId::new(system_actor_id, 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );

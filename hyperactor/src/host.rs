@@ -186,10 +186,13 @@ impl<M: ProcManager> Host<M> {
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
         // Set up a system proc. This is often used to manage the host itself.
-        let service_proc_id = ProcId(frontend_addr.clone(), SERVICE_PROC_NAME.to_string());
+        // These use with_name (not unique) because their uniqueness is
+        // guaranteed by the ChannelAddr component, and the Name type's
+        // '-' delimiter must not collide with a hash suffix.
+        let service_proc_id = ProcId::with_name(frontend_addr.clone(), SERVICE_PROC_NAME);
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId(frontend_addr.clone(), LOCAL_PROC_NAME.to_string());
+        let local_proc_id = ProcId::with_name(frontend_addr.clone(), LOCAL_PROC_NAME);
         let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
@@ -260,7 +263,7 @@ impl<M: ProcManager> Host<M> {
             return Err(HostError::ProcExists(name));
         }
 
-        let proc_id = ProcId(self.frontend_addr.clone(), name.clone());
+        let proc_id = ProcId::with_name(self.frontend_addr.clone(), &name);
         let handle = self
             .manager
             .spawn(proc_id.clone(), self.backend_addr.clone(), config)
@@ -1435,7 +1438,7 @@ mod tests {
             .unwrap();
 
         let (proc_id1, _ref) = host.spawn("proc1".to_string(), ()).await.unwrap();
-        assert_eq!(proc_id1, ProcId(host.addr().clone(), "proc1".to_string()));
+        assert_eq!(proc_id1, ProcId::with_name(host.addr().clone(), "proc1"));
         assert!(procs.lock().await.contains_key(&proc_id1));
 
         let (proc_id2, _ref) = host.spawn("proc2".to_string(), ()).await.unwrap();
@@ -1576,7 +1579,7 @@ mod tests {
     async fn local_ready_and_wait_are_immediate() {
         // Build a LocalHandle directly.
         let addr = ChannelAddr::any(ChannelTransport::Local);
-        let proc_id = ProcId(addr.clone(), "p".into());
+        let proc_id = ProcId::with_name(addr.clone(), "p");
         let agent_ref = ActorRef::<()>::attest(proc_id.actor_id("host_agent", 0));
         let h = LocalHandle::<()> {
             proc_id,

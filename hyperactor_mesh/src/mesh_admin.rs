@@ -2123,11 +2123,11 @@ mod tests {
     #[test]
     fn test_build_root_payload_with_root_client() {
         let addr1: SocketAddr = "127.0.0.1:9001".parse().unwrap();
-        let proc1 = ProcId(ChannelAddr::Tcp(addr1), "host1".to_string());
+        let proc1 = ProcId::with_name(ChannelAddr::Tcp(addr1), "host1");
         let actor_id1 = ActorId::root(proc1, "mesh_agent".to_string());
         let ref1: ActorRef<HostAgent> = ActorRef::attest(actor_id1.clone());
 
-        let client_proc_id = ProcId(ChannelAddr::Tcp(addr1), "local".to_string());
+        let client_proc_id = ProcId::with_name(ChannelAddr::Tcp(addr1), "local");
         let client_actor_id = client_proc_id.actor_id("client", 0);
 
         let agent = MeshAdminAgent::new(
