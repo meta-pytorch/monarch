@@ -16,10 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hyperactor::Actor;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Handler;
-use hyperactor::ProcId;
 use hyperactor::RemoteMessage;
 use hyperactor::RemoteSpawn;
 use hyperactor::accum::StreamingReducerOpts;
@@ -29,6 +26,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -89,16 +87,20 @@ pub const COMM_ACTOR_NAME: &str = "comm";
 /// A reference to a single [`hyperactor::Proc`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProcRef {
-    proc_id: ProcId,
+    proc_id: hyperactor_reference::ProcId,
     /// The rank of this proc at creation.
     create_rank: usize,
     /// The agent managing this proc.
-    agent: ActorRef<ProcAgent>,
+    agent: hyperactor_reference::ActorRef<ProcAgent>,
 }
 
 impl ProcRef {
     /// Create a new proc ref from the provided id, create rank and agent.
-    pub fn new(proc_id: ProcId, create_rank: usize, agent: ActorRef<ProcAgent>) -> Self {
+    pub fn new(
+        proc_id: hyperactor_reference::ProcId,
+        create_rank: usize,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
+    ) -> Self {
         Self {
             proc_id,
             create_rank,
@@ -106,18 +108,18 @@ impl ProcRef {
         }
     }
 
-    pub fn proc_id(&self) -> &ProcId {
+    pub fn proc_id(&self) -> &hyperactor_reference::ProcId {
         &self.proc_id
     }
 
-    pub(crate) fn actor_id(&self, name: &Name) -> ActorId {
+    pub(crate) fn actor_id(&self, name: &Name) -> hyperactor_reference::ActorId {
         self.proc_id.actor_id(name.to_string(), 0)
     }
 
     /// Generic bound: `A: Referable` - required because we return
     /// an `ActorRef<A>`.
-    pub(crate) fn attest<A: Referable>(&self, name: &Name) -> ActorRef<A> {
-        ActorRef::attest(self.actor_id(name))
+    pub(crate) fn attest<A: Referable>(&self, name: &Name) -> hyperactor_reference::ActorRef<A> {
+        hyperactor_reference::ActorRef::attest(self.actor_id(name))
     }
 }
 
@@ -263,7 +265,10 @@ impl ProcMesh {
         let region = self.region.clone();
         match &mut self.allocation {
             ProcMeshAllocation::Owned { hosts, .. } => {
-                let procs = self.current_ref.proc_ids().collect::<Vec<ProcId>>();
+                let procs = self
+                    .current_ref
+                    .proc_ids()
+                    .collect::<Vec<hyperactor_reference::ProcId>>();
                 hosts
                     .stop_proc_mesh(cx, &self.name, procs, region, reason)
                     .await
@@ -540,7 +545,9 @@ impl ProcMeshRef {
         &self,
         cx: &impl context::Actor,
     ) -> crate::Result<Option<ValueMesh<resource::State<ProcState>>>> {
-        let names = self.proc_ids().collect::<Vec<ProcId>>();
+        let names = self
+            .proc_ids()
+            .collect::<Vec<hyperactor_reference::ProcId>>();
         if let Some(host_mesh) = &self.host_mesh {
             Ok(Some(
                 host_mesh
@@ -553,7 +560,7 @@ impl ProcMeshRef {
     }
 
     /// Returns an iterator over the proc ids in this mesh.
-    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = ProcId> {
+    pub(crate) fn proc_ids(&self) -> impl Iterator<Item = hyperactor_reference::ProcId> {
         self.ranks.iter().map(|proc_ref| proc_ref.proc_id.clone())
     }
 

@@ -14,14 +14,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
@@ -30,6 +28,7 @@ use hyperactor::actor::remote::Remote;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::proc::Proc;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -93,14 +92,14 @@ pub(crate) enum MeshAgentMessage {
     /// Stop actors of a specific mesh name
     StopActor {
         /// The actor to stop
-        actor_id: ActorId,
+        actor_id: hyperactor_reference::ActorId,
         /// The timeout for waiting for the actor to stop
         timeout_ms: u64,
         /// The reason for stopping the actor
         reason: String,
         /// The result when trying to stop the actor
         #[reply]
-        stopped: OncePortRef<StopActorResult>,
+        stopped: hyperactor_reference::OncePortRef<StopActorResult>,
     },
 }
 
@@ -108,7 +107,7 @@ pub(crate) enum MeshAgentMessage {
 #[derive(Debug)]
 struct ActorInstanceState {
     create_rank: usize,
-    spawn: Result<ActorId, anyhow::Error>,
+    spawn: Result<hyperactor_reference::ActorId, anyhow::Error>,
     /// If true, the actor has been stopped. There is no way to restart it, a new
     /// actor must be spawned.
     stopped: bool,
@@ -172,7 +171,7 @@ pub struct ProcAgent {
     /// If true, record supervision events to be reported to owning actors later.
     record_supervision_events: bool,
     /// Contains the list of all supervision events that were received.
-    supervision_events: HashMap<ActorId, Vec<ActorSupervisionEvent>>,
+    supervision_events: HashMap<hyperactor_reference::ActorId, Vec<ActorSupervisionEvent>>,
     /// True when supervision events have arrived but introspect
     /// properties haven't been republished yet.
     introspect_dirty: bool,
@@ -216,7 +215,13 @@ impl ProcAgent {
         cx: &Context<'a, Self>,
         timeout: tokio::time::Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+    ) -> Result<
+        (
+            Vec<hyperactor_reference::ActorId>,
+            Vec<hyperactor_reference::ActorId>,
+        ),
+        anyhow::Error,
+    > {
         self.proc
             .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
@@ -303,9 +308,8 @@ impl Actor for ProcAgent {
             use hyperactor::introspect::NodePayload;
             use hyperactor::introspect::NodeProperties;
             use hyperactor::introspect::PublishedPropertiesKind;
-            use hyperactor::reference::Reference;
 
-            if let Reference::Actor(id) = child_ref {
+            if let hyperactor::reference::Reference::Actor(id) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(id) {
                     return snapshot;
                 }
@@ -318,7 +322,7 @@ impl Actor for ProcAgent {
             // next QueryChild(Reference::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let Reference::Proc(proc_id) = child_ref {
+            if let hyperactor::reference::Reference::Proc(proc_id) = child_ref {
                 if proc_id == proc.proc_id() {
                     let live_ids = proc.all_actor_ids();
                     let num_live = live_ids.len();
@@ -418,7 +422,7 @@ impl MeshAgentMessageHandler for ProcAgent {
     async fn stop_actor(
         &mut self,
         cx: &Context<Self>,
-        actor_id: ActorId,
+        actor_id: hyperactor_reference::ActorId,
         timeout_ms: u64,
         reason: String,
     ) -> Result<StopActorResult, anyhow::Error> {
@@ -527,7 +531,7 @@ wirevalue::register_type!(ActorSpec);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct ActorState {
     /// The actor's ID.
-    pub actor_id: ActorId,
+    pub actor_id: hyperactor_reference::ActorId,
     /// The rank of the proc that created the actor. This is before any slicing.
     pub create_rank: usize,
     // TODO status: ActorStatus,
@@ -902,7 +906,7 @@ impl Handler<SelfCheck> for ProcAgent {
         let now = RealClock.system_time_now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
-        let expired: Vec<(Name, ActorId)> = self
+        let expired: Vec<(Name, hyperactor_reference::ActorId)> = self
             .actor_states
             .iter()
             .filter_map(|(name, state)| {
@@ -976,14 +980,13 @@ mod tests {
     // mesh_admin::tests::test_proc_children_reflect_directly_spawned_actors.
     #[tokio::test]
     async fn test_query_child_proc_returns_live_children() {
-        use hyperactor::PortRef;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::NodePayload;
         use hyperactor::introspect::NodeProperties;
-        use hyperactor::reference::Reference;
+        use hyperactor::reference as hyperactor_reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
         let agent_handle = ProcAgent::boot(proc.clone(), None).unwrap();
@@ -1000,7 +1003,8 @@ mod tests {
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
@@ -1009,7 +1013,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: Reference::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )

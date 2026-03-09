@@ -14,10 +14,10 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use async_trait::async_trait;
-use hyperactor::ActorRef;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
+use hyperactor::reference as hyperactor_reference;
 use ndslice::view::Extent;
 use tokio::sync::mpsc;
 
@@ -66,7 +66,7 @@ impl Allocator for LocalAllocator {
 struct LocalProc {
     create_key: ShortUuid,
     host_addr: ChannelAddr,
-    host_agent: ActorRef<HostAgent>,
+    host_agent: hyperactor_reference::ActorRef<HostAgent>,
 }
 
 /// A local allocation. It is a collection of procs that are running in the local process.

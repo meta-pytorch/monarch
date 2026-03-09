@@ -17,11 +17,11 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
 use ndslice::view::Extent;
@@ -166,7 +166,7 @@ impl Child {
         mut process: tokio::process::Child,
         log_channel: Option<ChannelAddr>,
         tail_size: usize,
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
     ) -> (Self, impl Future<Output = ProcStopReason>) {
         let (group, handle) = monitor::group();
         let (exit_flag, exit_guard) = flag::guarded();
@@ -349,12 +349,16 @@ impl ProcessAlloc {
     // the process.
 
     #[hyperactor::instrument_infallible]
-    fn stop(&mut self, proc_id: &ProcId, reason: ProcStopReason) -> Result<(), anyhow::Error> {
+    fn stop(
+        &mut self,
+        proc_id: &hyperactor_reference::ProcId,
+        reason: ProcStopReason,
+    ) -> Result<(), anyhow::Error> {
         self.get_mut(proc_id)?.stop(reason);
         Ok(())
     }
 
-    fn get(&self, proc_id: &ProcId) -> Result<&Child, anyhow::Error> {
+    fn get(&self, proc_id: &hyperactor_reference::ProcId) -> Result<&Child, anyhow::Error> {
         self.active.get(&self.index(proc_id)?).ok_or_else(|| {
             anyhow::anyhow!(
                 "proc {} not currently active in alloc {}",
@@ -364,7 +368,10 @@ impl ProcessAlloc {
         })
     }
 
-    fn get_mut(&mut self, proc_id: &ProcId) -> Result<&mut Child, anyhow::Error> {
+    fn get_mut(
+        &mut self,
+        proc_id: &hyperactor_reference::ProcId,
+    ) -> Result<&mut Child, anyhow::Error> {
         self.active.get_mut(&self.index(proc_id)?).ok_or_else(|| {
             anyhow::anyhow!(
                 "proc {} not currently active in alloc {}",
@@ -379,7 +386,7 @@ impl ProcessAlloc {
         &self.name
     }
 
-    fn index(&self, proc_id: &ProcId) -> Result<usize, anyhow::Error> {
+    fn index(&self, proc_id: &hyperactor_reference::ProcId) -> Result<usize, anyhow::Error> {
         // ProcId names have format "{alloc_name}_{index}" (e.g., "abc123_0")
         let name = proc_id.name();
         let expected_prefix = format!("{}_", self.name);
@@ -492,7 +499,7 @@ impl ProcessAlloc {
                         // For spawned processes, we use a temporary placeholder ProcId.
                         // The actual ProcId will be set when the process calls Hello with its address.
                         let temp_addr = ChannelAddr::any(ChannelTransport::Local);
-                        let proc_id = ProcId::with_name(
+                        let proc_id = hyperactor_reference::ProcId::with_name(
                             temp_addr,
                             format!("{}_{}", self.alloc_name.name(), rank),
                         );

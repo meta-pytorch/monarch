@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hyperactor::ActorRef;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::OnceCell;
@@ -34,7 +34,7 @@ use crate::RdmaTransportLevel;
 #[derive(Debug, Clone)]
 pub enum RdmaBackendContext {
     Ibverbs(
-        ActorRef<ibverbs::manager_actor::IbvManagerActor>,
+        reference::ActorRef<ibverbs::manager_actor::IbvManagerActor>,
         Arc<OnceCell<ibverbs::IbvBuffer>>,
     ),
 }
@@ -54,7 +54,7 @@ impl<'de> Deserialize<'de> for RdmaBackendContext {
         #[derive(Deserialize)]
         #[serde(rename = "RdmaBackendContext")]
         enum Repr {
-            Ibverbs(ActorRef<ibverbs::manager_actor::IbvManagerActor>),
+            Ibverbs(reference::ActorRef<ibverbs::manager_actor::IbvManagerActor>),
         }
 
         match Repr::deserialize(deserializer)? {

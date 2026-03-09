@@ -538,9 +538,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// use hyperactor::HandleClient;
 /// use hyperactor::Handler;
 /// use hyperactor::Instance;
-/// use hyperactor::OncePortRef;
 /// use hyperactor::RefClient;
 /// use hyperactor::proc::Proc;
+/// use hyperactor::reference;
 /// use serde::Deserialize;
 /// use serde::Serialize;
 /// use typeuri::Named;
@@ -553,9 +553,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 ///     // Call messages dispatch a request, expecting a reply to the
 ///     // provided port, which must be in the last position.
-///     Exists(String, #[reply] OncePortRef<bool>),
+///     Exists(String, #[reply] reference::OncePortRef<bool>),
 ///
-///     List(#[reply] OncePortRef<Vec<String>>),
+///     List(#[reply] reference::OncePortRef<Vec<String>>),
 /// }
 ///
 /// // Define an actor.

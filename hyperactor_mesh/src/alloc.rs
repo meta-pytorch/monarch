@@ -24,10 +24,10 @@ use std::fmt;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
-use hyperactor::ActorRef;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TlsAddr;
+use hyperactor::reference as hyperactor_reference;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
 use mockall::predicate::*;
@@ -187,7 +187,7 @@ pub enum ProcState {
         /// The address the host is serving on.
         host_addr: ChannelAddr,
         /// Reference to this host's mesh agent.
-        host_agent: ActorRef<HostAgent>,
+        host_agent: hyperactor_reference::ActorRef<HostAgent>,
     },
     /// A proc was stopped.
     Stopped {
@@ -352,7 +352,7 @@ pub trait Alloc {
 pub(crate) struct AllocatedHost {
     pub create_key: ShortUuid,
     pub host_addr: ChannelAddr,
-    pub host_agent: ActorRef<HostAgent>,
+    pub host_agent: hyperactor_reference::ActorRef<HostAgent>,
 }
 
 /// Extension trait that drives an [`Alloc`] to collect host information.
