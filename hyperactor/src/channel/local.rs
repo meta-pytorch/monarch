@@ -33,7 +33,13 @@ struct Ports {
 }
 
 impl Ports {
-    fn alloc(&mut self) -> (u64, mpsc::UnboundedReceiver<Message>, watch::Sender<TxStatus>) {
+    fn alloc(
+        &mut self,
+    ) -> (
+        u64,
+        mpsc::UnboundedReceiver<Message>,
+        watch::Sender<TxStatus>,
+    ) {
         let port = self.next_port;
         self.next_port += 1;
         let (tx, rx) = mpsc::unbounded_channel::<Message>();
