@@ -28,8 +28,6 @@ use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
@@ -297,7 +295,7 @@ impl RsyncDaemon {
                 loop {
                     match TcpStream::connect(addr).await {
                         Err(err) if err.kind() == ErrorKind::ConnectionRefused => {
-                            RealClock.sleep(Duration::from_millis(1)).await
+                            tokio::time::sleep(Duration::from_millis(1)).await
                         }
                         Err(err) => return Err(err.into()),
                         Ok(_) => break,

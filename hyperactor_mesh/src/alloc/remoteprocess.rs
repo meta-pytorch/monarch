@@ -27,9 +27,6 @@ use hyperactor::channel::Rx;
 use hyperactor::channel::TcpMode;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
-use hyperactor::clock;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::internal_macro_support::serde_json;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
@@ -213,7 +210,7 @@ impl RemoteProcessAllocator {
         loop {
             // Refresh each loop iteration so the timer updates whenever a message
             // is received.
-            let sleep = conditional_sleeper(timeout.map(|t| RealClock.sleep(t)));
+            let sleep = conditional_sleeper(timeout.map(|t| tokio::time::sleep(t)));
             tokio::select! {
                 msg = rx.recv() => {
                     match msg {
@@ -482,7 +479,7 @@ impl RemoteProcessAllocator {
                         }
                     }
                 }
-                _ = RealClock.sleep(hyperactor_config::global::get(hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)) => {
+                _ = tokio::time::sleep(hyperactor_config::global::get(hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)) => {
                     tracing::trace!("sending heartbeat");
                     tx.post(RemoteProcessProcStateMessage::HeartBeat);
                 }
@@ -1132,7 +1129,7 @@ impl Alloc for RemoteProcessAlloc {
             let heartbeat_interval = hyperactor_config::global::get(
                 hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             );
-            let mut heartbeat_time = hyperactor::clock::RealClock.now() + heartbeat_interval;
+            let mut heartbeat_time = tokio::time::Instant::now() + heartbeat_interval;
             // rerun outer loop in case we pushed new items to the event queue
             let mut reloop = false;
             let update = loop {
@@ -1215,9 +1212,9 @@ impl Alloc for RemoteProcessAlloc {
                         }
                     }
 
-                    _ = clock::RealClock.sleep_until(heartbeat_time) => {
+                    _ = tokio::time::sleep_until(heartbeat_time) => {
                         self.host_states.iter().for_each(|(_, host_state)| host_state.tx.post(RemoteProcessAllocatorMessage::HeartBeat));
-                        heartbeat_time = hyperactor::clock::RealClock.now() + heartbeat_interval;
+                        heartbeat_time = tokio::time::Instant::now() + heartbeat_interval;
                     }
 
                     closed_host_id = self.comm_watcher_rx.recv() => {
@@ -1366,7 +1363,6 @@ mod test {
 
     use hyperactor::ActorRef;
     use hyperactor::channel::ChannelRx;
-    use hyperactor::clock::ClockKind;
     use hyperactor::testing::ids::test_proc_id;
     use ndslice::extent;
     use tokio::sync::oneshot;
@@ -1925,7 +1921,6 @@ mod test {
         tracing::info!("closing upstream");
         drop(rx);
         // wait for the heartbeat to expire
-        #[allow(clippy::disallowed_methods)]
         tokio::time::sleep(Duration::from_secs(2)).await;
         // wait for the stop to be called
         stop_rx.await.unwrap();
@@ -2044,7 +2039,7 @@ mod test {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_mins(1),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -2127,7 +2122,7 @@ mod test {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_mins(1),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
         let serve_addr = ChannelAddr::any(ChannelTransport::Unix);
         let bootstrap_addr = ChannelAddr::any(ChannelTransport::Unix);
         let (_, mut rx) = channel::serve(bootstrap_addr.clone()).unwrap();
@@ -2202,7 +2197,6 @@ mod test {
 mod test_alloc {
     use std::os::unix::process::ExitStatusExt;
 
-    use hyperactor::clock::ClockKind;
     use hyperactor_config;
     use ndslice::extent;
     use nix::sys::signal;
@@ -2224,7 +2218,7 @@ mod test_alloc {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let spec = AllocSpec {
             extent: extent!(host = 2, gpu = 2),
@@ -2308,9 +2302,9 @@ mod test_alloc {
         );
 
         // ensure no more pending items
-        let timeout = hyperactor::clock::RealClock.now() + std::time::Duration::from_millis(1000);
+        let timeout = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
         tokio::select! {
-            _ = hyperactor::clock::RealClock.sleep_until(timeout) => {},
+            _ = tokio::time::sleep_until(timeout) => {},
             _ = alloc.next() => panic!("expected no more items"),
         }
 
@@ -2355,7 +2349,7 @@ mod test_alloc {
             hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
             Duration::from_millis(100),
         );
-        hyperactor_telemetry::initialize_logging(ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let spec = AllocSpec {
             extent: extent!(host = 2, gpu = 2),
@@ -2420,23 +2414,20 @@ mod test_alloc {
         }
 
         // ensure no more pending items
-        let timeout = hyperactor::clock::RealClock.now() + std::time::Duration::from_millis(1000);
+        let timeout = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
         tokio::select! {
-            _ = hyperactor::clock::RealClock
-            .sleep_until(timeout) => {},
+            _ = tokio::time::sleep_until(timeout) => {},
             _ = alloc.next() => panic!("expected no more items"),
         }
 
         // now we kill task1 and wait for timeout
         tracing::info!("aborting task1 allocator");
         task1_allocator_handle.abort();
-        RealClock
-            .sleep(
-                hyperactor_config::global::get(
-                    hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-                ) * 2,
-            )
-            .await;
+        tokio::time::sleep(
+            hyperactor_config::global::get(hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)
+                * 2,
+        )
+        .await;
         for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
             tracing::info!("test received next proc_state: {:?}", proc_state);
@@ -2448,23 +2439,20 @@ mod test_alloc {
             }
         }
         // no more events
-        let timeout = hyperactor::clock::RealClock.now() + std::time::Duration::from_millis(1000);
+        let timeout = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
         tokio::select! {
-            _ = hyperactor::clock::RealClock
-            .sleep_until(timeout) => {},
+            _ = tokio::time::sleep_until(timeout) => {},
             _ = alloc.next() => panic!("expected no more items"),
         }
 
         // abort the second host
         tracing::info!("aborting task2 allocator");
         task2_allocator_handle.abort();
-        RealClock
-            .sleep(
-                hyperactor_config::global::get(
-                    hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL,
-                ) * 2,
-            )
-            .await;
+        tokio::time::sleep(
+            hyperactor_config::global::get(hyperactor::config::REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL)
+                * 2,
+        )
+        .await;
         for _ in 0..spec.extent.num_ranks() / 2 {
             let proc_state = alloc.next().await.unwrap();
             tracing::info!("test received next proc_state: {:?}", proc_state);
@@ -2584,10 +2572,9 @@ mod test_alloc {
         }
 
         // ensure no more pending items
-        let timeout = hyperactor::clock::RealClock.now() + std::time::Duration::from_millis(1000);
+        let timeout = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
         tokio::select! {
-            _ = hyperactor::clock::RealClock
-            .sleep_until(timeout) => {},
+            _ = tokio::time::sleep_until(timeout) => {},
             _ = alloc.next() => panic!("expected no more items"),
         }
 
@@ -2681,7 +2668,7 @@ mod test_alloc {
             Some(signal::SIGINT as i32)
         );
 
-        RealClock.sleep(tokio::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
         // Assert that the processes spawned by ProcessAllocator have been killed
         for child_pid in received_pids {

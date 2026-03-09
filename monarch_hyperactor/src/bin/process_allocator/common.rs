@@ -84,8 +84,6 @@ mod tests {
 
     use clap::Parser;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor_mesh::alloc;
     use hyperactor_mesh::alloc::Alloc;
     use hyperactor_mesh::alloc::AllocName;
@@ -212,7 +210,7 @@ mod tests {
         let alloc_name = AllocName("__unused__".to_string());
 
         // Wait at least as long as the timeout before sending any messages.
-        RealClock.sleep(timeout * 2).await;
+        tokio::time::sleep(timeout * 2).await;
 
         // Attempt to allocate, it should fail because a timeout happens before
         let mut alloc = remoteprocess::RemoteProcessAlloc::new(
@@ -288,7 +286,7 @@ mod tests {
         alloc.stop_and_wait().await.unwrap();
 
         // Wait at least as long as the timeout before sending any messages.
-        RealClock.sleep(timeout * 2).await;
+        tokio::time::sleep(timeout * 2).await;
 
         // Allocate again to see the error.
         let mut initializer = remoteprocess::MockRemoteProcessAllocInitializer::new();
@@ -381,7 +379,7 @@ mod tests {
         // Now that all procs have started, wait at least as long as the timeout
         // before sending any messages. This way we ensure the remote allocator
         // stays alive as long as the child processes stay alive.
-        RealClock.sleep(timeout * 2).await;
+        tokio::time::sleep(timeout * 2).await;
         // Now wait for more events and ensure they are ProcState::Stopped
         while !created.is_empty() {
             let proc_state = alloc.next().await.unwrap();
