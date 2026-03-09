@@ -37,9 +37,8 @@ use ndslice::selection::EvalOpts;
 use ndslice::selection::ReifySlice;
 use ndslice::selection::normal;
 
-use crate::comm::ENABLE_NATIVE_V1_CASTING;
-
 use crate::CommActor;
+use crate::comm::ENABLE_NATIVE_V1_CASTING;
 use crate::comm::multicast::CAST_ORIGINATING_SENDER;
 use crate::comm::multicast::CastMessage;
 use crate::comm::multicast::CastMessageEnvelope;
