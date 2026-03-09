@@ -1583,11 +1583,11 @@ mod tests {
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
         use hyperactor::Proc;
-        use hyperactor::id;
         use hyperactor::mailbox::BoxableMailboxSender;
         use hyperactor::mailbox::DialMailboxRouter;
+        use hyperactor::testing::ids::test_proc_id;
 
-        let proc = Proc::new(id!(test[0]), DialMailboxRouter::new().boxed());
+        let proc = Proc::new(test_proc_id("0"), DialMailboxRouter::new().boxed());
         let instance = proc
             .actor_instance::<testing::TestRootClient>("test_client")
             .unwrap()
