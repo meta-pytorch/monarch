@@ -28,7 +28,7 @@ use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
 use ndslice::extent;
@@ -258,7 +258,8 @@ async fn main() -> Result<ExitCode> {
     };
 
     let group_size = 5;
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.
@@ -282,17 +283,21 @@ async fn main() -> Result<ExitCode> {
         cacert, mesh_admin_url
     );
     println!(
-        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}",
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- --addr {}",
+        mesh_admin_url, mesh_admin_url
+    );
+    println!(
+        "  - Diagnose:      cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- --addr {} --diagnose",
         mesh_admin_url
     );
     let host_addr = &host_mesh.hosts()[0];
     println!(
-        "  - Hyper list:    buck2 run fbcode//monarch/hyper:hyper -- list {}",
-        host_addr
+        "  - Hyper list:    buck2 run fbcode//monarch/hyper:hyper -- list {}\n                   cargo run --manifest-path hyper/Cargo.toml -- list {}",
+        host_addr, host_addr
     );
     println!(
-        "  - Hyper show:    buck2 run fbcode//monarch/hyper:hyper -- show {},<proc_name>  (use a name from list)",
-        host_addr
+        "  - Hyper show:    buck2 run fbcode//monarch/hyper:hyper -- show {},<proc_name>  (use a name from list)\n                   cargo run --manifest-path hyper/Cargo.toml -- show {},<proc_name>",
+        host_addr, host_addr
     );
 
     let proc_mesh = host_mesh

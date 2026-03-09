@@ -22,8 +22,8 @@ So the through line is: *one process that can speak hyperactor → host → proc
 
 ## Pieces (conceptual)
 
-- **Host**: a long-lived runtime that owns "all procs on this machine" and gives them a single front door (`*` / mux). It also runs a **`HostMeshAgent`** in its system proc so other parts of the mesh can tell it "start/stop this proc."
-- **Proc**: an actor runtime. In v1 the proc also runs a **`ProcMeshAgent`** so it can be managed the same way as the host — that's why the agent handlers all look like the resource ones you saw.
+- **Host**: a long-lived runtime that owns "all procs on this machine" and gives them a single front door (`*` / mux). It also runs a **`HostAgent`** in its system proc so other parts of the mesh can tell it "start/stop this proc."
+- **Proc**: an actor runtime. In v1 the proc also runs a **`ProcAgent`** so it can be managed the same way as the host — that's why the agent handlers all look like the resource ones you saw.
 - **Actor mesh**: the thing you actually care about as a user — N copies of your actor (often one per proc), callable as a group.
 
 That's why the messages look uniform — `CreateOrUpdate<T>`, `GetState<T>`, `Stop`, `ShutdownHost` — the same resource shape works at both the host level and the proc level.
@@ -45,8 +45,8 @@ After that, it's just "send messages to the mesh."
     - **2. Process allocator & v0 bootstrap** — the older path / allocator angle.
     - **3. HostMesh from an allocation** — taking an allocation and saying "these are my hosts."
     - **4. Doing real work (hosts → procs → actors)** — actually spawning actors once procs exist.
-- **Host & agents (control plane & mux)** — deep dive on the thing the host runs (`HostMeshAgent`), how it maps `CreateOrUpdate<ProcSpec>` to `host.spawn(...)`, and why all the handlers look the same.
-- **Proc meshes & ProcMeshAgent** — deep dive on the proc-level agent: how it turns `CreateOrUpdate<ActorSpec>` and `MeshAgentMessage::Gspawn` into actor spawns via hyperactor's `Remote` registry.
+- **Host & agents (control plane & mux)** — deep dive on the thing the host runs (`HostAgent`), how it maps `CreateOrUpdate<ProcSpec>` to `host.spawn(...)`, and why all the handlers look the same.
+- **Proc meshes & ProcAgent** — deep dive on the proc-level agent: how it turns `CreateOrUpdate<ActorSpec>` and `MeshAgentMessage::Gspawn` into actor spawns via hyperactor's `Remote` registry.
 - **Process-backed hosts: BootstrapProcManager** — the "real OS child, real bootstrap command" path the host delegates to.
 - **Bootstrapping from Python** — show that `this_host().spawn_procs(...).spawn(...)` is using the same Rust v1 path, just through the Python bindings.
 - **Error handling by supervision** - how errors in actors and procs are sent to

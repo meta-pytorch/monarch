@@ -8,10 +8,11 @@
 
 //! EntityDispatcher - Dispatches entity lifecycle events to Arrow RecordBatches
 //!
-//! Produces two tables:
+//! Produces tables:
 //! - `actors`: Actor creation events
 //! - `meshes`: Mesh creation events
 //! - `actor_status_events`: Actor status change events
+//! - `sent_messages`: Sent message events
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -38,6 +39,8 @@ pub struct Actor {
     pub rank: u64,
     /// Full hierarchical name of this actor
     pub full_name: String,
+    /// User-facing name for this actor
+    pub display_name: Option<String>,
 }
 
 /// Row data for the meshes table.
@@ -78,11 +81,32 @@ pub struct ActorStatusEvent {
     pub reason: Option<String>,
 }
 
+/// Row data for the sent_messages table.
+///
+/// Tracks messages from the perspective of the sending actor.
+/// Logged from send (cast or point-to-point).
+#[derive(RecordBatchRow)]
+pub struct SentMessage {
+    /// Unique identifier for this sent message record
+    pub id: u64,
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// ID of the sending actor
+    pub sender_actor_id: u64,
+    /// ID of the actor mesh over which the message was sent (0 for point-to-point)
+    pub actor_mesh_id: u64,
+    /// Region over which the message was sent, serialized from ndslice::Region
+    pub view_json: String,
+    /// Shape of the message, serialized from ndslice::Shape
+    pub shape_json: String,
+}
+
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
     actors_buffer: ActorBuffer,
     meshes_buffer: MeshBuffer,
     actor_status_events_buffer: ActorStatusEventBuffer,
+    sent_messages_buffer: SentMessageBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -104,6 +128,11 @@ impl EntityDispatcherInner {
         Self::flush_buffer(
             &mut self.actor_status_events_buffer,
             "actor_status_events",
+            &self.flush_callback,
+        )?;
+        Self::flush_buffer(
+            &mut self.sent_messages_buffer,
+            "sent_messages",
             &self.flush_callback,
         )?;
         Ok(())
@@ -128,6 +157,17 @@ impl EntityDispatcherInner {
             Self::flush_buffer(
                 &mut self.actor_status_events_buffer,
                 "actor_status_events",
+                &self.flush_callback,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn flush_sent_messages_if_full(&mut self) -> anyhow::Result<()> {
+        if self.sent_messages_buffer.len() >= self.batch_size {
+            Self::flush_buffer(
+                &mut self.sent_messages_buffer,
+                "sent_messages",
                 &self.flush_callback,
             )?;
         }
@@ -159,6 +199,7 @@ impl EntityDispatcher {
             actors_buffer: ActorBuffer::default(),
             meshes_buffer: MeshBuffer::default(),
             actor_status_events_buffer: ActorStatusEventBuffer::default(),
+            sent_messages_buffer: SentMessageBuffer::default(),
             batch_size,
             flush_callback,
         }));
@@ -193,6 +234,7 @@ impl EntityEventDispatcher for EntityDispatcher {
                     mesh_id: actor_event.mesh_id,
                     rank: actor_event.rank,
                     full_name: actor_event.full_name,
+                    display_name: actor_event.display_name,
                 });
                 inner.flush_actors_if_full()?;
             }
@@ -226,6 +268,21 @@ impl EntityEventDispatcher for EntityDispatcher {
                     reason: status_event.reason,
                 });
                 inner.flush_actor_status_events_if_full()?;
+            }
+            EntityEvent::SentMessage(event) => {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+                inner.sent_messages_buffer.insert(SentMessage {
+                    id: hyperactor_telemetry::generate_sent_message_id(event.sender_actor_id),
+                    timestamp_us: timestamp_to_micros(&event.timestamp),
+                    sender_actor_id: event.sender_actor_id,
+                    actor_mesh_id: event.actor_mesh_id,
+                    view_json: event.view_json,
+                    shape_json: event.shape_json,
+                });
+                inner.flush_sent_messages_if_full()?;
             }
         }
         Ok(())

@@ -69,6 +69,11 @@ jobs:
           --exclude torch-sys-cuda \
           --exclude monarch_rdma \
           --exclude torch-sys
+
+        echo "=== sccache stats ==="
+        sccache --show-stats
+        echo "=== end sccache stats ==="
+
         # Copy the test results to the expected location
         # TODO: error in pytest-results-action, TypeError: results.testsuites.testsuite.testcase is not iterable
         # Don't try to parse these results for now.

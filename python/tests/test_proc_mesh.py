@@ -15,7 +15,6 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import cloudpickle
-import monarch._src.actor.host_mesh
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
@@ -89,6 +88,7 @@ class TestActor(Actor):
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 async def test_proc_mesh_initialization() -> None:
     host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
@@ -97,6 +97,7 @@ async def test_proc_mesh_initialization() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_proc_mesh_spawn_single_actor() -> None:
     host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc")
@@ -107,6 +108,7 @@ def test_proc_mesh_spawn_single_actor() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_proc_mesh_multi_actor() -> None:
     host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
@@ -121,6 +123,7 @@ def test_proc_mesh_multi_actor() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_proc_mesh_sliced() -> None:
     host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
     proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
@@ -225,6 +228,7 @@ async def test_deprecated_proc_mesh_from_alloc_mock() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_deprecated_proc_mesh_from_alloc_multi_actor() -> None:
     allocator = ProcessAllocator(*_get_bootstrap_args())
     spec = AllocSpec(AllocConstraints(), replicas=2, hosts=2, gpus=3)
@@ -302,12 +306,7 @@ def test_context_proc_mesh_in_controller_spawns_actor_in_client_os_process() -> 
 @pytest.mark.timeout(60)
 def test_root_client_does_not_leak_proc_meshes() -> None:
     orig_get_client_context = _client_context.get
-    with (
-        patch.object(_client_context, "get") as mock_get_client_context,
-        patch.object(
-            monarch._src.actor.host_mesh, "fake_in_process_host"
-        ) as mock_fake_in_process_host,
-    ):
+    with patch.object(_client_context, "get") as mock_get_client_context:
         mock_get_client_context.side_effect = orig_get_client_context
 
         def sync_sleep_then_context():
@@ -324,11 +323,6 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
             t.join()
 
         assert mock_get_client_context.call_count == 100
-        # If this test is run in isolation, the local host mesh will
-        # be created once. But if it runs with other tests, the host mesh
-        # will have already been initialized and the function never gets
-        # called.
-        assert mock_fake_in_process_host.call_count in (0, 1)
 
 
 @pytest.mark.timeout(60)
@@ -348,6 +342,7 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
         time.sleep(15)
