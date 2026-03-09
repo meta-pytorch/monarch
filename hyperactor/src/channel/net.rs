@@ -2358,12 +2358,12 @@ mod tests {
         mpsc::Receiver<M>,
         CancellationToken,
     ) {
+        let mvar = crate::sync::mvar::MVar::empty();
         let cancel_token = CancellationToken::new();
-        let stream_mvar = crate::sync::mvar::MVar::<DuplexStream>::empty();
         let link = AcceptorLink {
             dest: ChannelAddr::Local(u64::MAX),
             session_id,
-            stream: stream_mvar.clone(),
+            stream: mvar.clone(),
             cancel: cancel_token.clone(),
         };
         let (tx, rx) = mpsc::channel::<M>(1024);
@@ -2388,19 +2388,18 @@ mod tests {
 
                 // Flush remaining ack if behind.
                 if next.ack < next.seq {
-                    if let Ok(ack) = serialize_response(NetRxResponse::Ack(next.seq - 1)) {
-                        let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
-                        let mut completion = stream.write(ack);
-                        match completion.drive().await {
-                            Ok(()) => {
-                                next.ack = next.seq;
-                            }
-                            Err(e) => {
-                                tracing::debug!(
-                                    error = %e,
-                                    "failed to flush acks during cleanup"
-                                );
-                            }
+                    let ack = serialize_response(NetRxResponse::Ack(next.seq - 1)).unwrap();
+                    let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
+                    let mut completion = stream.write(ack);
+                    match completion.drive().await {
+                        Ok(()) => {
+                            next.ack = next.seq;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                error = %e,
+                                "failed to flush acks during cleanup"
+                            );
                         }
                     }
                 }
@@ -2414,11 +2413,10 @@ mod tests {
                     _ => None,
                 };
                 if let Some(rsp) = terminal_response {
-                    if let Ok(data) = serialize_response(rsp) {
-                        let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
-                        let mut completion = stream.write(data);
-                        let _ = completion.drive().await;
-                    }
+                    let data = serialize_response(rsp).unwrap();
+                    let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
+                    let mut completion = stream.write(data);
+                    let _ = completion.drive().await;
                 }
 
                 let recoverable = matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
@@ -2429,7 +2427,7 @@ mod tests {
                 break;
             }
         });
-        (handle, stream_mvar, rx, cancel_token)
+        (handle, mvar, rx, cancel_token)
     }
 
     async fn write_stream<M, W>(
@@ -2484,12 +2482,12 @@ mod tests {
         }
 
         let session_id = SessionId(123);
-        let (_handle, stream_mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
+        let (_handle, mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         // First connection: send messages, verify delivery and ack.
         {
             let (sender, receiver) = tokio::io::duplex(5000);
-            stream_mvar.put(receiver).await;
+            mvar.put(receiver).await;
 
             let (r, writer) = tokio::io::split(sender);
             let mut reader = FrameReader::new(
@@ -2522,7 +2520,7 @@ mod tests {
         // Second connection (reconnection): retransmitted messages are deduped.
         {
             let (sender2, receiver2) = tokio::io::duplex(5000);
-            stream_mvar.put(receiver2).await;
+            mvar.put(receiver2).await;
 
             let (r2, writer2) = tokio::io::split(sender2);
             let mut reader2 = FrameReader::new(
@@ -2558,10 +2556,10 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let session_id = SessionId(123);
-        let (_handle, stream_mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
+        let (_handle, mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         let (sender, receiver) = tokio::io::duplex(5000);
-        stream_mvar.put(receiver).await;
+        mvar.put(receiver).await;
         let (r, mut writer) = tokio::io::split(sender);
         let mut reader = FrameReader::new(
             r,
@@ -3279,10 +3277,10 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
         let session_id = SessionId(123);
-        let (_handle, stream_mvar, mut rx, _cancel_token) = serve_acceptor_test::<u64>(session_id);
+        let (_handle, mvar, mut rx, _cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         let (sender, receiver) = tokio::io::duplex(5000);
-        stream_mvar.put(receiver).await;
+        mvar.put(receiver).await;
         let (r, writer) = tokio::io::split(sender);
         let mut reader = FrameReader::new(
             r,
