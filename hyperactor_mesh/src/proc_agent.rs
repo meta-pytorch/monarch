@@ -43,8 +43,6 @@ use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::mailbox::BoxedMailboxSender;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
@@ -515,10 +513,8 @@ impl Actor for ProcAgent {
                         },
                         children,
                         parent: None,
-                        as_of: humantime::format_rfc3339_millis(
-                            hyperactor::clock::RealClock.system_time_now(),
-                        )
-                        .to_string(),
+                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
+                            .to_string(),
                     };
                 }
             }
@@ -531,10 +527,7 @@ impl Actor for ProcAgent {
                 },
                 children: Vec::new(),
                 parent: None,
-                as_of: humantime::format_rfc3339_millis(
-                    hyperactor::clock::RealClock.system_time_now(),
-                )
-                .to_string(),
+                as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
             }
         });
 
@@ -653,12 +646,11 @@ impl MeshAgentMessageHandler for ProcAgent {
         );
 
         let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
-            match RealClock
-                .timeout(
-                    tokio::time::Duration::from_millis(timeout_ms),
-                    status.wait_for(|state: &ActorStatus| state.is_terminal()),
-                )
-                .await
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(timeout_ms),
+                status.wait_for(|state: &ActorStatus| state.is_terminal()),
+            )
+            .await
             {
                 Ok(_) => Ok(StopActorResult::Success),
                 Err(_) => Ok(StopActorResult::Timeout),
@@ -1157,7 +1149,7 @@ impl Handler<SelfCheck> for ProcAgent {
             return Ok(());
         };
         let duration = duration.clone();
-        let now = RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
         let expired: Vec<(Name, ActorId)> = self
@@ -1534,8 +1526,7 @@ mod tests {
             reply_rx
         };
         let recv = |rx: hyperactor::mailbox::OncePortReceiver<NodePayload>| async move {
-            hyperactor::clock::RealClock
-                .timeout(std::time::Duration::from_secs(5), rx.recv())
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
                 .await
                 .expect("QueryChild(Proc) timed out — reply never delivered")
                 .expect("reply channel closed")

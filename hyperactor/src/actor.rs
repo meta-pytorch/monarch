@@ -38,8 +38,6 @@ use crate::Message;
 use crate::RemoteMessage;
 use crate::checkpoint::CheckpointError;
 use crate::checkpoint::Checkpointable;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::context;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
@@ -613,8 +611,7 @@ impl fmt::Display for ActorStatus {
                 write!(
                     f,
                     "processing for {}ms",
-                    RealClock
-                        .system_time_now()
+                    std::time::SystemTime::now()
                         .duration_since(*instant)
                         .unwrap_or_default()
                         .as_millis()
@@ -625,8 +622,7 @@ impl fmt::Display for ActorStatus {
                     f,
                     "{}: processing for {}ms",
                     handler_info,
-                    RealClock
-                        .system_time_now()
+                    std::time::SystemTime::now()
                         .duration_since(*instant)
                         .unwrap_or_default()
                         .as_millis()
@@ -636,8 +632,7 @@ impl fmt::Display for ActorStatus {
                 write!(
                     f,
                     "saving for {}ms",
-                    RealClock
-                        .system_time_now()
+                    std::time::SystemTime::now()
                         .duration_since(*instant)
                         .unwrap_or_default()
                         .as_millis()
@@ -647,8 +642,7 @@ impl fmt::Display for ActorStatus {
                 write!(
                     f,
                     "loading for {}ms",
-                    RealClock
-                        .system_time_now()
+                    std::time::SystemTime::now()
                         .duration_since(*instant)
                         .unwrap_or_default()
                         .as_millis()
@@ -850,8 +844,6 @@ mod tests {
     use crate::PortRef;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
-    use crate::clock::Clock;
-    use crate::clock::RealClock;
     use crate::config;
     use crate::context::Mailbox as _;
     use crate::introspect::IntrospectMessage;
@@ -956,7 +948,6 @@ mod tests {
             .unwrap();
 
         // TODO: Fix this receiver hanging issue in T200423722.
-        #[allow(clippy::disallowed_methods)]
         let res: Result<Result<bool, MailboxError>, tokio::time::error::Elapsed> =
             timeout(Duration::from_secs(5), local_receiver.recv()).await;
         assert!(res.is_err());
@@ -2126,7 +2117,7 @@ mod tests {
                 },
                 children: Vec::new(),
                 parent: None,
-                as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
+                as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
             });
 
         // Now query_child returns the callback's response.
@@ -2194,7 +2185,7 @@ mod tests {
         handle.send(&client, 1u64).unwrap();
 
         // Wait for the handler to start blocking.
-        RealClock.sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Send introspect query via the dedicated introspect port.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
@@ -2209,8 +2200,7 @@ mod tests {
             .unwrap();
 
         // Must not hang — the introspect task runs independently.
-        let payload = RealClock
-            .timeout(Duration::from_secs(5), reply_rx.recv())
+        let payload = tokio::time::timeout(Duration::from_secs(5), reply_rx.recv())
             .await
             .expect("introspect should not hang on a wedged actor")
             .unwrap();
@@ -2389,9 +2379,7 @@ mod tests {
 
         // The introspect receiver was dropped in `instance()`, so the
         // message is silently discarded and the reply never arrives.
-        let result = RealClock
-            .timeout(Duration::from_millis(100), reply_rx.recv())
-            .await;
+        let result = tokio::time::timeout(Duration::from_millis(100), reply_rx.recv()).await;
         assert!(
             result.is_err(),
             "instance() must not respond to IntrospectMessage (introspect receiver dropped)"

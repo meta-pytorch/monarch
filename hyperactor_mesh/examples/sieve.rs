@@ -24,8 +24,6 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::context;
 use hyperactor_mesh::this_host;
@@ -168,7 +166,7 @@ async fn main() -> Result<ExitCode> {
 
     // TODO: put an indicatif spinner here
     println!("Starts in 5 seconds.");
-    RealClock.sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     println!("Starting...");
 
     let proc_mesh = this_proc().await;

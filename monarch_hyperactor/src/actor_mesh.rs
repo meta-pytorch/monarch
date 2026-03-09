@@ -705,16 +705,13 @@ fn py_identity(obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 ///     hold_secs: Seconds to hold the GIL
 #[pyfunction]
 #[pyo3(name = "hold_gil_for_test", signature = (delay_secs, hold_secs))]
-#[allow(clippy::disallowed_methods)] // Intentional: we need blocking sleep to hold the GIL
 pub fn hold_gil_for_test(delay_secs: f64, hold_secs: f64) {
     thread::spawn(move || {
         // Wait before grabbing the GIL (blocking sleep is fine here, we're in a spawned thread)
-        #[allow(clippy::disallowed_methods)]
         thread::sleep(Duration::from_secs_f64(delay_secs));
         // Acquire and hold the GIL - MUST use blocking sleep to keep GIL held
         Python::attach(|_py| {
             tracing::info!("start holding the gil...");
-            #[allow(clippy::disallowed_methods)]
             thread::sleep(Duration::from_secs_f64(hold_secs));
             tracing::info!("end holding the gil...");
         });
@@ -756,8 +753,6 @@ mod tests {
     use hyperactor::Proc;
     use hyperactor::actor::Signal;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor::mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::WorkCell;
@@ -930,8 +925,7 @@ mod tests {
         controller
             .send(instance, GetSubscriberCount(port.bind()))
             .unwrap();
-        let initial_count = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let initial_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
             .expect("channel closed");
@@ -946,7 +940,7 @@ mod tests {
                 _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
                     panic!("unexpected supervision event on healthy mesh");
                 }
-                _ = RealClock.sleep(Duration::from_millis(200)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
             }
         }
 
@@ -956,8 +950,7 @@ mod tests {
         controller
             .send(instance, GetSubscriberCount(port.bind()))
             .unwrap();
-        let after_count = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let after_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
             .expect("channel closed");
@@ -972,7 +965,7 @@ mod tests {
                 _ = python_actor_mesh.inner.supervision_event(&py_instance) => {
                     panic!("unexpected supervision event on healthy mesh");
                 }
-                _ = RealClock.sleep(Duration::from_millis(200)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
             }
         }
 
@@ -980,8 +973,7 @@ mod tests {
         controller
             .send(instance, GetSubscriberCount(port.bind()))
             .unwrap();
-        let final_count = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let final_count = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for subscriber count")
             .expect("channel closed");

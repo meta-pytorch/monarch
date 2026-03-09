@@ -17,8 +17,6 @@
 //! Usage:
 //!   buck2 run //monarch/hyperactor_telemetry:correctness_test
 
-#![allow(clippy::disallowed_methods)] // don't want to take a dependency on `hyperactor`` just for `hyperactor::clock::Clock`
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 

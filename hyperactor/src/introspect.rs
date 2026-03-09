@@ -69,7 +69,6 @@ use typeuri::Named;
 
 use crate::InstanceCell;
 use crate::OncePortRef;
-use crate::clock::Clock;
 use crate::reference::Reference;
 
 /// Structured failure information extracted from an
@@ -450,7 +449,7 @@ pub fn live_actor_payload(cell: &InstanceCell) -> NodePayload {
         },
         children,
         parent: supervisor,
-        as_of: format_timestamp(crate::clock::RealClock.system_time_now()),
+        as_of: format_timestamp(std::time::SystemTime::now()),
     }
 }
 
@@ -585,10 +584,8 @@ pub async fn serve_introspect(
                     },
                     children: Vec::new(),
                     parent: None,
-                    as_of: humantime::format_rfc3339_millis(
-                        crate::clock::RealClock.system_time_now(),
-                    )
-                    .to_string(),
+                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
+                        .to_string(),
                 });
                 mailbox.serialize_and_send_once(
                     reply,
