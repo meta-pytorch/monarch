@@ -16,4 +16,6 @@ pub(crate) enum KeyResult {
     NeedsRefresh,
     /// Lazily expand the node at the given (reference, depth).
     ExpandNode(String, usize),
+    /// Start the self-diagnostic suite against the attached mesh.
+    RunDiagnostics,
 }

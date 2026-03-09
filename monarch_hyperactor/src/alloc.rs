@@ -12,12 +12,12 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TlsAddr;
 use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::AllocConstraints;
+use hyperactor_mesh::alloc::AllocName;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::Allocator;
 use hyperactor_mesh::alloc::AllocatorError;
@@ -94,8 +94,8 @@ impl Alloc for ReshapedAlloc {
         &self.spec
     }
 
-    fn world_id(&self) -> &WorldId {
-        self.base.world_id()
+    fn alloc_name(&self) -> &AllocName {
+        self.base.alloc_name()
     }
 
     async fn stop(&mut self) -> Result<(), AllocatorError> {
@@ -431,14 +431,14 @@ impl RemoteProcessAllocInitializer for PyRemoteProcessAllocInitializer {
     subclass
 )]
 pub struct PyRemoteAllocator {
-    world_id: String,
+    alloc_name: String,
     initializer: Py<PyAny>,
 }
 
 impl Clone for PyRemoteAllocator {
     fn clone(&self) -> Self {
         Self {
-            world_id: self.world_id.clone(),
+            alloc_name: self.alloc_name.clone(),
             initializer: monarch_with_gil_blocking(|py| Py::clone_ref(&self.initializer, py)),
         }
     }
@@ -483,7 +483,7 @@ impl Allocator for PyRemoteAllocator {
         }
 
         let alloc =
-            RemoteProcessAlloc::new(spec, WorldId(self.world_id.clone()), port, initializer)
+            RemoteProcessAlloc::new(spec, AllocName(self.alloc_name.clone()), port, initializer)
                 .await
                 .map_err(|e| {
                     tracing::error!("failed to allocate: {e:?}");
@@ -497,12 +497,12 @@ impl Allocator for PyRemoteAllocator {
 impl PyRemoteAllocator {
     #[new]
     #[pyo3(signature = (
-        world_id,
+        alloc_name,
         initializer,
     ))]
-    fn new(world_id: String, initializer: Py<PyAny>) -> PyResult<Self> {
+    fn new(alloc_name: String, initializer: Py<PyAny>) -> PyResult<Self> {
         Ok(Self {
-            world_id,
+            alloc_name,
             initializer,
         })
     }

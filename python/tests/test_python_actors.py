@@ -44,12 +44,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
-from monarch._src.actor.host_mesh import (
-    fake_in_process_host,
-    HostMesh,
-    this_host,
-    this_proc,
-)
+from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
@@ -63,7 +58,7 @@ from monarch.actor import (
     endpoint,
     ProcMesh,
 )
-from monarch.config import configured, parametrize_config
+from monarch.config import configure, configured, parametrize_config
 from monarch.tools.config import defaults
 from typing_extensions import assert_type
 
@@ -98,8 +93,9 @@ class Indirect(Actor):
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_choose():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter", Counter, 3)
     i = proc.spawn("indirect", Indirect)
     v.incr.broadcast()
@@ -115,16 +111,18 @@ async def test_choose():
     result3 = v2.value_sync_endpoint.choose().get()
     assert_type(result, int)
     assert result2 == result3
+    await proc.stop()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_stream():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     v = proc.spawn("counter2", Counter, 3)
     v.incr.broadcast()
 
     assert 8 == sum([await x for x in v.value.stream()])
+    await proc.stop()
 
 
 class To(Actor):
@@ -141,8 +139,9 @@ class From(Actor):
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 async def test_mesh_passed_to_mesh():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     f = proc.spawn("from", From)
     t = proc.spawn("to", To)
     # Make sure t is initialized before sending to f. Otherwise
@@ -151,13 +150,14 @@ async def test_mesh_passed_to_mesh():
     all = [y for x in f.fetch.stream(t) for y in await x]
     assert len(all) == 4
     assert all[0] != all[1]
+    await proc.stop()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_mesh_passed_to_mesh_on_different_proc_mesh():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
-    proc2 = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
+    proc2 = this_host().spawn_procs(per_host={"gpus": 2})
     f = proc.spawn("from", From)
     t = proc2.spawn("to", To)
     # Make sure t is initialized before sending to f. Otherwise
@@ -166,13 +166,15 @@ async def test_mesh_passed_to_mesh_on_different_proc_mesh():
     all = [y for x in f.fetch.stream(t) for y in await x]
     assert len(all) == 4
     assert all[0] != all[1]
+    await proc.stop()
+    await proc2.stop()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_actor_slicing():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
-    proc2 = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
+    proc2 = this_host().spawn_procs(per_host={"gpus": 2})
 
     f = proc.spawn("from", From)
     t = proc2.spawn("to", To)
@@ -183,17 +185,20 @@ def test_actor_slicing():
     assert len(result) == 2
 
     assert result[0] == result[1]
+    proc.stop().get()
+    proc2.stop().get()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_aggregate():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     counter = proc.spawn("counter", Counter, 1)
     counter.incr.broadcast()
     acc = Accumulator(counter.value, 0, operator.add)
     r = await acc.accumulate()
     assert r == 4
+    await proc.stop()
 
 
 class RunIt(Actor):
@@ -209,26 +214,28 @@ class RunIt(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_rank_size():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     r = proc.spawn("runit", RunIt)
 
     acc = Accumulator(r.run, 0, operator.add)
 
     assert 1 == await acc.accumulate(lambda: current_rank()["gpus"])
     assert 4 == await acc.accumulate(lambda: current_size()["gpus"])
+    await proc.stop()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_rank_string():
     per_host = {"hosts": 1, "gpus": 2}
-    proc = fake_in_process_host().spawn_procs(per_host=per_host)
+    proc = this_host().spawn_procs(per_host=per_host)
     r = proc.spawn("runit", RunIt)
     vm = r.return_current_rank_str.call().get()
     r0 = vm.flatten("r").slice(r=0).item()
     r1 = vm.flatten("r").slice(r=1).item()
     assert r0 == "{'hosts': 0/1, 'gpus': 0/2}"
     assert r1 == "{'hosts': 0/1, 'gpus': 1/2}"
+    await proc.stop()
 
 
 class SyncActor(Actor):
@@ -240,50 +247,56 @@ class SyncActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 async def test_sync_actor():
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     a = proc.spawn("actor", SyncActor)
     c = proc.spawn("counter", Counter, 5)
     r = await a.sync_endpoint.choose(c)
     assert r == 5
+    await proc.stop()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_sync_actor_sync_client() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     a = proc.spawn("actor", SyncActor)
     c = proc.spawn("counter", Counter, 5)
     r = a.sync_endpoint.choose(c).get()
     assert r == 5
+    proc.stop().get()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_proc_mesh_size() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     assert 2 == proc.size("gpus")
+    proc.stop().get()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_rank_size_sync() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     r = proc.spawn("runit", RunIt)
 
     acc = Accumulator(r.run, 0, operator.add)
     assert 1 == acc.accumulate(lambda: current_rank()["gpus"]).get()
     assert 4 == acc.accumulate(lambda: current_size()["gpus"]).get()
+    proc.stop().get()
 
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_accumulate_sync() -> None:
-    proc = fake_in_process_host().spawn_procs(per_host={"gpus": 2})
+    proc = this_host().spawn_procs(per_host={"gpus": 2})
     counter = proc.spawn("counter", Counter, 1)
     counter.incr.broadcast()
     acc = Accumulator(counter.value, 0, operator.add)
     r = acc.accumulate().get()
     assert r == 4
+    proc.stop().get()
 
 
 class CastToCounter(Actor):
@@ -296,7 +309,7 @@ class CastToCounter(Actor):
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_value_mesh() -> None:
     per_host = {"hosts": 1, "gpus": 2}
-    proc = fake_in_process_host().spawn_procs(per_host=per_host)
+    proc = this_host().spawn_procs(per_host=per_host)
     counter = proc.spawn("counter", Counter, 0)
     counter.slice(hosts=0, gpus=1).incr.broadcast()
     x = counter.value.call().get()
@@ -305,6 +318,7 @@ def test_value_mesh() -> None:
     assert 1 == x.slice(hosts=0, gpus=1).item()
     n = proc.spawn("ctc", CastToCounter)
     assert list(x) == n.slice(gpus=0).doit.call_one(counter).get()
+    proc.stop().get()
 
 
 @pytest.mark.timeout(60)
@@ -337,6 +351,7 @@ def test_rust_binding_modules_correct() -> None:
 
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_proc_mesh_liveness() -> None:
     mesh = this_host().spawn_procs(per_host={"gpus": 2})
     counter = mesh.spawn("counter", Counter, 1)
@@ -384,6 +399,7 @@ async def test_actor_tls() -> None:
 
     assert 4 == await am.get_value.call_one()
     assert 4 == await am.get_async.call_one()
+    await pm.stop()
 
 
 class TLSActorFullSync(Actor):
@@ -414,6 +430,7 @@ async def test_actor_tls_full_sync() -> None:
     await am.increment.call_one()
 
     assert 4 == await am.get_value.call_one()
+    await pm.stop()
 
 
 class AsyncActor(Actor):
@@ -697,6 +714,7 @@ async def test_actor_log_streaming() -> None:
             r"similar log lines.*log streaming as level matched",
             stderr_content,
         ), stderr_content
+        await pm.stop()
 
 
 # oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
@@ -744,6 +762,7 @@ async def test_logging_option_defaults() -> None:
         assert not re.search(r"similar log lines.*log streaming", stderr_content), (
             stderr_content
         )
+        await pm.stop()
 
 
 class MockEvents:
@@ -803,6 +822,7 @@ async def test_flush_called_only_once() -> None:
             mock_ipython.events.trigger("post_run_cell", unittest.mock.MagicMock())
 
             assert mock_flush.call_count == 1
+            await pm1.stop()
 
 
 # oss_skip: pytest keeps complaining about mocking get_ipython module
@@ -964,6 +984,7 @@ async def test_flush_on_disable_aggregation() -> None:
         assert total_single == 10, (
             f"Expected 10 single log lines, got {total_single} from {stdout_content}"
         )
+        await pm.stop()
 
 
 @pytest.mark.timeout(120)
@@ -1001,6 +1022,7 @@ async def test_multiple_ongoing_flushes_no_deadlock() -> None:
 
         # The last flush should not block
         futures[-1].get()
+        await pm.stop()
 
 
 # oss_skip: (SF) broken in GitHub by D86994420. Passes internally.
@@ -1053,6 +1075,7 @@ async def test_adjust_aggregation_window() -> None:
         assert re.search(r"similar log lines.*second batch of logs", stdout_content), (
             stdout_content
         )
+        await pm.stop()
 
 
 class SendAlot(Actor):
@@ -1065,7 +1088,7 @@ class SendAlot(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_port_as_argument() -> None:
-    proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    proc_mesh = this_host().spawn_procs(per_host={"gpus": 1})
     s = proc_mesh.spawn("send_alot", SendAlot)
     send, recv = Channel[int].open()
 
@@ -1073,6 +1096,7 @@ def test_port_as_argument() -> None:
 
     for i in range(100):
         assert i == recv.recv().get()
+    proc_mesh.stop().get()
 
 
 class LsActor(Actor):
@@ -1124,6 +1148,8 @@ async def test_sync_workspace() -> None:
             with open(file_path, "r") as f:
                 assert f.readline() == "hello world"
 
+        await pm.stop()
+
     # sanity check
     assert "WORKSPACE_DIR" not in os.environ, "test leaves env var side-effects!"
 
@@ -1151,9 +1177,10 @@ class PortedActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_ported_actor():
-    proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    proc_mesh = this_host().spawn_procs(per_host={"gpus": 1})
     a = proc_mesh.spawn("port_actor", PortedActor)
     assert 5 == a.add.call_one(2).get()
+    proc_mesh.stop().get()
 
 
 async def _recv():
@@ -1194,9 +1221,12 @@ class SleepActor(Actor):
 
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_mesh_len():
-    proc_mesh = fake_in_process_host().spawn_procs(per_host={"gpus": 12})
+    configure(message_delivery_timeout="5s")
+    proc_mesh = this_host().spawn_procs(per_host={"gpus": 12})
     s = proc_mesh.spawn("sleep_actor", SleepActor)
     assert 12 == len(s)
+    proc_mesh.stop().get()
+    time.sleep(5)
 
 
 @pytest.mark.oss_skip
@@ -1207,6 +1237,7 @@ def test_long_endpoint_completes() -> None:
     sleeper = pm.spawn("sleep", SleepActor)
     # Sleep for 60 seconds and then complete without an exception.
     sleeper.sleep.call(60).get()
+    pm.stop().get()
 
 
 class UndeliverableMessageReceiver(Actor):
@@ -1229,7 +1260,7 @@ class UndeliverableMessageSender(Actor):
     def send_undeliverable(self) -> None:
         actor_instance = context().actor_instance
         port_id = PortId(
-            actor_id=ActorId(world_name="bogus", rank=0, actor_name="bogus"),
+            actor_id=ActorId(addr="local:0", proc_name="bogus", actor_name="bogus"),
             port=1234,
         )
         port_ref = PortRef(port_id)
@@ -1257,8 +1288,8 @@ class UndeliverableMessageSenderWithOverride(UndeliverableMessageSender):
 
 
 @pytest.mark.timeout(10)
-# Not compatible with queue dispatch, as it assumes concurrent dispatch
 @isolate_in_subprocess
+# Not compatible with queue dispatch, as it assumes concurrent dispatch
 async def test_undeliverable_message_with_override() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     receiver = pm.spawn("undeliverable_receiver", UndeliverableMessageReceiver)
@@ -1314,6 +1345,7 @@ async def test_things_survive_losing_python_reference() -> None:
     receptor = receptor.slice(gpus=0)
 
     await receptor.status.call()
+    await pm.stop()
 
 
 class IsInit(Actor):
@@ -1406,6 +1438,65 @@ def test_simple_bootstrap():
             proc.wait()
 
 
+@parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
+def test_config_propagates_to_host_agent():
+    """Verify that configure() overrides reach host agent OS processes
+    via the simple bootstrap (attach_to_workers) path.
+
+    Sets mesh_admin_addr on the client, attaches to workers (which
+    pushes config to host agents via SetClientConfig), then spawns
+    MeshAdminAgent on the host's system proc. MeshAdminAgent reads
+    MESH_ADMIN_ADDR from the host agent process's global config to
+    decide its bind address. If the client's config was propagated,
+    it binds to :9999 instead of the default :1729.
+
+    This specifically tests the host agent's own process config, NOT
+    child procs (which already receive config via ProcSpec/Bootstrap).
+    """
+    from monarch.config import configure
+
+    # Set a non-default admin address on the client side.
+    configure(mesh_admin_addr="[::]:9999")
+
+    with TemporaryDirectory() as d:
+        procs = []
+        workers = []
+
+        for i in range(1):
+            addr = f"ipc://{d}/{i}"
+            env = {**os.environ}
+            if "FB_XAR_INVOKED_NAME" in os.environ:
+                env["PYTHONPATH"] = ":".join(sys.path)
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    f'import sys; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca="trust_all_connections")',
+                ],
+                env=env,
+            )
+            procs.append(proc)
+            workers.append(addr)
+
+        hosts = attach_to_workers(ca="trust_all_connections", workers=workers)
+
+        # _spawn_admin() sends SpawnMeshAdmin to the host agent, which
+        # spawns MeshAdminAgent on the host's system proc. The admin
+        # agent reads MESH_ADMIN_ADDR from the host process's config.
+        head = hosts.slice(hosts=0)
+        admin_addr = head._spawn_admin().get()
+
+        assert ":9999" in admin_addr, (
+            f"Expected :9999 in admin addr '{admin_addr}', "
+            "client config not propagated to host agent process"
+        )
+
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+
+
 class HostMeshActor(Actor):
     @endpoint
     async def this_host(self) -> HostMesh:
@@ -1452,6 +1543,7 @@ def test_this_host() -> None:
         expected_hosts_by_rank[6],
         expected_hosts_by_rank[10],
     ]
+    proc_mesh_all.stop().get()
 
 
 class FakeLocalLoginJob(LoginJob):
@@ -1530,6 +1622,7 @@ def test_setup() -> None:
     counter.incr.call().get()
     # Make sure no errors occur in the meantime
     time.sleep(10)
+    procs.stop().get()
 
 
 # oss_skip: passes internally but fails on CI with "ValueError: error spawning proc mesh: statuses: Timeout(30.000905376s)=0..1"
@@ -1540,6 +1633,7 @@ def test_setup_async() -> None:
     counter.incr.call().get()
     # Make sure no errors occur in the meantime
     time.sleep(10)
+    procs.stop().get()
 
 
 class CaptureLogs:
@@ -1571,6 +1665,7 @@ class Named(Actor):
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_instance_name():
     cr, result = (
         this_host()
@@ -1621,6 +1716,7 @@ def test_context_propagated_through_python_task_spawn():
     p = this_host().spawn_procs()
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn.call().get()
+    p.stop().get()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -1628,6 +1724,7 @@ def test_context_propagated_through_python_task_spawn_blocking():
     p = this_host().spawn_procs()
     a = p.spawn("test_pytokio_actor", TestPytokioActor)
     a.context_propagated_through_spawn_blocking.call().get()
+    p.stop().get()
 
 
 class ActorWithCleanup(Actor):
@@ -1667,6 +1764,7 @@ def test_cleanup():
     cleanup.check.call_one().get()
     cast(ActorMesh[ActorWithCleanup], cleanup).stop().get()
     assert counter.value.call_one().get() == 1
+    procs.stop().get()
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -1679,6 +1777,7 @@ def test_cleanup_async():
     cleanup.check.call_one().get()
     cast(ActorMesh[ActorWithCleanup], cleanup).stop().get()
     assert counter.value.call_one().get() == 1
+    procs.stop().get()
 
 
 class WrapperActor(Actor):
@@ -1725,51 +1824,60 @@ def test_recursive_stop():
     # Two increments to the counter: one for the actors on the owned proc mesh,
     # and one for the actors on the passed-in proc mesh.
     assert counter.value.call_one().get() == 2
+    procs.stop().get()
+
+
+class _StoreActor(Actor):
+    def __init__(self):
+        self._store = {}
+
+    @endpoint
+    def put(self, key, value):
+        self._store[key] = value
+
+    @endpoint
+    def get(self, key):
+        return self._store[key]
+
+
+class _UnpickledPmMyActor(Actor):
+    @endpoint
+    def register_pm(self, proc_mesh):
+        self.pm = proc_mesh
+
+    @endpoint
+    def spawn_and_get_from_store(self, actor_cls, key):
+        child_actor = self.pm.spawn("child_actor", actor_cls)
+        return child_actor.get_from_store.call_one(key).get()
+
+
+class _UnpickledPmChildActor(Actor):
+    @endpoint
+    def get_from_store(self, key):
+        return (
+            get_or_spawn_controller("store", _StoreActor).get().get.call_one(key).get()
+        )
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
+@isolate_in_subprocess
 def test_get_or_spawn_controller_on_unpickled_proc_mesh():
-    class StoreActor(Actor):
-        def __init__(self):
-            self._store = {}
-
-        @endpoint
-        def put(self, key, value):
-            self._store[key] = value
-
-        @endpoint
-        def get(self, key):
-            return self._store[key]
-
-    class MyActor(Actor):
-        @endpoint
-        def register_pm(self, proc_mesh):
-            self.pm = proc_mesh
-
-        @endpoint
-        def spawn_and_get_from_store(self, actor_cls, key):
-            child_actor = self.pm.spawn("child_actor", actor_cls)
-            return child_actor.get_from_store.call_one(key).get()
-
-    class ChildActor(Actor):
-        @endpoint
-        def get_from_store(self, key):
-            return (
-                get_or_spawn_controller("store", StoreActor)
-                .get()
-                .get.call_one(key)
-                .get()
-            )
-
     pm = this_host().spawn_procs(per_host={"procs": 1})
-    my_actor = pm.spawn("my_actor", MyActor)
+    my_actor = pm.spawn("my_actor", _UnpickledPmMyActor)
 
-    store = get_or_spawn_controller("store", StoreActor).get()
+    store = get_or_spawn_controller("store", _StoreActor).get()
     store.put.call_one("a", 1).get()
 
     child_pm = this_host().spawn_procs(per_host={"procs": 1})
     my_actor.register_pm.call(child_pm).get()
-    assert my_actor.spawn_and_get_from_store.call_one(ChildActor, "a").get() == 1
+    assert (
+        my_actor.spawn_and_get_from_store.call_one(_UnpickledPmChildActor, "a").get()
+        == 1
+    )
+    # TODO: pm.stop() / child_pm.stop() cause a non-deterministic crash.
+    # See test_errors_propagated in test_actor_error.py for details.
+    # pm.stop().get()
+    # child_pm.stop().get()
 
 
 class RunForeverOnInitActor(Actor):
@@ -1790,7 +1898,7 @@ class RunForeverOnInitActor(Actor):
 async def test_run_forever_on_init():
     """Test that an actor whose __init__ never returns still allows
     initialization side effects to propagate."""
-    pm = fake_in_process_host().spawn_procs(per_host={"gpus": 1})
+    pm = this_host().spawn_procs(per_host={"gpus": 1})
     # Fake type, actually ActorMesh[Counter], but necessary for type-checking.
     send, recv = Channel[Counter].open()
     forever = pm.spawn("forever", RunForeverOnInitActor, pm, send)
@@ -1813,6 +1921,7 @@ def test_raw_actor_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     assert proc_mesh._proc_mesh.poll() is None
     cloudpickle.dumps(actor_mesh)
     assert proc_mesh._proc_mesh.poll() is not None
+    proc_mesh.stop().get()
 
 
 _GRACEFUL_SHUTDOWN_WORKER = """\
