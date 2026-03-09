@@ -24,7 +24,10 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::actor::handle_undeliverable_message;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::kv_pairs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -32,6 +35,7 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_telemetry::declare_static_counter;
 use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
 use ndslice::view::Point;
@@ -47,11 +51,15 @@ use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
 use crate::casting::update_undeliverable_envelope_for_casting;
 use crate::host_mesh::HostMeshRef;
-use crate::mesh_agent::ActorState;
+use crate::proc_agent::ActorState;
+use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
 use crate::proc_mesh::ProcMeshRef;
 use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
+
+/// Actor name for `ActorMeshController` when spawned as a named child.
+pub const ACTOR_MESH_CONTROLLER_NAME: &str = "actor_mesh_controller";
 
 declare_attrs! {
     /// Time between checks of actor states to create supervision events for
@@ -67,6 +75,11 @@ declare_attrs! {
     ))
     pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(10);
 }
+
+declare_static_counter!(
+    ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS,
+    "actor.actor_mesh_controller.num_stalls"
+);
 
 #[derive(Debug)]
 struct HealthState {
@@ -115,8 +128,10 @@ pub struct GetSubscriberCount(#[binding(include)] pub PortRef<usize>);
 
 /// Check state of the actors in the mesh. This is used as a self message to
 /// periodically check.
+/// Stores the next time we expect to start running a check state message.
+/// Used to check for stalls in message handling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct CheckState();
+pub struct CheckState(pub std::time::SystemTime);
 
 /// The implementation of monitoring works as follows:
 /// * ActorMesh and ActorMeshRef subscribe for updates from this controller,
@@ -185,10 +200,10 @@ impl<A: Referable> ActorMeshController<A> {
     fn self_check_state_message(&self, cx: &Instance<Self>) -> Result<(), ActorError> {
         // Only schedule a self message if the monitor has not been dropped.
         if self.monitor.is_some() {
-            cx.self_message_with_delay(
-                CheckState {},
-                hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY),
-            )
+            // Save when we expect the next check state message, so we can automatically
+            // detect stalls as they accumulate.
+            let delay = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
+            cx.self_message_with_delay(CheckState(RealClock.system_time_now() + delay), delay)
         } else {
             Ok(())
         }
@@ -233,6 +248,7 @@ impl<A: Referable> Debug for ActorMeshController<A> {
 #[async_trait]
 impl<A: Referable> Actor for ActorMeshController<A> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
         // Start the monitor task.
         // There's a shared monitor for all whole mesh ref. Note that slices do
         // not share the health state. This is fine because requerying a slice
@@ -454,7 +470,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
             .keys()
             .next()
             .map(|p| p.extent().clone());
-        // Send a stop message to the ProcMeshAgent for these actors.
+        // Send a stop message to the ProcAgent for these actors.
         match self.stop(cx, message.reason.clone()).await {
             Ok(statuses) => {
                 // All stops successful, set actor status on health state.
@@ -621,6 +637,11 @@ fn actor_state_to_supervision_events(
     (rank, events)
 }
 
+fn format_system_time(time: std::time::SystemTime) -> String {
+    let datetime: chrono::DateTime<chrono::Local> = time.into();
+    datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 #[async_trait]
 impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
     /// Checks actor states and reschedules as a self-message.
@@ -634,13 +655,35 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
     ///
     /// * SUPERVISION_POLL_FREQUENCY controls how frequently to poll.
     /// * self-messaging stops when self.monitor is set to None.
-    async fn handle(&mut self, cx: &Context<Self>, _: CheckState) -> Result<(), anyhow::Error> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        CheckState(expected_time): CheckState,
+    ) -> Result<(), anyhow::Error> {
         // This implementation polls every "time_between_checks" duration, checking
         // for changes in the actor states. It can be improved in two ways:
         // 1. Use accumulation, to get *any* actor with a change in state, not *all*
         //    actors.
         // 2. Use a push-based mode instead of polling.
         // Wait in between checking to avoid using too much network.
+
+        // Check for stalls in the supervision loop. These delays can cause the
+        // subscribers to think the controller is dead.
+        // Allow a little slack time to avoid logging for innocuous delays.
+        // If it's greater than 2x the expected time, log a warning.
+        if RealClock.system_time_now()
+            > expected_time + hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY)
+        {
+            // Current time is included by default in the log message.
+            let expected_time = format_system_time(expected_time);
+            // Track in both metrics and tracing.
+            ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS.add(1, kv_pairs!("actor_id" => cx.self_id().to_string(), "expected_time" => expected_time.clone()));
+            tracing::warn!(
+                actor_id = %cx.self_id(),
+                "Handler<CheckState> is being stalled, expected at {}",
+                expected_time,
+            );
+        }
         let mesh = &self.mesh;
         let supervision_display_name = &self.supervision_display_name;
         // First check if the proc mesh is dead before trying to query their agents.
@@ -691,21 +734,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         status
                     ))),
                 };
-                let display_name = if !point.is_empty() {
-                    let coords_display = point.format_as_dict();
-                    if let Some(pos) = supervision_display_name.rfind('>') {
-                        format!(
-                            "{}{}{}",
-                            &supervision_display_name[..pos],
-                            coords_display,
-                            &supervision_display_name[pos..]
-                        )
-                    } else {
-                        format!("{}{}", supervision_display_name, coords_display)
-                    }
-                } else {
-                    supervision_display_name.clone()
-                };
+                let display_name = crate::actor_display_name(supervision_display_name, &point);
                 send_state_change(
                     cx,
                     point.rank(),
@@ -727,7 +756,13 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         }
 
         // Now that we know the proc mesh is alive, check for actor state changes.
-        let events = mesh.actor_states(cx).await;
+        let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
+        let keepalive = if orphan_timeout.is_zero() {
+            None
+        } else {
+            Some(RealClock.system_time_now() + orphan_timeout)
+        };
+        let events = mesh.actor_states_with_keepalive(cx, keepalive).await;
         if let Err(e) = events {
             send_state_change(
                 cx,
@@ -848,6 +883,11 @@ impl ProcMeshController {
 
 #[async_trait]
 impl Actor for ProcMeshController {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
@@ -887,6 +927,11 @@ impl HostMeshController {
 
 #[async_trait]
 impl Actor for HostMeshController {
+    async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
+        this.set_system();
+        Ok(())
+    }
+
     async fn cleanup(
         &mut self,
         this: &Instance<Self>,
@@ -899,5 +944,242 @@ impl Actor for HostMeshController {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Deref;
+    use std::time::Duration;
+
+    use hyperactor::clock::Clock;
+    use hyperactor::clock::RealClock;
+    use ndslice::Extent;
+    use ndslice::ViewExt;
+
+    use super::SUPERVISION_POLL_FREQUENCY;
+    use crate::ActorMesh;
+    use crate::Name;
+    use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
+    use crate::resource;
+    use crate::supervision::MeshFailure;
+    use crate::test_utils::local_host_mesh;
+    use crate::testactor;
+    use crate::testing;
+
+    /// Verify that actors spawned without a controller are cleaned up
+    /// when their keepalive expiry lapses. We:
+    ///   1. Enable the orphan timeout on the `ProcMeshAgent`.
+    ///   2. Spawn actors as *system actors* (no `ActorMeshController`).
+    ///   3. Send a single keepalive with a short expiry time.
+    ///   4. Wait for the expiry to pass and `SelfCheck` to fire.
+    ///   5. Assert that the actors are now stopped.
+    #[tokio::test]
+    async fn test_orphaned_actors_are_cleaned_up() {
+        let config = hyperactor_config::global::lock();
+        // Short orphan timeout so SelfCheck fires frequently.
+        let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Duration::from_secs(1));
+
+        let instance = testing::instance();
+        let host_mesh = local_host_mesh(2).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", Extent::unity())
+            .await
+            .unwrap();
+
+        let actor_name = Name::new("orphan_test").unwrap();
+        // Spawn as a system actor so no controller is created. This lets us
+        // control keepalive messages directly without the controller
+        // interfering.
+        let actor_mesh: ActorMesh<testactor::TestActor> = proc_mesh
+            .spawn_with_name(instance, actor_name.clone(), &(), None, true)
+            .await
+            .unwrap();
+        assert!(
+            actor_mesh.deref().extent().num_ranks() > 0,
+            "should have spawned at least one actor"
+        );
+
+        // Send a keepalive with a short expiry. This is what the
+        // ActorMeshController would normally do on each supervision poll.
+        let states = proc_mesh
+            .actor_states_with_keepalive(
+                instance,
+                actor_name.clone(),
+                Some(RealClock.system_time_now() + Duration::from_secs(2)),
+            )
+            .await
+            .unwrap();
+        // All actors should be running right now.
+        for state in states.values() {
+            assert_eq!(
+                state.status,
+                resource::Status::Running,
+                "actor should be running before expiry"
+            );
+        }
+
+        // Wait long enough for the expiry to pass and at least one
+        // SelfCheck cycle to fire. With MESH_ORPHAN_TIMEOUT = 1s and
+        // expiry in 2s, by around 4s at least two SelfCheck cycles will
+        // have elapsed after the expiry.
+        RealClock.sleep(Duration::from_secs(5)).await;
+
+        // Query again, this time *without* a keepalive so we don't
+        // extend the expiry.
+        let states = proc_mesh
+            .actor_states(instance, actor_name.clone())
+            .await
+            .unwrap();
+        for state in states.values() {
+            assert_eq!(
+                state.status,
+                resource::Status::Stopped,
+                "actor should be stopped after keepalive expiry"
+            );
+        }
+    }
+
+    /// Create a multi-process host mesh that propagates the current
+    /// process's config overrides to child processes via Bootstrap.
+    #[cfg(fbcode_build)]
+    async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMesh {
+        use hyperactor::channel::ChannelTransport;
+        use tokio::process::Command;
+
+        let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
+        let mut host_addrs = vec![];
+        for _ in 0..n {
+            host_addrs.push(ChannelTransport::Unix.any());
+        }
+
+        for host in host_addrs.iter() {
+            let mut cmd = Command::new(program.clone());
+            let boot = crate::Bootstrap::Host {
+                addr: host.clone(),
+                command: None,
+                config: Some(hyperactor_config::global::attrs()),
+                exit_on_shutdown: false,
+            };
+            boot.to_env(&mut cmd);
+            cmd.kill_on_drop(false);
+            // SAFETY: pre_exec sets PR_SET_PDEATHSIG so the child is
+            // cleaned up if the parent (test) process dies.
+            unsafe {
+                cmd.pre_exec(crate::bootstrap::install_pdeathsig_kill);
+            }
+            cmd.spawn().unwrap();
+        }
+
+        let host_mesh = crate::HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
+        crate::host_mesh::HostMesh::take(host_mesh)
+    }
+
+    /// Verify that actors are cleaned up via the orphan timeout when the
+    /// `ActorMeshController`'s process crashes. Unlike the system-actor test
+    /// above, this spawns actors through a real controller (via `WrapperActor`)
+    /// and then kills the controller's process uncleanly with `ProcessExit`.
+    /// The agents on the surviving proc mesh detect the expired keepalive
+    /// and stop the actors.
+    #[tokio::test]
+    #[cfg(fbcode_build)]
+    async fn test_orphaned_actors_cleaned_up_on_controller_crash() {
+        let config = hyperactor_config::global::lock();
+        let _orphan = config.override_key(MESH_ORPHAN_TIMEOUT, Duration::from_secs(2));
+        let _poll = config.override_key(SUPERVISION_POLL_FREQUENCY, Duration::from_secs(1));
+
+        let instance = testing::instance();
+        let num_replicas = 2;
+
+        // Host mesh for the test actors (these survive the crash).
+        // host_mesh_with_config propagates config overrides to child
+        // processes via Bootstrap, so agents boot with
+        // MESH_ORPHAN_TIMEOUT=2s and start the SelfCheck loop.
+        let mut actor_hm = host_mesh_with_config(num_replicas).await;
+        let actor_proc_mesh = actor_hm
+            .spawn(instance, "actors", Extent::unity())
+            .await
+            .unwrap();
+
+        // Host mesh for the wrapper + controller (will be killed).
+        let mut controller_hm = host_mesh_with_config(1).await;
+        let controller_proc_mesh = controller_hm
+            .spawn(instance, "controller", Extent::unity())
+            .await
+            .unwrap();
+
+        let child_name = Name::new("orphan_child").unwrap();
+
+        // Supervision port required by WrapperActor params.
+        let (supervision_port, _supervision_receiver) = instance.open_port::<MeshFailure>();
+        let supervisor = supervision_port.bind();
+
+        // Spawn WrapperActor on controller_proc_mesh. Its init() spawns
+        // ActorMesh<TestActor> on actor_proc_mesh with a real
+        // ActorMeshController co-located on the controller's process.
+        let wrapper_mesh: ActorMesh<testactor::WrapperActor> = controller_proc_mesh
+            .spawn(
+                instance,
+                "wrapper",
+                &(
+                    actor_proc_mesh.deref().clone(),
+                    supervisor,
+                    child_name.clone(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        // Give the controller time to run at least one CheckState cycle
+        // (polling every 1s) so it sends KeepaliveGetState to the agents.
+        RealClock.sleep(Duration::from_secs(3)).await;
+
+        // Verify actors are running before the crash.
+        let states = actor_proc_mesh
+            .actor_states(instance, child_name.clone())
+            .await
+            .unwrap();
+        for state in states.values() {
+            assert_eq!(
+                state.status,
+                resource::Status::Running,
+                "actor should be running before controller crash"
+            );
+        }
+
+        // Kill the controller's process uncleanly. send_to_children: false
+        // means only the WrapperActor's process exits; the TestActors on
+        // actor_proc_mesh survive.
+        wrapper_mesh
+            .cast(
+                instance,
+                testactor::CauseSupervisionEvent {
+                    kind: testactor::SupervisionEventType::ProcessExit(1),
+                    send_to_children: false,
+                },
+            )
+            .unwrap();
+
+        // Wait for:
+        //  - keepalive expiry (2s from last CheckState)
+        //  - at least one SelfCheck cycle (every 2s)
+        //  - margin for processing
+        RealClock.sleep(Duration::from_secs(8)).await;
+
+        // Actors should now be stopped via the orphan timeout.
+        let states = actor_proc_mesh
+            .actor_states(instance, child_name.clone())
+            .await
+            .unwrap();
+        for state in states.values() {
+            assert_eq!(
+                state.status,
+                resource::Status::Stopped,
+                "actor should be stopped after controller crash and orphan timeout"
+            );
+        }
+
+        let _ = actor_hm.shutdown(instance).await;
+        let _ = controller_hm.shutdown(instance).await;
     }
 }

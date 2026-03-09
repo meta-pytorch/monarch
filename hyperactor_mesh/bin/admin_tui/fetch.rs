@@ -224,6 +224,7 @@ pub(crate) fn build_tree_node<'a>(
     reference: &'a str,
     depth: usize,
     expanded_keys: &'a HashSet<(String, usize)>,
+    failed_keys: &'a HashSet<(String, usize)>,
     refresh_gen: u64,
     seq_counter: &'a mut u64,
 ) -> Pin<Box<dyn Future<Output = Option<TreeNode>> + Send + 'a>> {
@@ -332,10 +333,15 @@ pub(crate) fn build_tree_node<'a>(
                 // Failed nodes are always visible (never filtered by show_stopped).
                 // If the parent proc is poisoned, its stopped children may be
                 // failed — don't filter them out (cache may be empty on first load).
-                let child_is_failed = parent_is_poisoned
-                    || get_cached_payload(cache, child_ref)
-                        .is_some_and(|c| is_failed_node(&c.properties));
-                if !show_stopped && child_is_stopped && !child_is_failed {
+                // A child is known-failed from its cached payload, or
+                // inferred-failed if it is stopped on a poisoned proc
+                // (the failure that poisoned the proc likely stopped it).
+                let child_cached_failed = get_cached_payload(cache, child_ref)
+                    .is_some_and(|c| is_failed_node(&c.properties));
+                let child_cached_failed =
+                    child_cached_failed || (parent_is_poisoned && child_is_stopped);
+                let child_maybe_failed = parent_is_poisoned || child_cached_failed;
+                if !show_stopped && child_is_stopped && !child_maybe_failed {
                     continue;
                 }
 
@@ -356,6 +362,7 @@ pub(crate) fn build_tree_node<'a>(
                             child_ref,
                             depth + 1,
                             expanded_keys,
+                            failed_keys,
                             refresh_gen,
                             seq_counter,
                         )
@@ -374,14 +381,17 @@ pub(crate) fn build_tree_node<'a>(
                                 }
                                 let mut node = TreeNode::from_payload(child_ref.clone(), cached);
                                 node.stopped = node.stopped || child_is_stopped;
+                                node.failed = node.failed || child_cached_failed;
                                 node.is_system = node.is_system || child_is_system;
                                 children.push(node);
                             } else if child_is_stopped {
                                 let mut node = TreeNode::placeholder_stopped(child_ref.clone());
+                                node.failed = child_cached_failed;
                                 node.is_system = child_is_system;
                                 children.push(node);
                             } else {
                                 let mut node = TreeNode::placeholder(child_ref.clone());
+                                node.failed = child_cached_failed;
                                 node.is_system = child_is_system;
                                 children.push(node);
                             }
@@ -398,14 +408,17 @@ pub(crate) fn build_tree_node<'a>(
                             }
                             let mut node = TreeNode::from_payload(child_ref.clone(), cached);
                             node.stopped = node.stopped || child_is_stopped;
+                            node.failed = node.failed || child_cached_failed;
                             node.is_system = node.is_system || child_is_system;
                             children.push(node);
                         } else if child_is_stopped {
                             let mut node = TreeNode::placeholder_stopped(child_ref.clone());
+                            node.failed = child_cached_failed;
                             node.is_system = child_is_system;
                             children.push(node);
                         } else {
                             let mut node = TreeNode::placeholder(child_ref.clone());
+                            node.failed = child_cached_failed;
                             node.is_system = child_is_system;
                             children.push(node);
                         }
@@ -422,6 +435,7 @@ pub(crate) fn build_tree_node<'a>(
                         child_ref,
                         depth + 1,
                         expanded_keys,
+                        failed_keys,
                         refresh_gen,
                         seq_counter,
                     )
@@ -433,11 +447,15 @@ pub(crate) fn build_tree_node<'a>(
             }
         }
 
-        // A node is failed if it has failure info itself (actor with
-        // failure_info, poisoned proc) OR if any of its children are
-        // failed.  This propagates the unhealthy state upward so that
-        // host and root nodes render red when the mesh contains failures.
-        let children_failed = children.iter().any(|c| c.failed);
+        // Failure propagation: expanded nodes recompute from live
+        // children; collapsed nodes carry forward prior state.
+        let children_failed = if is_expanded {
+            // Live: authoritative recomputation from fetched children.
+            children.iter().any(|c| c.failed)
+        } else {
+            // Carried: children not built this cycle — inherit prior.
+            failed_keys.contains(&(reference.to_string(), depth))
+        };
         let node = TreeNode {
             reference: reference.to_string(),
             label,

@@ -16,7 +16,15 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use glob::glob;
+// pyo3_build_config is only called inside #[cfg(not(fbcode_build))],
+// so the Buck compiler never sees a direct reference. This import
+// suppresses the unused_extern warning while keeping the dep explicit
+// in the generated Cargo.toml (autocargo doesn't propagate transitive
+// deps).
+use pyo3_build_config as _;
 use which::which;
+
+pub mod rocm;
 
 /// Python script to extract Python paths from sysconfig
 pub const PYTHON_PRINT_DIRS: &str = r"

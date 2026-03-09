@@ -48,12 +48,14 @@ base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = "1.3.3"
 bitmaps = "3.2.1"
 buck-resources = "1"
-chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
+chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 crossterm = { version = "0.28", features = ["event-stream", "serde"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.9"
+fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
+fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hostname = "0.3"
 humantime = "2.1"
@@ -61,12 +63,12 @@ hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
-indicatif = { version = "0.18.3", features = ["futures", "improved_unicode", "rayon", "tokio"] }
+indicatif = { version = "0.18.4", features = ["futures", "improved_unicode", "rayon", "tokio"] }
 libc = "0.2.139"
 mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
-opentelemetry = "0.29"
+opentelemetry = "0.31"
 pin-project = "1.1.10"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = { version = "0.9", features = ["small_rng"] }
@@ -82,12 +84,12 @@ thiserror = "2.0.18"
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.18", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
-tokio-util = { version = "0.7.15", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 urlencoding = "2.1.0"
-uuid = { version = "1.17", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.21.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 zbus = { version = "5.11.0", features = ["async-executor", "async-fs", "async-io", "async-lock", "async-process", "async-task", "p2p", "tokio"], default-features = false }
 

@@ -457,7 +457,7 @@ mod tests {
     use anyhow::Result;
     use anyhow::anyhow;
     use hyperactor_mesh::ActorMesh;
-    use hyperactor_mesh::global_root_client;
+    use hyperactor_mesh::context;
     use hyperactor_mesh::test_utils;
     use tempfile::TempDir;
     use tokio::fs;
@@ -501,7 +501,8 @@ mod tests {
         fs::write(target_workspace.path().join("foo.txt"), "something").await?;
 
         // Set up actor mesh with 2 RsyncActors
-        let instance = global_root_client();
+        let cx = context().await;
+        let instance = cx.actor_instance;
         let mut host_mesh = test_utils::local_host_mesh(1).await;
         let proc_mesh = host_mesh
             .spawn(instance, "rsync_test", ndslice::Extent::unity())

@@ -52,13 +52,14 @@ pub(crate) fn ui(frame: &mut ratatui::Frame<'_>, app: &App) {
 
     render_header(frame, chunks[0], app);
     render_body(frame, chunks[1], app);
-    render_footer(frame, chunks[2], &app.theme.scheme, &app.theme.labels);
+    render_footer(frame, chunks[2], app);
 }
 
 /// Render the main body of the UI.
 ///
 /// Splits the screen into a left topology pane and a right detail
-/// pane, and renders each using the current application state.
+/// pane. When diagnostics is active the topology tree is dimmed
+/// (non-interactive) and the right pane shows the diagnostics view.
 pub(crate) fn render_body(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)

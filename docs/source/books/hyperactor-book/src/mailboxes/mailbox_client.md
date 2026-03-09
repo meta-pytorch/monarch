@@ -1,20 +1,18 @@
 # MailboxClient
 
-A `MailboxClient` is the sending counterpart to a `MailboxServer`. It owns a buffer of outgoing messages and transmits them over a `channel::Tx` interface to a remote server.
+A `MailboxClient` is the sending counterpart to a `MailboxServer`. It transmits messages directly over a `channel::Tx` interface to a remote server.
 
 The client handles undeliverable returns, maintains a background task for monitoring channel health, and implements `MailboxSender` for compatibility.
 
 Topics in this section:
 
 - The `MailboxClient` struct and its `new` constructor
-- The use of `Buffer<MessageEnvelope>` for decoupled delivery
+- Direct transmission via `channel::Tx`
 - Delivery error handling and monitoring
 
-## Internal Buffering
+## The Buffer Abstraction
 
-`MailboxClient` uses a `Buffer<MessageEnvelope>` internally to decouple message submission from actual transmission. This buffer ensures ordered, asynchronous delivery while preserving undeliverable routing guarantees.
-
-This is a foundational buffer abstraction used in several types in the remainder of the program. It's a concurrency-safe buffered message processor, parameterized on the message type `T`.
+While `MailboxClient` itself transmits messages directly without internal buffering, the `Buffer<T>` abstraction is a foundational type used in several other components in the system (such as `DurableMailboxSender`). It's a concurrency-safe buffered message processor, parameterized on the message type `T`.
 
 The buffer:
 - accepts messages of type `T`
@@ -58,7 +56,7 @@ The `Buffer<T>` type is constructed by providing a user-supplied asynchronous pr
 
 Internally, the buffer maintains an unbounded channel for queued messages and spawns a background task responsible for processing messages sequentially. As each message is handled, the buffer advances an internal sequence counter and updates a watch channel, allowing external components to monitor processing progress if needed. The processing function is fully asynchronous: the buffer awaits its completion before proceeding to the next message, ensuring that processing remains ordered and that no work is dropped or skipped.
 
-This design decouples message submission from processing, allowing producers to enqueue messages immediately while processing occurs concurrently in the background.
+This design decouples message submission from processing, allowing producers to enqueue messages immediately while processing occurs concurrently in the background. This pattern is used in components like `DurableMailboxSender` where buffering is needed.
 
 We can write a `send` function for `Buffer<T>`. It is not `async` since it just enqueues the incoming `T` for processing:
 ```rust
@@ -93,104 +91,84 @@ Internally, `flush(`) uses the buffer’s watch channel to observe updates as me
 
 ## Role and Behavior of `MailboxClient`
 
-The `MailboxServer` listens for incoming messages on a channel and delivers them to the system. The `MailboxClient` acts as the sender, enqueueing messages for transmission to the server.
+The `MailboxServer` listens for incoming messages on a channel and delivers them to the system. The `MailboxClient` acts as the sender, transmitting messages directly to the server.
 
 A `MailboxClient` is the **dual** of a `MailboxServer`. It:
-- owns a `Buffer<MessageEnvelope>` that decouples senders from actual delivery;
-- transmits messages asynchronously over a `channel::Tx<MessageEnvelope>`;
+- holds a reference to a `channel::Tx<MessageEnvelope>` for direct transmission;
+- transmits messages synchronously via `try_post`;
 - reports undeliverable messages via a `PortHandle<Undeliverable<MessageEnvelope>>`;
-- monitors the transmission channel for health and shuts down approriately.
+- monitors the transmission channel for health and shuts down appropriately.
 
-`MailboxServer` is a trait defining the receiving side of a message channel; `MailboxClient` is a concrete sender that buffers and transmits messages to it:
+`MailboxServer` is a trait defining the receiving side of a message channel; `MailboxClient` is a concrete sender that transmits messages directly to it:
 ```rust
 pub struct MailboxClient {
-    buffer: Buffer<MessageEnvelope>,
+    tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync>,
     _tx_monitoring: CancellationToken,
 }
 ```
 
-The `MailboxClient::new` constructor creates a buffered client capable of sending `MessageEnvelope`s over a `channel::Tx`. This channel represents the transmission path to a remote `MailboxServer`.
+The `MailboxClient::new` constructor creates a client capable of sending `MessageEnvelope`s over a `channel::Tx`. This channel represents the transmission path to a remote `MailboxServer`.
 ```rust
 impl MailboxClient {
     pub fn new(tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static) -> Self {
         let addr = tx.addr();
-        let tx = Arc::new(tx);
+        let tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync> = Arc::new(tx);
         let tx_status = tx.status().clone();
         let tx_monitoring = CancellationToken::new();
-        let buffer = Buffer::new(move |envelope, return_handle| {
-            let tx = Arc::clone(&tx);
-            let (return_channel, return_receiver) = oneshot::channel();
-            // Set up for delivery failure.
-            let return_handle_0 = return_handle.clone();
-            tokio::spawn(async move {
-                let result = return_receiver.await;
-                if let Ok(SendError{error: e, message, ..}) = result {
-                    message.undeliverable(
-                        DeliveryError::BrokenLink(format!(
-                            "failed to enqueue in MailboxClient when processing buffer: {e}"
-                        )),
-                        return_handle_0,
-                    );
-                }
-            });
-            // Send the message for transmission.
-            tx.try_post(envelope, return_channel);
-            future::ready(())
-        });
         let this = Self {
-            buffer,
+            tx,
             _tx_monitoring: tx_monitoring.clone(),
         };
         Self::monitor_tx_health(tx_status, tx_monitoring, addr);
         this
     }
-
+}
 ```
 
-Constructing a `MailboxClient` sets up a buffer that attempts to transmit messages over a `channel::Tx`, returning them to the sender via the return handle if delivery fails.
-
-The client internally maintains a `Buffer<MessageEnvelope>` that decouples the enqueueing of messages from their actual delivery. This allows producers to send messages immediately without blocking on network or delivery latency.
-
-To construct the client:
-- The provided `tx` (a `channel::Tx<MessageEnvelope>`) is wrapped in an `Arc` so it can be shared safely across tasks.
+Constructing a `MailboxClient` is straightforward:
+- The provided `tx` (a `channel::Tx<MessageEnvelope>`) is wrapped in an `Arc` so it can be shared safely.
 - A `CancellationToken` is created to coordinate shutdown or monitoring cancellation.
-- A new `Buffer` is initialized, with a closure defining how each buffered message should be processed.
+- The constructor installs a monitoring task using `monitor_tx_health`, allowing the client to detect when the transmission channel becomes unhealthy.
 
-  This closure is passed `(envelope, return_handle)`:
-  1. A fresh one-shot channel is created for each message, to support delivery-failure return paths.
-  2. A background task is spawned that awaits the outcome of the one-shot channel.
-     - If the `channel::Tx` reports delivery failure by sending the message back on the one-shot channel, the task uses the return handle to report it as undeliverable.
-  3. The closure returns an `async move` block that attempts to send the envelope using `tx.try_post(`...).
-      - If the send fails (e.g., due to a broken channel), the envelope is marked as undeliverable and returned via the return handle.
-
-- Finally, the constructor installs a monitoring task using `monitor_tx_health`, allowing the client to detect when the transmission channel becomes unhealthy.
-
-The resulting `MailboxClient` consists of the constructed `Buffer` and the cancellation token used to coordinate monitoring.
+The resulting `MailboxClient` consists of the `Arc`-wrapped transmission channel and the cancellation token used to coordinate monitoring.
 
 ### `MailboxClient` implements `MailboxSender`
 
-`MailboxClient` itself implements the `MailboxSender` trait. This is made possible by delegating its `post` method to the underlying `Buffer` (by calling `send` on it). As a result, any component expecting a `MailboxSender` can use a `MailboxClient` transparently:
+`MailboxClient` itself implements the `MailboxSender` trait. This is made possible by delegating its `post_unchecked` method directly to the underlying `channel::Tx` (by calling `try_post` on it). As a result, any component expecting a `MailboxSender` can use a `MailboxClient` transparently:
 ```rust
 impl MailboxSender for MailboxClient {
-    fn post(
+    fn post_unchecked(
         &self,
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::trace!(name = "post", "posting message to {}", envelope.dest);
-        if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
-        {
-            // Failed to enqueue.
-            envelope.undeliverable(
-                DeliveryError::BrokenLink("failed to enqueue in MailboxClient".to_string()),
-                return_handle,
-            );
-        }
+        tracing::trace!(name = "post_unchecked", "posting message to {}", envelope.dest);
+        let (return_channel, return_receiver) = oneshot::channel();
+        // Set up for delivery failure.
+        let return_handle_clone = return_handle.clone();
+        tokio::spawn(async move {
+            let result = return_receiver.await;
+            if let Ok(SendError { error: e, message, .. }) = result {
+                message.undeliverable(
+                    DeliveryError::BrokenLink(format!(
+                        "failed to send in MailboxClient: {e}"
+                    )),
+                    return_handle_clone,
+                );
+            }
+        });
+        // Send the message for transmission directly.
+        self.tx.try_post(envelope, return_channel);
     }
 }
 ```
 
+The `post_unchecked` method transmits messages directly via the `channel::Tx`:
+1. A fresh one-shot channel is created for each message to support delivery-failure return paths.
+2. A background task is spawned that awaits the outcome of the one-shot channel.
+   - If the `channel::Tx` reports delivery failure by sending the message back on the one-shot channel, the task uses the return handle to report it as undeliverable.
+3. The message is transmitted immediately using `tx.try_post()`.
+
 Although `MailboxClient` and `MailboxServer` play dual roles (one sends, the other receives) both implement the `MailboxSender` trait.
 
-In the client’s case, implementing `MailboxSender` allows it to participate in code paths that post messages, by enqueueing them into its internal buffer. For the server, `MailboxSender` reflects its ability to post directly into the system after receiving a message from a channel.
+In the client's case, implementing `MailboxSender` allows it to participate in code paths that post messages by transmitting them directly over the channel. For the server, `MailboxSender` reflects its ability to post directly into the system after receiving a message from a channel.
