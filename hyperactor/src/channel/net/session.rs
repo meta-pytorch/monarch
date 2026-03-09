@@ -727,12 +727,11 @@ pub(super) enum RecvResult {
     SequenceError(String),
 }
 
-/// Receive protocol loop: read message frames, validate sequence
-/// numbers, deliver to the application, and periodically send acks.
+/// Inner receive protocol loop. Runs on a single physical connection.
 ///
 /// This is the shared implementation used by both simplex (`server.rs`)
 /// and duplex (`duplex.rs`).
-pub(super) async fn recv_loop<
+pub(super) async fn recv_connected<
     M: RemoteMessage,
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
@@ -824,7 +823,7 @@ pub(super) async fn recv_loop<
 }
 
 /// Outcome of the send protocol loop.
-pub(super) enum SendLoopResult {
+pub(super) enum SendLoopStatus {
     Eof,
     Cancelled,
     AppClosed,
@@ -832,7 +831,6 @@ pub(super) enum SendLoopResult {
     ServerClosed,
     DeliveryTimeout,
     OversizedFrame(String),
-    Error(anyhow::Error),
 }
 
 /// Used to bookkeep message processing states.
@@ -850,18 +848,16 @@ impl fmt::Display for Next {
     }
 }
 
-/// Send protocol loop: accept messages from the application,
-/// serialize, write via [`Completion`], read ack responses, and
-/// manage the outbox/unacked buffers.
+/// Inner send protocol loop. Runs on a single physical connection.
 ///
 /// This is the shared implementation used by both simplex (`client.rs`)
 /// and duplex (`duplex.rs`).
-pub(super) async fn send_loop<M, R, W>(
+pub(super) async fn send_connected<M, R, W>(
     stream: &TaggedStream<R, W>,
     deliveries: &mut Deliveries<M>,
     receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
     cancel: CancellationToken,
-) -> SendLoopResult
+) -> Result<SendLoopStatus, anyhow::Error>
 where
     M: RemoteMessage,
     R: AsyncRead + Unpin + Send,
@@ -885,7 +881,7 @@ where
                     .pop_front()
                     .expect("not empty")
                     .try_return(Some(reason.clone()));
-                return SendLoopResult::OversizedFrame(reason);
+                return Ok(SendLoopStatus::OversizedFrame(reason));
             }
             let message = deliveries.outbox.front_message().expect("not empty");
             pending = Some(stream.write(message.framed()));
@@ -900,7 +896,7 @@ where
                     Ok(Some(buffer)) => {
                         let response = match deserialize_response(buffer) {
                             Ok(r) => r,
-                            Err(e) => return SendLoopResult::Error(e.into()),
+                            Err(e) => return Err(e.into()),
                         };
                         match response {
                             NetRxResponse::Ack(ack) => {
@@ -912,21 +908,21 @@ where
                                 );
                             }
                             NetRxResponse::Reject(reason) => {
-                                return SendLoopResult::Rejected(reason);
+                                return Ok(SendLoopStatus::Rejected(reason));
                             }
                             NetRxResponse::Closed => {
-                                return SendLoopResult::ServerClosed;
+                                return Ok(SendLoopStatus::ServerClosed);
                             }
                         }
                     }
-                    Ok(None) => return SendLoopResult::Eof,
-                    Err(e) => return SendLoopResult::Error(e.into()),
+                    Ok(None) => return Ok(SendLoopStatus::Eof),
+                    Err(e) => return Err(e.into()),
                 }
             }
 
             // Delivery timeout on oldest unacked message.
             _ = deliveries.unacked.wait_for_timeout(), if !deliveries.unacked.is_empty() => {
-                return SendLoopResult::DeliveryTimeout;
+                return Ok(SendLoopStatus::DeliveryTimeout);
             }
 
             // Drive frame write to completion.
@@ -940,7 +936,7 @@ where
                         message.sent_at = Some(RealClock.now());
                         deliveries.unacked.push_back(message);
                     }
-                    Err(e) => return SendLoopResult::Error(e.into()),
+                    Err(e) => return Err(e.into()),
                 }
             }
 
@@ -950,15 +946,15 @@ where
                 match msg {
                     Some(item) => {
                         if let Err(e) = deliveries.outbox.push_back(item) {
-                            return SendLoopResult::Error(anyhow::anyhow!(e));
+                            return Err(anyhow::anyhow!(e));
                         }
                     }
-                    None => return SendLoopResult::AppClosed,
+                    None => return Ok(SendLoopStatus::AppClosed),
                 }
             }
 
             _ = cancel.cancelled() => {
-                return SendLoopResult::Cancelled;
+                return Ok(SendLoopStatus::Cancelled);
             }
         }
     }
@@ -984,14 +980,14 @@ pub(super) trait SessionConnector<M: RemoteMessage>: Send {
     /// Establish connection + set up framing.
     async fn connect(&mut self) -> Result<Self::Connected, ClientError>;
 
-    /// Run the protocol. Simplex: send_loop. Duplex: select!{send_loop, recv_loop}.
+    /// Run the protocol. Simplex: send_connected. Duplex: select!{send_connected, recv_connected}.
     async fn run_connected(
         &mut self,
         connected: &Self::Connected,
         deliveries: &mut Deliveries<M>,
         receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
         cancel: CancellationToken,
-    ) -> SendLoopResult;
+    ) -> Result<SendLoopStatus, anyhow::Error>;
 
     /// Shut down the connection (best-effort writer flush + close).
     async fn shutdown(connected: Self::Connected);
@@ -1367,15 +1363,32 @@ where
                 .await;
 
             match result {
-                SendLoopResult::Eof => (State::Running(deliveries), Conn::reconnect_with_default()),
-                SendLoopResult::AppClosed => (
+                Err(err) => {
+                    tracing::info!(
+                        dest = %connector.dest(),
+                        session_id,
+                        error = %err,
+                        "send loop error"
+                    );
+                    metrics::CHANNEL_ERRORS.add(
+                        1,
+                        hyperactor_telemetry::kv_pairs!(
+                            "dest" => connector.dest().to_string(),
+                            "session_id" => session_id.to_string(),
+                            "error_type" => metrics::ChannelErrorType::SendError.as_str(),
+                        ),
+                    );
+                    (State::Running(deliveries), Conn::reconnect_with_default())
+                }
+                Ok(SendLoopStatus::Eof) => (State::Running(deliveries), Conn::reconnect_with_default()),
+                Ok(SendLoopStatus::AppClosed) => (
                     State::Closing {
                         deliveries,
                         reason: "NetTx is dropped".to_string(),
                     },
                     Conn::Connected(connected),
                 ),
-                SendLoopResult::Rejected(reason) => {
+                Ok(SendLoopStatus::Rejected(reason)) => {
                     let error_msg = format!("server rejected connection due to: {reason}");
                     tracing::error!(
                         dest = %connector.dest(),
@@ -1390,7 +1403,7 @@ where
                         Conn::reconnect_with_default(),
                     )
                 }
-                SendLoopResult::ServerClosed => {
+                Ok(SendLoopStatus::ServerClosed) => {
                     let msg = "server closed the channel".to_string();
                     tracing::info!(
                         dest = %connector.dest(),
@@ -1405,7 +1418,7 @@ where
                         Conn::reconnect_with_default(),
                     )
                 }
-                SendLoopResult::DeliveryTimeout => {
+                Ok(SendLoopStatus::DeliveryTimeout) => {
                     let error_msg = format!(
                         "failed to receive ack within timeout {:?}; link is currently connected",
                         hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
@@ -1423,7 +1436,7 @@ where
                         Conn::Connected(connected),
                     )
                 }
-                SendLoopResult::OversizedFrame(reason) => {
+                Ok(SendLoopStatus::OversizedFrame(reason)) => {
                     tracing::error!(
                         dest = %connector.dest(),
                         session_id = session_id,
@@ -1434,30 +1447,13 @@ where
                         Conn::Connected(connected),
                     )
                 }
-                SendLoopResult::Cancelled => (
+                Ok(SendLoopStatus::Cancelled) => (
                     State::Closing {
                         deliveries,
                         reason: "cancelled".to_string(),
                     },
                     Conn::Connected(connected),
                 ),
-                SendLoopResult::Error(err) => {
-                    tracing::info!(
-                        dest = %connector.dest(),
-                        session_id,
-                        error = %err,
-                        "send loop error"
-                    );
-                    metrics::CHANNEL_ERRORS.add(
-                        1,
-                        hyperactor_telemetry::kv_pairs!(
-                            "dest" => connector.dest().to_string(),
-                            "session_id" => session_id.to_string(),
-                            "error_type" => metrics::ChannelErrorType::SendError.as_str(),
-                        ),
-                    );
-                    (State::Running(deliveries), Conn::reconnect_with_default())
-                }
             }
         }
 

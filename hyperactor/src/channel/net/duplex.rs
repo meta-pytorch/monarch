@@ -385,8 +385,8 @@ async fn join_nonempty<T: 'static>(set: &mut JoinSet<T>) -> Result<T, tokio::tas
 }
 
 /// Handle a single duplex connection. Takes `(inbound_next, outbound_next)`
-/// from the link's MVar, runs recv_loop and send_loop concurrently, and
-/// puts state back on close.
+/// from the link's MVar, runs recv_connected and send_connected concurrently,
+/// and puts state back on close.
 async fn handle_duplex_connection<M1: RemoteMessage, M2: RemoteMessage, S>(
     stream: S,
     link: Arc<DuplexServerLink<M1, M2>>,
@@ -418,15 +418,12 @@ where
     // Run both directions concurrently. When either finishes, the other
     // is dropped (the physical stream is broken once one direction fails).
     let result: Result<(), anyhow::Error> = tokio::select! {
-        r = session::recv_loop::<M1, _, _>(
+        r = session::recv_connected::<M1, _, _>(
             &stream_a, &link.inbound_tx, &mut inbound_next, ct.clone(),
         ) => r.map(|_| ()),
-        r = session::send_loop(
+        r = session::send_connected(
             &stream_b, &mut deliveries, &mut outbound_rx, ct.clone(),
-        ) => match r {
-            session::SendLoopResult::Error(e) => Err(e),
-            _ => Ok(()),
-        },
+        ) => r.map(|_| ()),
     };
 
     let new_outbound_next = Next {
@@ -492,22 +489,22 @@ impl<M1: RemoteMessage, M2: RemoteMessage> SessionConnector<M1> for DuplexConnec
         deliveries: &mut session::Deliveries<M1>,
         receiver: &mut mpsc::UnboundedReceiver<(M1, oneshot::Sender<SendError<M1>>, Instant)>,
         cancel: CancellationToken,
-    ) -> session::SendLoopResult {
+    ) -> Result<session::SendLoopStatus, anyhow::Error> {
         let stream_a = connected.mux.stream(Side::A as u8);
         let stream_b = connected.mux.stream(Side::B as u8);
         tokio::select! {
-            r = session::send_loop(
+            r = session::send_connected(
                 &stream_a, deliveries, receiver, cancel.clone(),
             ) => r,
-            r = session::recv_loop::<M2, _, _>(
+            r = session::recv_connected::<M2, _, _>(
                 &stream_b, &self.inbound_tx, &mut self.inbound_next, cancel,
             ) => match r {
-                Ok(status) => match status {
-                    session::RecvResult::Eof => session::SendLoopResult::Eof,
-                    session::RecvResult::Cancelled => session::SendLoopResult::Cancelled,
-                    session::RecvResult::SequenceError(e) => session::SendLoopResult::Rejected(e),
-                },
-                Err(e) => session::SendLoopResult::Error(e),
+                Ok(status) => Ok(match status {
+                    session::RecvResult::Eof => session::SendLoopStatus::Eof,
+                    session::RecvResult::Cancelled => session::SendLoopStatus::Cancelled,
+                    session::RecvResult::SequenceError(e) => session::SendLoopStatus::Rejected(e),
+                }),
+                Err(e) => Err(e),
             },
         }
     }
