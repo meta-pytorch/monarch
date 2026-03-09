@@ -619,7 +619,7 @@ impl Alloc for ProcessAlloc {
                                 None => format!("{}_{}", self.name, index),
                             };
                             child.post(Allocator2Process::StartProc(
-                                ProcId::with_name(addr.clone(), proc_name),
+                                hyperactor_reference::ProcId::with_name(addr.clone(), proc_name),
                                 transport,
                             ));
                         }

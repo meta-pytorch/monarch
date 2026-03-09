@@ -199,7 +199,7 @@ impl ProcMesh {
         }
 
         let root_comm_actor = comm_actor_name.as_ref().map(|name| {
-            ActorRef::attest(
+            hyperactor_reference::ActorRef::attest(
                 ranks
                     .first()
                     .expect("root mesh cannot be empty")
@@ -710,7 +710,7 @@ pub struct ProcMeshRef {
     // should be removed after we remove the v0 code.
     // v0 casting requires root mesh rank 0 as the 1st hop, so we need to provide
     // it here. For v1, this can be removed since v1 can use any rank.
-    pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
+    pub(crate) root_comm_actor: Option<hyperactor_reference::ActorRef<CommActor>>,
 }
 wirevalue::register_type!(ProcMeshRef);
 
@@ -723,7 +723,7 @@ impl ProcMeshRef {
         ranks: Arc<Vec<ProcRef>>,
         host_mesh: Option<HostMeshRef>,
         root_region: Option<Region>,
-        root_comm_actor: Option<ActorRef<CommActor>>,
+        root_comm_actor: Option<hyperactor_reference::ActorRef<CommActor>>,
     ) -> crate::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(crate::Error::InvalidRankCardinality {
@@ -755,7 +755,7 @@ impl ProcMeshRef {
         }
     }
 
-    pub(crate) fn root_comm_actor(&self) -> Option<&ActorRef<CommActor>> {
+    pub(crate) fn root_comm_actor(&self) -> Option<&hyperactor_reference::ActorRef<CommActor>> {
         self.root_comm_actor.as_ref()
     }
 

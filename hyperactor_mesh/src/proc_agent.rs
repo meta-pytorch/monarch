@@ -33,8 +33,6 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
-use hyperactor::PortRef;
-use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorStatus;
@@ -77,7 +75,7 @@ declare_attrs! {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
-    Success { rank: usize, actor_id: ActorId },
+    Success { rank: usize, actor_id: hyperactor_reference::ActorId },
     Error(String),
 }
 wirevalue::register_type!(GspawnResult);
@@ -126,12 +124,12 @@ pub(crate) enum MeshAgentMessage {
         /// The forwarder to send messages to unknown destinations.
         forwarder: ChannelAddr,
         /// The supervisor port to which the agent should report supervision events.
-        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
         /// An address book to use for direct dialing.
-        address_book: HashMap<ProcId, ChannelAddr>,
+        address_book: HashMap<hyperactor_reference::ProcId, ChannelAddr>,
         /// The agent should write its rank to this port when it successfully
         /// configured.
-        configured: PortRef<usize>,
+        configured: hyperactor_reference::PortRef<usize>,
         /// If true, and supervisor is None, record supervision events to be reported
         record_supervision_events: bool,
     },
@@ -140,7 +138,7 @@ pub(crate) enum MeshAgentMessage {
         /// The status of the proc.
         /// To be replaced with fine-grained lifecycle status,
         /// and to use aggregation.
-        status: PortRef<(usize, bool)>,
+        status: hyperactor_reference::PortRef<(usize, bool)>,
     },
 
     /// Spawn an actor on the proc to the provided name.
@@ -152,7 +150,7 @@ pub(crate) enum MeshAgentMessage {
         /// serialized parameters
         params_data: Data,
         /// reply port; the proc should send its rank to indicated a spawned actor
-        status_port: PortRef<GspawnResult>,
+        status_port: hyperactor_reference::PortRef<GspawnResult>,
     },
 
     /// Stop actors of a specific mesh name
@@ -179,7 +177,7 @@ enum State {
     ConfiguredV0 {
         sender: ReconfigurableMailboxSender,
         rank: usize,
-        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
     },
 
     V1,
@@ -196,7 +194,7 @@ impl State {
         }
     }
 
-    fn supervisor(&self) -> Option<PortRef<ActorSupervisionEvent>> {
+    fn supervisor(&self) -> Option<hyperactor_reference::PortRef<ActorSupervisionEvent>> {
         match self {
             State::ConfiguredV0 { supervisor, .. } => supervisor.clone(),
             _ => None,
@@ -290,10 +288,10 @@ pub struct ProcAgent {
 impl ProcAgent {
     #[hyperactor::observe_result("MeshAgent")]
     pub(crate) async fn bootstrap(
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
     ) -> Result<(Proc, ActorHandle<Self>), anyhow::Error> {
         let sender = ReconfigurableMailboxSender::new();
-        let proc = Proc::new(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
+        let proc = Proc::configured(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
 
         let agent = ProcAgent {
             proc: proc.clone(),
@@ -553,9 +551,9 @@ impl MeshAgentMessageHandler for ProcAgent {
         cx: &Context<Self>,
         rank: usize,
         forwarder: ChannelAddr,
-        supervisor: Option<PortRef<ActorSupervisionEvent>>,
-        address_book: HashMap<ProcId, ChannelAddr>,
-        configured: PortRef<usize>,
+        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
+        address_book: HashMap<hyperactor_reference::ProcId, ChannelAddr>,
+        configured: hyperactor_reference::PortRef<usize>,
         record_supervision_events: bool,
     ) -> Result<(), anyhow::Error> {
         anyhow::ensure!(
@@ -594,7 +592,7 @@ impl MeshAgentMessageHandler for ProcAgent {
         actor_type: String,
         actor_name: String,
         params_data: Data,
-        status_port: PortRef<GspawnResult>,
+        status_port: hyperactor_reference::PortRef<GspawnResult>,
     ) -> Result<(), anyhow::Error> {
         anyhow::ensure!(
             self.state.is_configured_v0(),
@@ -663,7 +661,7 @@ impl MeshAgentMessageHandler for ProcAgent {
     async fn status(
         &mut self,
         cx: &Context<Self>,
-        status_port: PortRef<(usize, bool)>,
+        status_port: hyperactor_reference::PortRef<(usize, bool)>,
     ) -> Result<(), anyhow::Error> {
         match &self.state {
             State::ConfiguredV0 { rank, .. } => {

@@ -513,7 +513,7 @@ impl<A: Referable> ActorMeshRef<A> {
         cx: &impl context::Actor,
         message: M,
         sel: Selection,
-        root_comm_actor: &ActorRef<CommActor>,
+        root_comm_actor: &hyperactor_reference::ActorRef<CommActor>,
     ) -> crate::Result<()>
     where
         A: RemoteHandles<IndexedErasedUnbound<M>>,

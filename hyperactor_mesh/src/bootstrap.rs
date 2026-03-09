@@ -205,7 +205,7 @@ pub(crate) enum Process2AllocatorMessage {
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
     StartedProc(
-        ProcId,
+        hyperactor_reference::ProcId,
         hyperactor_reference::ActorRef<ProcAgent>,
         ChannelAddr,
     ),
@@ -219,7 +219,7 @@ wirevalue::register_type!(Process2AllocatorMessage);
 pub(crate) enum Allocator2Process {
     /// Request to start a new proc with the provided ID, listening
     /// to an address on the indicated channel transport.
-    StartProc(ProcId, ChannelTransport),
+    StartProc(hyperactor_reference::ProcId, ChannelTransport),
 
     /// A request for the process to shut down its procs and exit the
     /// process with the provided code.
