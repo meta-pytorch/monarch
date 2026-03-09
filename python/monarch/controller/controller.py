@@ -136,7 +136,7 @@ class Controller:
             error=DeviceException(
                 exception,
                 worker_frames,
-                ActorId.from_string("unknown[0].unknown[0]"),
+                ActorId(addr="local:0", proc_name="unknown", actor_name="unknown"),
                 message="A worker experienced an internal error.",
             ),
         )
@@ -153,7 +153,9 @@ class Controller:
             error=DeviceException(
                 exception=exception,
                 frames=frames,
-                source_actor_id=ActorId.from_string("unknown[0].unknown[0]"),
+                source_actor_id=ActorId(
+                    addr="local:0", proc_name="unknown", actor_name="unknown"
+                ),
                 message="A remote generator failed.",
             ),
         )

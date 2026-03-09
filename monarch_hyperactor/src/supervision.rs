@@ -141,6 +141,14 @@ impl PyMeshFailure {
     #[getter]
     fn mesh(&self) {}
 
+    #[getter]
+    fn mesh_name(&self) -> String {
+        self.inner
+            .actor_mesh_name
+            .clone()
+            .unwrap_or("<none>".into())
+    }
+
     fn __repr__(&self) -> String {
         format!("{}", self)
     }

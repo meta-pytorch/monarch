@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 
 use hyperactor::PortHandle;
-use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
 use hyperactor::mailbox::DeliveryError;
@@ -59,9 +58,10 @@ impl MailboxSender for LocalProcDialer {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        if let ProcId::Direct(addr, name) = envelope.dest().actor_id().proc_id()
-            // Only the local backend address applies...
-            && addr == &self.local_addr
+        let proc_id = envelope.dest().actor_id().proc_id();
+        let addr = proc_id.addr();
+        let name = proc_id.name();
+        if addr == &self.local_addr
             // ...and only non-system procs on that address; the rest are directly
             // reachable through the backend address.
             && name.parse::<Name>().as_ref().is_ok_and(Name::is_suffixed)
@@ -72,7 +72,7 @@ impl MailboxSender for LocalProcDialer {
             } else {
                 drop(senders);
                 let mut senders = self.local_senders.write().unwrap();
-                senders.entry(name.clone()).or_insert_with(|| {
+                senders.entry(name.to_string()).or_insert_with(|| {
                     let socket_path = self.socket_dir.join(name);
                     if socket_path.exists() {
                         let addr = format!("unix:{}", self.socket_dir.join(name).display());
@@ -107,13 +107,14 @@ mod tests {
 
     use std::assert_matches::assert_matches;
 
-    use hyperactor::ActorId;
     use hyperactor::Mailbox;
     use hyperactor::PortId;
+    use hyperactor::ProcId;
+    use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
-    use hyperactor::id;
+    use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
 
     use super::*;
@@ -140,22 +141,13 @@ mod tests {
         let (backend_addr, mut backend_rx) =
             channel::serve::<MessageEnvelope>(ChannelTransport::Unix.any()).unwrap();
 
+        // These proc names must match the socket file names on disk, so we
+        // construct the IDs directly rather than via test_proc_id.
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
-        let first_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), first.to_string()),
-            "actor".to_string(),
-            0,
-        );
-        let second_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), second.to_string()),
-            "actor".to_string(),
-            0,
-        );
-        let third_notexist_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), third.to_string()),
-            "actor".to_string(),
-            0,
-        );
+        let first_actor_id = ProcId(local_addr.clone(), first.to_string()).actor_id("actor", 0);
+        let second_actor_id = ProcId(local_addr.clone(), second.to_string()).actor_id("actor", 0);
+        let third_notexist_actor_id =
+            ProcId(local_addr.clone(), third.to_string()).actor_id("actor", 0);
         let proc_dialer = LocalProcDialer::new(
             local_addr.clone(),
             dir.path().to_owned(),
@@ -163,7 +155,8 @@ mod tests {
         );
 
         let (return_handle, mut return_rx) =
-            Mailbox::new_detached(id!(world[0].proc)).open_port::<Undeliverable<MessageEnvelope>>();
+            Mailbox::new_detached(test_actor_id("world_0", "proc"))
+                .open_port::<Undeliverable<MessageEnvelope>>();
 
         // Existing address on the host:
         let envelope = MessageEnvelope::new(
@@ -194,19 +187,15 @@ mod tests {
         // Outside the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId(id!(external[0].actor), 0),
+            PortId(test_actor_id("external_0", "actor"), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
         proc_dialer.post(envelope.clone(), return_handle.clone());
         assert_eq!(backend_rx.recv().await.unwrap().sender(), &second_actor_id);
 
-        // System proc on the host:
-        let system_actor_id = ActorId(
-            ProcId::Direct(local_addr.clone(), "system".to_string()),
-            "actor".to_string(),
-            0,
-        );
+        // System proc on the host (name must be exactly "system"):
+        let system_actor_id = ProcId(local_addr.clone(), "system".to_string()).actor_id("actor", 0);
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
             PortId(system_actor_id, 0),

@@ -26,7 +26,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::ActorRef;
 use hyperactor::ProcId;
-use hyperactor::WorldId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TlsAddr;
@@ -47,8 +46,35 @@ use typeuri::Named;
 
 use crate::alloc::test_utils::MockAllocWrapper;
 use crate::assign::Ranks;
-use crate::mesh_agent::ProcMeshAgent;
+use crate::proc_agent::ProcAgent;
 use crate::shortuuid::ShortUuid;
+
+/// A name uniquely identifying an allocation.
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Hash,
+    Ord
+)]
+pub struct AllocName(pub String);
+
+impl AllocName {
+    /// The alloc name as a string slice.
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AllocName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Errors that occur during allocation operations.
 #[derive(Debug, thiserror::Error)]
@@ -163,7 +189,7 @@ pub enum ProcState {
         proc_id: ProcId,
         /// Reference to this proc's mesh agent. In the future, we'll reserve a
         /// 'well known' PID (0) for this purpose.
-        mesh_agent: ActorRef<ProcMeshAgent>,
+        mesh_agent: ActorRef<ProcAgent>,
         /// The address of this proc. The endpoint of this address is
         /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
         addr: ChannelAddr,
@@ -181,10 +207,8 @@ pub enum ProcState {
     /// Allocation can then be cleaned up by calling `stop()`` on the `Alloc` and
     /// drain the iterator for clean shutdown.
     Failed {
-        /// The world ID of the failed alloc.
-        ///
-        /// TODO: this is not meaningful with direct addressing.
-        world_id: WorldId,
+        /// The name of the failed alloc.
+        alloc_name: AllocName,
         /// A description of the failure.
         description: String,
     },
@@ -208,9 +232,9 @@ impl fmt::Display for ProcState {
             }
             ProcState::Failed {
                 description,
-                world_id,
+                alloc_name,
             } => {
-                write!(f, "{}: failed: {}", world_id, description)
+                write!(f, "{}: failed: {}", alloc_name, description)
             }
         }
     }
@@ -276,10 +300,8 @@ pub trait Alloc {
         Shape::new(self.extent().labels().to_vec(), slice).unwrap()
     }
 
-    /// The world id of this alloc, uniquely identifying the alloc.
-    /// Note: This will be removed in favor of a different naming scheme,
-    /// once we exise "worlds" from hyperactor core.
-    fn world_id(&self) -> &WorldId;
+    /// The name of this alloc, uniquely identifying it.
+    fn alloc_name(&self) -> &AllocName;
 
     /// The channel transport used the procs in this alloc.
     fn transport(&self) -> ChannelTransport {
@@ -296,19 +318,19 @@ pub trait Alloc {
     async fn stop_and_wait(&mut self) -> Result<(), AllocatorError> {
         tracing::error!(
             name = "AllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "StopAndWait",
         );
         self.stop().await?;
         while let Some(event) = self.next().await {
             tracing::debug!(
-                alloc_name = %self.world_id(),
+                alloc_name = %self.alloc_name(),
                 "drained event: {event:?}"
             );
         }
         tracing::error!(
             name = "AllocStatus",
-            alloc_name = %self.world_id(),
+            alloc_name = %self.alloc_name(),
             status = "Stopped",
         );
         Ok(())
@@ -331,7 +353,7 @@ pub(crate) struct AllocatedProc {
     pub create_key: ShortUuid,
     pub proc_id: ProcId,
     pub addr: ChannelAddr,
-    pub mesh_agent: ActorRef<ProcMeshAgent>,
+    pub mesh_agent: ActorRef<ProcAgent>,
 }
 
 impl fmt::Display for AllocatedProc {
@@ -452,14 +474,14 @@ impl<A: ?Sized + Send + Alloc> AllocExt for A {
                     return Err(AllocatorError::Other(anyhow::Error::msg(reason)));
                 }
                 ProcState::Failed {
-                    world_id,
+                    alloc_name,
                     description,
                 } => {
                     tracing::error!(
                         name,
                         status,
-                        "allocation failed for world {}: {}",
-                        world_id,
+                        "allocation failed for {}: {}",
+                        alloc_name,
                         description
                     );
                     return Err(AllocatorError::Other(anyhow::Error::msg(description)));
@@ -598,8 +620,8 @@ pub mod test_utils {
             self.alloc.extent()
         }
 
-        fn world_id(&self) -> &WorldId {
-            self.alloc.world_id()
+        fn alloc_name(&self) -> &AllocName {
+            self.alloc.alloc_name()
         }
 
         async fn stop(&mut self) -> Result<(), AllocatorError> {
@@ -633,8 +655,8 @@ pub(crate) mod testing {
     use super::*;
     use crate::alloc::test_utils::TestActor;
     use crate::alloc::test_utils::Wait;
-    use crate::mesh_agent::GspawnResult;
-    use crate::mesh_agent::MeshAgentMessageClient;
+    use crate::proc_agent::GspawnResult;
+    use crate::proc_agent::MeshAgentMessageClient;
     use crate::transport::default_transport;
 
     #[macro_export]
@@ -690,9 +712,18 @@ pub(crate) mod testing {
             assert!(points.contains(&extent.point(vec![x]).unwrap()));
         }
 
-        // Every proc should belong to the same "world" (alloc).
-        let worlds: HashSet<_> = procs.keys().map(|proc_id| proc_id.world_id()).collect();
-        assert_eq!(worlds.len(), 1);
+        // Every proc should belong to the same "alloc" (have the same prefix).
+        // Proc names are formatted as "{alloc_name}_{rank}"
+        let alloc_names: HashSet<_> = procs
+            .keys()
+            .filter_map(|proc_id| {
+                proc_id
+                    .name()
+                    .rsplit_once('_')
+                    .map(|(prefix, _)| prefix.to_string())
+            })
+            .collect();
+        assert_eq!(alloc_names.len(), 1);
 
         // Now, stop the alloc and make sure it shuts down cleanly.
 
@@ -718,7 +749,10 @@ pub(crate) mod testing {
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
-        let client_proc_id = ProcId::Ranked(WorldId("test_stuck".to_string()), 0);
+        let client_proc_id = ProcId(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test_stuck_0".to_string(),
+        );
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
         let client_proc = Proc::new(
             client_proc_id.clone(),
@@ -739,7 +773,7 @@ pub(crate) mod testing {
         client_proc: &Proc,
         cx: &impl context::Actor,
         router_channel_addr: ChannelAddr,
-        mesh_agent: ActorRef<ProcMeshAgent>,
+        mesh_agent: ActorRef<ProcAgent>,
     ) -> ActorRef<TestActor> {
         let (supervisor, _supervisor_handle) = client_proc.instance("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();

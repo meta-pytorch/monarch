@@ -131,6 +131,8 @@ impl<M: RemoteMessage> Rx<M> for LocalRx<M> {
     fn addr(&self) -> ChannelAddr {
         ChannelAddr::Local(self.port)
     }
+
+    async fn join(self) {}
 }
 
 impl<M: RemoteMessage> Drop for LocalRx<M> {

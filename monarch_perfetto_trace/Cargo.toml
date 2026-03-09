@@ -10,4 +10,4 @@ license = "BSD-3-Clause"
 [dependencies]
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tracing-perfetto-sdk-schema = "0.12.0"
+tracing-perfetto-sdk-schema = "0.13.1"
