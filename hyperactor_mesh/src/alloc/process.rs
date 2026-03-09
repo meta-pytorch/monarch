@@ -348,7 +348,6 @@ impl Child {
         tokio::spawn(async move {
             let exit_timeout =
                 hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
-            #[allow(clippy::disallowed_methods)]
             if tokio::time::timeout(exit_timeout, exit_flag).await.is_err() {
                 tracing::info!("watchdog timeout, killing process");
                 let _ = stop_reason.set(ProcStopReason::Watchdog);

@@ -507,8 +507,6 @@ mod tests {
     use std::time::Duration;
 
     use hyperactor::PortId;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
     use ndslice::extent;
@@ -579,19 +577,18 @@ mod tests {
 
         // The handler runs asynchronously via work_rx; wait for the
         // forwarded event with our marker.
-        let event = RealClock
-            .timeout(Duration::from_secs(5), async {
-                loop {
-                    let ev = sink_rx.recv().await.expect("sink channel closed");
-                    if ev.actor_id == marker {
-                        return ev;
-                    }
-                    // Discard stale events from other tests sharing the
-                    // global sink.
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ev = sink_rx.recv().await.expect("sink channel closed");
+                if ev.actor_id == marker {
+                    return ev;
                 }
-            })
-            .await
-            .expect("timed out waiting for supervision event");
+                // Discard stale events from other tests sharing the
+                // global sink.
+            }
+        })
+        .await
+        .expect("timed out waiting for supervision event");
 
         assert_eq!(
             event.actor_id, marker,
@@ -618,17 +615,16 @@ mod tests {
         inject_undeliverable(client, marker.clone());
 
         // B should receive our marked event.
-        let event = RealClock
-            .timeout(Duration::from_secs(5), async {
-                loop {
-                    let ev = sink_b_rx.recv().await.expect("sink B channel closed");
-                    if ev.actor_id == marker {
-                        return ev;
-                    }
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ev = sink_b_rx.recv().await.expect("sink B channel closed");
+                if ev.actor_id == marker {
+                    return ev;
                 }
-            })
-            .await
-            .expect("timed out waiting for supervision event on sink B");
+            }
+        })
+        .await
+        .expect("timed out waiting for supervision event on sink B");
         assert_eq!(event.actor_id, marker);
     }
 
@@ -648,7 +644,7 @@ mod tests {
         inject_undeliverable(client, test_actor_id("no_sink", "marker_actor"));
 
         // Give the async handler time to run.
-        RealClock.sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // The global client must still be alive and usable.
         // Verify by installing a new sink and sending another
@@ -659,17 +655,16 @@ mod tests {
         let marker = test_actor_id("no_sink_recovery", "marker_actor");
         inject_undeliverable(client, marker.clone());
 
-        let event = RealClock
-            .timeout(Duration::from_secs(5), async {
-                loop {
-                    let ev = sink_rx.recv().await.expect("sink channel closed");
-                    if ev.actor_id == marker {
-                        return ev;
-                    }
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let ev = sink_rx.recv().await.expect("sink channel closed");
+                if ev.actor_id == marker {
+                    return ev;
                 }
-            })
-            .await
-            .expect("timed out: global client crashed or stopped processing");
+            }
+        })
+        .await
+        .expect("timed out: global client crashed or stopped processing");
         assert_eq!(event.actor_id, marker);
     }
 }

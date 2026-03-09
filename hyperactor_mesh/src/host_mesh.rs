@@ -10,8 +10,6 @@ use hyperactor::Actor;
 use hyperactor::Handler;
 use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
 use hyperactor::host::SERVICE_PROC_NAME;
@@ -256,7 +254,7 @@ impl HostMesh {
 
         hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
             id: mesh_id_hash,
-            timestamp: RealClock.system_time_now(),
+            timestamp: std::time::SystemTime::now(),
             class: "Host".to_string(),
             given_name: self.name.name().to_string(),
             full_name: name_str,
@@ -267,7 +265,7 @@ impl HostMesh {
 
         // Notify telemetry of each HostAgent actor in this mesh.
         // These are skipped in Proc::spawn_inner. mesh_id directly points to host mesh.
-        let now = RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
             let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
@@ -961,7 +959,7 @@ impl HostMeshRef {
             }
         }));
 
-        match RealClock.timeout(timeout, barrier).await {
+        match tokio::time::timeout(timeout, barrier).await {
             Ok(results) => {
                 let success = results.iter().filter(|&&r| r).count();
                 let failed = num_hosts - success;
@@ -1133,7 +1131,7 @@ impl HostMeshRef {
             }
         }
 
-        let start_time = RealClock.now();
+        let start_time = tokio::time::Instant::now();
 
         // Wait on accumulated StatusMesh snapshots until complete or
         // timeout.
@@ -1172,12 +1170,11 @@ impl HostMeshRef {
                         .map_err(|e| {
                             crate::Error::SendingError(mesh_agent.actor_id().clone(), e.into())
                         })?;
-                    let state = match RealClock
-                        .timeout(
-                            hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
-                            reply_rx.recv(),
-                        )
-                        .await
+                    let state = match tokio::time::timeout(
+                        hyperactor_config::global::get(PROC_SPAWN_MAX_IDLE),
+                        reply_rx.recv(),
+                    )
+                    .await
                     {
                         Ok(Ok(state)) => state,
                         _ => resource::State {
@@ -1361,7 +1358,7 @@ impl HostMeshRef {
                 .join(", ")
         );
 
-        let start_time = RealClock.now();
+        let start_time = tokio::time::Instant::now();
 
         match GetRankStatus::wait(
             rx,
@@ -1462,7 +1459,7 @@ impl HostMeshRef {
             // the agent will be unresponsive.
             // We handle this by setting a timeout on the recv, and if we don't get a
             // message we assume the agent is dead and return a failed state.
-            let state = RealClock.timeout(timeout, rx.recv()).await;
+            let state = tokio::time::timeout(timeout, rx.recv()).await;
             if let Ok(state) = state {
                 // Handle non-timeout receiver error.
                 let state = state?;

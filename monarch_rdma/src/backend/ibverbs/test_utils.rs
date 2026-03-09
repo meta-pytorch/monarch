@@ -22,8 +22,6 @@ use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
@@ -287,7 +285,7 @@ pub async fn wait_for_completion(
                 if remaining.is_empty() {
                     return Ok(true);
                 }
-                RealClock.sleep(Duration::from_millis(1)).await;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(e));
@@ -365,7 +363,7 @@ pub async fn recv_wqe_gpu(
 }
 
 pub async fn ring_db_gpu(qp: &IbvQueuePair) -> Result<(), anyhow::Error> {
-    RealClock.sleep(Duration::from_millis(2)).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
     unsafe {
         let dv_qp = qp.dv_qp as *mut rdmaxcel_sys::mlx5dv_qp;
         let base_ptr = (*dv_qp).sq.buf as *mut u8;
@@ -439,7 +437,7 @@ pub async fn wait_for_completion_gpu(
                 }
                 _ => {
                     // No completion yet, sleep and try again
-                    RealClock.sleep(Duration::from_millis(1)).await;
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
         }

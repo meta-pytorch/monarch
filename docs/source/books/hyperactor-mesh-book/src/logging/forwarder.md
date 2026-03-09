@@ -104,7 +104,7 @@ impl Actor for LogForwardActor {
     Ok(Self {
       rx,
       flush_tx,
-      next_flush_deadline: RealClock.system_time_now(),
+      next_flush_deadline: std::time::SystemTime::now(),
       logging_client_ref,
       stream_to_client: true,
     })
@@ -142,11 +142,11 @@ impl LogForwardMessageHandler for LogForwardActor {
             // Heartbeat to prevent the actor from sitting in recv()
             // forever and starving its mailbox/transport.
             let delay = Duration::from_secs(1);
-            if RealClock.system_time_now() >= self.next_flush_deadline {
-              self.next_flush_deadline = RealClock.system_time_now() + delay;
+            if std::time::SystemTime::now() >= self.next_flush_deadline {
+              self.next_flush_deadline = std::time::SystemTime::now() + delay;
               let tx = self.flush_tx.clone();
               tokio::spawn(async move {
-                RealClock.sleep(delay).await;
+                tokio::time::sleep(delay).await;
                 let _ = tx.lock().await
                   .send(LogMessage::Flush { sync_version: None }).await;
               });
