@@ -58,13 +58,24 @@ impl std::fmt::Display for LangName {
 pub(crate) struct Args {
     /// Admin server address.
     ///
-    /// Accepts `host:port` (scheme auto-detected), or an explicit URL
-    /// like `https://host:port` or `http://host:port`.
+    /// Accepts `host:port` (scheme auto-detected), an explicit URL
+    /// like `https://host:port`, or a MAST job handle like
+    /// `mast_conda:///<job-name>` (Meta-internal only).
     #[arg(long, short)]
     pub(crate) addr: String,
 
+    /// Admin port override for MAST job resolution. When not set,
+    /// reads from `MESH_ADMIN_ADDR` config.
+    #[arg(long)]
+    pub(crate) admin_port: Option<u16>,
+
+    /// MAST resolution strategy: "thrift" (default at Meta) or
+    /// "cli" (INV-DISPATCH).
+    #[arg(long)]
+    pub(crate) mast_resolver: Option<String>,
+
     /// Refresh interval in milliseconds
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 2000)]
     pub(crate) refresh_ms: u64,
 
     /// Color theme
@@ -94,6 +105,14 @@ pub(crate) struct Args {
     /// Path to a PEM client private key for mutual TLS.
     #[arg(long)]
     pub(crate) tls_key: Option<String>,
+
+    /// Run diagnostics and print a JSON report to stdout, then exit.
+    ///
+    /// Walks the full resolution graph (root → hosts → service proc
+    /// actors → user procs → user actors) and probes each node.
+    /// Exits 0 when all checks pass, 1 when any fail.
+    #[arg(long)]
+    pub(crate) diagnose: bool,
 }
 
 /// All user-visible text in the TUI.
@@ -148,6 +167,32 @@ pub(crate) struct Labels {
     pub(crate) yes: &'static str,
     pub(crate) no: &'static str,
 
+    // Diagnostic pane status / summary strings
+    pub(crate) diag_running: &'static str,
+    pub(crate) diag_live_updates: &'static str,
+    pub(crate) diag_completed_at: &'static str,
+    pub(crate) diag_static_snapshot: &'static str,
+    pub(crate) diag_checks_all: &'static str,
+    pub(crate) diag_checks_passed: &'static str,
+    pub(crate) diag_admin_label: &'static str,
+    pub(crate) diag_mesh_label: &'static str,
+    pub(crate) diag_status_healthy: &'static str,
+    pub(crate) diag_status_failing: &'static str,
+    pub(crate) diag_status_na: &'static str,
+
+    // Diagnostic pane node annotations
+    pub(crate) diag_note_admin_server: &'static str,
+    pub(crate) diag_note_host_agent: &'static str,
+    pub(crate) diag_note_admin_service_proc: &'static str,
+    pub(crate) diag_note_local_client_proc: &'static str,
+    pub(crate) diag_note_introspection_handler: &'static str,
+    pub(crate) diag_note_actor_lifecycle_manager: &'static str,
+    pub(crate) diag_note_root_client_bridge: &'static str,
+    pub(crate) diag_note_comm_actor: &'static str,
+    pub(crate) diag_note_proc_agent: &'static str,
+    pub(crate) diag_note_user_proc: &'static str,
+    pub(crate) diag_note_user_actor: &'static str,
+
     // Pane titles
     pub(crate) pane_topology: &'static str,
     pub(crate) pane_details: &'static str,
@@ -157,9 +202,12 @@ pub(crate) struct Labels {
     pub(crate) pane_proc_details: &'static str,
     pub(crate) pane_actor_details: &'static str,
     pub(crate) pane_flight_recorder: &'static str,
+    pub(crate) pane_diagnostics: &'static str,
 
     // Footer
     pub(crate) footer_help_text: &'static str,
+    pub(crate) footer_diag_running_help_text: &'static str,
+    pub(crate) footer_diag_help_text: &'static str,
 }
 
 impl Labels {
@@ -202,6 +250,28 @@ impl Labels {
             failed_actors: "Failed actors: ",
             yes: "yes",
             no: "no",
+            diag_running: "Running\u{2026}",
+            diag_live_updates: "live updates",
+            diag_completed_at: "Completed at",
+            diag_static_snapshot: "static snapshot",
+            diag_checks_all: "All",
+            diag_checks_passed: "checks passed",
+            diag_admin_label: "Admin:",
+            diag_mesh_label: "Mesh:",
+            diag_status_healthy: "healthy",
+            diag_status_failing: "failing",
+            diag_status_na: "n/a",
+            diag_note_admin_server: "admin HTTP server — lists connected hosts",
+            diag_note_host_agent: "host agent — manages procs on this machine",
+            diag_note_admin_service_proc: "admin service proc — hosts the admin actor layer",
+            diag_note_local_client_proc: "local client proc — in-process actors (empty in pure Rust)",
+            diag_note_introspection_handler: "handles GET /v1/\u{2026} HTTP requests",
+            diag_note_actor_lifecycle_manager: "manages actor spawn and lifecycle",
+            diag_note_root_client_bridge: "root client bridge — connects admin to the mesh",
+            diag_note_comm_actor: "mesh comm actor — enables proc-to-proc messaging",
+            diag_note_proc_agent: "proc agent — manages actor spawn and lifecycle on this proc",
+            diag_note_user_proc: "user proc — your workload is alive",
+            diag_note_user_actor: "user actor — reachable through full stack",
             pane_topology: "Topology",
             pane_details: "Details",
             pane_error: "Error",
@@ -210,7 +280,10 @@ impl Labels {
             pane_proc_details: "Proc Details",
             pane_actor_details: "Actor Details",
             pane_flight_recorder: "Flight Recorder",
-            footer_help_text: "q: quit | j/k: navigate | g/G: top/bottom | Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors",
+            pane_diagnostics: "Diagnostics",
+            footer_help_text: "q: quit | j/k: navigate | g/G: top/bottom | Tab: expand/collapse | c: collapse all | s: system procs | h: stopped actors | d: diag",
+            footer_diag_running_help_text: "q: quit | Esc: cancel | j/k: scroll",
+            footer_diag_help_text: "q: quit | Esc: back to topology | j/k: scroll | r: rerun",
         }
     }
 
@@ -253,6 +326,28 @@ impl Labels {
             failed_actors: "失败执行器: ",
             yes: "是",
             no: "否",
+            diag_running: "运行中\u{2026}",
+            diag_live_updates: "实时更新",
+            diag_completed_at: "完成于",
+            diag_static_snapshot: "静态快照",
+            diag_checks_all: "所有",
+            diag_checks_passed: "项检查通过",
+            diag_admin_label: "管理:",
+            diag_mesh_label: "网格:",
+            diag_status_healthy: "健康",
+            diag_status_failing: "失败",
+            diag_status_na: "不适用",
+            diag_note_admin_server: "管理HTTP服务器 — 列出已连接主机",
+            diag_note_host_agent: "主机代理 — 管理此机器上的进程",
+            diag_note_admin_service_proc: "管理服务进程 — 承载管理员Actor层",
+            diag_note_local_client_proc: "本地客户端进程 — 进程内Actor（纯Rust中为空）",
+            diag_note_introspection_handler: "处理 GET /v1/\u{2026} HTTP请求",
+            diag_note_actor_lifecycle_manager: "管理Actor派生和生命周期",
+            diag_note_root_client_bridge: "根客户端桥 — 连接管理员与用户网格",
+            diag_note_comm_actor: "网格通信Actor — 实现进程间消息传递",
+            diag_note_proc_agent: "进程代理 — 管理此进程上的Actor派生和生命周期",
+            diag_note_user_proc: "用户进程 — 您的工作负载正在运行",
+            diag_note_user_actor: "用户Actor — 可通过完整堆栈访问",
             pane_topology: "拓扑",
             pane_details: "详情",
             pane_error: "错误",
@@ -261,7 +356,10 @@ impl Labels {
             pane_proc_details: "进程详情",
             pane_actor_details: "执行器详情",
             pane_flight_recorder: "飞行记录器",
-            footer_help_text: "q: 退出 | j/k: 导航 | g/G: 顶部/底部 | Tab: 展开/折叠 | c: 全部折叠 | s: 系统进程 | h: 已停止",
+            pane_diagnostics: "诊断",
+            footer_help_text: "q: 退出 | j/k: 导航 | g/G: 顶部/底部 | Tab: 展开/折叠 | c: 全部折叠 | s: 系统进程 | h: 已停止 | d: 诊断",
+            footer_diag_running_help_text: "q: 退出 | Esc: 取消 | j/k: 滚动",
+            footer_diag_help_text: "q: 退出 | Esc: 返回拓扑 | j/k: 滚动 | r: 重新运行",
         }
     }
 }
@@ -307,6 +405,7 @@ pub(crate) struct ColorScheme {
     pub(crate) node_actor: Style,
     pub(crate) node_failed: Style,
     pub(crate) node_system_actor: Style,
+    pub(crate) node_user_actor: Style,
 
     // Semantic states
     pub(crate) error: Style,
@@ -360,12 +459,17 @@ impl ColorScheme {
             _footer_help: Style::default().fg(polar3),
 
             // Node types
-            node_root: Style::default().fg(frost_teal),
-            node_host: Style::default().fg(aurora_green),
-            node_proc: Style::default().fg(aurora_yellow),
+            node_root: Style::default().fg(frost_teal).add_modifier(Modifier::BOLD),
+            node_host: Style::default()
+                .fg(aurora_green)
+                .add_modifier(Modifier::BOLD),
+            node_proc: Style::default()
+                .fg(aurora_yellow)
+                .add_modifier(Modifier::BOLD),
             node_actor: Style::default().fg(frost_blue),
             node_failed: Style::default().fg(aurora_red),
             node_system_actor: Style::default().fg(frost_dark),
+            node_user_actor: Style::default().fg(aurora_green),
 
             // Semantic states
             error: Style::default().fg(aurora_red),
@@ -376,14 +480,16 @@ impl ColorScheme {
             stat_selection: Style::default().fg(aurora_purple),
             stat_system: Style::default().fg(frost_dark),
             stat_url: Style::default().fg(polar3),
-            stat_label: Style::default().fg(snow0),
+            stat_label: Style::default().fg(snow0).add_modifier(Modifier::BOLD),
             _stat_value: Style::default().fg(snow2).add_modifier(Modifier::BOLD),
 
             // Detail pane and misc
-            detail_label: Style::default().fg(snow0),
+            detail_label: Style::default().fg(snow0).add_modifier(Modifier::BOLD),
             detail_stopped: Style::default().fg(polar3),
             detail_status_ok: Style::default().fg(aurora_green),
-            detail_status_warn: Style::default().fg(aurora_orange),
+            detail_status_warn: Style::default()
+                .fg(aurora_orange)
+                .add_modifier(Modifier::BOLD),
             detail_status_failed: Style::default().fg(aurora_red).add_modifier(Modifier::BOLD),
             footer_help: Style::default().fg(polar3),
             header_class_bracket: Style::default().fg(polar3),
@@ -419,12 +525,13 @@ impl ColorScheme {
             _footer_help: Style::default().fg(base7),
 
             // Node types
-            node_root: Style::default().fg(teal),
-            node_host: Style::default().fg(green),
-            node_proc: Style::default().fg(yellow),
+            node_root: Style::default().fg(teal).add_modifier(Modifier::BOLD),
+            node_host: Style::default().fg(green).add_modifier(Modifier::BOLD),
+            node_proc: Style::default().fg(yellow).add_modifier(Modifier::BOLD),
             node_actor: Style::default().fg(blue),
             node_failed: Style::default().fg(red),
             node_system_actor: Style::default().fg(orange),
+            node_user_actor: Style::default().fg(green),
 
             // Semantic states
             error: Style::default().fg(red),
@@ -435,14 +542,14 @@ impl ColorScheme {
             stat_selection: Style::default().fg(violet),
             stat_system: Style::default().fg(dark_blue),
             stat_url: Style::default().fg(base7),
-            stat_label: Style::default().fg(fg),
+            stat_label: Style::default().fg(fg).add_modifier(Modifier::BOLD),
             _stat_value: Style::default().fg(fg_alt).add_modifier(Modifier::BOLD),
 
             // Detail pane and misc
-            detail_label: Style::default().fg(fg),
+            detail_label: Style::default().fg(fg).add_modifier(Modifier::BOLD),
             detail_stopped: Style::default().fg(base7),
             detail_status_ok: Style::default().fg(green),
-            detail_status_warn: Style::default().fg(orange),
+            detail_status_warn: Style::default().fg(orange).add_modifier(Modifier::BOLD),
             detail_status_failed: Style::default().fg(red).add_modifier(Modifier::BOLD),
             footer_help: Style::default().fg(base7),
             header_class_bracket: Style::default().fg(base7),

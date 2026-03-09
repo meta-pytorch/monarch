@@ -14,6 +14,7 @@ use std::time::Duration;
 use anyhow::Result;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::ClockKind;
 use hyperactor::mailbox::PortReceiver;
@@ -22,7 +23,6 @@ use hyperactor::proc::Proc;
 use hyperactor::reference::ActorId;
 use hyperactor::reference::Index;
 use hyperactor::reference::ProcId;
-use hyperactor::reference::WorldId;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -55,20 +55,13 @@ impl PyProc {
     }
 
     #[getter]
-    fn world_name(&self) -> String {
-        self.inner
-            .proc_id()
-            .world_name()
-            .expect("proc must be ranked for world name")
-            .to_string()
+    fn addr(&self) -> String {
+        self.inner.proc_id().addr().to_string()
     }
 
     #[getter]
-    fn rank(&self) -> usize {
-        self.inner
-            .proc_id()
-            .rank()
-            .expect("proc must be ranked for rank access")
+    fn name(&self) -> String {
+        self.inner.proc_id().name().to_string()
     }
 
     #[getter]
@@ -168,15 +161,18 @@ impl From<PyActorId> for ActorId {
 #[pymethods]
 impl PyActorId {
     #[new]
-    #[pyo3(signature = (*, world_name, rank, actor_name, pid = 0))]
-    fn new(world_name: &str, rank: Index, actor_name: &str, pid: Index) -> Self {
-        Self {
+    #[pyo3(signature = (*, addr, proc_name, actor_name, pid = 0))]
+    fn new(addr: &str, proc_name: &str, actor_name: &str, pid: Index) -> PyResult<Self> {
+        let addr: ChannelAddr = addr.parse().map_err(|e| {
+            PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
+        })?;
+        Ok(Self {
             inner: ActorId(
-                ProcId::Ranked(WorldId(world_name.to_string()), rank),
+                ProcId(addr, proc_name.to_string()),
                 actor_name.to_string(),
                 pid,
             ),
-        }
+        })
     }
 
     #[staticmethod]
@@ -192,13 +188,13 @@ impl PyActorId {
     }
 
     #[getter]
-    fn world_name(&self) -> String {
-        self.inner.world_name().to_string()
+    fn addr(&self) -> String {
+        self.inner.proc_id().addr().to_string()
     }
 
     #[getter]
-    fn rank(&self) -> Index {
-        self.inner.rank()
+    fn proc_name(&self) -> String {
+        self.inner.proc_id().name().to_string()
     }
 
     #[getter]

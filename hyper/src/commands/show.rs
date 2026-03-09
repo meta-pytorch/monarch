@@ -7,10 +7,12 @@
  */
 
 use hyperactor::ActorRef;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::reference::ProcId;
 use hyperactor::reference::Reference;
-use hyperactor_mesh::global_root_client;
-use hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent;
+use hyperactor_mesh::context;
+use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
+use hyperactor_mesh::host_mesh::host_agent::HostAgent;
 use hyperactor_mesh::resource::GetStateClient;
 
 #[derive(clap::Args, Debug)]
@@ -23,23 +25,20 @@ pub struct ShowCommand {
 impl ShowCommand {
     pub async fn run(self) -> anyhow::Result<()> {
         match self.reference {
-            Reference::Proc(ProcId::Direct(host, proc)) => {
-                let client = global_root_client();
+            Reference::Proc(proc_id) => {
+                let host = proc_id.addr().clone();
+                let proc = proc_id.name().to_string();
+                let cx = context().await;
+                let client = cx.actor_instance;
 
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
-                let agent: ActorRef<HostMeshAgent> = ActorRef::attest(
-                    ProcId::Direct(host, "service".to_string()).actor_id("agent", 0),
+                let agent: ActorRef<HostAgent> = ActorRef::attest(
+                    ProcId(host, SERVICE_PROC_NAME.to_string())
+                        .actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0),
                 );
 
                 let state = agent.get_state(&client, proc.parse().unwrap()).await?;
                 println!("{}", serde_json::to_string_pretty(&state)?);
-            }
-
-            ref_ @ Reference::Proc(_) => {
-                anyhow::bail!(
-                    "cannot show reference {}: only direct proc ids are supported",
-                    ref_
-                );
             }
 
             ref_ => {

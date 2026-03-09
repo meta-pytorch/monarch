@@ -38,12 +38,29 @@ setup_rust_toolchain() {
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
-    cargo install cargo-nextest --locked
+    curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+    # Setup sccache for distributed Rust compilation caching via S3.
+    setup_sccache
 
     # We amend the RUSTFLAGS here because they have already been altered by `setup_cuda_environment`
     # (and a few other places); RUSTFLAGS environment variable overrides the definition in
     # .cargo/config.toml.
     export RUSTFLAGS="--cfg tracing_unstable ${RUSTFLAGS:-}"
+}
+
+# Setup sccache for Rust compilation caching.
+# Uses the pytorch ossci-compiler-cache S3 bucket if available.
+setup_sccache() {
+    echo "Setting up sccache..."
+    pip install sccache
+
+    export RUSTC_WRAPPER=sccache
+    export SCCACHE_BUCKET=ossci-compiler-cache
+    export SCCACHE_REGION=us-east-1
+    export SCCACHE_S3_KEY_PREFIX=monarch
+
+    echo "sccache configured: bucket=${SCCACHE_BUCKET}, prefix=${SCCACHE_S3_KEY_PREFIX}"
 }
 
 # Install Python test dependencies

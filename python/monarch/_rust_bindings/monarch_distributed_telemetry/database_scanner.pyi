@@ -12,7 +12,6 @@ class DatabaseScanner:
     def __new__(
         cls,
         rank: int,
-        use_fake_data: bool = True,
         max_batches: int = 100,
         batch_size: int = 1000,
     ) -> "DatabaseScanner": ...

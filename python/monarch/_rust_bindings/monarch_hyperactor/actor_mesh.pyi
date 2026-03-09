@@ -30,6 +30,10 @@ class ActorMeshProtocol(Protocol):
         """Get the actor id at the given rank."""
         ...
 
+    def name(self) -> PythonTask[str]:
+        """Get the name of the mesh."""
+        ...
+
     def cast(
         self,
         message: PythonMessage,
