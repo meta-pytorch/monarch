@@ -87,6 +87,29 @@ use crate::mailbox::MailboxServerHandle;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 
+/// Name of the system service proc on a host — hosts the admin actor
+/// layer (HostMeshAgent, MeshAdminAgent, bridge).
+pub const SERVICE_PROC_NAME: &str = "service";
+
+/// Name of the local client proc on a host.
+///
+/// # Invariant LP-1 — Local proc lazy activation
+///
+/// The local proc always exists as a `ProcId::Direct(addr,
+/// LOCAL_PROC_NAME)` and is forwarded in-process by the host's mailbox
+/// muxer. However it starts with zero actors. A `ProcAgent` and root
+/// client actor are added only when
+/// `HostMeshAgent::handle(GetLocalProc)` is first called — which
+/// happens exactly once, lazily, via
+/// `monarch_hyperactor::bootstrap_host` (the Rust entry-point for
+/// Python's `this_proc()` / `this_host()`).
+///
+/// In pure-Rust programs (e.g. sieve, dining_philosophers)
+/// `GetLocalProc` is never sent, so the local proc remains empty
+/// throughout the program's lifetime. Code that inspects the local
+/// proc's actors must not assume they exist.
+pub const LOCAL_PROC_NAME: &str = "local";
+
 /// The type of error produced by host operations.
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -163,10 +186,10 @@ impl<M: ProcManager> Host<M> {
         let (backend_addr, backend_rx) = channel::serve(ChannelAddr::any(manager.transport()))?;
 
         // Set up a system proc. This is often used to manage the host itself.
-        let service_proc_id = ProcId(frontend_addr.clone(), "service".to_string());
+        let service_proc_id = ProcId(frontend_addr.clone(), SERVICE_PROC_NAME.to_string());
         let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
 
-        let local_proc_id = ProcId(frontend_addr.clone(), "local".to_string());
+        let local_proc_id = ProcId(frontend_addr.clone(), LOCAL_PROC_NAME.to_string());
         let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
@@ -216,8 +239,10 @@ impl<M: ProcManager> Host<M> {
         &self.service_proc
     }
 
-    /// The local proc associated with this host.
-    /// This is the local proc used in processes that are also hosts.
+    /// The local proc associated with this host (`LOCAL_PROC_NAME`).
+    ///
+    /// Starts with zero actors; see invariant LP-1 on
+    /// [`LOCAL_PROC_NAME`] for activation semantics.
     pub fn local_proc(&self) -> &Proc {
         &self.local_proc
     }

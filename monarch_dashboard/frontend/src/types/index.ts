@@ -70,7 +70,9 @@ export interface NavItem {
   label: string;
   level:
     | "host_meshes"
+    | "host_units"
     | "proc_meshes"
+    | "proc_units"
     | "actor_meshes"
     | "actors"
     | "actor_detail";

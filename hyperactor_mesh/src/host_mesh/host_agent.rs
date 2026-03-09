@@ -42,7 +42,10 @@ use hyperactor::context;
 use hyperactor::context::Mailbox as _;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
+use hyperactor::host::LOCAL_PROC_NAME;
 use hyperactor::host::LocalProcManager;
+use hyperactor::host::SERVICE_PROC_NAME;
+use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::mailbox::PortSender as _;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::Attrs;
@@ -113,7 +116,10 @@ pub(crate) type ProcManagerSpawnFn = Box<dyn Fn(Proc) -> ProcManagerSpawnFuture 
 pub enum HostAgentMode {
     Process {
         host: Host<BootstrapProcManager>,
-        exit_on_shutdown: bool,
+        /// If set, the ShutdownHost handler sends the frontend mailbox server
+        /// handle back to the bootstrap loop via this channel once shutdown is
+        /// complete, so the caller can drain it and exit.
+        shutdown_tx: Option<tokio::sync::oneshot::Sender<MailboxServerHandle>>,
     },
     Local(Host<LocalProcManager<ProcManagerSpawnFn>>),
 }
@@ -222,8 +228,15 @@ pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "host_agent";
 pub struct HostAgent {
     pub(crate) host: Option<HostAgentMode>,
     pub(crate) created: HashMap<Name, ProcCreationState>,
-    /// Stores the lazily initialized proc mesh agent for the local proc.
+    /// Lazily initialized ProcAgent on the host's local proc.
+    /// Boots on first [`GetLocalProc`] (LP-1 — see
+    /// `hyperactor::host::LOCAL_PROC_NAME`).
     local_mesh_agent: OnceLock<anyhow::Result<ActorHandle<ProcAgent>>>,
+    /// Handle to the host's frontend mailbox server, set during `init` after
+    /// `this.bind::<Self>()` ensures the actor port is registered before the
+    /// mailbox starts routing messages. Sent back to the bootstrap loop via
+    /// `shutdown_tx` when the host shuts down so the caller can drain it.
+    mailbox_handle: Option<MailboxServerHandle>,
 }
 
 impl HostAgent {
@@ -233,6 +246,7 @@ impl HostAgent {
             host: Some(host),
             created: HashMap::new(),
             local_mesh_agent: OnceLock::new(),
+            mailbox_handle: None,
         }
     }
 
@@ -249,15 +263,13 @@ impl HostAgent {
 
         let addr = host.addr().to_string();
         let mut children = Vec::new();
-        let mut system_children = Vec::new();
+        let system_children = Vec::new();
 
-        // System procs — plain ProcId strings, no prefix needed.
-        // The admin server's resolve_proc_node handles routing via
-        // QueryChild to the host agent.
+        // Procs are not system — only actors are. Both service and
+        // local appear as regular children; 's' in the TUI toggles
+        // actor visibility, not proc visibility.
         let sys_ref = host.system_proc().proc_id().to_string();
         let local_ref = host.local_proc().proc_id().to_string();
-        system_children.push(sys_ref.clone());
-        system_children.push(local_ref.clone());
         children.push(sys_ref);
         children.push(local_ref);
 
@@ -286,7 +298,7 @@ impl Actor for HostAgent {
         this.bind::<Self>();
         match self.host.as_mut().unwrap() {
             HostAgentMode::Process { host, .. } => {
-                host.serve();
+                self.mailbox_handle = host.serve();
                 let (directory, file) = hyperactor_telemetry::log_file_path(
                     hyperactor_telemetry::env::Env::current(),
                     None,
@@ -320,9 +332,9 @@ impl Actor for HostAgent {
             let proc = match child_ref {
                 Reference::Proc(proc_id) => {
                     if *proc_id == *system_proc.proc_id() {
-                        Some((&system_proc, "service"))
+                        Some((&system_proc, SERVICE_PROC_NAME))
                     } else if *proc_id == *local_proc.proc_id() {
-                        Some((&local_proc, "local"))
+                        Some((&local_proc, LOCAL_PROC_NAME))
                     } else {
                         None
                     }
@@ -347,7 +359,6 @@ impl Actor for HostAgent {
                         properties: NodeProperties::Proc {
                             proc_name: label.to_string(),
                             num_actors: actors.len(),
-                            is_system: true,
                             system_children: system_actors,
                             stopped_children: Vec::new(),
                             stopped_retention_cap: 0,
@@ -538,12 +549,12 @@ impl Handler<ShutdownHost> for HostAgent {
         cx.mailbox()
             .serialize_and_send(&msg.ack, (), return_handle)?;
 
-        let mut should_exit = false;
+        let mut shutdown_tx = None;
         if let Some(host_mode) = self.host.take() {
             match host_mode {
                 HostAgentMode::Process {
                     host,
-                    exit_on_shutdown,
+                    shutdown_tx: tx,
                 } => {
                     let summary = host
                         .terminate_children(
@@ -554,7 +565,7 @@ impl Handler<ShutdownHost> for HostAgent {
                         )
                         .await;
                     tracing::info!(?summary, "terminated children on host");
-                    should_exit = exit_on_shutdown;
+                    shutdown_tx = tx;
                 }
                 HostAgentMode::Local(host) => {
                     let summary = host
@@ -573,13 +584,15 @@ impl Handler<ShutdownHost> for HostAgent {
         // Drop the host to release any resources that somehow survived.
         let _ = self.host.take();
 
-        if should_exit {
+        if let Some(tx) = shutdown_tx {
             tracing::info!(
                 proc_id = %cx.self_id().proc_id(),
                 actor_id = %cx.self_id(),
-                "host is shut down, exiting this process"
+                "host is shut down, sending mailbox handle to bootstrap for draining"
             );
-            std::process::exit(0);
+            if let Some(handle) = self.mailbox_handle.take() {
+                let _ = tx.send(handle);
+            }
         }
 
         Ok(())
@@ -757,9 +770,14 @@ impl Handler<SetClientConfig> for HostAgent {
     }
 }
 
-/// A local-only message to access the "local" proc on the host.
-/// This is used to bootstrap the root mesh process client on the
-/// local singleton host mesh.
+/// Boot the ProcAgent on the host's local proc (LP-1).
+///
+/// The local proc starts empty; this message activates it by spawning
+/// a `ProcAgent` (once, via `OnceLock`). Called by
+/// `monarch_hyperactor::bootstrap_host` when setting up the Python
+/// `this_proc()` singleton.
+///
+/// See also: `hyperactor::host::LOCAL_PROC_NAME`.
 #[derive(Debug, hyperactor::Handler, hyperactor::HandleClient)]
 pub struct GetLocalProc {
     #[reply]
@@ -837,7 +855,7 @@ impl hyperactor::RemoteSpawn for HostMeshAgentProcMeshTrampoline {
             let host = Host::new(manager, transport.any()).await?;
             HostAgentMode::Process {
                 host,
-                exit_on_shutdown: false,
+                shutdown_tx: None,
             }
         };
 
@@ -902,7 +920,7 @@ mod tests {
                 HOST_MESH_AGENT_ACTOR_NAME,
                 HostAgent::new(HostAgentMode::Process {
                     host,
-                    exit_on_shutdown: false,
+                    shutdown_tx: None,
                 }),
             )
             .unwrap();

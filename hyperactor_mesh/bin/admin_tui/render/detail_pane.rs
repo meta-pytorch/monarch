@@ -17,7 +17,7 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -27,6 +27,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
 use crate::App;
+use crate::diagnostics::DiagNodeRole;
+use crate::diagnostics::DiagOutcome;
+use crate::diagnostics::DiagPhase;
+use crate::diagnostics::DiagResult;
+use crate::diagnostics::DiagSummary;
 use crate::format::format_event_summary;
 use crate::format::format_local_time;
 use crate::format::format_relative_time;
@@ -42,6 +47,10 @@ use crate::theme::Labels;
 /// the last fetch error (`app.detail_error`) or a neutral "select a
 /// node" placeholder message.
 pub(crate) fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    if app.diag_running || !app.diag_results.is_empty() {
+        render_diagnostics_pane(frame, area, app);
+        return;
+    }
     match &app.detail {
         Some(payload) => {
             render_node_detail(frame, area, payload, &app.theme.scheme, &app.theme.labels)
@@ -203,7 +212,7 @@ fn render_root_detail(
     for child in &payload.children {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(child, Style::default().fg(Color::Cyan)),
+            Span::styled(child, scheme.node_host),
         ]));
     }
 
@@ -241,7 +250,7 @@ fn render_host_detail(
             .unwrap_or_else(|_| child.clone());
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(short, Style::default().fg(Color::Green)),
+            Span::styled(short, scheme.node_proc),
         ]));
     }
 
@@ -332,7 +341,7 @@ fn render_actor_detail(
     let info_height = if failure_info.is_some() { 15 } else { 11 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(info_height), Constraint::Length(5)])
+        .constraints([Constraint::Length(info_height), Constraint::Min(5)])
         .split(area);
 
     // Actor info
@@ -405,30 +414,27 @@ fn render_actor_detail(
         .unwrap_or_default();
 
     let events: Vec<Line> = if recorded_events.is_empty() {
-        vec![Line::from(Span::styled(
-            "No events",
-            Style::default().fg(Color::Gray),
-        ))]
+        vec![Line::from(Span::styled("No events", scheme.detail_label))]
     } else {
         recorded_events
             .iter()
             .take(20)
             .map(|event| {
-                let level_color = match event.level.as_str() {
-                    "ERROR" => Color::Red,
-                    "WARN" => Color::Yellow,
-                    "INFO" => Color::Green,
-                    "DEBUG" => Color::Blue,
-                    _ => Color::Gray,
+                let level_style = match event.level.as_str() {
+                    "ERROR" => scheme.error,
+                    "WARN" => scheme.detail_status_warn,
+                    "INFO" => scheme.detail_status_ok,
+                    "DEBUG" => scheme.info,
+                    _ => scheme.detail_label,
                 };
                 Line::from(vec![
                     Span::styled(
                         format!("{} ", event.level.chars().next().unwrap_or('?')),
-                        Style::default().fg(level_color),
+                        level_style,
                     ),
                     Span::styled(
                         format!("{} ", format_local_time(&event.timestamp)),
-                        Style::default().fg(Color::DarkGray),
+                        scheme.detail_label,
                     ),
                     Span::raw(format_event_summary(&event.name, &event.fields)),
                 ])
@@ -440,4 +446,188 @@ fn render_actor_detail(
         .block(recorder_block)
         .wrap(Wrap { trim: true });
     frame.render_widget(recorder, chunks[1]);
+}
+
+/// Render the live self-diagnostic pane.
+///
+/// Shows phase-separated probe results as they stream in. While the
+/// run is still in progress a "Running…" indicator is shown; once
+/// complete a summary line reports overall health.
+pub(crate) fn render_diagnostics_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let scheme = &app.theme.scheme;
+    let labels = &app.theme.labels;
+    let results = &app.diag_results;
+
+    // Build the summary/status line that is pinned above the scrollable results.
+    let sep = labels.separator;
+    let status_line = if app.diag_running {
+        Line::from(vec![
+            Span::styled(labels.diag_running, scheme.info),
+            Span::styled(
+                format!("{}{}", sep, labels.diag_live_updates),
+                scheme.detail_label,
+            ),
+        ])
+    } else if !results.is_empty() {
+        let s = DiagSummary::from_results(results);
+        let admin_status = if s.admin_passed == s.admin_total && s.admin_total > 0 {
+            labels.diag_status_healthy
+        } else {
+            labels.diag_status_failing
+        };
+        let mesh_status = if s.mesh_total == 0 {
+            labels.diag_status_na
+        } else if s.mesh_passed == s.mesh_total {
+            labels.diag_status_healthy
+        } else {
+            labels.diag_status_failing
+        };
+        let (summary, summary_style) = if !s.any_fail {
+            (
+                format!(
+                    "{} {} {}. {} {} {} {}.",
+                    labels.diag_checks_all,
+                    s.total,
+                    labels.diag_checks_passed,
+                    labels.diag_admin_label,
+                    admin_status,
+                    labels.diag_mesh_label,
+                    mesh_status,
+                ),
+                scheme.detail_status_ok,
+            )
+        } else {
+            (
+                format!(
+                    "{}/{} {}. {} {}/{}. {} {}/{}.",
+                    s.passed,
+                    s.total,
+                    labels.diag_checks_passed,
+                    labels.diag_admin_label,
+                    s.admin_passed,
+                    s.admin_total,
+                    labels.diag_mesh_label,
+                    s.mesh_passed,
+                    s.mesh_total,
+                ),
+                scheme.error,
+            )
+        };
+        Line::from(Span::styled(summary, summary_style))
+    } else {
+        Line::default()
+    };
+
+    // Scrollable section results.
+    let sep_style = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        "── Admin Infra ──────────────────────────────────",
+        sep_style,
+    )));
+    for r in results.iter().filter(|r| r.phase == DiagPhase::AdminInfra) {
+        lines.push(diag_result_line(r, scheme, labels));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "── Mesh ─────────────────────────────────────────",
+        sep_style,
+    )));
+    for r in results.iter().filter(|r| r.phase == DiagPhase::Mesh) {
+        lines.push(diag_result_line(r, scheme, labels));
+    }
+
+    // Render the outer block, then split the inner area into a pinned
+    // status row and the scrollable results below it.
+    let title_line = if app.diag_running {
+        Line::from(vec![
+            Span::styled(
+                labels.pane_diagnostics,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{}{}", sep, labels.diag_running), scheme.info),
+        ])
+    } else if let Some(t) = &app.diag_completed_at {
+        Line::from(vec![
+            Span::styled(
+                labels.pane_diagnostics,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}{}", sep, labels.diag_completed_at),
+                scheme.detail_label,
+            ),
+            Span::raw(" "),
+            Span::styled(t.clone(), scheme.stat_timing),
+            Span::styled(
+                format!("{}{}", sep, labels.diag_static_snapshot),
+                scheme.detail_stopped,
+            ),
+        ])
+    } else {
+        Line::from(Span::raw(labels.pane_diagnostics))
+    };
+    let block = Block::default()
+        .title(title_line)
+        .borders(Borders::ALL)
+        .border_style(scheme.border);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Split inner area: 1 row for pinned status, rest for scrollable results.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(inner);
+
+    frame.render_widget(Paragraph::new(status_line), chunks[0]);
+
+    // Clamp scroll against the scrollable chunk height.
+    let max_scroll = (lines.len() as u16).saturating_sub(chunks[1].height);
+    app.diag_max_scroll.set(max_scroll);
+    let scroll = app.diag_scroll.get().min(max_scroll);
+    app.diag_scroll.set(scroll);
+
+    let results_p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(results_p, chunks[1]);
+}
+
+/// Format one diagnostic probe result as a TUI row.
+fn diag_result_line(r: &DiagResult, scheme: &ColorScheme, labels: &Labels) -> Line<'static> {
+    let (icon, icon_style) = match &r.outcome {
+        DiagOutcome::Pass { .. } => ("✓", scheme.detail_status_ok),
+        DiagOutcome::Slow { .. } => ("⚠", scheme.detail_status_warn),
+        DiagOutcome::Fail { .. } => ("✗", scheme.error),
+    };
+    let timing = match &r.outcome {
+        DiagOutcome::Pass { elapsed_ms } | DiagOutcome::Slow { elapsed_ms } => {
+            format!(" {}ms", elapsed_ms)
+        }
+        DiagOutcome::Fail { elapsed_ms, error } => format!(" {}ms — {}", elapsed_ms, error),
+    };
+    let mut spans = vec![
+        Span::styled(format!(" {} ", icon), icon_style),
+        Span::raw(r.label.clone()),
+        Span::styled(timing, scheme.detail_label),
+    ];
+    if let Some(role) = r.note {
+        let note = match role {
+            DiagNodeRole::AdminServer => labels.diag_note_admin_server,
+            DiagNodeRole::HostAgent => labels.diag_note_host_agent,
+            DiagNodeRole::AdminServiceProc => labels.diag_note_admin_service_proc,
+            DiagNodeRole::LocalClientProc => labels.diag_note_local_client_proc,
+            DiagNodeRole::IntrospectionHandler => labels.diag_note_introspection_handler,
+            DiagNodeRole::ActorLifecycleManager => labels.diag_note_actor_lifecycle_manager,
+            DiagNodeRole::RootClientBridge => labels.diag_note_root_client_bridge,
+            DiagNodeRole::CommActor => labels.diag_note_comm_actor,
+            DiagNodeRole::ProcAgent => labels.diag_note_proc_agent,
+            DiagNodeRole::UserProc => labels.diag_note_user_proc,
+            DiagNodeRole::UserActor => labels.diag_note_user_actor,
+        };
+        spans.push(Span::styled(format!("  — {}", note), scheme.stat_url));
+    }
+    Line::from(spans)
 }

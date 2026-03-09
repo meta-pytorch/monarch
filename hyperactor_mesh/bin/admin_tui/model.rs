@@ -638,7 +638,6 @@ mod tests {
             properties: NodeProperties::Proc {
                 proc_name: "proc1".to_string(),
                 num_actors: 0,
-                is_system: false,
                 system_children: vec![],
                 stopped_children: vec!["x".to_string()],
                 stopped_retention_cap: 10,

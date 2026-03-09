@@ -73,7 +73,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ORPHAN_TIMEOUT".to_string()),
         Some("mesh_orphan_timeout".to_string()),
     ))
-    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(0);
+    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
@@ -241,7 +241,7 @@ struct SelfCheck {}
 ///
 /// We **export** `ActorSupervisionEvent` as a handler so that other
 /// procs—most importantly the process-global root client created by
-/// `global_root_client()`—can forward undeliverables as supervision
+/// `context()`—can forward undeliverables as supervision
 /// events to the *currently active* mesh.
 ///
 /// Without exporting this handler, `ActorSupervisionEvent` cannot be
@@ -250,7 +250,7 @@ struct SelfCheck {}
 /// degrade to log-only behavior (events become undeliverable again or
 /// are dropped).
 ///
-/// See `global_client.rs` for the invariant and the forwarding path
+/// See `global_context.rs` for the invariant and the forwarding path
 /// ("last sink wins").
 #[hyperactor::export(
     handlers=[
@@ -411,7 +411,6 @@ impl ProcAgent {
             .publish_properties(PublishedPropertiesKind::Proc {
                 proc_name: self.proc.proc_id().to_string(),
                 num_actors: num_live,
-                is_system: false,
                 children,
                 system_children,
                 stopped_children,
@@ -432,14 +431,95 @@ impl Actor for ProcAgent {
         // Resolve terminated actor snapshots via QueryChild so that
         // dead actors remain directly queryable by reference.
         let proc = self.proc.clone();
+        let self_id = this.self_id().clone();
         this.set_query_child_handler(move |child_ref| {
             use hyperactor::introspect::NodePayload;
             use hyperactor::introspect::NodeProperties;
+            use hyperactor::introspect::PublishedPropertiesKind;
             use hyperactor::reference::Reference;
 
             if let Reference::Actor(id) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(id) {
                     return snapshot;
+                }
+            }
+
+            // PA-1 (ProcAgent path): proc-node children used by
+            // admin/TUI must be computed from live proc state at query
+            // time, not solely from cached published_properties.
+            // Therefore a direct proc.spawn() actor must appear on the
+            // next QueryChild(Reference::Proc) response without an
+            // extra publish event. See
+            // test_query_child_proc_returns_live_children.
+            if let Reference::Proc(proc_id) = child_ref {
+                if proc_id == proc.proc_id() {
+                    let live_ids = proc.all_actor_ids();
+                    let num_live = live_ids.len();
+                    let mut children = Vec::with_capacity(num_live);
+                    let mut system_children = Vec::new();
+                    for id in live_ids {
+                        let ref_str = id.to_string();
+                        if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
+                            system_children.push(ref_str.clone());
+                        }
+                        children.push(ref_str);
+                    }
+
+                    let mut stopped_children: Vec<String> = Vec::new();
+                    for id in proc.all_terminated_actor_ids() {
+                        let ref_str = id.to_string();
+                        stopped_children.push(ref_str.clone());
+                        if let Some(snapshot) = proc.terminated_snapshot(&id) {
+                            if matches!(
+                                snapshot.properties,
+                                hyperactor::introspect::NodeProperties::Actor {
+                                    is_system: true,
+                                    ..
+                                }
+                            ) {
+                                system_children.push(ref_str.clone());
+                            }
+                        }
+                        if !children.contains(&ref_str) {
+                            children.push(ref_str);
+                        }
+                    }
+
+                    let stopped_retention_cap = hyperactor_config::global::get(
+                        hyperactor::config::TERMINATED_SNAPSHOT_RETENTION,
+                    );
+
+                    let (is_poisoned, failed_actor_count) = proc
+                        .get_instance(&self_id)
+                        .and_then(|cell| cell.published_properties())
+                        .and_then(|p| match p.kind {
+                            PublishedPropertiesKind::Proc {
+                                is_poisoned,
+                                failed_actor_count,
+                                ..
+                            } => Some((is_poisoned, failed_actor_count)),
+                            _ => None,
+                        })
+                        .unwrap_or((false, 0));
+
+                    return NodePayload {
+                        identity: proc_id.to_string(),
+                        properties: NodeProperties::Proc {
+                            proc_name: proc_id.to_string(),
+                            num_actors: num_live,
+                            system_children,
+                            stopped_children,
+                            stopped_retention_cap,
+                            is_poisoned,
+                            failed_actor_count,
+                        },
+                        children,
+                        parent: None,
+                        as_of: humantime::format_rfc3339_millis(
+                            hyperactor::clock::RealClock.system_time_now(),
+                        )
+                        .to_string(),
+                    };
                 }
             }
 
@@ -1384,5 +1464,122 @@ mod tests {
         assert_eq!(messages[1].deserialized::<u64>().unwrap(), 6);
         assert_eq!(messages[2].deserialized::<u64>().unwrap(), 7);
         assert_eq!(messages[3].deserialized::<u64>().unwrap(), 8);
+    }
+
+    // A no-op actor used to test direct proc-level spawning.
+    #[derive(Debug, Default)]
+    #[hyperactor::export(handlers = [])]
+    struct ExtraActor;
+    impl hyperactor::Actor for ExtraActor {}
+
+    // Verifies that QueryChild(Reference::Proc) on a ProcAgent returns
+    // a live NodeProperties::Proc whose children reflect actors spawned
+    // directly on the proc — i.e. via proc.spawn(), which bypasses the
+    // gspawn message handler and therefore never triggers
+    // publish_introspect_properties.
+    //
+    // Invariant PA-1 (canonical):
+    // For proc-node resolution used by admin/TUI, children lists
+    // (children/system_children/stopped_children) must be derived from
+    // live proc state at query time rather than only from the last
+    // published snapshot.
+    // Required behavior: direct proc.spawn() of actor X is visible on
+    // the next proc resolve (no extra publish event required).
+    //
+    // Regression guard for the bug introduced in 9a08d559: removing
+    // handle_introspect left publish_introspect_properties as the only
+    // update path, which missed supervision-spawned actors (e.g. every
+    // sieve actor after sieve[0]). See also
+    // mesh_admin::tests::test_proc_children_reflect_directly_spawned_actors.
+    #[tokio::test]
+    async fn test_query_child_proc_returns_live_children() {
+        use hyperactor::PortRef;
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::NodePayload;
+        use hyperactor::introspect::NodeProperties;
+        use hyperactor::reference::Reference;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+
+        // Wait for ProcAgent to finish init.
+        agent_handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        // Client instance for opening reply ports.
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _client_handle) = client_proc.instance("client").unwrap();
+
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+
+        // Helper: send QueryChild(Proc) and return the payload with a
+        // timeout so a misrouted reply fails fast rather than hanging.
+        let query = |client: &hyperactor::Instance<()>| {
+            let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+            port.send(
+                client,
+                IntrospectMessage::QueryChild {
+                    child_ref: Reference::Proc(proc.proc_id().clone()),
+                    reply: reply_port.bind(),
+                },
+            )
+            .unwrap();
+            reply_rx
+        };
+        let recv = |rx: hyperactor::mailbox::OncePortReceiver<NodePayload>| async move {
+            hyperactor::clock::RealClock
+                .timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("QueryChild(Proc) timed out — reply never delivered")
+                .expect("reply channel closed")
+        };
+
+        // Initial query: ProcAgent itself should appear in children.
+        let payload = recv(query(&client)).await;
+        assert!(
+            matches!(payload.properties, NodeProperties::Proc { .. }),
+            "expected Proc, got {:?}",
+            payload.properties
+        );
+        assert!(
+            payload
+                .children
+                .iter()
+                .any(|c| c.contains(PROC_AGENT_ACTOR_NAME)),
+            "initial children {:?} should contain proc_agent",
+            payload.children
+        );
+        let initial_count = payload.children.len();
+
+        // Spawn an actor directly on the proc, bypassing ProcAgent's
+        // gspawn message handler. This is how supervision-spawned
+        // actors (e.g. sieve children) are created.
+        proc.spawn("extra_actor", ExtraActor).unwrap();
+
+        // Second query: extra_actor must appear without any republish.
+        let payload2 = recv(query(&client)).await;
+        assert!(
+            matches!(payload2.properties, NodeProperties::Proc { .. }),
+            "expected Proc, got {:?}",
+            payload2.properties
+        );
+        assert!(
+            payload2.children.iter().any(|c| c.contains("extra_actor")),
+            "after direct spawn, children {:?} should contain extra_actor",
+            payload2.children
+        );
+        assert!(
+            payload2.children.len() > initial_count,
+            "expected at least {} children after direct spawn, got {:?}",
+            initial_count + 1,
+            payload2.children
+        );
     }
 }

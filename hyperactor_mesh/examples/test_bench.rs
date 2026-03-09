@@ -26,7 +26,7 @@ use hyperactor::clock::RealClock;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::Point;
 use ndslice::ViewExt;
@@ -73,7 +73,8 @@ async fn main() {
         .await
         .unwrap();
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     let proc_mesh = host_mesh
         .spawn(instance, "test", extent!(procs = 2))

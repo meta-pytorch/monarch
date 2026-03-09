@@ -48,7 +48,7 @@ base64 = { version = "0.22.1", features = ["alloc"] }
 bincode = "1.3.3"
 bitmaps = "3.2.1"
 buck-resources = "1"
-chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
+chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 crossterm = { version = "0.28", features = ["event-stream", "serde"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
@@ -68,7 +68,7 @@ libc = "0.2.139"
 mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
-opentelemetry = "0.29"
+opentelemetry = "0.31"
 pin-project = "1.1.10"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = { version = "0.9", features = ["small_rng"] }

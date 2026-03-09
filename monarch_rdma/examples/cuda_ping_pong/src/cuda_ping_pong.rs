@@ -76,16 +76,16 @@ use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_rdma::IbvConfig;
-use monarch_rdma::RawLocalMemory;
-use monarch_rdma::RdmaLocalMemory;
 use monarch_rdma::RdmaManagerActor;
 use monarch_rdma::RdmaManagerMessageClient;
 use monarch_rdma::RdmaRemoteBuffer;
 use monarch_rdma::backend::ibverbs::manager_actor::IbvManagerMessageClient;
 use monarch_rdma::cu_check;
+use monarch_rdma::local_memory::RdmaLocalMemory;
+use monarch_rdma::local_memory::UnsafeLocalMemory;
 use ndslice::Extent;
 use ndslice::ViewExt;
 use serde::Deserialize;
@@ -429,7 +429,8 @@ impl Handler<InitializeBuffer> for CudaRdmaActor {
         if self.rdma_buffer_handle.is_none() {
             let addr = self.cu_ptr;
             let size = self.cpu_buffer.len();
-            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(addr, size));
+            let local_memory: Arc<dyn RdmaLocalMemory> =
+                Arc::new(UnsafeLocalMemory::new(addr, size));
             let handle = self
                 .rdma_manager
                 .downcast_handle(cx)
@@ -717,7 +718,8 @@ pub async fn run() -> Result<(), anyhow::Error> {
         device_2_ibv_config = IbvConfig::default();
     }
 
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Setup host meshes and proc meshes
     let program =

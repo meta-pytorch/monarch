@@ -20,42 +20,15 @@ const STATUS_COLORS: Record<string, string> = {
   stopped: "var(--status-stopped)",
   unknown: "var(--status-unknown)",
   client: "var(--status-unknown)",
+  "n/a": "var(--status-neutral)",
+  active: "var(--status-healthy)",
+  running: "var(--status-processing)",
 };
 
 /** Map a status string to its CSS color variable. */
 export function statusColor(status: string | null | undefined): string {
   if (!status) return "var(--text-muted)";
   return STATUS_COLORS[status.toLowerCase()] ?? "var(--text-muted)";
-}
-
-/** Status priority for "worst status" aggregation. Higher = worse. */
-const STATUS_PRIORITY: Record<string, number> = {
-  idle: 0,
-  processing: 1,
-  client: 2,
-  unknown: 3,
-  created: 4,
-  initializing: 4,
-  saving: 4,
-  loading: 4,
-  stopping: 5,
-  stopped: 6,
-  failed: 7,
-};
-
-/** Return the worst (highest priority) status from a list. */
-export function worstStatus(statuses: (string | null | undefined)[]): string {
-  let worst = "idle";
-  let worstPri = -1;
-  for (const s of statuses) {
-    if (!s) continue;
-    const pri = STATUS_PRIORITY[s.toLowerCase()] ?? 3;
-    if (pri > worstPri) {
-      worstPri = pri;
-      worst = s.toLowerCase();
-    }
-  }
-  return worst;
 }
 
 /** Format a microsecond timestamp to a readable string. */

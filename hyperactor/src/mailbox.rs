@@ -364,7 +364,7 @@ impl MessageEnvelope {
         error: DeliveryError,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::error!(
+        tracing::debug!(
             name = "undelivered_message_attempt",
             sender = self.sender.to_string(),
             dest = self.dest.to_string(),
@@ -1050,7 +1050,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
         let join_handle = tokio::spawn(async move {
             let mut detached = false;
 
-            loop {
+            let result = loop {
                 if *stopped_rx.borrow_and_update() {
                     break Ok(());
                 }
@@ -1080,7 +1080,13 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
                         }
                     }
                 }
-            }
+            };
+
+            // Join the channel receiver to ensure pending acks are
+            // sent before the underlying channel server is torn down.
+            rx.join().await;
+
+            result
         });
 
         MailboxServerHandle {

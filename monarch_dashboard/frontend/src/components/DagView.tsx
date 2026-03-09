@@ -7,9 +7,8 @@
  */
 
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { Mesh, Actor, Message, Summary } from "../types";
 import { useApi } from "../hooks/useApi";
-import { computeLayout, DagNode, DagGraph, TIER_X, TIER_LABELS, DagTier } from "../utils/dagLayout";
+import { computeLayout, ApiDagData, DagNode, DagGraph, TIER_Y, TIER_LABELS, DagTier } from "../utils/dagLayout";
 import { DagNodeComponent } from "./DagNode";
 import { DagEdgeComponent } from "./DagEdge";
 import { DagLegend } from "./DagLegend";
@@ -25,88 +24,40 @@ interface Tooltip {
 /**
  * Full DAG visualization of the Monarch hierarchy.
  *
- * Renders an interactive SVG with zoom/pan, clickable nodes,
- * hover tooltips, and a slide-in detail panel.
+ * Fetches pre-classified nodes and edges from /api/dag, then uses
+ * computeLayout to assign X/Y positions for SVG rendering.
  */
 export function DagView() {
-  // Fetch all data needed for the graph.
-  const { data: meshes, loading: meshLoading } = useApi<Mesh[]>("/meshes");
-  const { data: actors, loading: aLoading } = useApi<Actor[]>("/actors");
-  const { data: messages, loading: msgLoading } = useApi<Message[]>("/messages");
-  const { data: summary } = useApi<Summary>("/summary");
+  const { data: dagData, loading } = useApi<ApiDagData>("/dag");
 
-  // Build per-actor status map.  The /actors list endpoint doesn't include
-  // latest_status (only the individual /actors/<id> endpoint does), so we
-  // enrich from the summary which lists failed and stopped actors by ID.
-  const actorStatuses: Record<number, string> = useMemo(() => {
-    const statuses: Record<number, string> = {};
-    if (!actors) return statuses;
-
-    for (const a of actors) {
-      statuses[a.id] = a.latest_status ?? "idle";
-    }
-
-    if (summary) {
-      for (const fa of summary.errors.failed_actors) {
-        statuses[fa.actor_id] = "failed";
-      }
-      for (const sa of summary.errors.stopped_actors) {
-        statuses[sa.actor_id] = "stopped";
-      }
-    }
-
-    return statuses;
-  }, [actors, summary]);
-
-  // UI state.
   const [selectedNode, setSelectedNode] = useState<DagNode | null>(null);
   const [tooltip, setTooltip] = useState<Tooltip | null>(null);
-
-  // Pan/zoom state.
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: 1300, h: 800 });
   const svgRef = useRef<SVGSVGElement>(null);
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0, vx: 0, vy: 0 });
 
-  // Compute graph layout.
   const graph: DagGraph | null = useMemo(() => {
-    if (!meshes || !actors) return null;
+    if (!dagData) return null;
+    return computeLayout(dagData);
+  }, [dagData]);
 
-    const messagePairs: Array<[number, number]> = (messages ?? []).map((m) => [
-      m.from_actor_id,
-      m.to_actor_id,
-    ]);
-
-    return computeLayout(meshes, actors, actorStatuses, messagePairs);
-  }, [meshes, actors, messages, actorStatuses]);
-
-  // Set initial view on first load only — don't reset on data refresh.
   const viewInitialized = useRef(false);
   useEffect(() => {
     if (graph && !viewInitialized.current) {
       viewInitialized.current = true;
-      setViewBox({
-        x: -20,
-        y: -20,
-        w: graph.width + 40,
-        h: Math.min(graph.height + 40, 800),
-      });
+      setViewBox({ x: -20, y: -20, w: graph.width + 40, h: Math.min(graph.height + 40, 800) });
     }
   }, [graph]);
 
-  // Keep selected node in sync with refreshed data.
   useEffect(() => {
     if (selectedNode && graph) {
       const updated = graph.nodes.find((n) => n.id === selectedNode.id);
-      if (updated && updated !== selectedNode) {
-        setSelectedNode(updated);
-      } else if (!updated) {
-        setSelectedNode(null);
-      }
+      if (updated && updated !== selectedNode) setSelectedNode(updated);
+      else if (!updated) setSelectedNode(null);
     }
   }, [graph, selectedNode]);
 
-  // Node lookup map for edge rendering.
   const nodeMap = useMemo(() => {
     if (!graph) return new Map<string, DagNode>();
     const m = new Map<string, DagNode>();
@@ -114,43 +65,30 @@ export function DagView() {
     return m;
   }, [graph]);
 
-  // -- Zoom handler --
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.1 : 0.9;
       const svg = svgRef.current;
       if (!svg) return;
-
       const rect = svg.getBoundingClientRect();
       const mx = ((e.clientX - rect.left) / rect.width) * viewBox.w + viewBox.x;
       const my = ((e.clientY - rect.top) / rect.height) * viewBox.h + viewBox.y;
-
-      setViewBox((vb) => {
-        const nw = vb.w * factor;
-        const nh = vb.h * factor;
-        return {
-          x: mx - (mx - vb.x) * factor,
-          y: my - (my - vb.y) * factor,
-          w: nw,
-          h: nh,
-        };
-      });
+      setViewBox((vb) => ({
+        x: mx - (mx - vb.x) * factor,
+        y: my - (my - vb.y) * factor,
+        w: vb.w * factor,
+        h: vb.h * factor,
+      }));
     },
     [viewBox]
   );
 
-  // -- Pan handlers --
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (e.button !== 0) return;
       isPanning.current = true;
-      panStart.current = {
-        x: e.clientX,
-        y: e.clientY,
-        vx: viewBox.x,
-        vy: viewBox.y,
-      };
+      panStart.current = { x: e.clientX, y: e.clientY, vx: viewBox.x, vy: viewBox.y };
     },
     [viewBox]
   );
@@ -160,55 +98,30 @@ export function DagView() {
       if (!isPanning.current) return;
       const svg = svgRef.current;
       if (!svg) return;
-
       const rect = svg.getBoundingClientRect();
       const dx = ((e.clientX - panStart.current.x) / rect.width) * viewBox.w;
       const dy = ((e.clientY - panStart.current.y) / rect.height) * viewBox.h;
-
-      setViewBox((vb) => ({
-        ...vb,
-        x: panStart.current.vx - dx,
-        y: panStart.current.vy - dy,
-      }));
+      setViewBox((vb) => ({ ...vb, x: panStart.current.vx - dx, y: panStart.current.vy - dy }));
     },
     [viewBox]
   );
 
-  const handleMouseUp = useCallback(() => {
-    isPanning.current = false;
-  }, []);
+  const handleMouseUp = useCallback(() => { isPanning.current = false; }, []);
 
-  // -- Node interaction --
   const handleNodeSelect = useCallback((node: DagNode) => {
     setSelectedNode((prev) => (prev?.id === node.id ? null : node));
   }, []);
 
-  const handleNodeHover = useCallback(
-    (node: DagNode | null) => {
-      if (!node) {
-        setTooltip(null);
-        return;
-      }
-      setTooltip({ node, x: node.x, y: node.y - node.radius - 14 });
-    },
-    []
-  );
+  const handleNodeHover = useCallback((node: DagNode | null) => {
+    if (!node) { setTooltip(null); return; }
+    setTooltip({ node, x: node.x, y: node.y - node.radius - 14 });
+  }, []);
 
-  // -- Loading / Error --
-  const loading = meshLoading || aLoading || msgLoading;
-  if (loading) {
-    return <div className="loading-state">Loading DAG data...</div>;
-  }
+  if (loading) return <div className="loading-state">Loading DAG data...</div>;
+  if (!graph || graph.nodes.length === 0) return <div className="empty-state">No data available</div>;
 
-  if (!graph || graph.nodes.length === 0) {
-    return <div className="empty-state">No data available</div>;
-  }
-
-  // Separate hierarchy and message edges for layering.
   const hierEdges = graph.edges.filter((e) => e.type === "hierarchy");
   const msgEdges = graph.edges.filter((e) => e.type === "message");
-
-  // Tier labels for the 4 columns.
   const tierEntries = Object.entries(TIER_LABELS) as Array<[DagTier, string]>;
 
   return (
@@ -226,108 +139,35 @@ export function DagView() {
           onMouseLeave={handleMouseUp}
         >
           <defs>
-            <pattern
-              id="dag-grid"
-              width="40"
-              height="40"
-              patternUnits="userSpaceOnUse"
-            >
-              <path
-                d="M 40 0 L 0 0 0 40"
-                fill="none"
-                stroke="var(--border-subtle)"
-                strokeWidth="0.3"
-                opacity="0.4"
-              />
+            <pattern id="dag-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="var(--border-subtle)" strokeWidth="0.3" opacity="0.4" />
             </pattern>
-
             <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
               <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
+              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
             </filter>
           </defs>
-
-          {/* Background grid */}
-          <rect
-            x={viewBox.x - 1000}
-            y={viewBox.y - 1000}
-            width={viewBox.w + 2000}
-            height={viewBox.h + 2000}
-            fill="url(#dag-grid)"
-          />
-
-          {/* Tier labels */}
+          <rect x={viewBox.x - 1000} y={viewBox.y - 1000} width={viewBox.w + 2000} height={viewBox.h + 2000} fill="url(#dag-grid)" />
           {tierEntries.map(([tier, label]) => (
-            <text
-              key={tier}
-              x={TIER_X[tier]}
-              y={30}
-              textAnchor="middle"
-              fill="var(--text-muted)"
-              fontSize="11"
-              fontFamily="var(--font-display)"
-              opacity="0.5"
-            >
-              {label}
-            </text>
+            <text key={tier} x={15} y={TIER_Y[tier]} textAnchor="start" dominantBaseline="middle" fill="var(--text-muted)" fontSize="10" fontFamily="var(--font-display)" opacity="0.5">{label}</text>
           ))}
-
-          {/* Edges: hierarchy first (below), messages on top */}
-          <g className="dag-edges-hierarchy">
-            {hierEdges.map((e) => (
-              <DagEdgeComponent key={e.id} edge={e} nodes={nodeMap} />
-            ))}
-          </g>
-          <g className="dag-edges-messages">
-            {msgEdges.map((e) => (
-              <DagEdgeComponent key={e.id} edge={e} nodes={nodeMap} />
-            ))}
-          </g>
-
-          {/* Nodes */}
+          <g className="dag-edges-hierarchy">{hierEdges.map((e) => <DagEdgeComponent key={e.id} edge={e} nodes={nodeMap} />)}</g>
+          <g className="dag-edges-messages">{msgEdges.map((e) => <DagEdgeComponent key={e.id} edge={e} nodes={nodeMap} />)}</g>
           <g className="dag-nodes">
             {graph.nodes.map((node) => (
-              <DagNodeComponent
-                key={node.id}
-                node={node}
-                selected={selectedNode?.id === node.id}
-                onSelect={handleNodeSelect}
-                onHover={handleNodeHover}
-              />
+              <DagNodeComponent key={node.id} node={node} selected={selectedNode?.id === node.id} onSelect={handleNodeSelect} onHover={handleNodeHover} />
             ))}
           </g>
         </svg>
-
-        {/* Hover tooltip */}
         {tooltip && !selectedNode && (
-          <div
-            className="dag-tooltip"
-            style={{
-              left: `${((tooltip.x - viewBox.x) / viewBox.w) * 100}%`,
-              top: `${((tooltip.y - viewBox.y) / viewBox.h) * 100}%`,
-            }}
-          >
+          <div className="dag-tooltip" style={{ left: `${((tooltip.x - viewBox.x) / viewBox.w) * 100}%`, top: `${((tooltip.y - viewBox.y) / viewBox.h) * 100}%` }}>
             <div className="dag-tooltip-name">{tooltip.node.label}</div>
-            <div className="dag-tooltip-info">
-              {tooltip.node.subtitle} &middot; {tooltip.node.status}
-            </div>
+            <div className="dag-tooltip-info">{tooltip.node.subtitle} &middot; {tooltip.node.status}</div>
           </div>
         )}
-
-        {/* Legend */}
         <DagLegend />
       </div>
-
-      {/* Detail panel */}
-      {selectedNode && (
-        <NodeDetail
-          node={selectedNode}
-          onClose={() => setSelectedNode(null)}
-        />
-      )}
+      {selectedNode && <NodeDetail node={selectedNode} onClose={() => setSelectedNode(null)} />}
     </div>
   );
 }

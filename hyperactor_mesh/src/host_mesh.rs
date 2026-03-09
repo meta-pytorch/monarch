@@ -14,6 +14,7 @@ use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::host::Host;
 use hyperactor::host::LocalProcManager;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
@@ -24,9 +25,7 @@ use crate::supervision::MeshFailure;
 pub mod host_agent;
 
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
-use std::hash::Hasher;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -76,6 +75,12 @@ use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::transport::DEFAULT_TRANSPORT;
 
+/// Actor name for `HostMeshController` when spawned as a named child.
+pub const HOST_MESH_CONTROLLER_NAME: &str = "host_mesh_controller";
+
+/// Actor name for `ProcMeshController` when spawned as a named child.
+pub const PROC_MESH_CONTROLLER_NAME: &str = "proc_mesh_controller";
+
 declare_attrs! {
     /// The maximum idle time between updates while spawning proc
     /// meshes.
@@ -123,7 +128,7 @@ impl HostRef {
 
     /// The service proc on this host.
     fn service_proc(&self) -> ProcId {
-        ProcId(self.0.clone(), "service".to_string())
+        ProcId(self.0.clone(), SERVICE_PROC_NAME.to_string())
     }
 
     /// Request an orderly teardown of this host and all procs it
@@ -247,9 +252,7 @@ impl HostMesh {
     /// Emit a telemetry event for this host mesh creation.
     fn notify_created(&self) {
         let name_str = self.name.to_string();
-        let mut mesh_hasher = DefaultHasher::new();
-        name_str.hash(&mut mesh_hasher);
-        let mesh_id_hash = mesh_hasher.finish();
+        let mesh_id_hash = hyperactor_telemetry::hash_to_u64(&name_str);
 
         hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
             id: mesh_id_hash,
@@ -266,16 +269,13 @@ impl HostMesh {
         // These are skipped in Proc::spawn_inner. mesh_id directly points to host mesh.
         let now = RealClock.system_time_now();
         for (rank, host) in self.current_ref.hosts().iter().enumerate() {
-            let actor_id = host.mesh_agent().actor_id().clone();
-            let mut actor_hasher = DefaultHasher::new();
-            actor_id.hash(&mut actor_hasher);
-
+            let actor = host.mesh_agent();
             hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
-                id: actor_hasher.finish(),
+                id: hyperactor_telemetry::hash_to_u64(actor.actor_id()),
                 timestamp: now,
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
-                full_name: actor_id.to_string(),
+                full_name: actor.actor_id().to_string(),
                 display_name: None,
             });
         }
@@ -332,7 +332,7 @@ impl HostMesh {
                 "host_agent",
                 HostAgent::new(HostAgentMode::Process {
                     host,
-                    exit_on_shutdown: false,
+                    shutdown_tx: None,
                 }),
             )
             .map_err(crate::Error::SingletonActorSpawnError)?;
@@ -564,8 +564,11 @@ impl HostMesh {
         // Spawn a unique mesh controller for each proc mesh, so the type of the
         // mesh can be preserved.
         let controller = HostMeshController::new(mesh.deref().clone());
+        // AI-3: controller name must include mesh identity for
+        // proc-wide ActorId uniqueness.
+        let controller_name = format!("{}_{}", HOST_MESH_CONTROLLER_NAME, mesh.name());
         let controller_handle = controller
-            .spawn(cx)
+            .spawn_with_name(cx, &controller_name)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
         // Bind the actor's well-known ports (Signal, IntrospectMessage,
         // Undeliverable). Without this, the controller's mailbox has no
@@ -909,6 +912,16 @@ impl HostMeshRef {
         })
     }
 
+    /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
+    /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
+    /// admin's host list (A/C invariant).
+    pub(crate) fn host_entries(&self) -> Vec<(String, ActorRef<HostAgent>)> {
+        self.ranks
+            .iter()
+            .map(|h| (h.0.to_string(), h.mesh_agent()))
+            .collect()
+    }
+
     /// Push client config to all host agents in this mesh, in parallel.
     ///
     /// Each host installs the attrs as `Source::ClientOverride`.
@@ -1215,8 +1228,11 @@ impl HostMeshRef {
             // Spawn a unique mesh controller for each proc mesh, so the type of the
             // mesh can be preserved.
             let controller = ProcMeshController::new(mesh.deref().clone());
+            // AI-3: controller name must include mesh identity for
+            // proc-wide ActorId uniqueness.
+            let controller_name = format!("{}_{}", PROC_MESH_CONTROLLER_NAME, mesh.name());
             let controller_handle = controller
-                .spawn(cx)
+                .spawn_with_name(cx, &controller_name)
                 .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
             // Bind the actor's well-known ports (Signal, IntrospectMessage,
             // Undeliverable). Without this, the controller's mailbox has no
@@ -1250,12 +1266,30 @@ impl HostMeshRef {
         cx: &impl hyperactor::context::Actor,
         admin_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<String> {
-        let hosts: Vec<(String, ActorRef<HostAgent>)> = self
+        let mut hosts: Vec<(String, ActorRef<HostAgent>)> = self
             .ranks
             .iter()
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
-        let root_client_id = crate::global_root_client().self_id().clone();
+
+        // A/C invariant: include C (the client host) so the admin
+        // can introspect it as a normal host subtree. Dedup by
+        // HostAgent ActorId for C ∈ A. Works for both same-process
+        // and cross-process (MAST) because we read C here on the
+        // caller's process and send it in the message.
+        if let Some(client_host) = crate::global_context::try_this_host() {
+            for (addr, agent_ref) in client_host.host_entries() {
+                let agent_id = agent_ref.actor_id();
+                if !hosts
+                    .iter()
+                    .any(|(_, existing)| existing.actor_id() == agent_id)
+                {
+                    hosts.push((addr, agent_ref));
+                }
+            }
+        }
+
+        let root_client_id = cx.mailbox().actor_id().clone();
 
         let head_agent = self.ranks[0].mesh_agent();
         let addr = head_agent

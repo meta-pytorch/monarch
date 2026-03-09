@@ -11,11 +11,14 @@
 //! This module defines configuration attributes for telemetry features including
 //! OpenTelemetry tracing/metrics, recorder output, SQLite tracing, and file logging.
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::declare_attrs;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::filter::Targets;
 
 declare_attrs! {
     /// Enable the OpenTelemetry tracing layer.
@@ -86,4 +89,23 @@ declare_attrs! {
         Some("monarch_log_suffix".to_string()),
     ))
     pub attr MONARCH_LOG_SUFFIX: String = String::new();
+}
+
+/// Build a `Targets` filter for tracing sinks.
+///
+/// Reads the log level from `MONARCH_FILE_LOG_LEVEL` (defaulting to "info")
+/// and disables noisy internal targets (`hyperactor_telemetry`, `message`,
+/// `execution`, `opentelemetry`).
+pub(crate) fn get_tracing_targets() -> Targets {
+    let level = LevelFilter::from_level({
+        let log_level_str = hyperactor_config::global::try_get_cloned(MONARCH_FILE_LOG_LEVEL)
+            .unwrap_or_else(|| "info".to_string());
+        tracing::Level::from_str(&log_level_str).unwrap_or(tracing::Level::INFO)
+    });
+    Targets::new()
+        .with_target("hyperactor_telemetry", LevelFilter::OFF)
+        .with_target("message", LevelFilter::OFF)
+        .with_target("execution", LevelFilter::OFF)
+        .with_target("opentelemetry", LevelFilter::OFF)
+        .with_default(level)
 }

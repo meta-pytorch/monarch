@@ -173,6 +173,8 @@ fn main() {
         .allowlist_type("rdmaxcel_segment_scanner_fn")
         // EFA types
         .allowlist_type("efadv_.*")
+        // CUDA types needed by monarch_rdma
+        .allowlist_type("CUmemorytype.*")
         // Vars
         .allowlist_var("MLX5_.*")
         .allowlist_var("IBV_.*")
@@ -387,7 +389,7 @@ fn compile_gpu_source(
 
     // Compile with nvcc/hipcc
     let mut cmd = std::process::Command::new(&compiler);
-    cmd.args(&[
+    cmd.args([
         "-c",
         &gpu_source.to_string_lossy(),
         "-o",
@@ -399,9 +401,9 @@ fn compile_gpu_source(
     ]);
 
     if is_rocm {
-        cmd.args(&["-fPIC", "-D__HIP_PLATFORM_AMD__=1", "-DUSE_ROCM=1"]);
+        cmd.args(["-fPIC", "-D__HIP_PLATFORM_AMD__=1", "-DUSE_ROCM=1"]);
     } else {
-        cmd.args(&[
+        cmd.args([
             "--compiler-options",
             "-fPIC",
             "--expt-extended-lambda",
@@ -427,7 +429,7 @@ fn compile_gpu_source(
 
     // Create static library
     let ar_output = std::process::Command::new("ar")
-        .args(&[
+        .args([
             "rcs",
             &lib_path.to_string_lossy(),
             &obj_path.to_string_lossy(),
