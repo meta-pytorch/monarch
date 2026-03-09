@@ -145,4 +145,13 @@ declare_attrs! {
         Some("mesh_attach_config_timeout".to_string()),
     ))
     pub attr MESH_ATTACH_CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// When the cast domain has fewer ranks than this threshold,
+    /// v1 casting sends messages point-to-point instead of through the
+    /// comm actor tree. 0 disables the optimization.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_V1_CAST_POINT_TO_POINT_THRESHOLD".to_string()),
+        Some("v1_cast_point_to_point_threshold".to_string()),
+    ))
+    pub attr V1_CAST_POINT_TO_POINT_THRESHOLD: usize = 0;
 }
