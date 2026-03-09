@@ -48,7 +48,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
@@ -1132,6 +1131,19 @@ class _Actor:
     error handling.
     """
 
+    class QueuePanicFlag:
+        """Panic flag for queue dispatch mode.
+
+        Unlike the DummyPanicFlag, this one stores the exception so it can
+        be re-raised after handle() returns, ensuring proper cleanup.
+        """
+
+        def __init__(self) -> None:
+            self.panic_exception: BaseException | None = None
+
+        def signal_panic(self, ex: BaseException) -> None:
+            self.panic_exception = ex
+
     def __init__(self) -> None:
         self.instance: object | None = None
         # TODO: (@pzhang) remove this with T229200522
@@ -1288,7 +1300,6 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
-        return
 
     def _maybe_exit_debugger(self, do_continue: bool = True) -> None:
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
@@ -1417,20 +1428,7 @@ class _Actor:
     async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
         """Handle a single queued message."""
 
-        class QueuePanicFlag:
-            """Panic flag for queue dispatch mode.
-
-            Unlike the DummyPanicFlag, this one stores the exception so it can
-            be re-raised after handle() returns, ensuring proper cleanup.
-            """
-
-            def __init__(self) -> None:
-                self.panic_exception: BaseException | None = None
-
-            def signal_panic(self, ex: BaseException) -> None:
-                self.panic_exception = ex
-
-        panic_flag = QueuePanicFlag()
+        panic_flag = self.QueuePanicFlag()
         await self.handle(
             msg.context,
             msg.method,
