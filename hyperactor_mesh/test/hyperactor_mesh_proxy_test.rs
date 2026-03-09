@@ -147,8 +147,17 @@ impl RemoteSpawn for ProxyActor {
             .unwrap();
         let cx = context().await;
         let instance = cx.actor_instance;
+        let host_mesh = hyperactor_mesh::host_mesh::HostMesh::allocate(
+            instance,
+            Box::new(alloc),
+            "proxy",
+            None,
+        )
+        .await
+        .unwrap();
         let proc_mesh = Arc::new(
-            ProcMesh::allocate(instance, Box::new(alloc), "proxy")
+            host_mesh
+                .spawn(instance, "proxy_procs", extent! { procs = 1 })
                 .await
                 .unwrap(),
         );
@@ -203,7 +212,12 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
     let cx = context().await;
     let instance = cx.actor_instance;
 
-    let mut proc_mesh = ProcMesh::allocate(instance, Box::new(alloc), "client").await?;
+    let host_mesh =
+        hyperactor_mesh::host_mesh::HostMesh::allocate(instance, Box::new(alloc), "client", None)
+            .await?;
+    let mut proc_mesh = host_mesh
+        .spawn(instance, "client_procs", extent! { procs = 1 })
+        .await?;
     let actor_mesh: ActorMesh<ProxyActor> = proc_mesh
         .spawn(instance, "proxy", &exe_path.to_str().unwrap().to_string())
         .await?;
