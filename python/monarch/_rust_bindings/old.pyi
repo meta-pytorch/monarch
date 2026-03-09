@@ -388,6 +388,28 @@ class LocalAllocatorBase:
 
 @final
 class ProcMesh:
+    @classmethod
+    async def allocate_nonblocking(self, alloc: Alloc) -> ProcMesh:
+        """
+        Allocate a process mesh according to the provided alloc.
+        Returns when the mesh is fully allocated.
+
+        Arguments:
+        - `alloc`: The alloc to allocate according to.
+        """
+        ...
+
+    @classmethod
+    def allocate_blocking(self, alloc: Alloc) -> ProcMesh:
+        """
+        Allocate a process mesh according to the provided alloc.
+        Blocks until the mesh is fully allocated.
+
+        Arguments:
+        - `alloc`: The alloc to allocate according to.
+        """
+        ...
+
     async def spawn_nonblocking(self, name: str, actor: Type[Actor]) -> PythonActorMesh:
         """
         Spawn a new actor on this mesh.

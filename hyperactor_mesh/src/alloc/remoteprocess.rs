@@ -437,11 +437,12 @@ impl RemoteProcessAllocator {
                             tracing::debug!(name = event.as_ref(), "got event: {:?}", event);
                             let event = match event {
                                 ProcState::Created { .. } => event,
-                                ProcState::Running { create_key, host_addr, host_agent } => {
-                                    tracing::debug!("remapping host_agent {}: addr {} -> {}", host_agent, host_addr, forward_addr);
-                                    mesh_agents_by_create_key.insert(create_key.clone(), host_agent.clone());
-                                    router.bind(host_agent.actor_id().proc_id().clone().into(), host_addr);
-                                    ProcState::Running { create_key, host_addr: forward_addr.clone(), host_agent }
+                                ProcState::Running { create_key, proc_id, mesh_agent, addr } => {
+                                    // TODO(meriksen, direct addressing): disable remapping in direct addressing mode
+                                    tracing::debug!("remapping mesh_agent {}: addr {} -> {}", mesh_agent, addr, forward_addr);
+                                    mesh_agents_by_create_key.insert(create_key.clone(), mesh_agent.clone());
+                                    router.bind(mesh_agent.actor_id().proc_id().clone().into(), addr);
+                                    ProcState::Running { create_key, proc_id, mesh_agent, addr: forward_addr.clone() }
                                 },
                                 ProcState::Stopped { create_key, reason } => {
                                     match mesh_agents_by_create_key.remove(&create_key) {
@@ -1377,6 +1378,7 @@ mod test {
     use crate::alloc::MockAllocator;
     use crate::alloc::ProcStopReason;
     use crate::alloc::with_unspecified_port_or_any;
+    use crate::proc_agent::ProcAgent;
 
     async fn read_all_created(rx: &mut ChannelRx<RemoteProcessProcStateMessage>, alloc_len: usize) {
         let mut i: usize = 0;
@@ -1435,12 +1437,13 @@ mod test {
             .enumerate()
         {
             let proc_id = test_proc_id(&format!("{i}"));
-            let host_agent = ActorRef::<HostAgent>::attest(proc_id.actor_id("host_agent", i));
+            let mesh_agent = ActorRef::<ProcAgent>::attest(proc_id.actor_id("mesh_agent", i));
             alloc.expect_next().times(1).return_once(move || {
                 Some(ProcState::Running {
                     create_key,
-                    host_addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
-                    host_agent,
+                    proc_id,
+                    addr: ChannelAddr::Unix("/proc0".parse().unwrap()),
+                    mesh_agent,
                 })
             });
         }
@@ -1552,17 +1555,19 @@ mod test {
                     got_alloc_key,
                     ProcState::Running {
                         create_key,
-                        host_agent,
-                        ..
+                        proc_id,
+                        mesh_agent,
+                        addr: _,
                     },
                 ) => {
                     assert_eq!(got_alloc_key, alloc_key);
                     assert_eq!(create_key, create_keys[rank]);
                     let expected_proc_id = test_proc_id(&format!("{}", rank));
-                    let expected_host_agent = ActorRef::<HostAgent>::attest(
-                        expected_proc_id.actor_id("host_agent", rank),
+                    let expected_mesh_agent = ActorRef::<ProcAgent>::attest(
+                        expected_proc_id.actor_id("mesh_agent", rank),
                     );
-                    assert_eq!(host_agent, expected_host_agent);
+                    assert_eq!(proc_id, expected_proc_id);
+                    assert_eq!(mesh_agent, expected_mesh_agent);
                     rank += 1;
                 }
                 RemoteProcessProcStateMessage::HeartBeat => {}

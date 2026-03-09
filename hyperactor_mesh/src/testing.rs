@@ -213,14 +213,13 @@ pub async fn local_proc_mesh(
         })
         .await
         .unwrap();
-    let host_mesh = crate::host_mesh::HostMesh::allocate(actor, Box::new(alloc), "test", None)
-        .await
-        .unwrap();
-    let proc_mesh = host_mesh
-        .spawn(actor, "test_procs", ndslice::extent!(procs = 1))
-        .await
-        .unwrap();
-    (proc_mesh, actor, router)
+    (
+        ProcMesh::allocate(actor, Box::new(alloc), "test")
+            .await
+            .unwrap(),
+        actor,
+        router,
+    )
 }
 
 /// Create a host mesh using multiple processes running on the test machine.
