@@ -552,6 +552,11 @@ impl PythonActor {
             .unwrap();
         let instance = root_client_instance.get().unwrap();
 
+        // The root client PythonActor uses a custom run loop that
+        // bypasses Actor::init, so mark it as system explicitly
+        // (matching GlobalClientActor::fresh_instance).
+        instance.set_system();
+
         // Bind to ensure the Signal and Undeliverable<MessageEnvelope> ports
         // are bound.
         let _client_ref = handle.bind::<PythonActor>();
@@ -631,9 +636,9 @@ impl PythonActor {
             }
             if let Some(err) = err {
                 let event = actor_error_to_event(instance, &actor, err);
-                // The proc supervision handler will send to ProcMeshAgent, which
+                // The proc supervision handler will send to ProcAgent, which
                 // just records it in v1. We want to crash instead, as nothing will
-                // monitor the client ProcMeshAgent for now.
+                // monitor the client ProcAgent for now.
                 tracing::error!(
                     actor_id = %instance.self_id(),
                     "could not propagate supervision event {} because it reached the global client: exiting the process with code 1",
@@ -1507,13 +1512,13 @@ mod tests {
     use hyperactor::PortRef;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
-    use hyperactor::id;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
     use hyperactor::reference::UnboundPort;
+    use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::Name;
-    use hyperactor_mesh::host_mesh::mesh_agent::ProcState;
+    use hyperactor_mesh::host_mesh::host_agent::ProcState;
     use hyperactor_mesh::resource::Status;
     use hyperactor_mesh::resource::{self};
     use pyo3::PyTypeInfo;
@@ -1528,7 +1533,7 @@ mod tests {
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
         let port_ref = PortRef::<PythonMessage>::attest_reducible(
-            id!(world[0].client[0][123]),
+            test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
         );
@@ -1589,9 +1594,15 @@ mod tests {
         };
 
         // A ProcCreationError
+        let mesh_agent: hyperactor::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
+            hyperactor::ActorRef::attest(test_port_id("hello_0", "actor", 0).actor_id().clone());
+        let expected_prefix = format!(
+            "error creating proc (host rank 0) on host mesh agent {}",
+            mesh_agent
+        );
         let err = MeshError::ProcCreationError {
             host_rank: 0,
-            mesh_agent: hyperactor::ActorRef::attest(id!(hello[0].actor[0])),
+            mesh_agent,
             state: Box::new(state),
         };
 
@@ -1609,8 +1620,7 @@ mod tests {
             assert!(py_msg.contains(", state: "));
             assert!(py_msg.contains("\"status\":{\"Failed\":\"boom\"}"));
             // 3) Starts with the expected prefix
-            let expected_prefix = "error creating proc (host rank 0) on host mesh agent hello[0].actor[0]<hyperactor_mesh::host_mesh::mesh_agent::HostMeshAgent>";
-            assert!(py_msg.starts_with(expected_prefix));
+            assert!(py_msg.starts_with(&expected_prefix));
         });
     }
 }

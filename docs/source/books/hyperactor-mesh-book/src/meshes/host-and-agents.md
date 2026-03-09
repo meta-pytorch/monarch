@@ -66,7 +66,7 @@ At the control plane we have the mesh-facing actor:
 
 ```rust
 // hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs
-pub struct HostMeshAgent {
+pub struct HostAgent {
   host: Option<HostAgentMode>,
   created: HashMap<Name, ProcCreationState>,
 }
@@ -105,12 +105,12 @@ pub struct Host<M> {
 
 So the layering from the code's point of view is:
 
-1. `HostMeshAgent` (actor you message over v1)
+1. `HostAgent` (actor you message over v1)
 2. → maybe a `HostAgentMode`
 3. → definitely a `Host<...>` once materialized
 4. → which, through its manager (e.g. `BootstrapProcManager`), owns/spawns the procs and does the `*`/`#n` routing.
 
-## HostMeshAgent message handling
+## HostAgent message handling
 
 The agent is exported with exactly these handlers:
 
@@ -125,10 +125,10 @@ The agent is exported with exactly these handlers:
         ShutdownHost,
     ]
 )]
-pub struct HostMeshAgent {
+pub struct HostAgent {
     host: Option<HostAgentMode>,
     created: HashMap<Name, ProcCreationState>,
-    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcMeshAgent>>>,
+    local_mesh_agent: OnceCell<anyhow::Result<ActorHandle<ProcAgent>>>,
 }
 ```
 
@@ -157,7 +157,7 @@ So everything it does is one of those 6 messages.
 - Same lookup, but return the richer state:
   - the proc's direct id at the host,
   - the rank we used,
-  - the proc's own `ProcMeshAgent` ref,
+  - the proc's own `ProcAgent` ref,
   - and any bootstrap/process status the host's manager could provide.
 
 ### 5. List
@@ -172,7 +172,7 @@ So everything it does is one of those 6 messages.
 
 ## Why this exists
 
-`Host` is local; `HostMeshAgent` is the remote handle for it. Bootstrap code just sends `CreateOrUpdate/Stop/GetState` to the agent; the agent is the one that actually owns the `Host` and can spawn/stop procs. That’s why all handlers use the shared `resource` messages.
+`Host` is local; `HostAgent` is the remote handle for it. Bootstrap code just sends `CreateOrUpdate/Stop/GetState` to the agent; the agent is the one that actually owns the `Host` and can spawn/stop procs. That’s why all handlers use the shared `resource` messages.
 
 ## 1. `ProcSpec` (what we tell the host to run)
 
@@ -200,7 +200,7 @@ pub struct CreateOrUpdate<S> {
     pub spec: S,
 }
 ```
-What the `HostMeshAgent` actually does matches this shape:
+What the `HostAgent` actually does matches this shape:
 - if the host is process-backed (`HostAgentMode::Process(...)`), it builds a `BootstrapProcConfig` using
 - the rank from `CreateOrUpdate::<ProcSpec>`, and
 - the `client_config_override` from `ProcSpec`, and passes that to `host.spawn(...);`
@@ -208,7 +208,7 @@ What the `HostMeshAgent` actually does matches this shape:
 
 Here is the bit of real code that does exactly that (abridged to just the decision):
 ```rust
-// from hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs (`impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostMeshAgent`)
+// from hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs (`impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent`)
 
 let created = match host {
     HostAgentMode::Process(host) => {
@@ -235,16 +235,16 @@ When the agent calls `host.spawn(name, …)`, the **host itself** is not doing t
 - process-backed host → `Host<BootstrapProcManager>`
 - in-proc/test host → `Host<LocalProcManager<...>>`
 
-The manager is the thing that can "make a proc real" (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the `procs: HashSet<String>` table and expose it as `ProcId::Direct(frontend_addr, name)`.
+The manager is the thing that can "make a proc real" (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the `procs: HashSet<String>` table and expose it as `ProcId(frontend_addr, name)`.
 
 We're not going to unpack the process-backed path here — that lives in **"BootstrapProcManager (process-backed hosts)"** where we can talk about commands, ready signals, and termination.
 
 ## v1 bootstrap in one pass
 
-The reason the `HostMeshAgent` has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats "things on a host" as **resources**. A typical sequence is:
+The reason the `HostAgent` has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats "things on a host" as **resources**. A typical sequence is:
 
 1. **Coordinator → hosts:** send `CreateOrUpdate<ProcSpec>` to every host agent in the mesh ("each of you should have a proc called `p0` with this rank/config").
 2. **Coordinator → hosts (later):** send `GetState<ProcState>` (or `GetRankStatus`) to see which hosts actually brought that proc up and what address/command it got.
 3. **Coordinator → hosts (teardown):** send `ShutdownHost` to have each agent tell its host to terminate all children and drop the host.
 
-Because everyone speaks this same resource shape — `CreateOrUpdate<T>`, `GetState<T>`, `Stop`, `StopAll`/`ShutdownHost` — the handlers on `HostMeshAgent` all look the same, and the coordinator can fan the same message out to N hosts.
+Because everyone speaks this same resource shape — `CreateOrUpdate<T>`, `GetState<T>`, `Stop`, `StopAll`/`ShutdownHost` — the handlers on `HostAgent` all look the same, and the coordinator can fan the same message out to N hosts.

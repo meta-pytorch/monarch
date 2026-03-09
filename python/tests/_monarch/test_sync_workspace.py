@@ -6,63 +6,13 @@
 
 # pyre-strict
 
-import contextlib
-import importlib.resources
-import os
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Generator
 
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints
-from monarch._rust_bindings.monarch_hyperactor.channel import (
-    ChannelAddr,
-    ChannelTransport,
-)
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent
-from monarch._src.actor.allocator import RemoteAllocator, StaticRemoteAllocInitializer
-from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
+from monarch._src.job.process import ProcessJob
 from monarch.tools.config.workspace import Workspace
-
-
-@contextlib.contextmanager
-def remote_process_allocator(env: dict[str, str]) -> Generator[str, None, None]:
-    if __package__:
-        cm = importlib.resources.as_file(importlib.resources.files(__package__))
-    else:  # running as script (e.g. pytest test_proc_mesh.py)
-        cm = contextlib.nullcontext()
-
-    with cm as package_path:
-        if package_path is None:
-            package_path = ""
-
-        addr = ChannelAddr.any(ChannelTransport.Unix)
-        args = ["process_allocator", f"--addr={addr}"]
-
-        env = {
-            # prefix PATH with this test module's directory to
-            # give 'process_allocator' and 'monarch_bootstrap' binary resources
-            # in this test module's directory precedence over the installed ones
-            # useful in BUCK where these binaries are added as 'resources' of this test target
-            "PATH": f"{package_path}:{os.getenv('PATH', '')}",
-            "RUST_LOG": "debug",
-        } | env
-
-        process_allocator = subprocess.Popen(
-            args=args,
-            env=env,
-        )
-        try:
-            yield addr
-        finally:
-            process_allocator.terminate()
-            try:
-                five_seconds = 5
-                process_allocator.wait(timeout=five_seconds)
-            except subprocess.TimeoutExpired:
-                process_allocator.kill()
 
 
 class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
@@ -80,31 +30,23 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
         remote_workspace_dir = remote_workspace_root / "torch"
         workspace = Workspace(dirs=[local_workspace_dir])
 
-        with remote_process_allocator(
-            env={"WORKSPACE_DIR": str(remote_workspace_root)}
-        ) as host:
-            allocator = RemoteAllocator(
-                world_id="test_sync_workspace",
-                initializer=StaticRemoteAllocInitializer(host),
-            )
+        job = ProcessJob(
+            {"hosts": 1},
+            env={"WORKSPACE_DIR": str(remote_workspace_root)},
+        )
+        host = job.state(cached_path=None).hosts
 
-            mesh = HostMesh.allocate_nonblocking(
-                "hosts",
-                Extent(["hosts", "gpus"], [1, 1]),
-                allocator,
-                AllocConstraints(),
-                _bootstrap_cmd(),
-            )
+        # local workspace dir is empty & remote workspace dir hasn't been primed yet
+        self.assertFalse(remote_workspace_dir.is_dir())
 
-            # local workspace dir is empty & remote workspace dir hasn't been primed yet
-            self.assertFalse(remote_workspace_dir.is_dir())
+        # create a README file locally and sync workspace
+        with open(local_workspace_dir / "README.md", mode="w") as f:
+            f.write("hello world")
 
-            # create a README file locally and sync workspace
-            with open(local_workspace_dir / "README.md", mode="w") as f:
-                f.write("hello world")
+        await host.sync_workspace(workspace)
 
-            await mesh.sync_workspace(workspace)
+        # validate README has been created remotely
+        with open(remote_workspace_dir / "README.md", mode="r") as f:
+            self.assertListEqual(["hello world"], f.readlines())
 
-            # validate README has been created remotely
-            with open(remote_workspace_dir / "README.md", mode="r") as f:
-                self.assertListEqual(["hello world"], f.readlines())
+        host.shutdown().get()

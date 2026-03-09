@@ -40,6 +40,7 @@ from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInst
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.actor_mesh import (
     _Actor,
     _create_endpoint_message,
@@ -818,8 +819,15 @@ class ProcMesh(MeshTrait):
 
 
 class _ControllerController(Actor):
+    # PY-SYS-2 marker consumed by actor init path (actor_mesh.py).
+    _is_system_actor: bool = True
+
     def __init__(self) -> None:
-        self._controllers: Dict[str, Actor] = {}
+        # Store failed actors in the dict so we can forward their failures to
+        # the user.
+        self._controllers: Dict[str, Actor | MeshFailure] = {}
+        # Internal mesh name mapped back to the key from _controllers.
+        self._mesh_name_to_name: Dict[str, str] = {}
 
     # pyre-ignore
     @endpoint
@@ -836,8 +844,29 @@ class _ControllerController(Actor):
 
             proc = this_proc()
             proc._controller_controller = self_ref
-            self._controllers[name] = proc.spawn(name, Class, *args, **kwargs)
-        return cast(TActor, self._controllers[name])
+            mesh = proc.spawn(name, Class, *args, **kwargs)
+            mesh_name = cast(ActorMesh[Actor], mesh)._name.get()
+            self._controllers[name] = mesh
+            self._mesh_name_to_name[mesh_name] = name
+        actor = cast(TActor, self._controllers[name])
+        if isinstance(actor, MeshFailure):
+            raise ValueError(f"Failure on {name}: {actor}")
+        else:
+            return actor
+
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        controller_name = self._mesh_name_to_name.get(failure.mesh_name)
+        if controller_name is not None:
+            controller = self._controllers.get(controller_name)
+            if controller is not None:
+                if not isinstance(controller, MeshFailure):
+                    # This might be a duplicate failure delivered for the same controller,
+                    # make sure to only store the first such failure.
+                    self._controllers[controller_name] = failure
+                return True
+        # Failure is not one we recognize, let it flow further to end the whole
+        # program.
+        return False
 
 
 # Lazy init so that the controller_controller and does not produce logs when it isn't used.

@@ -36,3 +36,7 @@ jobs:
 
         # Build monarch (No tensor engine, CPU version)
         USE_TENSOR_ENGINE=0 python setup.py bdist_wheel
+
+        echo "=== sccache stats ==="
+        sccache --show-stats
+        echo "=== end sccache stats ==="

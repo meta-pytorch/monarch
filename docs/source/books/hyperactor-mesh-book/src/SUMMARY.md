@@ -8,7 +8,7 @@
       - [4. Doing real work (hosts → procs → actors)](meshes/bootstrapping-doing-real-work.md)
       - [Boostrapping from Python](meshes/bootstrapping-from-python.md)
   - [Host & agents (control plane & mux)](meshes/host-and-agents.md)
-  - [Proc meshes & ProcMeshAgent](meshes/proc-mesh-and-agent.md)
+  - [Proc meshes & ProcAgent](meshes/proc-mesh-and-agent.md)
   - [Process-backed hosts: BootstrapProcManager](meshes/bootstrap-proc-manager.md)
   - [Error Handling & Recovery](meshes/mesh-supervision.md)
   - [Appendix: `bootstrap_canonical_simple`](meshes/bootstrapping-appendix-canonical-test.md)

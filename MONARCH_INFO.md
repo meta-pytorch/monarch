@@ -23,8 +23,10 @@
 
 - For prose (docs, comments, commit messages, etc.), adhere to Strunk & White. Use the Oxford comma. Use "you" and "we" to refer to the reader and the author, respectively.
 - Do NOT use decoration in code comments. If structure is necessary, use Markdown (Rust), or reStructuredText (Python). Keep it SIMPLE.
+- Do NOT add headers (e.g., in comments) to denote different sections of code; only use modules, structs, impl blocks, etc. for organization.
 - Use "that" for restrictive clauses (essential to meaning, no commas) and "which" for non-restrictive clauses (additional info, set off by commas). "The actor that crashed must be restarted" (identifies a specific actor) vs "The actor, which was created yesterday, is still running" (adds extra detail about an already-identified actor).
 - In Rust code, error messages are concise lowercase sentences without trailing punctuation
+- In Rust, avoid creating type aliases in `use` statements; prefer to use qualified identifiers to disambiguate
 
 
 ## Workflow
@@ -104,6 +106,7 @@ uv sync
 - `MONARCH_PACKAGE_NAME` - Override package name (default: `torchmonarch`)
 - `MONARCH_VERSION` - Override version (default: `0.0.1`)
 - `ENABLE_MESSAGE_LOGGING` - Enable hyperactor message logging
+- `MONARCH_RDMA_GPU_PLATFORM` - Select GPU platform for RDMA builds: `cuda` or `rocm`. Required when both CUDA and ROCm are installed; auto-detected when only one is present
 
 **PyTorch Index Configuration:**
 The project uses PyTorch from specific indices (see `pyproject.toml`). Default is `pytorch-cu128`. To change:
@@ -191,13 +194,18 @@ buck2 test @fbcode//mode/dev-nosan fbcode//monarch/...
 
 # Run single test
 buck2 test @fbcode//mode/dev-nosan fbcode//monarch/python/tests:test_actor_mesh
+
+# If a test requires CUDA, you must comment out the remote execution config in the
+# test's buck target, and run the test using the --local-only flag, e.g.:
+buck2 test @fbcode//mode/dev-nosan --local-only fbcode//monarch/monarch_rdma:monarch_rdma-unittest
 ```
 
 ### Linting and Formatting
 
 **Meta Internal:**
 ```bash
-# Format changed files
+# Format changed files. You MUST ALWAYS run this when you are done
+# making changes.
 arc f
 
 # Run all lints and formatters

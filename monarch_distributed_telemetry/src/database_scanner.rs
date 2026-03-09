@@ -12,15 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
-use datafusion::arrow::array::Float64Array;
-use datafusion::arrow::array::Int32Array;
-use datafusion::arrow::array::StringArray;
-use datafusion::arrow::array::TimestampMicrosecondArray;
-use datafusion::arrow::datatypes::DataType;
-use datafusion::arrow::datatypes::Field;
-use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::datatypes::TimeUnit;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
@@ -107,138 +99,11 @@ pub struct DatabaseScanner {
     dispatcher: Option<EntityDispatcher>,
 }
 
-fn fill_fake_batches(scanner: &DatabaseScanner) -> anyhow::Result<()> {
-    use rand::Rng;
-
-    let mut rng = rand::rng();
-
-    // Create hosts table schema
-    let hosts_schema = Arc::new(Schema::new(vec![
-        Field::new("host_id", DataType::Int32, false),
-        Field::new("hostname", DataType::Utf8, false),
-        Field::new("datacenter", DataType::Utf8, false),
-        Field::new("os", DataType::Utf8, false),
-        Field::new("cpu_cores", DataType::Int32, false),
-        Field::new("memory_gb", DataType::Int32, false),
-    ]));
-
-    // Use random base to avoid duplicate host_ids across actors
-    let host_start = rng.random_range(0..10000) * 10;
-    let host_end = host_start + 10;
-    let datacenters = ["us-east-1", "us-west-2", "eu-west-1", "ap-south-1"];
-    let os_types = ["ubuntu-22.04", "debian-12", "rhel-9", "amazon-linux-2"];
-    let cpu_options = [4, 8, 16, 32, 64];
-    let memory_options = [16, 32, 64, 128, 256];
-
-    // Generate hosts data
-    let mut host_ids = Vec::new();
-    let mut hostnames = Vec::new();
-    let mut dcs = Vec::new();
-    let mut oses = Vec::new();
-    let mut cpus = Vec::new();
-    let mut mems = Vec::new();
-
-    for host_id in host_start..host_end {
-        host_ids.push(host_id);
-        hostnames.push(format!("server-{:05}", host_id));
-        dcs.push(datacenters[rng.random_range(0..datacenters.len())].to_string());
-        oses.push(os_types[rng.random_range(0..os_types.len())].to_string());
-        cpus.push(cpu_options[rng.random_range(0..cpu_options.len())]);
-        mems.push(memory_options[rng.random_range(0..memory_options.len())]);
-    }
-
-    let hosts_batch = RecordBatch::try_new(
-        hosts_schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(host_ids.clone())),
-            Arc::new(StringArray::from(hostnames)),
-            Arc::new(StringArray::from(dcs)),
-            Arc::new(StringArray::from(oses)),
-            Arc::new(Int32Array::from(cpus)),
-            Arc::new(Int32Array::from(mems)),
-        ],
-    )?;
-    scanner.push_batch_internal("hosts", hosts_batch)?;
-
-    // Create metrics table schema
-    let metrics_schema = Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            false,
-        ),
-        Field::new("host_id", DataType::Int32, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("value", DataType::Float64, false),
-    ]));
-
-    // Generate metrics data
-    let metric_names = [
-        "cpu_usage",
-        "memory_usage",
-        "disk_io",
-        "network_rx",
-        "network_tx",
-    ];
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_micros() as i64;
-
-    let mut timestamps = Vec::new();
-    let mut metric_host_ids = Vec::new();
-    let mut metric_names_col = Vec::new();
-    let mut values = Vec::new();
-
-    for i in 0..960 {
-        let timestamp_micros = now - (i * 90 * 1_000_000);
-        timestamps.push(timestamp_micros);
-
-        let host_id = rng.random_range(host_start..host_end);
-        metric_host_ids.push(host_id as i32);
-
-        let metric_name = metric_names[rng.random_range(0..metric_names.len())];
-        metric_names_col.push(metric_name.to_string());
-
-        let value = match metric_name {
-            "cpu_usage" | "memory_usage" => rng.random_range(0.0..100.0),
-            "disk_io" => rng.random_range(0.0..1000.0),
-            _ => rng.random_range(0.0..10000.0),
-        };
-        values.push(value);
-    }
-
-    let metrics_batch = RecordBatch::try_new(
-        metrics_schema.clone(),
-        vec![
-            Arc::new(TimestampMicrosecondArray::from(timestamps)),
-            Arc::new(Int32Array::from(metric_host_ids)),
-            Arc::new(StringArray::from(metric_names_col)),
-            Arc::new(Float64Array::from(values)),
-        ],
-    )?;
-    scanner.push_batch_internal("metrics", metrics_batch)?;
-
-    tracing::info!(
-        "Worker {}: initialized with hosts {}-{}",
-        scanner.rank,
-        host_start,
-        host_end - 1
-    );
-    Ok(())
-}
-
 #[pymethods]
 impl DatabaseScanner {
     #[new]
-    #[pyo3(signature = (rank, use_fake_data=true, max_batches=100, batch_size=1000))]
-    fn new(
-        rank: usize,
-        use_fake_data: bool,
-        max_batches: usize,
-        batch_size: usize,
-    ) -> PyResult<Self> {
+    #[pyo3(signature = (rank, max_batches=100, batch_size=1000))]
+    fn new(rank: usize, max_batches: usize, batch_size: usize) -> PyResult<Self> {
         let mut scanner = Self {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
             rank,
@@ -247,20 +112,15 @@ impl DatabaseScanner {
             dispatcher: None,
         };
 
-        if use_fake_data {
-            fill_fake_batches(&scanner)
-                .map_err(|e| PyException::new_err(format!("failed to create fake data: {}", e)))?;
-        } else {
-            // Create and register a RecordBatchSink for trace events (spans, events)
-            let sink = scanner.create_record_batch_sink(batch_size);
-            scanner.sink = Some(sink.clone());
-            hyperactor_telemetry::register_sink(Box::new(sink));
+        // Create and register a RecordBatchSink for trace events (spans, events)
+        let sink = scanner.create_record_batch_sink(batch_size);
+        scanner.sink = Some(sink.clone());
+        hyperactor_telemetry::register_sink(Box::new(sink));
 
-            // Create and register an EntityDispatcher for entity events (actors, meshes)
-            let dispatcher = scanner.create_entity_dispatcher(batch_size);
-            scanner.dispatcher = Some(dispatcher.clone());
-            hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
-        }
+        // Create and register an EntityDispatcher for entity events (actors, meshes)
+        let dispatcher = scanner.create_entity_dispatcher(batch_size);
+        scanner.dispatcher = Some(dispatcher.clone());
+        hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
 
         Ok(scanner)
     }

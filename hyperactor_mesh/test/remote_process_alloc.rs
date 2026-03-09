@@ -9,13 +9,13 @@
 use std::time::Duration;
 
 use clap::Parser;
-use hyperactor::WorldId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Tx;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor_mesh::alloc::Alloc;
+use hyperactor_mesh::alloc::AllocName;
 use hyperactor_mesh::alloc::AllocSpec;
 use hyperactor_mesh::alloc::ProcState;
 use hyperactor_mesh::alloc::remoteprocess::MockRemoteProcessAllocInitializer;
@@ -94,7 +94,7 @@ async fn main() {
                 transport: ChannelTransport::Unix,
                 proc_allocation_mode: Default::default(),
             },
-            WorldId("test_world_id".to_string()),
+            AllocName("test_alloc_name".to_string()),
             0,
             initializer,
         )
