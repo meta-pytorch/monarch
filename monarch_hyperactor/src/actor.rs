@@ -27,7 +27,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Signal;
 use hyperactor::context::Actor as ContextActor;
-use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
@@ -38,7 +37,6 @@ use hyperactor_config::Flattrs;
 use hyperactor_mesh::casting::update_undeliverable_envelope_for_casting;
 use hyperactor_mesh::comm::multicast::CAST_POINT;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::router;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::transport::default_bind_spec;
 use monarch_types::PickledPyObject;
@@ -476,10 +474,9 @@ impl PythonActor {
     pub(crate) fn bootstrap_client(py: Python<'_>) -> (&'static Instance<Self>, ActorHandle<Self>) {
         static ROOT_CLIENT_INSTANCE: OnceLock<Instance<PythonActor>> = OnceLock::new();
 
-        let client_proc = Proc::direct_with_default(
+        let client_proc = Proc::direct(
             default_bind_spec().binding_addr(),
             "mesh_root_client_proc".into(),
-            router::global().clone().boxed(),
         )
         .unwrap();
 
@@ -494,12 +491,6 @@ impl PythonActor {
         client_proc: Proc,
         root_client_instance: &'static OnceLock<Instance<PythonActor>>,
     ) -> (&'static Instance<Self>, ActorHandle<Self>) {
-        // Make this proc reachable through the global router, so that we can use the
-        // same client in both direct-addressed and ranked-addressed modes.
-        //
-        // DEPRECATE after v0 removal
-        router::global().bind(client_proc.proc_id().clone().into(), client_proc.clone());
-
         let actor_mesh_mod = py
             .import("monarch._src.actor.actor_mesh")
             .expect("import actor_mesh");

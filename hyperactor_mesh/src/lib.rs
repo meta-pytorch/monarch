@@ -42,7 +42,6 @@ pub mod proc_launcher;
 pub mod proc_mesh;
 pub mod reference;
 pub mod resource;
-pub mod router;
 pub mod shared_cell;
 pub mod shortuuid;
 pub mod supervision;
