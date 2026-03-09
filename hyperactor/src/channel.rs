@@ -20,7 +20,6 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use hyperactor_config::attrs::AttrValue;
-use lazy_static::lazy_static;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -29,12 +28,8 @@ use tokio::sync::watch;
 
 use crate as hyperactor;
 use crate::RemoteMessage;
-use crate::channel::sim::SimAddr;
-use crate::simnet::SimNetError;
-
 pub(crate) mod local;
 pub(crate) mod net;
-pub mod sim;
 
 // Public TLS API for HTTP services (mesh admin, TUI, etc.). The
 // implementation lives in `net` but we re-export here to keep `net`'s
@@ -90,10 +85,6 @@ pub enum ChannelError {
     /// An operation timeout occurred.
     #[error("operation timed out after {0:?}")]
     Timeout(std::time::Duration),
-
-    /// A simulator error occurred.
-    #[error(transparent)]
-    SimNetError(#[from] SimNetError),
 }
 
 /// An error that occurred during send. Returns the message that failed to send.
@@ -388,9 +379,6 @@ pub enum ChannelTransport {
     /// Local transports uses an in-process registry and mpsc channels.
     Local,
 
-    /// Sim is a simulated channel for testing.
-    Sim(/*simulated transport:*/ Box<ChannelTransport>),
-
     /// Transport over unix domain socket.
     Unix,
 }
@@ -402,7 +390,6 @@ impl fmt::Display for ChannelTransport {
             Self::MetaTls(mode) => write!(f, "metatls({:?})", mode),
             Self::Tls => write!(f, "tls"),
             Self::Local => write!(f, "local"),
-            Self::Sim(transport) => write!(f, "sim({})", transport),
             Self::Unix => write!(f, "unix"),
         }
     }
@@ -412,17 +399,6 @@ impl FromStr for ChannelTransport {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Hacky parsing; can't recurse (e.g., sim(sim(..)))
-        if let Some(rest) = s.strip_prefix("sim(") {
-            if let Some(end) = rest.rfind(')') {
-                let inner = &rest[..end];
-                let inner_transport = ChannelTransport::from_str(inner)?;
-                return Ok(ChannelTransport::Sim(Box::new(inner_transport)));
-            } else {
-                return Err(anyhow::anyhow!("invalid sim transport"));
-            }
-        }
-
         match s {
             // Default to TcpMode::Hostname, if the mode isn't set
             "tcp" => Ok(ChannelTransport::Tcp(TcpMode::Hostname)),
@@ -455,8 +431,6 @@ impl ChannelTransport {
             ChannelTransport::Unix,
             // Tls requires certificate configuration, tested separately in tls::tests
             // TODO add MetaTls (T208303369)
-            // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Tcp)),
-            // TODO ChannelTransport::Sim(Box::new(ChannelTransport::Local)),
         ]
     }
 
@@ -472,7 +446,6 @@ impl ChannelTransport {
             ChannelTransport::MetaTls(_) => true,
             ChannelTransport::Tls => true,
             ChannelTransport::Local => false,
-            ChannelTransport::Sim(_) => false,
             ChannelTransport::Unix => false,
         }
     }
@@ -621,9 +594,6 @@ pub enum ChannelAddr {
     /// index.
     Local(u64),
 
-    /// Sim is a simulated channel for testing.
-    Sim(SimAddr),
-
     /// A unix domain socket address. Supports both absolute path names as
     ///  well as "abstract" names per https://manpages.debian.org/unstable/manpages/unix.7.en.html#Abstract_sockets
     Unix(net::unix::SocketAddr),
@@ -729,7 +699,6 @@ impl ChannelAddr {
                     .unwrap_or("localhost".to_string());
                 Self::Tls(TlsAddr::new(host_address, 0))
             }
-            ChannelTransport::Sim(transport) => sim::any(*transport),
             // This works because the file will be deleted but we know we have a unique file by this point.
             ChannelTransport::Unix => Self::Unix(net::unix::SocketAddr::from_str("").unwrap()),
         }
@@ -752,7 +721,6 @@ impl ChannelAddr {
             },
             Self::Tls(_) => ChannelTransport::Tls,
             Self::Local(_) => ChannelTransport::Local,
-            Self::Sim(addr) => ChannelTransport::Sim(Box::new(addr.transport())),
             Self::Unix(_) => ChannelTransport::Unix,
             // bind_to's transport is what is actually used in communication.
             // Therefore we use its transport to represent the Alias.
@@ -778,7 +746,6 @@ impl fmt::Display for ChannelAddr {
             Self::MetaTls(addr) => write!(f, "metatls:{}", addr),
             Self::Tls(addr) => write!(f, "tls:{}", addr),
             Self::Local(index) => write!(f, "local:{}", index),
-            Self::Sim(sim_addr) => write!(f, "sim:{}", sim_addr),
             Self::Unix(addr) => write!(f, "unix:{}", addr),
             Self::Alias { dial_to, bind_to } => {
                 write!(f, "alias:dial_to={};bind_to={}", dial_to, bind_to)
@@ -802,7 +769,6 @@ impl FromStr for ChannelAddr {
                 .map_err(anyhow::Error::from),
             Some(("metatls", rest)) => net::meta::parse(rest).map_err(|e| e.into()),
             Some(("tls", rest)) => net::tls::parse(rest).map_err(|e| e.into()),
-            Some(("sim", rest)) => sim::parse(rest).map_err(|e| e.into()),
             Some(("unix", rest)) => Ok(Self::Unix(net::unix::SocketAddr::from_str(rest)?)),
             Some(("alias", _)) => Err(anyhow::anyhow!(
                 "detect possible alias address, but we currently do not support \
@@ -989,7 +955,6 @@ enum ChannelTxKind<M: RemoteMessage> {
     MetaTls(net::NetTx<M>),
     Tls(net::NetTx<M>),
     Unix(net::NetTx<M>),
-    Sim(sim::SimTx<M>),
 }
 
 #[async_trait]
@@ -1000,7 +965,6 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Tcp(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::MetaTls(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Tls(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::Sim(tx) => tx.do_post(message, return_channel),
             ChannelTxKind::Unix(tx) => tx.do_post(message, return_channel),
         }
     }
@@ -1011,7 +975,6 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Tcp(tx) => Tx::<M>::addr(tx),
             ChannelTxKind::MetaTls(tx) => Tx::<M>::addr(tx),
             ChannelTxKind::Tls(tx) => Tx::<M>::addr(tx),
-            ChannelTxKind::Sim(tx) => tx.addr(),
             ChannelTxKind::Unix(tx) => Tx::<M>::addr(tx),
         }
     }
@@ -1022,7 +985,6 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
             ChannelTxKind::Tcp(tx) => tx.status(),
             ChannelTxKind::MetaTls(tx) => tx.status(),
             ChannelTxKind::Tls(tx) => tx.status(),
-            ChannelTxKind::Sim(tx) => tx.status(),
             ChannelTxKind::Unix(tx) => tx.status(),
         }
     }
@@ -1048,7 +1010,6 @@ enum ChannelRxKind<M: RemoteMessage> {
     MetaTls(net::NetRx<M>),
     Tls(net::NetRx<M>),
     Unix(net::NetRx<M>),
-    Sim(sim::SimRx<M>),
 }
 
 #[async_trait]
@@ -1060,7 +1021,6 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::Tcp(rx) => rx.recv().await,
             ChannelRxKind::MetaTls(rx) => rx.recv().await,
             ChannelRxKind::Tls(rx) => rx.recv().await,
-            ChannelRxKind::Sim(rx) => rx.recv().await,
             ChannelRxKind::Unix(rx) => rx.recv().await,
         }
     }
@@ -1071,7 +1031,6 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::Tcp(rx) => rx.addr(),
             ChannelRxKind::MetaTls(rx) => rx.addr(),
             ChannelRxKind::Tls(rx) => rx.addr(),
-            ChannelRxKind::Sim(rx) => rx.addr(),
             ChannelRxKind::Unix(rx) => rx.addr(),
         }
     }
@@ -1083,7 +1042,6 @@ impl<M: RemoteMessage> Rx<M> for ChannelRx<M> {
             ChannelRxKind::MetaTls(rx) => rx.join().await,
             ChannelRxKind::Tls(rx) => rx.join().await,
             ChannelRxKind::Unix(rx) => rx.join().await,
-            ChannelRxKind::Sim(rx) => rx.join().await,
         }
     }
 }
@@ -1100,7 +1058,6 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
         ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
         ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
         ChannelAddr::Tls(tls_addr) => ChannelTxKind::Tls(net::tls::dial(tls_addr)?),
-        ChannelAddr::Sim(sim_addr) => ChannelTxKind::Sim(sim::dial::<M>(sim_addr)?),
         ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
@@ -1147,10 +1104,6 @@ fn serve_inner<M: RemoteMessage>(
         ChannelAddr::Local(0) => {
             let (port, rx) = local::serve::<M>();
             Ok((ChannelAddr::Local(port), ChannelRxKind::Local(rx)))
-        }
-        ChannelAddr::Sim(sim_addr) => {
-            let (addr, rx) = sim::serve::<M>(sim_addr)?;
-            Ok((addr, ChannelRxKind::Sim(rx)))
         }
         ChannelAddr::Local(a) => Err(ChannelError::InvalidAddress(format!(
             "invalid local addr: {}",
@@ -1230,21 +1183,10 @@ mod tests {
             ),
         ];
 
-        for (raw, parsed) in cases_ok.clone() {
+        for (raw, parsed) in cases_ok {
             for delim in ["!", ":"] {
                 let raw = raw.replace("<DELIM>", delim);
                 assert_eq!(raw.parse::<ChannelAddr>().unwrap(), parsed);
-            }
-        }
-
-        for (raw, parsed) in cases_ok {
-            for delim in ["!", ":"] {
-                // We don't allow mixing and matching delims
-                let raw = format!("sim{}{}", delim, raw.replace("<DELIM>", delim));
-                assert_eq!(
-                    raw.parse::<ChannelAddr>().unwrap(),
-                    ChannelAddr::Sim(SimAddr::new(parsed.clone()).unwrap())
-                );
             }
         }
 
