@@ -14,8 +14,6 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use dashmap::DashMap;
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio::task::JoinHandle;
@@ -40,12 +38,12 @@ use crate::config;
 use crate::metrics;
 use crate::sync::mvar::MVar;
 
-/// Server-side representation of a logical link. Created when a new `LinkId` is
+/// Server-side representation of a logical link. Created when a new `SessionId` is
 /// first seen. Wraps `MVar<Next>` for session state; the MVar acts as both
 /// storage and a serializer — only one connection at a time can hold the
 /// `Next` state for a given link.
 pub(super) struct ServerLink {
-    id: super::LinkId,
+    id: super::SessionId,
     next: MVar<Next>,
 }
 
@@ -59,7 +57,7 @@ impl Clone for ServerLink {
 }
 
 impl ServerLink {
-    pub(super) fn new(id: super::LinkId) -> Self {
+    pub(super) fn new(id: super::SessionId) -> Self {
         Self {
             id,
             next: MVar::full(Next { seq: 0, ack: 0 }),
@@ -79,30 +77,31 @@ pub(super) async fn handle_connection<S, M>(
     cancel_token: CancellationToken,
 ) -> Result<(), anyhow::Error>
 where
-    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    S: super::Stream,
     M: RemoteMessage,
 {
-    let session_id = link.id.0;
+    let session_id = link.id;
     let mut next = link.next.take().await;
     let initial_next = next.clone();
 
-    let (reader, writer) = tokio::io::split(stream);
     let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+    let (reader, writer) = tokio::io::split(stream);
     let mux = Mux::new(reader, writer, max);
     let stream = mux.stream(0);
 
-    let result = session::recv_connected::<M, _, _>(&stream, &tx, &mut next, cancel_token).await;
+    let result = tokio::select! {
+        r = session::recv_connected::<M, _, _>(&stream, &tx, &mut next) => r,
+        _ = cancel_token.cancelled() => Err(session::RecvLoopError::Cancelled),
+    };
 
     tracing::info!(
         source = %source,
         dest = %dest,
-        session_id,
+        session_id = %session_id,
         "recv_connected exited: initial {initial_next}, final {next}, outcome: {}",
         match &result {
-            Ok(session::RecvResult::Eof) => "eof".to_string(),
-            Ok(session::RecvResult::Cancelled) => "cancelled".to_string(),
-            Ok(session::RecvResult::SequenceError(e)) => format!("sequence error: {e}"),
-            Err(e) => format!("error: {e}"),
+            Ok(()) => "eof".to_string(),
+            Err(e) => format!("{e}"),
         }
     );
 
@@ -118,7 +117,7 @@ where
                 }
                 Err(e) => {
                     tracing::debug!(
-                        session_id,
+                        session_id = %session_id,
                         source = %source,
                         dest = %dest,
                         error = %e,
@@ -131,10 +130,10 @@ where
 
     // Send reject or closed response if appropriate.
     let terminal_response = match &result {
-        Ok(session::RecvResult::SequenceError(reason)) => {
+        Err(session::RecvLoopError::SequenceError(reason)) => {
             Some(NetRxResponse::Reject(reason.clone()))
         }
-        Ok(session::RecvResult::Cancelled) => Some(NetRxResponse::Closed),
+        Err(session::RecvLoopError::Cancelled) => Some(NetRxResponse::Closed),
         _ => None,
     };
 
@@ -145,18 +144,13 @@ where
         }
     }
 
-    // Shutdown the underlying writer.
-    drop(stream);
-    mux.shutdown().await;
-
     link.next.put(next).await;
 
-    result?;
-    Ok(())
+    result.map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Main listen loop. Each accepted connection spawns a task that looks up (or
-/// creates) the `ServerLink` for its `LinkId`, then calls `handle_connection`.
+/// creates) the `ServerLink` for its `SessionId`, then calls `handle_connection`.
 /// The MVar inside `ServerLink` serializes overlapping connections for the
 /// same link.
 async fn listen<M: RemoteMessage, L: super::Listener>(
@@ -174,7 +168,7 @@ where
     // Cancellation token used to cancel our children only.
     let child_cancel_token = CancellationToken::new();
 
-    let links: Arc<DashMap<super::LinkId, ServerLink>> = Arc::new(DashMap::new());
+    let links: Arc<DashMap<super::SessionId, ServerLink>> = Arc::new(DashMap::new());
 
     // Heartbeat timer for server health metrics
     let heartbeat_interval = hyperactor_config::global::get(config::SERVER_HEARTBEAT_INTERVAL);
@@ -210,15 +204,15 @@ where
                                     _ => meta::tls_acceptor(true)?,
                                 };
                                 let mut stream = tls_acceptor.accept(stream).await?;
-                                let link_id = read_link_init(&mut stream).await
+                                let session_id = read_link_init(&mut stream).await
                                     .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                                let link = links.entry(link_id).or_insert_with(|| ServerLink::new(link_id)).value().clone();
+                                let link = links.entry(session_id).or_insert_with(|| ServerLink::new(session_id)).value().clone();
                                 handle_connection(stream, source.clone(), dest.clone(), link, tx, child_cancel_token).await
                             } else {
                                 let mut stream = stream;
-                                let link_id = read_link_init(&mut stream).await
+                                let session_id = read_link_init(&mut stream).await
                                     .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                                let link = links.entry(link_id).or_insert_with(|| ServerLink::new(link_id)).value().clone();
+                                let link = links.entry(session_id).or_insert_with(|| ServerLink::new(session_id)).value().clone();
                                 handle_connection(stream, source.clone(), dest.clone(), link, tx, child_cancel_token).await
                             };
 

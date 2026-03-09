@@ -294,7 +294,7 @@ async fn run_local_duplex(
         }
     });
 
-    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr.clone()).await?;
+    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr.clone()).unwrap();
 
     println!("Client connected to {server_addr} (duplex)");
 
@@ -374,7 +374,7 @@ async fn bench_ping_pong_duplex(
         }
     });
 
-    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr).await?;
+    let (client_tx, mut client_rx) = duplex::dial::<Message, Message>(server_addr).unwrap();
 
     let message = Message::Echo(serde_multipart::Part::from(vec![0u8; message_size]));
 
