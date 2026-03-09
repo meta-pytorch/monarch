@@ -181,7 +181,9 @@ declare_attrs! {
     ))
     pub attr CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 
-    /// Heartbeat interval for remote allocator.
+    /// Heartbeat interval for remote allocator. We do not rely on this heartbeat
+    /// anymore in v1, and it should be removed after we finishing the v0
+    /// deprecation.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_REMOTE_ALLOCATOR_HEARTBEAT_INTERVAL".to_string()),
         Some("remote_allocator_heartbeat_interval".to_string()),

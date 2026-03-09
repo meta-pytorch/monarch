@@ -8,10 +8,22 @@
 
 //! The mesh agent actor manages procs in ProcMeshes.
 
+// EnumAsInner generates code that triggers a false positive
+// unused_assignments lint on struct variant fields. #[allow] on the
+// enum itself doesn't propagate into derive-macro-generated code, so
+// the suppression must be at module scope.
+#![allow(unused_assignments)]
+
 use std::collections::HashMap;
+use std::mem::take;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::RwLock;
+use std::sync::RwLockReadGuard;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::ActorId;
@@ -23,12 +35,23 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
+use hyperactor::PortRef;
+use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::mailbox::BoxedMailboxSender;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::IntoBoxedMailboxSender;
+use hyperactor::mailbox::MailboxClient;
+use hyperactor::mailbox::MailboxSender;
+use hyperactor::mailbox::MessageEnvelope;
+use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -52,6 +75,13 @@ declare_attrs! {
     ))
     pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
+pub enum GspawnResult {
+    Success { rank: usize, actor_id: ActorId },
+    Error(String),
+}
+wirevalue::register_type!(GspawnResult);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
 pub enum StopActorResult {
@@ -90,6 +120,42 @@ wirevalue::register_type!(RepublishIntrospect);
     Named
 )]
 pub(crate) enum MeshAgentMessage {
+    /// Configure the proc in the mesh.
+    Configure {
+        /// The rank of this proc in the mesh.
+        rank: usize,
+        /// The forwarder to send messages to unknown destinations.
+        forwarder: ChannelAddr,
+        /// The supervisor port to which the agent should report supervision events.
+        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+        /// An address book to use for direct dialing.
+        address_book: HashMap<ProcId, ChannelAddr>,
+        /// The agent should write its rank to this port when it successfully
+        /// configured.
+        configured: PortRef<usize>,
+        /// If true, and supervisor is None, record supervision events to be reported
+        record_supervision_events: bool,
+    },
+
+    Status {
+        /// The status of the proc.
+        /// To be replaced with fine-grained lifecycle status,
+        /// and to use aggregation.
+        status: PortRef<(usize, bool)>,
+    },
+
+    /// Spawn an actor on the proc to the provided name.
+    Gspawn {
+        /// registered actor type
+        actor_type: String,
+        /// spawned actor name
+        actor_name: String,
+        /// serialized parameters
+        params_data: Data,
+        /// reply port; the proc should send its rank to indicated a spawned actor
+        status_port: PortRef<GspawnResult>,
+    },
+
     /// Stop actors of a specific mesh name
     StopActor {
         /// The actor to stop
@@ -102,6 +168,41 @@ pub(crate) enum MeshAgentMessage {
         #[reply]
         stopped: OncePortRef<StopActorResult>,
     },
+}
+
+/// Internal configuration state of the mesh agent.
+#[derive(Debug, EnumAsInner, Default)]
+enum State {
+    UnconfiguredV0 {
+        sender: ReconfigurableMailboxSender,
+    },
+
+    ConfiguredV0 {
+        sender: ReconfigurableMailboxSender,
+        rank: usize,
+        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+    },
+
+    V1,
+
+    #[default]
+    Invalid,
+}
+
+impl State {
+    fn rank(&self) -> Option<usize> {
+        match self {
+            State::ConfiguredV0 { rank, .. } => Some(*rank),
+            _ => None,
+        }
+    }
+
+    fn supervisor(&self) -> Option<PortRef<ActorSupervisionEvent>> {
+        match self {
+            State::ConfiguredV0 { supervisor, .. } => supervisor.clone(),
+            _ => None,
+        }
+    }
 }
 
 /// Actor state used for v1 API.
@@ -167,11 +268,14 @@ struct SelfCheck {}
 pub struct ProcAgent {
     proc: Proc,
     remote: Remote,
+    state: State,
     /// Actors created and tracked through the resource behavior.
     actor_states: HashMap<Name, ActorInstanceState>,
-    /// If true, record supervision events to be reported to owning actors later.
+    /// If true, and supervisor is None, record supervision events to be reported
+    /// to owning actors later.
     record_supervision_events: bool,
-    /// Contains the list of all supervision events that were received.
+    /// If record_supervision_events is true, then this will contain the list
+    /// of all events that were received.
     supervision_events: HashMap<ActorId, Vec<ActorSupervisionEvent>>,
     /// True when supervision events have arrived but introspect
     /// properties haven't been republished yet.
@@ -185,7 +289,31 @@ pub struct ProcAgent {
 }
 
 impl ProcAgent {
-    pub(crate) fn boot(
+    #[hyperactor::observe_result("MeshAgent")]
+    pub(crate) async fn bootstrap(
+        proc_id: ProcId,
+    ) -> Result<(Proc, ActorHandle<Self>), anyhow::Error> {
+        let sender = ReconfigurableMailboxSender::new();
+        let proc = Proc::new(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
+
+        let agent = ProcAgent {
+            proc: proc.clone(),
+            remote: Remote::collect(),
+            state: State::UnconfiguredV0 { sender },
+            actor_states: HashMap::new(),
+            record_supervision_events: false,
+            supervision_events: HashMap::new(),
+            introspect_dirty: false,
+            shutdown_tx: None,
+            // v0 procs don't have an owner they can check for, so they should
+            // never try to kill the children.
+            mesh_orphan_timeout: None,
+        };
+        let handle = proc.spawn::<Self>("mesh", agent)?;
+        Ok((proc, handle))
+    }
+
+    pub(crate) fn boot_v1(
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
@@ -201,6 +329,7 @@ impl ProcAgent {
         let agent = ProcAgent {
             proc: proc.clone(),
             remote: Remote::collect(),
+            state: State::V1,
             actor_states: HashMap::new(),
             record_supervision_events: true,
             supervision_events: HashMap::new(),
@@ -415,6 +544,86 @@ impl Actor for ProcAgent {
 #[async_trait]
 #[hyperactor::handle(MeshAgentMessage)]
 impl MeshAgentMessageHandler for ProcAgent {
+    async fn configure(
+        &mut self,
+        cx: &Context<Self>,
+        rank: usize,
+        forwarder: ChannelAddr,
+        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+        address_book: HashMap<ProcId, ChannelAddr>,
+        configured: PortRef<usize>,
+        record_supervision_events: bool,
+    ) -> Result<(), anyhow::Error> {
+        anyhow::ensure!(
+            self.state.is_unconfigured_v0(),
+            "mesh agent cannot be (re-)configured"
+        );
+        self.record_supervision_events = record_supervision_events;
+
+        let client = MailboxClient::new(channel::dial(forwarder)?);
+        let router =
+            DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed());
+
+        for (proc_id, addr) in address_book {
+            router.bind(proc_id.into(), addr);
+        }
+
+        let sender = take(&mut self.state).into_unconfigured_v0().unwrap();
+        assert!(sender.configure(router.into_boxed()));
+
+        // This is a bit suboptimal: ideally we'd set the supervisor first, to correctly report
+        // any errors that occur during configuration. However, these should anyway be correctly
+        // caught on process exit.
+        self.state = State::ConfiguredV0 {
+            sender,
+            rank,
+            supervisor,
+        };
+        configured.send(cx, rank)?;
+
+        Ok(())
+    }
+
+    async fn gspawn(
+        &mut self,
+        cx: &Context<Self>,
+        actor_type: String,
+        actor_name: String,
+        params_data: Data,
+        status_port: PortRef<GspawnResult>,
+    ) -> Result<(), anyhow::Error> {
+        anyhow::ensure!(
+            self.state.is_configured_v0(),
+            "mesh agent is not v0 configured"
+        );
+        let actor_id = match self
+            .remote
+            .gspawn(
+                &self.proc,
+                &actor_type,
+                &actor_name,
+                params_data,
+                cx.headers().clone(),
+            )
+            .await
+        {
+            Ok(id) => id,
+            Err(err) => {
+                status_port.send(cx, GspawnResult::Error(format!("gspawn failed: {}", err)))?;
+                return Err(anyhow::anyhow!("gspawn failed"));
+            }
+        };
+        status_port.send(
+            cx,
+            GspawnResult::Success {
+                rank: self.state.rank().unwrap(),
+                actor_id,
+            },
+        )?;
+        self.publish_introspect_properties(cx);
+        Ok(())
+    }
+
     async fn stop_actor(
         &mut self,
         cx: &Context<Self>,
@@ -445,6 +654,35 @@ impl MeshAgentMessageHandler for ProcAgent {
         };
         self.publish_introspect_properties(cx);
         result
+    }
+
+    async fn status(
+        &mut self,
+        cx: &Context<Self>,
+        status_port: PortRef<(usize, bool)>,
+    ) -> Result<(), anyhow::Error> {
+        match &self.state {
+            State::ConfiguredV0 { rank, .. } => {
+                // v0 path: configured with a concrete rank
+                status_port.send(cx, (*rank, true))?;
+                Ok(())
+            }
+            State::UnconfiguredV0 { .. } => {
+                // v0 path but not configured yet
+                Err(anyhow::anyhow!(
+                    "status unavailable: v0 agent not configured (waiting for Configure)"
+                ))
+            }
+            State::V1 => {
+                // v1/owned path does not support status (no rank semantics)
+                Err(anyhow::anyhow!(
+                    "status unsupported in v1/owned path (no rank)"
+                ))
+            }
+            State::Invalid => Err(anyhow::anyhow!(
+                "status unavailable: agent in invalid state"
+            )),
+        }
     }
 }
 
@@ -486,14 +724,20 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                 );
             }
         }
-        if !self.record_supervision_events {
-            // If nothing is recording these, crash the whole process.
+        if let Some(supervisor) = self.state.supervisor() {
+            supervisor.send(cx, event)?;
+        } else if !self.record_supervision_events {
+            // If there is no supervisor, and nothing is recording these, crash
+            // the whole process.
             tracing::error!(
                 name = "supervision_event_transmit_failed",
                 proc_id = %cx.self_id().proc_id(),
                 %event,
                 "could not propagate supervision event, crashing",
             );
+
+            // We should have a custom "crash" function here, so that this works
+            // in testing of the LocalAllocator, etc.
             std::process::exit(1);
         }
         Ok(())
@@ -945,9 +1189,268 @@ impl Handler<SelfCheck> for ProcAgent {
     }
 }
 
+/// A mailbox sender that initially queues messages, and then relays them to
+/// an underlying sender once configured.
+#[derive(Clone)]
+pub(crate) struct ReconfigurableMailboxSender {
+    state: Arc<RwLock<ReconfigurableMailboxSenderState>>,
+}
+
+impl std::fmt::Debug for ReconfigurableMailboxSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Not super helpful, but we definitely don't wan to acquire any locks
+        // in a Debug formatter.
+        f.debug_struct("ReconfigurableMailboxSender").finish()
+    }
+}
+
+/// A capability wrapper granting access to the configured mailbox
+/// sender.
+///
+/// This type exists to tie the lifetime of any `&BoxedMailboxSender`
+/// reference to a lock guard, so the underlying state cannot be
+/// reconfigured while the reference is in use.
+///
+/// A **read** guard is sufficient because we only need to *observe*
+/// and borrow the configured sender, not mutate state. While a
+/// `RwLockReadGuard` is held, `configure()` cannot acquire the write
+/// lock, so the state cannot transition from `Configured(..)` to any
+/// other variant during the guard’s lifetime.
+pub(crate) struct ReconfigurableMailboxSenderInner<'a> {
+    guard: RwLockReadGuard<'a, ReconfigurableMailboxSenderState>,
+}
+
+impl<'a> ReconfigurableMailboxSenderInner<'a> {
+    pub(crate) fn as_configured(&self) -> Option<&BoxedMailboxSender> {
+        self.guard.as_configured()
+    }
+}
+
+type Post = (MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>);
+
+#[derive(EnumAsInner, Debug)]
+enum ReconfigurableMailboxSenderState {
+    Queueing(Mutex<Vec<Post>>),
+    Configured(BoxedMailboxSender),
+}
+
+impl ReconfigurableMailboxSender {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Arc::new(RwLock::new(ReconfigurableMailboxSenderState::Queueing(
+                Mutex::new(Vec::new()),
+            ))),
+        }
+    }
+
+    /// Configure this mailbox with the provided sender. This will first
+    /// enqueue any pending messages onto the sender; future messages are
+    /// posted directly to the configured sender.
+    pub(crate) fn configure(&self, sender: BoxedMailboxSender) -> bool {
+        // Hold the write lock until all queued messages are flushed.
+        let mut state = self.state.write().unwrap();
+        if state.is_configured() {
+            return false;
+        }
+
+        // Install the configured sender exactly once.
+        let queued = std::mem::replace(
+            &mut *state,
+            ReconfigurableMailboxSenderState::Configured(sender),
+        );
+
+        // Borrow the configured sender from the state (stable while
+        // we hold the lock).
+        let configured_sender = state.as_configured().expect("just configured");
+
+        // Flush the old queue while still holding the write lock.
+        for (envelope, return_handle) in queued.into_queueing().unwrap().into_inner().unwrap() {
+            configured_sender.post(envelope, return_handle);
+        }
+
+        true
+    }
+
+    pub(crate) fn as_inner<'a>(
+        &'a self,
+    ) -> Result<ReconfigurableMailboxSenderInner<'a>, anyhow::Error> {
+        let state = self.state.read().unwrap();
+        if state.is_configured() {
+            Ok(ReconfigurableMailboxSenderInner { guard: state })
+        } else {
+            Err(anyhow::anyhow!("cannot get inner sender: not configured"))
+        }
+    }
+}
+
+impl MailboxSender for ReconfigurableMailboxSender {
+    fn post(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        match &*self.state.read().unwrap() {
+            ReconfigurableMailboxSenderState::Queueing(queue) => {
+                queue.lock().unwrap().push((envelope, return_handle));
+            }
+            ReconfigurableMailboxSenderState::Configured(sender) => {
+                sender.post(envelope, return_handle);
+            }
+        }
+    }
+
+    fn post_unchecked(
+        &self,
+        envelope: MessageEnvelope,
+        return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+    ) {
+        match &*self.state.read().unwrap() {
+            ReconfigurableMailboxSenderState::Queueing(queue) => {
+                queue.lock().unwrap().push((envelope, return_handle));
+            }
+            ReconfigurableMailboxSenderState::Configured(sender) => {
+                sender.post_unchecked(envelope, return_handle);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use hyperactor::mailbox::BoxedMailboxSender;
+    use hyperactor::mailbox::Mailbox;
+    use hyperactor::mailbox::MailboxSender;
+    use hyperactor::mailbox::MessageEnvelope;
+    use hyperactor::mailbox::PortHandle;
+    use hyperactor::mailbox::Undeliverable;
+    use hyperactor::testing::ids::test_actor_id;
+    use hyperactor::testing::ids::test_port_id;
+    use hyperactor_config::Flattrs;
+
     use super::*;
+
+    #[derive(Debug, Clone)]
+    struct QueueingMailboxSender {
+        messages: Arc<Mutex<Vec<MessageEnvelope>>>,
+    }
+
+    impl QueueingMailboxSender {
+        fn new() -> Self {
+            Self {
+                messages: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn get_messages(&self) -> Vec<MessageEnvelope> {
+            self.messages.lock().unwrap().clone()
+        }
+    }
+
+    impl MailboxSender for QueueingMailboxSender {
+        fn post_unchecked(
+            &self,
+            envelope: MessageEnvelope,
+            _return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
+        ) {
+            self.messages.lock().unwrap().push(envelope);
+        }
+    }
+
+    // Helper function to create a test message envelope
+    fn envelope(data: u64) -> MessageEnvelope {
+        MessageEnvelope::serialize(
+            test_actor_id("world_0", "sender"),
+            test_port_id("world_0", "receiver", 1),
+            &data,
+            Flattrs::new(),
+        )
+        .unwrap()
+    }
+
+    fn return_handle() -> PortHandle<Undeliverable<MessageEnvelope>> {
+        let mbox = Mailbox::new_detached(test_actor_id("0", "test"));
+        let (port, _receiver) = mbox.open_port::<Undeliverable<MessageEnvelope>>();
+        port
+    }
+
+    #[test]
+    fn test_queueing_before_configure() {
+        let sender = ReconfigurableMailboxSender::new();
+
+        let test_sender = QueueingMailboxSender::new();
+        let boxed_sender = BoxedMailboxSender::new(test_sender.clone());
+
+        let return_handle = return_handle();
+        sender.post(envelope(1), return_handle.clone());
+        sender.post(envelope(2), return_handle.clone());
+
+        assert_eq!(test_sender.get_messages().len(), 0);
+
+        sender.configure(boxed_sender);
+
+        let messages = test_sender.get_messages();
+        assert_eq!(messages.len(), 2);
+
+        assert_eq!(messages[0].deserialized::<u64>().unwrap(), 1);
+        assert_eq!(messages[1].deserialized::<u64>().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_direct_delivery_after_configure() {
+        // Create a ReconfigurableMailboxSender
+        let sender = ReconfigurableMailboxSender::new();
+
+        let test_sender = QueueingMailboxSender::new();
+        let boxed_sender = BoxedMailboxSender::new(test_sender.clone());
+        sender.configure(boxed_sender);
+
+        let return_handle = return_handle();
+        sender.post(envelope(3), return_handle.clone());
+        sender.post(envelope(4), return_handle.clone());
+
+        let messages = test_sender.get_messages();
+        assert_eq!(messages.len(), 2);
+
+        assert_eq!(messages[0].deserialized::<u64>().unwrap(), 3);
+        assert_eq!(messages[1].deserialized::<u64>().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_multiple_configurations() {
+        let sender = ReconfigurableMailboxSender::new();
+        let boxed_sender = BoxedMailboxSender::new(QueueingMailboxSender::new());
+
+        assert!(sender.configure(boxed_sender.clone()));
+        assert!(!sender.configure(boxed_sender));
+    }
+
+    #[test]
+    fn test_mixed_queueing_and_direct_delivery() {
+        let sender = ReconfigurableMailboxSender::new();
+
+        let test_sender = QueueingMailboxSender::new();
+        let boxed_sender = BoxedMailboxSender::new(test_sender.clone());
+
+        let return_handle = return_handle();
+        sender.post(envelope(5), return_handle.clone());
+        sender.post(envelope(6), return_handle.clone());
+
+        sender.configure(boxed_sender);
+
+        sender.post(envelope(7), return_handle.clone());
+        sender.post(envelope(8), return_handle.clone());
+
+        let messages = test_sender.get_messages();
+        assert_eq!(messages.len(), 4);
+
+        assert_eq!(messages[0].deserialized::<u64>().unwrap(), 5);
+        assert_eq!(messages[1].deserialized::<u64>().unwrap(), 6);
+        assert_eq!(messages[2].deserialized::<u64>().unwrap(), 7);
+        assert_eq!(messages[3].deserialized::<u64>().unwrap(), 8);
+    }
 
     // A no-op actor used to test direct proc-level spawning.
     #[derive(Debug, Default)]
@@ -986,7 +1489,7 @@ mod tests {
         use hyperactor::reference::Reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
-        let agent_handle = ProcAgent::boot(proc.clone(), None).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
 
         // Wait for ProcAgent to finish init.
         agent_handle

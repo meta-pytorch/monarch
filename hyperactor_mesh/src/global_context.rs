@@ -343,7 +343,7 @@ async fn bootstrap_host() -> GlobalState {
     // 1. Create Host with LocalProcManager. The spawn closure is the
     // ProcAgent boot function, called by HostAgent on GetLocalProc.
     let spawn: ProcManagerSpawnFn =
-        Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+        Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
     let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
     let host = Host::new(manager, default_bind_spec().binding_addr())
         .await
