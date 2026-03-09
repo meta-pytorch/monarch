@@ -204,7 +204,11 @@ pub(crate) enum Process2AllocatorMessage {
     /// served at the provided channel address. Procs are started
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
-    StartedProc(ProcId, hyperactor_reference::ActorRef<ProcAgent>, ChannelAddr),
+    StartedProc(
+        ProcId,
+        hyperactor_reference::ActorRef<ProcAgent>,
+        ChannelAddr,
+    ),
 
     Heartbeat,
 }
@@ -262,7 +266,6 @@ async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: Channe
             std::process::exit(1);
         }
     }
-}
 }
 
 #[macro_export]
