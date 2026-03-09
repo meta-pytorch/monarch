@@ -17,10 +17,15 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
+use enum_as_inner::EnumAsInner;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelError;
 use hyperactor::channel::ChannelTransport;
+use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
+use hyperactor::channel::Tx;
+use hyperactor::channel::TxStatus;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
@@ -43,9 +48,11 @@ use super::ProcState;
 use super::ProcStopReason;
 use crate::assign::Ranks;
 use crate::bootstrap;
-use crate::bootstrap::BootstrapHostMessage;
+use crate::bootstrap::Allocator2Process;
 use crate::bootstrap::MESH_ENABLE_LOG_FORWARDING;
 use crate::bootstrap::MESH_TAIL_LOG_LINES;
+use crate::bootstrap::Process2Allocator;
+use crate::bootstrap::Process2AllocatorMessage;
 use crate::logging::OutputTarget;
 use crate::logging::StreamFwder;
 use crate::shortuuid::ShortUuid;
@@ -137,7 +144,7 @@ pub struct ProcessAlloc {
     alloc_name: AllocName,
     spec: AllocSpec,
     bootstrap_addr: ChannelAddr,
-    rx: channel::ChannelRx<BootstrapHostMessage>,
+    rx: channel::ChannelRx<Process2Allocator>,
     active: HashMap<usize, Child>,
     // Maps process index to its rank.
     ranks: Ranks<usize>,
@@ -150,8 +157,16 @@ pub struct ProcessAlloc {
     client_context: ClientContext,
 }
 
+#[derive(EnumAsInner)]
+enum ChannelState {
+    NotConnected,
+    Connected(ChannelTx<Allocator2Process>),
+    Failed(ChannelError),
+}
+
 struct Child {
     local_rank: usize,
+    channel: ChannelState,
     group: monitor::Group,
     exit_flag: Option<flag::Flag>,
     stdout_fwder: Arc<std::sync::Mutex<Option<StreamFwder>>>,
@@ -196,6 +211,7 @@ impl Child {
 
         let child = Self {
             local_rank,
+            channel: ChannelState::NotConnected,
             group,
             exit_flag: Some(exit_flag),
             stdout_fwder: Arc::new(std::sync::Mutex::new(None)),
@@ -295,6 +311,32 @@ impl Child {
         self.group.fail();
     }
 
+    fn connect(&mut self, addr: ChannelAddr) -> bool {
+        if !self.channel.is_not_connected() {
+            return false;
+        }
+
+        match channel::dial(addr) {
+            Ok(channel) => {
+                let mut status = channel.status().clone();
+                self.channel = ChannelState::Connected(channel);
+                // Monitor the channel, killing the process if it becomes unavailable
+                // (fails keepalive).
+                self.group.spawn(async move {
+                    let _ = status
+                        .wait_for(|status| matches!(status, TxStatus::Closed))
+                        .await;
+                    Result::<(), ()>::Err(())
+                });
+            }
+            Err(err) => {
+                self.channel = ChannelState::Failed(err);
+                self.stop(ProcStopReason::Watchdog);
+            }
+        };
+        true
+    }
+
     fn spawn_watchdog(&mut self) {
         let Some(exit_flag) = self.exit_flag.take() else {
             tracing::info!("exit flag set, not spawning watchdog");
@@ -314,6 +356,15 @@ impl Child {
             }
             tracing::info!("Watchdog task exit");
         });
+    }
+
+    #[hyperactor::instrument_infallible]
+    fn post(&mut self, message: Allocator2Process) {
+        if let ChannelState::Connected(channel) = &mut self.channel {
+            channel.post(message);
+        } else {
+            self.stop(ProcStopReason::Watchdog);
+        }
     }
 
     #[cfg(test)]
@@ -438,18 +489,13 @@ impl ProcessAlloc {
         self.created.push(ShortUuid::generate());
         let create_key = &self.created[index];
 
-        // Child bootstraps as a Host directly.
+        // Capture config and pass to child via Bootstrap::V0ProcMesh
         let client_config = hyperactor_config::global::attrs();
-        let host_addr = ChannelAddr::any(self.spec.transport.clone());
-        let bootstrap = bootstrap::Bootstrap::Host {
-            addr: host_addr,
-            command: None,
+        let bootstrap = bootstrap::Bootstrap::V0ProcMesh {
             config: Some(client_config),
-            exit_on_shutdown: true,
         };
         bootstrap.to_env(&mut cmd);
 
-        // Set bootstrap channel so the child reports back.
         cmd.env(
             bootstrap::BOOTSTRAP_ADDR_ENV,
             self.bootstrap_addr.to_string(),
@@ -549,20 +595,47 @@ impl Alloc for ProcessAlloc {
                 return state;
             }
 
-            let _transport = self.transport().clone();
+            let transport = self.transport().clone();
 
             tokio::select! {
-                Ok(msg) = self.rx.recv() => {
-                    let BootstrapHostMessage { index, host_addr, host_agent } = msg;
-                    if !self.active.contains_key(&index) {
-                        tracing::info!("message from zombie {}", index);
-                        continue;
+                Ok(Process2Allocator(index, message)) = self.rx.recv() => {
+                    let child = match self.active.get_mut(&index) {
+                        None => {
+                            tracing::info!("message {:?} from zombie {}", message, index);
+                            continue;
+                        }
+                        Some(child) => child,
+                    };
+
+                    match message {
+                        Process2AllocatorMessage::Hello(addr) => {
+                            if !child.connect(addr.clone()) {
+                                tracing::error!("received multiple hellos from {}", index);
+                                continue;
+                            }
+
+                            let proc_name = match &self.spec.proc_name {
+                                Some(name) => name.clone(),
+                                None => format!("{}_{}", self.name, index),
+                            };
+                            child.post(Allocator2Process::StartProc(
+                                ProcId::with_name(addr.clone(), proc_name),
+                                transport,
+                            ));
+                        }
+
+                        Process2AllocatorMessage::StartedProc(proc_id, mesh_agent, addr) => {
+                            break Some(ProcState::Running {
+                                create_key: self.created[index].clone(),
+                                proc_id,
+                                mesh_agent,
+                                addr,
+                            });
+                        }
+                        Process2AllocatorMessage::Heartbeat => {
+                            tracing::trace!("recv heartbeat from {index}");
+                        }
                     }
-                    break Some(ProcState::Running {
-                        create_key: self.created[index].clone(),
-                        host_addr,
-                        host_agent,
-                    });
                 },
 
                 Some(Ok((index, mut reason))) = self.children.join_next() => {
@@ -631,7 +704,8 @@ impl Alloc for ProcessAlloc {
         // so that we never rely on the system functioning correctly
         // for liveness.
         for (_index, child) in self.active.iter_mut() {
-            child.stop(ProcStopReason::Stopped);
+            child.post(Allocator2Process::StopAndExit(0));
+            child.spawn_watchdog();
         }
 
         self.running = false;
@@ -684,23 +758,28 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait for the host to start running.
-        let index = loop {
-            match alloc.next().await {
-                Some(ProcState::Running { .. }) => {
-                    break 0; // single-rank alloc
-                }
-                Some(ProcState::Failed { description, .. }) => {
-                    panic!("Process allocation failed: {}", description);
-                }
-                Some(_other) => {}
-                None => {
-                    panic!("Allocation ended unexpectedly");
+        let proc_id = {
+            loop {
+                match alloc.next().await {
+                    Some(ProcState::Running { proc_id, .. }) => {
+                        break proc_id;
+                    }
+                    Some(ProcState::Failed { description, .. }) => {
+                        panic!("Process allocation failed: {}", description);
+                    }
+                    Some(_other) => {}
+                    None => {
+                        panic!("Allocation ended unexpectedly");
+                    }
                 }
             }
         };
 
-        if let Some(child) = alloc.active.get(&index) {
+        if let Some(child) = alloc.active.get(
+            &alloc
+                .index(&proc_id)
+                .expect("proc must be in allocation for lookup"),
+        ) {
             child.fail_group();
         }
 

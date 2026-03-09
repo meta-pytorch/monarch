@@ -12,7 +12,11 @@ use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Deref;
+use std::panic::Location;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use hyperactor::Actor;
@@ -23,9 +27,13 @@ use hyperactor::accum::StreamingReducerOpts;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::mailbox::DialMailboxRouter;
+use hyperactor::mailbox::MailboxServer;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
@@ -35,10 +43,13 @@ use ndslice::Extent;
 use ndslice::ViewExt as _;
 use ndslice::view;
 use ndslice::view::CollectMeshExt;
+use ndslice::view::MapIntoExt;
 use ndslice::view::Ranked;
 use ndslice::view::Region;
 use serde::Deserialize;
 use serde::Serialize;
+use tokio::sync::Notify;
+use tracing::Instrument;
 use typeuri::Named;
 
 use crate::ActorMesh;
@@ -48,13 +59,19 @@ use crate::Error;
 use crate::HostMeshRef;
 use crate::Name;
 use crate::ValueMesh;
+use crate::alloc::Alloc;
+use crate::alloc::AllocExt;
+use crate::alloc::AllocatedProc;
+use crate::assign::Ranks;
 use crate::comm::CommMeshConfig;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
 use crate::proc_agent;
 use crate::proc_agent::ActorState;
+use crate::proc_agent::MeshAgentMessageClient;
 use crate::proc_agent::ProcAgent;
+use crate::proc_agent::ReconfigurableMailboxSender;
 use crate::resource;
 use crate::resource::GetRankStatus;
 use crate::resource::Status;
@@ -105,6 +122,25 @@ impl ProcRef {
             proc_id,
             create_rank,
             agent,
+        }
+    }
+
+    /// Pings the proc, returning whether it is alive. This will be replaced by a
+    /// finer-grained lifecycle status in the near future.
+    pub(crate) async fn status(&self, cx: &impl context::Actor) -> crate::Result<bool> {
+        let (port, mut rx) = cx.mailbox().open_port();
+        self.agent
+            .status(cx, port.bind())
+            .await
+            .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e))?;
+        loop {
+            let (rank, status) = rx
+                .recv()
+                .await
+                .map_err(|e| Error::CallError(self.agent.actor_id().clone(), e.into()))?;
+            if rank == self.create_rank {
+                break Ok(status);
+            }
         }
     }
 
@@ -162,9 +198,24 @@ impl ProcMesh {
             );
         }
 
+        let root_comm_actor = comm_actor_name.as_ref().map(|name| {
+            ActorRef::attest(
+                ranks
+                    .first()
+                    .expect("root mesh cannot be empty")
+                    .actor_id(name),
+            )
+        });
         let host_mesh = allocation.hosts();
-        let current_ref =
-            ProcMeshRef::new(name.clone(), region, ranks, host_mesh.cloned()).unwrap();
+        let current_ref = ProcMeshRef::new(
+            name.clone(),
+            region,
+            ranks,
+            host_mesh.cloned(),
+            None, // this is the root mesh
+            None, // comm actor is not alive yet
+        )
+        .unwrap();
 
         // Notify telemetry that the ProcAgent mesh was created.
         {
@@ -207,7 +258,7 @@ impl ProcMesh {
             }
         }
 
-        let proc_mesh = Self {
+        let mut proc_mesh = Self {
             name,
             allocation,
             comm_actor_name: comm_actor_name.clone(),
@@ -232,6 +283,9 @@ impl ProcMesh {
                     .send(cx, CommMeshConfig::new(*rank, address_book.clone()))
                     .map_err(|e| Error::SendingError(comm_actor.actor_id().clone(), Box::new(e)))?
             }
+
+            // The comm actor is now set up and ready to go.
+            proc_mesh.current_ref.root_comm_actor = root_comm_actor;
         }
 
         Ok(proc_mesh)
@@ -260,15 +314,269 @@ impl ProcMesh {
         .await
     }
 
+    fn alloc_counter() -> &'static AtomicUsize {
+        static C: OnceLock<AtomicUsize> = OnceLock::new();
+        C.get_or_init(|| AtomicUsize::new(0))
+    }
+
+    /// Allocate a new ProcMesh from the provided alloc.
+    /// Allocate does not require an owning actor because references are not owned.
+    #[track_caller]
+    pub async fn allocate<C: context::Actor>(
+        cx: &C,
+        alloc: Box<dyn Alloc + Send + Sync + 'static>,
+        name: &str,
+    ) -> crate::Result<Self>
+    where
+        C::A: Handler<MeshFailure>,
+    {
+        let caller = Location::caller();
+        Self::allocate_inner(cx, alloc, Name::new(name)?, caller).await
+    }
+
+    // Use allocate_inner to set field mesh_name in span
+    #[hyperactor::instrument(fields(proc_mesh=name.to_string()))]
+    async fn allocate_inner<C: context::Actor>(
+        cx: &C,
+        mut alloc: Box<dyn Alloc + Send + Sync + 'static>,
+        name: Name,
+        caller: &'static Location<'static>,
+    ) -> crate::Result<Self>
+    where
+        C::A: Handler<MeshFailure>,
+    {
+        let alloc_id = Self::alloc_counter().fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            name = "ProcMeshStatus",
+            status = "Allocate::Attempt",
+            %caller,
+            alloc_id,
+            shape = ?alloc.shape(),
+            "allocating proc mesh"
+        );
+
+        let running = alloc
+            .initialize()
+            .instrument(tracing::info_span!(
+                "ProcMeshStatus::Allocate::Initialize",
+                alloc_id,
+                proc_mesh = %name
+            ))
+            .await?;
+
+        // Wire the newly created mesh into the proc, so that it is routable.
+        // We route all of the relevant prefixes into the proc's forwarder,
+        // and serve it on the alloc's transport.
+        //
+        // This will be removed with direct addressing.
+        let proc = cx.instance().proc();
+
+        // First make sure we can serve the proc:
+        let proc_channel_addr = {
+            let _guard =
+                tracing::info_span!("allocate_serve_proc", proc_id = %proc.proc_id()).entered();
+            let (addr, rx) = channel::serve(ChannelAddr::any(alloc.transport()))?;
+            proc.clone().serve(rx);
+            tracing::info!(
+                name = "ProcMeshStatus",
+                status = "Allocate::ChannelServe",
+                proc_mesh = %name,
+                %addr,
+                "proc started listening on addr: {addr}"
+            );
+            addr
+        };
+
+        let bind_allocated_procs = |router: &DialMailboxRouter| {
+            // Bind procs whose ProcId address differs from their mailbox
+            // serving address. In the v0 bootstrap path, the ProcId embeds
+            // the bootstrap channel address while the proc's mailbox is
+            // served on a separate address. Without an explicit binding the
+            // DialMailboxRouter would direct-dial the bootstrap channel
+            // (which expects Allocator2Process, not MessageEnvelope).
+            for AllocatedProc { proc_id, addr, .. } in running.iter() {
+                if proc_id.addr() != addr {
+                    router.bind(proc_id.clone().into(), addr.clone());
+                }
+            }
+        };
+
+        // Temporary for backward compatibility with ranked procs and v0 API.
+        // Proc meshes can be allocated either using the root client proc (which
+        // has a DialMailboxRouter forwarder) or a mesh agent proc (which has a
+        // ReconfigurableMailboxSender forwarder with an inner DialMailboxRouter).
+        if let Some(router) = proc.forwarder().downcast_ref() {
+            bind_allocated_procs(router);
+        } else if let Some(router) = proc
+            .forwarder()
+            .downcast_ref::<ReconfigurableMailboxSender>()
+        {
+            bind_allocated_procs(
+                router
+                    .as_inner()
+                    .map_err(|_| Error::UnroutableMesh())?
+                    .as_configured()
+                    .ok_or(Error::UnroutableMesh())?
+                    .downcast_ref()
+                    .ok_or(Error::UnroutableMesh())?,
+            );
+        } else {
+            return Err(Error::UnroutableMesh());
+        }
+
+        // Set up the mesh agents. Since references are not owned, we don't supervise it.
+        // Instead, we just let procs die when they have unhandled supervision events.
+        let address_book: HashMap<_, _> = running
+            .iter()
+            .map(
+                |AllocatedProc {
+                     addr, mesh_agent, ..
+                 }| { (mesh_agent.actor_id().proc_id().clone(), addr.clone()) },
+            )
+            .collect();
+
+        let (config_handle, mut config_receiver) = cx.mailbox().open_port();
+        for (rank, AllocatedProc { mesh_agent, .. }) in running.iter().enumerate() {
+            mesh_agent
+                .configure(
+                    cx,
+                    rank,
+                    proc_channel_addr.clone(),
+                    None, // no supervisor; we just crash
+                    address_book.clone(),
+                    config_handle.bind(),
+                    true,
+                )
+                .await
+                .map_err(Error::ConfigurationError)?;
+        }
+        let mut completed = Ranks::new(running.len());
+        while !completed.is_full() {
+            let rank = config_receiver
+                .recv()
+                .await
+                .map_err(|err| Error::ConfigurationError(err.into()))?;
+            if completed.insert(rank, rank).is_some() {
+                tracing::warn!("multiple completions received for rank {}", rank);
+            }
+        }
+
+        let ranks: Vec<_> = running
+            .into_iter()
+            .enumerate()
+            .map(|(create_rank, allocated)| ProcRef {
+                proc_id: allocated.proc_id,
+                create_rank,
+                agent: allocated.mesh_agent,
+            })
+            .collect();
+
+        let stop = Arc::new(Notify::new());
+        let extent = alloc.extent().clone();
+        let alloc_name = alloc.alloc_name().to_string();
+
+        let alloc_task = {
+            let stop = Arc::clone(&stop);
+
+            tokio::spawn(
+                async move {
+                    loop {
+                        tokio::select! {
+                            _ = stop.notified() => {
+                                // If we are explicitly stopped, the alloc is torn down.
+                                if let Err(error) = alloc.stop_and_wait().await {
+                                    tracing::error!(
+                                        name = "ProcMeshStatus",
+                                        alloc_name = %alloc.alloc_name(),
+                                        status = "FailedToStopAlloc",
+                                        %error,
+                                    );
+                                }
+                                break;
+                            }
+                            // We are mostly just using this to drive allocation events.
+                            proc_state = alloc.next() => {
+                                match proc_state {
+                                    // The alloc was stopped.
+                                    None => break,
+                                    Some(proc_state) => {
+                                        tracing::debug!(
+                                            alloc_name = %alloc.alloc_name(),
+                                            "unmonitored allocation event: {}", proc_state);
+                                    }
+                                }
+
+                            }
+                        }
+                    }
+                }
+                .instrument(tracing::info_span!("alloc_monitor")),
+            )
+        };
+
+        let mesh = Self::create(
+            cx,
+            name,
+            ProcMeshAllocation::Allocated {
+                alloc_name,
+                stop,
+                extent,
+                ranks: Arc::new(ranks),
+                alloc_task: Some(alloc_task),
+            },
+            true, // alloc-based meshes support comm actors
+        )
+        .await;
+        match &mesh {
+            Ok(_) => tracing::info!(name = "ProcMeshStatus", status = "Allocate::Created"),
+            Err(error) => {
+                tracing::info!(name = "ProcMeshStatus", status = "Allocate::Failed", %error)
+            }
+        }
+        mesh
+    }
+
     /// Stop this mesh gracefully.
     pub async fn stop(&mut self, cx: &impl context::Actor, reason: String) -> anyhow::Result<()> {
         let region = self.region.clone();
         match &mut self.allocation {
+            ProcMeshAllocation::Allocated {
+                stop,
+                alloc_task,
+                alloc_name,
+                ..
+            } => {
+                stop.notify_one();
+                // Wait for the alloc monitor task to complete, ensuring the
+                // alloc has fully stopped before we drop it.
+                if let Some(handle) = alloc_task.take() {
+                    if let Err(e) = handle.await {
+                        tracing::warn!(
+                            name = "ProcMeshStatus",
+                            proc_mesh = %self.name,
+                            alloc_name,
+                            %e,
+                            "alloc monitor task failed"
+                        );
+                    }
+                }
+                tracing::info!(
+                    name = "ProcMeshStatus",
+                    proc_mesh = %self.name,
+                    alloc_name,
+                    status = "StoppingAlloc",
+                    "alloc {alloc_name} has stopped",
+                );
+
+                Ok(())
+            }
             ProcMeshAllocation::Owned { hosts, .. } => {
                 let procs = self
                     .current_ref
                     .proc_ids()
                     .collect::<Vec<hyperactor_reference::ProcId>>();
+                // We use the proc mesh region rather than the host mesh region
+                // because the host agent stores one entry per proc, not per host.
                 hosts
                     .stop_proc_mesh(cx, &self.name, procs, region, reason)
                     .await
@@ -306,12 +614,31 @@ impl Drop for ProcMesh {
     }
 }
 
-/// Represents how a ProcMesh was allocated.
+/// Represents different ways ProcMeshes can be allocated.
 enum ProcMeshAllocation {
+    /// A mesh that has been allocated from an `Alloc`.
+    Allocated {
+        // The name of the alloc from which this mesh was allocated.
+        alloc_name: String,
+
+        // A cancellation token used to stop the task keeping the alloc alive.
+        stop: Arc<Notify>,
+
+        extent: Extent,
+
+        // The allocated ranks.
+        ranks: Arc<Vec<ProcRef>>,
+
+        // The task handle for the alloc monitor. Used to wait for clean shutdown.
+        alloc_task: Option<tokio::task::JoinHandle<()>>,
+    },
+
     /// An owned allocation: this ProcMesh fully owns the set of ranks.
     Owned {
         /// The host mesh from which the proc mesh was spawned.
         hosts: HostMeshRef,
+        // This is purely for storage: `hosts.extent()` returns a computed (by value)
+        // extent.
         extent: Extent,
         /// A proc reference for each rank in the mesh.
         ranks: Arc<Vec<ProcRef>>,
@@ -321,18 +648,21 @@ enum ProcMeshAllocation {
 impl ProcMeshAllocation {
     fn extent(&self) -> &Extent {
         match self {
+            ProcMeshAllocation::Allocated { extent, .. } => extent,
             ProcMeshAllocation::Owned { extent, .. } => extent,
         }
     }
 
     fn ranks(&self) -> Arc<Vec<ProcRef>> {
-        match self {
-            ProcMeshAllocation::Owned { ranks, .. } => Arc::clone(ranks),
-        }
+        Arc::clone(match self {
+            ProcMeshAllocation::Allocated { ranks, .. } => ranks,
+            ProcMeshAllocation::Owned { ranks, .. } => ranks,
+        })
     }
 
     fn hosts(&self) -> Option<&HostMeshRef> {
         match self {
+            ProcMeshAllocation::Allocated { .. } => None,
             ProcMeshAllocation::Owned { hosts, .. } => Some(hosts),
         }
     }
@@ -341,6 +671,11 @@ impl ProcMeshAllocation {
 impl fmt::Debug for ProcMeshAllocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ProcMeshAllocation::Allocated { ranks, .. } => f
+                .debug_struct("ProcMeshAllocation::Allocated")
+                .field("alloc", &"<dyn Alloc>")
+                .field("ranks", ranks)
+                .finish(),
             ProcMeshAllocation::Owned {
                 hosts,
                 ranks,
@@ -367,17 +702,28 @@ pub struct ProcMeshRef {
     ranks: Arc<Vec<ProcRef>>,
     // Some if this was spawned from a host mesh, else none.
     host_mesh: Option<HostMeshRef>,
+    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
+    // should be removed after we remove the v0 code.
+    // The root region of this mesh. None means this mesh itself is the root.
+    pub(crate) root_region: Option<Region>,
+    // Temporary: used to fit v1 ActorMesh with v0's casting implementation. This
+    // should be removed after we remove the v0 code.
+    // v0 casting requires root mesh rank 0 as the 1st hop, so we need to provide
+    // it here. For v1, this can be removed since v1 can use any rank.
+    pub(crate) root_comm_actor: Option<ActorRef<CommActor>>,
 }
 wirevalue::register_type!(ProcMeshRef);
 
 impl ProcMeshRef {
-    /// Create a new ProcMeshRef from the given name, region, ranks, and host mesh.
+    /// Create a new ProcMeshRef from the given name, region, ranks, and so on.
     #[allow(clippy::result_large_err)]
     fn new(
         name: Name,
         region: Region,
         ranks: Arc<Vec<ProcRef>>,
         host_mesh: Option<HostMeshRef>,
+        root_region: Option<Region>,
+        root_comm_actor: Option<ActorRef<CommActor>>,
     ) -> crate::Result<Self> {
         if region.num_ranks() != ranks.len() {
             return Err(crate::Error::InvalidRankCardinality {
@@ -390,17 +736,27 @@ impl ProcMeshRef {
             region,
             ranks,
             host_mesh,
+            root_region,
+            root_comm_actor,
         })
     }
 
     /// Create a singleton ProcMeshRef, given the provided ProcRef and name.
+    /// This is used to support creating local singleton proc meshes to support `this_proc()`
+    /// in python client actors.
     pub fn new_singleton(name: Name, proc_ref: ProcRef) -> Self {
         Self {
             name,
             region: Extent::unity().into(),
             ranks: Arc::new(vec![proc_ref]),
             host_mesh: None,
+            root_region: None,
+            root_comm_actor: None,
         }
+    }
+
+    pub(crate) fn root_comm_actor(&self) -> Option<&ActorRef<CommActor>> {
+        self.root_comm_actor.as_ref()
     }
 
     pub fn name(&self) -> &Name {
@@ -415,6 +771,15 @@ impl ProcMeshRef {
     /// Returns None if this ProcMeshRef is backed by an Alloc instead of a host mesh.
     pub fn hosts(&self) -> Option<&HostMeshRef> {
         self.host_mesh.as_ref()
+    }
+
+    /// The current statuses of procs in this mesh.
+    pub async fn status(&self, cx: &impl context::Actor) -> crate::Result<ValueMesh<bool>> {
+        let vm: ValueMesh<_> = self.map_into(|proc_ref| {
+            let proc_ref = proc_ref.clone();
+            async move { proc_ref.status(cx).await }
+        });
+        vm.join().await.transpose()
     }
 
     pub(crate) fn agent_mesh(&self) -> ActorMeshRef<ProcAgent> {
@@ -1001,6 +1366,8 @@ impl view::RankedSliceable for ProcMeshRef {
             region,
             Arc::new(ranks),
             self.host_mesh.clone(),
+            Some(self.root_region.as_ref().unwrap_or(&self.region).clone()),
+            self.root_comm_actor.clone(),
         )
         .unwrap()
     }
@@ -1009,6 +1376,7 @@ impl view::RankedSliceable for ProcMeshRef {
 #[cfg(test)]
 mod tests {
     use hyperactor::Instance;
+    use ndslice::ViewExt;
     use ndslice::extent;
     use timed_test::async_timed_test;
 
@@ -1016,6 +1384,27 @@ mod tests {
     use crate::resource::Status;
     use crate::testactor;
     use crate::testing;
+
+    #[tokio::test]
+    async fn test_proc_mesh_allocate() {
+        let (mesh, actor, _router) = testing::local_proc_mesh(extent!(replica = 4)).await;
+        assert_eq!(mesh.extent(), extent!(replica = 4));
+        assert_eq!(mesh.ranks.len(), 4);
+
+        // All of the agents are alive, and reachable (both ways).
+        for proc_ref in mesh.values() {
+            assert!(proc_ref.status(&actor).await.unwrap());
+        }
+
+        // Same on the proc mesh:
+        assert!(
+            mesh.status(&actor)
+                .await
+                .unwrap()
+                .values()
+                .all(|status| status)
+        );
+    }
 
     #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]

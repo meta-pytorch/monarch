@@ -1880,7 +1880,7 @@ mod tests {
         // Use Unix transport for all procs — Local transport does not
         // support cross-proc message routing.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2040,7 +2040,7 @@ mod tests {
 
         // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2183,7 +2183,7 @@ mod tests {
 
         // Stand up a local in-process Host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2347,7 +2347,7 @@ mod tests {
 
         // Stand up a local host with a HostAgent.
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2452,7 +2452,7 @@ mod tests {
 
         // -- 1. Stand up a local in-process Host with a HostAgent --
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2901,7 +2901,7 @@ mod tests {
         // back to querying proc_agent[0] via QueryChild(Proc) — the
         // path being tested.
         let spawn_fn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
         let manager: LocalProcManager<ProcManagerSpawnFn> = LocalProcManager::new(spawn_fn);
         let host: Host<LocalProcManager<ProcManagerSpawnFn>> =
             Host::new(manager, ChannelTransport::Unix.any())
@@ -2920,7 +2920,7 @@ mod tests {
         let user_proc =
             Proc::direct(ChannelTransport::Unix.any(), "user_proc".to_string()).unwrap();
         let user_proc_addr = user_proc.proc_id().addr().to_string();
-        let agent_handle = ProcAgent::boot(user_proc.clone(), None).unwrap();
+        let agent_handle = ProcAgent::boot_v1(user_proc.clone(), None).unwrap();
         agent_handle
             .status()
             .wait_for(|s| matches!(s, ActorStatus::Idle))

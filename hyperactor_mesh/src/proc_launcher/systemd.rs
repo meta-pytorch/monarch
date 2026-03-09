@@ -1197,7 +1197,7 @@ mod tests {
 
         let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "env-vars");
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::dummy();
+        let bootstrap = Bootstrap::default();
         let opts = LaunchOptions {
             command: with_sh(script),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
@@ -1293,7 +1293,7 @@ mod tests {
         let launcher = SystemdProcLauncher::new();
 
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::dummy();
+        let bootstrap = Bootstrap::default();
         let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
@@ -1335,7 +1335,7 @@ mod tests {
         let launcher = SystemdProcLauncher::new();
 
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::dummy();
+        let bootstrap = Bootstrap::default();
         let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
@@ -1397,7 +1397,7 @@ mod tests {
         let launcher = SystemdProcLauncher::new();
 
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::dummy();
+        let bootstrap = Bootstrap::default();
         let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "terminated");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
@@ -1567,7 +1567,7 @@ mod tests {
             marker, marker, marker
         );
 
-        let bootstrap = Bootstrap::dummy();
+        let bootstrap = Bootstrap::default();
         let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "drop-cleanup-test");
 
         let exit_rx;
@@ -1668,7 +1668,7 @@ mod tests {
         let launcher = SystemdProcLauncher::new();
 
         let proc_id = hyperactor_reference::ProcId::with_name(any_unix_addr(), "long-running");
-        let bootstrap = Bootstrap::dummy();
+        let bootstrap = Bootstrap::default();
         let opts = LaunchOptions {
             command: with_sh("sleep 60"),
             bootstrap_payload: bootstrap.to_env_safe_string().unwrap(),
