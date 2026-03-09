@@ -1596,7 +1596,7 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, client_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(
+        let proc = Proc::configured(
             test_proc_id("client_0"),
             BoxedMailboxSender::new(router.clone()),
         );

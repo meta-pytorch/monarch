@@ -1023,7 +1023,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             let proc_id = ProcId::unique(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
-            let proc = Proc::new(proc_id, BoxedMailboxSender::new(server));
+            let proc = Proc::configured(proc_id, BoxedMailboxSender::new(server));
             let (client, _) = proc.instance("undeliverable_supervisor").unwrap();
             while let Ok(Undeliverable(mut envelope)) = undeliverable_rx.recv().await {
                 if let Ok(Undeliverable(e)) =
@@ -3008,7 +3008,7 @@ mod tests {
 
         let (port, receiver) = mbox0.open_once_port::<u64>();
 
-        let proc = Proc::new(test_proc_id("0"), BoxedMailboxSender::new(muxer));
+        let proc = Proc::configured(test_proc_id("0"), BoxedMailboxSender::new(muxer));
         let (client, _) = proc.instance("client").unwrap();
 
         port.send(&client, 123u64).unwrap();
@@ -3315,7 +3315,7 @@ mod tests {
             BOXED_PANICKING_MAILBOX_SENDER.clone(),
         ));
         let proc_id = test_proc_id("quux_0");
-        let mut proc = Proc::new(proc_id.clone(), proc_forwarder);
+        let mut proc = Proc::configured(proc_id.clone(), proc_forwarder);
         let (_reported, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
         let (client, _) = proc.instance("client").unwrap();
 

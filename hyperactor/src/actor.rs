@@ -1560,7 +1560,7 @@ mod tests {
         let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
         let actor_ref: ActorRef<GetSeqActor> = handle.bind();
 
-        let remote_proc = Proc::new(
+        let remote_proc = Proc::configured(
             test_proc_id("remote_0"),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );

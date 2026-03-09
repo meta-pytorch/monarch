@@ -199,22 +199,22 @@ pub struct ActorInstance<A: Actor> {
 }
 
 impl Proc {
-    /// Create a new proc with the given proc id and forwarder.
-    pub fn new(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self {
-        Self::new_with_clock(proc_id, forwarder, ClockKind::default())
+    /// Create a pre-configured proc with the given proc id and forwarder.
+    pub fn configured(proc_id: ProcId, forwarder: BoxedMailboxSender) -> Self {
+        Self::configured_with_clock(proc_id, forwarder, ClockKind::default())
     }
 
     /// Create a new direct-addressed proc.
     pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = ProcId::with_name(addr, name);
-        let proc = Self::new(proc_id, DialMailboxRouter::new().into_boxed());
+        let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         proc.clone().serve(rx);
         Ok(proc)
     }
 
-    /// Create a new proc with the given proc id, forwarder and clock kind.
-    pub fn new_with_clock(
+    /// Create a pre-configured proc with the given proc id, forwarder and clock kind.
+    pub fn configured_with_clock(
         proc_id: ProcId,
         forwarder: BoxedMailboxSender,
         clock: ClockKind,
@@ -283,7 +283,7 @@ impl Proc {
         let rank = NEXT_LOCAL_RANK.fetch_add(1, Ordering::Relaxed);
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_id = ProcId::unique(addr, format!("local_{}", rank));
-        Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
+        Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     }
 
     /// The proc's ID.
@@ -313,7 +313,7 @@ impl Proc {
         RUNTIME_PROC.get_or_init(|| {
             let addr = ChannelAddr::any(ChannelTransport::Local);
             let proc_id = ProcId::unique(addr, "hyperactor_runtime");
-            Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
+            Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
         })
     }
 

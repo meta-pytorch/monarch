@@ -497,7 +497,7 @@ impl Bootstrap {
                     ok!(MailboxClient::dial(backend_addr)),
                 );
 
-                let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
+                let proc = Proc::configured(proc_id.clone(), proc_sender.into_boxed());
 
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<i32>();
                 let agent_handle = ok!(ProcAgent::boot(proc.clone(), Some(shutdown_tx))
@@ -2446,7 +2446,7 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(
+        let proc = Proc::configured(
             test_proc_id("client_0"),
             BoxedMailboxSender::new(router.clone()),
         );
@@ -3138,7 +3138,7 @@ mod tests {
         //
         // (2) Host::serve(..) sets up a Host in the same OS process
         //     (no new process). It binds front/back channels, creates
-        //     an in-process service proc (`Proc::new(..)`), and
+        //     an in-process service proc (`Proc::configured(..)`), and
         //     stores the `BootstrapProcManager` for later spawns.
         //
         // (3) Install HostAgent (still no new OS process).

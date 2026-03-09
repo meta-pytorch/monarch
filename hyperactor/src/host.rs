@@ -190,10 +190,10 @@ impl<M: ProcManager> Host<M> {
         // guaranteed by the ChannelAddr component, and the Name type's
         // '-' delimiter must not collide with a hash suffix.
         let service_proc_id = ProcId::with_name(frontend_addr.clone(), SERVICE_PROC_NAME);
-        let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
+        let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 
         let local_proc_id = ProcId::with_name(frontend_addr.clone(), LOCAL_PROC_NAME);
-        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+        let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
@@ -1080,7 +1080,7 @@ where
         _config: (),
     ) -> Result<Self::Handle, HostError> {
         let transport = forwarder_addr.transport();
-        let proc = Proc::new(
+        let proc = Proc::configured(
             proc_id.clone(),
             MailboxClient::dial(forwarder_addr)?.into_boxed(),
         );
@@ -1362,7 +1362,7 @@ where
     F: Future<Output = Result<ActorHandle<A>, anyhow::Error>>,
 {
     let backend_transport = backend_addr.transport();
-    let proc = Proc::new(
+    let proc = Proc::configured(
         proc_id.clone(),
         MailboxClient::dial(backend_addr)?.into_boxed(),
     );
