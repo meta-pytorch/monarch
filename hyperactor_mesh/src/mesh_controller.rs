@@ -24,8 +24,6 @@ use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
 use hyperactor::actor::handle_undeliverable_message;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::kv_pairs;
 use hyperactor::mailbox::MessageEnvelope;
@@ -203,7 +201,7 @@ impl<A: Referable> ActorMeshController<A> {
             // Save when we expect the next check state message, so we can automatically
             // detect stalls as they accumulate.
             let delay = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
-            cx.self_message_with_delay(CheckState(RealClock.system_time_now() + delay), delay)
+            cx.self_message_with_delay(CheckState(std::time::SystemTime::now() + delay), delay)
         } else {
             Ok(())
         }
@@ -671,7 +669,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         // subscribers to think the controller is dead.
         // Allow a little slack time to avoid logging for innocuous delays.
         // If it's greater than 2x the expected time, log a warning.
-        if RealClock.system_time_now()
+        if std::time::SystemTime::now()
             > expected_time + hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY)
         {
             // Current time is included by default in the log message.
@@ -760,7 +758,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         let keepalive = if orphan_timeout.is_zero() {
             None
         } else {
-            Some(RealClock.system_time_now() + orphan_timeout)
+            Some(std::time::SystemTime::now() + orphan_timeout)
         };
         let events = mesh.actor_states_with_keepalive(cx, keepalive).await;
         if let Err(e) = events {
@@ -952,8 +950,6 @@ mod tests {
     use std::ops::Deref;
     use std::time::Duration;
 
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use ndslice::Extent;
     use ndslice::ViewExt;
 
@@ -1006,7 +1002,7 @@ mod tests {
             .actor_states_with_keepalive(
                 instance,
                 actor_name.clone(),
-                Some(RealClock.system_time_now() + Duration::from_secs(2)),
+                Some(std::time::SystemTime::now() + Duration::from_secs(2)),
             )
             .await
             .unwrap();
@@ -1023,7 +1019,7 @@ mod tests {
         // SelfCheck cycle to fire. With MESH_ORPHAN_TIMEOUT = 1s and
         // expiry in 2s, by around 4s at least two SelfCheck cycles will
         // have elapsed after the expiry.
-        RealClock.sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         // Query again, this time *without* a keepalive so we don't
         // extend the expiry.
@@ -1132,7 +1128,7 @@ mod tests {
 
         // Give the controller time to run at least one CheckState cycle
         // (polling every 1s) so it sends KeepaliveGetState to the agents.
-        RealClock.sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify actors are running before the crash.
         let states = actor_proc_mesh
@@ -1164,7 +1160,7 @@ mod tests {
         //  - keepalive expiry (2s from last CheckState)
         //  - at least one SelfCheck cycle (every 2s)
         //  - margin for processing
-        RealClock.sleep(Duration::from_secs(8)).await;
+        tokio::time::sleep(Duration::from_secs(8)).await;
 
         // Actors should now be stopped via the orphan timeout.
         let states = actor_proc_mesh

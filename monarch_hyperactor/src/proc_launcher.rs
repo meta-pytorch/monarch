@@ -25,8 +25,6 @@ use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
 use hyperactor::ProcId;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_mesh::proc_launcher::LaunchOptions;
 use hyperactor_mesh::proc_launcher::LaunchResult;
 use hyperactor_mesh::proc_launcher::ProcExitKind;
@@ -717,7 +715,7 @@ impl ProcLauncher for ActorProcLauncher {
 
         Ok(LaunchResult {
             pid: None,
-            started_at: RealClock.system_time_now(),
+            started_at: std::time::SystemTime::now(),
             stdio: StdioHandling::ManagedByLauncher,
             exit_rx,
         })

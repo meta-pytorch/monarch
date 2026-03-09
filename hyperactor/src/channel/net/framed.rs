@@ -1023,7 +1023,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::disallowed_methods)]
     async fn test_writer_cancellation_resume() {
         const MAX_LEN: usize = 1024 * 1024;
 
@@ -1272,7 +1271,6 @@ mod property_tests {
                 // wakeups or budget logic regresses and the future
                 // stalls forever, the test fails quickly instead of
                 // hanging the fuzz run.
-                #[allow(clippy::disallowed_methods)]
                 tokio::time::timeout(std::time::Duration::from_secs(2), async {
                     assert_cancel_safe_async!(
                         // `mk`: Build a *fresh* send future each attempt.
@@ -1396,7 +1394,6 @@ mod property_tests {
                 let step_ticks = pending_ticks.clone();
                 let step_drips = drips.clone();
 
-                #[allow(clippy::disallowed_methods)]
                 tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     assert_cancel_safe_async!(
                         // `mk`: Build a *fresh* send future each attempt.
@@ -1516,7 +1513,6 @@ mod property_tests {
                 let step_ticks = pending_ticks.clone();
                 let step_drips = drips.clone();
 
-                #[allow(clippy::disallowed_methods)]
                 tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     assert_cancel_safe_async!(
                         // `mk`: Build a *fresh* send future each attempt.

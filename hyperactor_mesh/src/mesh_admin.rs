@@ -165,8 +165,6 @@ use hyperactor::PortRef;
 use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::channel::try_tls_acceptor;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::NodePayload;
 use hyperactor::introspect::NodeProperties;
@@ -856,7 +854,7 @@ impl MeshAdminAgent {
             },
             children,
             parent: None,
-            as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
+            as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
         }
     }
 
@@ -883,8 +881,7 @@ impl MeshAdminAgent {
             },
         )?;
 
-        let mut payload = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+        let mut payload = tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| anyhow::anyhow!("timed out querying host agent"))?
             .map_err(|e| anyhow::anyhow!("failed to receive host introspection: {}", e))?;
@@ -930,8 +927,7 @@ impl MeshAdminAgent {
             },
         )?;
 
-        let payload = RealClock
-            .timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
+        let payload = tokio::time::timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| anyhow::anyhow!("timed out querying proc details"))?
             .map_err(|e| anyhow::anyhow!("failed to receive proc introspection: {}", e))?;
@@ -955,8 +951,7 @@ impl MeshAdminAgent {
             },
         )?;
 
-        let mut payload = RealClock
-            .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+        let mut payload = tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| anyhow::anyhow!("timed out querying proc mesh agent"))?
             .map_err(|e| {
@@ -1012,8 +1007,7 @@ impl MeshAdminAgent {
                 },
             )?;
 
-            let actor_payload = RealClock
-                .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            let actor_payload = tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
                 .await
                 .map_err(|_| anyhow::anyhow!("timed out querying anchor actor on {}", proc_id))?
                 .map_err(|e| {
@@ -1053,7 +1047,7 @@ impl MeshAdminAgent {
                         .is_ok()
                     {
                         matches!(
-                            RealClock.timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv()).await,
+                            tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv()).await,
                             Ok(Ok(p))
                                 if matches!(
                                     &p.properties,
@@ -1086,7 +1080,7 @@ impl MeshAdminAgent {
                 failed_actor_count: 0,
             },
             children,
-            as_of: humantime::format_rfc3339_millis(RealClock.system_time_now()).to_string(),
+            as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
             parent: Some("root".to_string()),
         })
     }
@@ -1128,8 +1122,7 @@ impl MeshAdminAgent {
                     reply: reply_handle.bind(),
                 },
             )?;
-            RealClock
-                .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+            tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
                 .await
                 .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
                 .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?
@@ -1149,8 +1142,7 @@ impl MeshAdminAgent {
                         reply: reply_handle.bind(),
                     },
                 )?;
-                RealClock
-                    .timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
+                tokio::time::timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
                     .await
                     .ok()
                     .and_then(|r| r.ok())
@@ -1172,8 +1164,7 @@ impl MeshAdminAgent {
                             reply: reply_handle.bind(),
                         },
                     )?;
-                    RealClock
-                        .timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
+                    tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
                         .await
                         .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
                         .map_err(|e| {
@@ -1296,19 +1287,19 @@ async fn resolve_reference_bridge(
         })?;
 
     let cx = &state.bridge_cx;
-    let response = RealClock
-        .timeout(SINGLE_HOST_TIMEOUT, state.admin_ref.resolve(cx, reference))
-        .await
-        .map_err(|_| ApiError {
-            code: "gateway_timeout".to_string(),
-            message: "timed out resolving reference".to_string(),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to resolve reference: {}", e),
-            details: None,
-        })?;
+    let response =
+        tokio::time::timeout(SINGLE_HOST_TIMEOUT, state.admin_ref.resolve(cx, reference))
+            .await
+            .map_err(|_| ApiError {
+                code: "gateway_timeout".to_string(),
+                message: "timed out resolving reference".to_string(),
+                details: None,
+            })?
+            .map_err(|e| ApiError {
+                code: "internal_error".to_string(),
+                message: format!("failed to resolve reference: {}", e),
+                details: None,
+            })?;
 
     match response.0 {
         Ok(payload) => Ok(Json(payload)),
@@ -1358,22 +1349,21 @@ async fn tree_dump(
     let base_url = format!("{}://{}", scheme, host);
 
     // Resolve root.
-    let root_resp = RealClock
-        .timeout(
-            TREE_TIMEOUT,
-            state.admin_ref.resolve(cx, "root".to_string()),
-        )
-        .await
-        .map_err(|_| ApiError {
-            code: "gateway_timeout".to_string(),
-            message: "timed out resolving root".to_string(),
-            details: None,
-        })?
-        .map_err(|e| ApiError {
-            code: "internal_error".to_string(),
-            message: format!("failed to resolve root: {}", e),
-            details: None,
-        })?;
+    let root_resp = tokio::time::timeout(
+        TREE_TIMEOUT,
+        state.admin_ref.resolve(cx, "root".to_string()),
+    )
+    .await
+    .map_err(|_| ApiError {
+        code: "gateway_timeout".to_string(),
+        message: "timed out resolving root".to_string(),
+        details: None,
+    })?
+    .map_err(|e| ApiError {
+        code: "internal_error".to_string(),
+        message: format!("failed to resolve root: {}", e),
+        details: None,
+    })?;
 
     let root = root_resp.0.map_err(|e| ApiError {
         code: "internal_error".to_string(),
@@ -1387,9 +1377,9 @@ async fn tree_dump(
     // subtree; non-host children (e.g. the root client actor) are
     // rendered as single leaf lines.
     for child_ref in &root.children {
-        let resp = RealClock
-            .timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, child_ref.clone()))
-            .await;
+        let resp =
+            tokio::time::timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, child_ref.clone()))
+                .await;
 
         let payload = match resp {
             Ok(Ok(r)) => r.0.ok(),
@@ -1423,9 +1413,11 @@ async fn tree_dump(
                     ));
 
                     // Resolve the proc to get its actor children.
-                    let proc_resp = RealClock
-                        .timeout(TREE_TIMEOUT, state.admin_ref.resolve(cx, proc_ref.clone()))
-                        .await;
+                    let proc_resp = tokio::time::timeout(
+                        TREE_TIMEOUT,
+                        state.admin_ref.resolve(cx, proc_ref.clone()),
+                    )
+                    .await;
                     let proc_payload = match proc_resp {
                         Ok(Ok(r)) => r.0.ok(),
                         _ => None,
@@ -2009,8 +2001,6 @@ mod tests {
 
         use hyperactor::Proc;
         use hyperactor::channel::ChannelTransport;
-        use hyperactor::clock::Clock;
-        use hyperactor::clock::RealClock;
         use hyperactor::host::Host;
         use hyperactor::host::LocalProcManager;
 
@@ -2075,7 +2065,7 @@ mod tests {
             .unwrap();
 
         // Wait for the user proc to boot.
-        RealClock.sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Resolve the host to get its children (system + user procs).
         let host_ref_string = HostId(host_agent_ref.actor_id().clone()).to_string();

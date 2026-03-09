@@ -19,8 +19,6 @@ use std::io::Error;
 use std::result::Result;
 use std::time::Duration;
 
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -99,8 +97,7 @@ impl IbvQueuePair {
                     rts_timestamp != u64::MAX,
                     "First operation attempted before queue pair reached RTS state! Call connect() first."
                 );
-                let current_nanos = RealClock
-                    .system_time_now()
+                let current_nanos = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos() as u64;
@@ -109,10 +106,9 @@ impl IbvQueuePair {
                 let init_delay = Duration::from_millis(self.config.hw_init_delay_ms);
                 if elapsed < init_delay {
                     let remaining_delay = init_delay - elapsed;
-                    // Sync context within unsafe block; Clock::sleep is async
+                    // Sync context within unsafe block; tokio::time::sleep is async
                     // and converting would require propagating async through the
                     // entire post_op / ring_doorbell call chain.
-                    #[allow(clippy::disallowed_methods)]
                     std::thread::sleep(remaining_delay);
                 }
             }
@@ -396,8 +392,7 @@ impl IbvQueuePair {
                 qp
             );
 
-            let rts_timestamp_nanos = RealClock
-                .system_time_now()
+            let rts_timestamp_nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64;
@@ -436,8 +431,7 @@ impl IbvQueuePair {
         }
 
         // Store RTS timestamp for first-op delay
-        let rts_timestamp_nanos = RealClock
-            .system_time_now()
+        let rts_timestamp_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;

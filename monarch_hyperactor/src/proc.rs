@@ -15,8 +15,6 @@ use anyhow::Result;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::Signal;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::clock::Clock;
-use hyperactor::clock::ClockKind;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
@@ -301,20 +299,12 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     message_receiver: PortReceiver<M>,
     signal_receiver: PortReceiver<Signal>,
     status: InstanceStatus,
-
-    clock: ClockKind,
     actor_id: ActorId,
 }
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
     pub fn new(proc: &PyProc, actor_name: &str) -> Result<Self> {
-        InstanceWrapper::new_with_instance_and_clock(
-            proc.inner.instance(actor_name)?.0,
-            proc.inner.clock().clone(),
-        )
-    }
-
-    fn new_with_instance_and_clock(instance: Instance<()>, clock: ClockKind) -> Result<Self> {
+        let instance = proc.inner.instance(actor_name)?.0;
         // TEMPORARY: remove after using fixed message ports.
         let (_message_port, message_receiver) = instance.bind_actor_port::<M>();
 
@@ -327,7 +317,6 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             message_receiver,
             signal_receiver,
             status: InstanceStatus::Running,
-            clock,
             actor_id,
         })
     }
@@ -401,7 +390,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
             }
             Some(timeout_msec) => {
                 // Blocking wait with a timeout.
-                match self.clock.timeout(
+                match tokio::time::timeout(
                     Duration::from_millis(timeout_msec),
                     self.message_receiver.recv(),
                 )

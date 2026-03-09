@@ -17,7 +17,6 @@ use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
 use serde::Serialize;
@@ -61,9 +60,7 @@ impl Handler<BenchMessage> for BenchActor {
         ctx: &Context<Self>,
         msg: BenchMessage,
     ) -> Result<(), anyhow::Error> {
-        hyperactor::clock::ClockKind::default()
-            .sleep(self.processing_time.clone())
-            .await;
+        tokio::time::sleep(self.processing_time.clone()).await;
 
         let _ = msg.reply.send(ctx, msg.step);
         Ok(())

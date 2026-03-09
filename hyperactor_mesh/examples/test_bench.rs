@@ -21,8 +21,6 @@ use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::PortRef;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -86,7 +84,7 @@ async fn main() {
     loop {
         let mut received = HashSet::new();
         let (port, mut rx) = instance.open_port();
-        let begin = RealClock.now();
+        let begin = tokio::time::Instant::now();
         actor_mesh
             .cast(instance, TestMessage::Ping(port.bind()))
             .unwrap();
@@ -95,6 +93,6 @@ async fn main() {
         }
 
         eprintln!("ping {}ms", begin.elapsed().as_millis());
-        RealClock.sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
