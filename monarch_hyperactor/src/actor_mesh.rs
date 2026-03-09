@@ -762,7 +762,6 @@ mod tests {
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::WorkCell;
     use hyperactor::supervision::ActorSupervisionEvent;
-    use hyperactor_mesh::ProcMesh;
     use hyperactor_mesh::alloc::AllocSpec;
     use hyperactor_mesh::alloc::Allocator;
     use hyperactor_mesh::alloc::LocalAllocator;
@@ -860,24 +859,24 @@ mod tests {
 
         let instance = test_instance();
 
-        let proc_mesh = ProcMesh::allocate(
-            instance,
-            Box::new(
-                LocalAllocator
-                    .allocate(AllocSpec {
-                        extent: extent!(replicas = 2),
-                        constraints: Default::default(),
-                        proc_name: None,
-                        transport: ChannelTransport::Local,
-                        proc_allocation_mode: Default::default(),
-                    })
-                    .await
-                    .unwrap(),
-            ),
-            "test",
-        )
-        .await
-        .unwrap();
+        let alloc = LocalAllocator
+            .allocate(AllocSpec {
+                extent: extent!(replicas = 2),
+                constraints: Default::default(),
+                proc_name: None,
+                transport: ChannelTransport::Local,
+                proc_allocation_mode: Default::default(),
+            })
+            .await
+            .unwrap();
+        let host_mesh =
+            hyperactor_mesh::host_mesh::HostMesh::allocate(instance, Box::new(alloc), "test", None)
+                .await
+                .unwrap();
+        let proc_mesh = host_mesh
+            .spawn(instance, "test_procs", extent!(procs = 1))
+            .await
+            .unwrap();
 
         // Create a minimal Python class and pickle it so we can spawn
         // PythonActor instances (mirroring PyProcMesh::spawn_async).

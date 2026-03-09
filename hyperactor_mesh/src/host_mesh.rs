@@ -49,14 +49,12 @@ use typeuri::Named;
 use crate::Bootstrap;
 use crate::Name;
 use crate::ProcMesh;
-use crate::ProcMeshRef;
 use crate::ValueMesh;
 use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
-use crate::host_mesh::host_agent::HostMeshAgentProcMeshTrampoline;
 use crate::host_mesh::host_agent::ProcManagerSpawnFn;
 use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
@@ -227,24 +225,7 @@ pub struct HostMesh {
 /// no leaked child processes.
 #[allow(dead_code)]
 enum HostMeshAllocation {
-    /// Hosts were allocated intrinsically via a [`ProcMesh`].
-    ///
-    /// In this mode, the `HostMesh` owns both the `ProcMesh` itself
-    /// and the service procs that implement each host. Dropping the
-    /// `HostMesh` also drops the embedded `ProcMesh`, ensuring that
-    /// all spawned child procs are terminated cleanly.
-    ProcMesh {
-        proc_mesh: ProcMesh,
-        proc_mesh_ref: ProcMeshRef,
-        hosts: Vec<HostRef>,
-    },
-    /// Hosts were constructed externally and explicitly transferred
-    /// under ownership by this `HostMesh`.
-    ///
-    /// In this mode, the `HostMesh` assumes responsibility for the
-    /// provided hosts going forward. Dropping the mesh guarantees
-    /// teardown of all associated state and signals to prevent any
-    /// leaked processes.
+    /// Hosts owned by this `HostMesh`.
     Owned { hosts: Vec<HostRef> },
 }
 
@@ -386,7 +367,7 @@ impl HostMesh {
     /// a [`HostRef`] for it.
     async fn create_in_process_host(addr: ChannelAddr) -> crate::Result<HostRef> {
         let spawn: ProcManagerSpawnFn =
-            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot_v1(proc, None))));
+            Box::new(|proc| Box::pin(std::future::ready(ProcAgent::boot(proc, None))));
         let manager = LocalProcManager::new(spawn);
         let host = Host::new(manager, addr).await?;
         let addr = host.addr().clone();
@@ -499,81 +480,49 @@ impl HostMesh {
     #[hyperactor::instrument(fields(host_mesh=name.to_string()))]
     async fn allocate_inner<C: context::Actor>(
         cx: &C,
-        alloc: Box<dyn Alloc + Send + Sync>,
+        mut alloc: Box<dyn Alloc + Send + Sync>,
         name: Name,
-        bootstrap_params: Option<BootstrapCommand>,
+        _bootstrap_params: Option<BootstrapCommand>,
     ) -> crate::Result<Self>
     where
         C::A: Handler<MeshFailure>,
     {
+        use tracing::Instrument;
+
+        use crate::alloc::AllocHostExt;
+
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Attempt");
-        let transport = alloc.transport();
         let extent = alloc.extent().clone();
-        let is_local = alloc.is_local();
-        let proc_mesh = ProcMesh::allocate(cx, alloc, name.name()).await?;
 
-        // TODO: figure out how to deal with MAST allocs. It requires an extra dimension,
-        // into which it launches multiple procs, so we need to always specify an additional
-        // sub-host dimension of size 1.
-
-        let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port();
-        let trampoline_name = Name::new("host_mesh_trampoline").unwrap();
-        let _trampoline_actor_mesh = proc_mesh
-            .spawn_with_name::<HostMeshAgentProcMeshTrampoline, C>(
-                cx,
-                trampoline_name,
-                &(transport, mesh_agents.bind(), bootstrap_params, is_local),
-                None,
-                // The trampoline is a system actor and does not need a controller.
-                true,
-            )
+        // Drive the alloc to collect host info directly.
+        let allocated_hosts = alloc
+            .initialize_hosts()
+            .instrument(tracing::info_span!(
+                "HostMeshStatus::Allocate::InitializeHosts",
+                host_mesh = %name
+            ))
             .await?;
 
-        // TODO: don't re-rank the hosts
-        let mut hosts = Vec::new();
-        for _rank in 0..extent.num_ranks() {
-            let mesh_agent = mesh_agents_rx.recv().await?;
+        let hosts: Vec<HostRef> = allocated_hosts
+            .iter()
+            .map(|h| HostRef(h.host_addr.clone()))
+            .collect();
 
-            let addr = mesh_agent.actor_id().proc_id().addr().clone();
-
-            let host_ref = HostRef(addr);
-            if host_ref.mesh_agent() != mesh_agent {
-                return Err(crate::Error::HostMeshAgentConfigurationError(
-                    mesh_agent.actor_id().clone(),
-                    format!(
-                        "expected mesh agent actor id to be {}",
-                        host_ref.mesh_agent().actor_id()
-                    ),
-                ));
-            }
-            hosts.push(host_ref);
-        }
-
-        let proc_mesh_ref = proc_mesh.clone();
         let mesh = Self {
             name: name.clone(),
             extent: extent.clone(),
-            allocation: HostMeshAllocation::ProcMesh {
-                proc_mesh,
-                proc_mesh_ref,
+            allocation: HostMeshAllocation::Owned {
                 hosts: hosts.clone(),
             },
             current_ref: HostMeshRef::new(name, extent.into(), hosts).unwrap(),
         };
 
-        // Spawn a unique mesh controller for each proc mesh, so the type of the
-        // mesh can be preserved.
+        // Spawn a unique mesh controller for each host mesh.
         let controller = HostMeshController::new(mesh.deref().clone());
-        // AI-3: controller name must include mesh identity for
-        // proc-wide ActorId uniqueness.
         let controller_name = format!("{}_{}", HOST_MESH_CONTROLLER_NAME, mesh.name());
         let controller_handle = controller
             .spawn_with_name(cx, &controller_name)
             .map_err(|e| crate::Error::ControllerActorSpawnError(mesh.name().clone(), e))?;
-        // Bind the actor's well-known ports (Signal, IntrospectMessage,
-        // Undeliverable). Without this, the controller's mailbox has no
-        // port entries and messages (including introspection queries)
-        // are returned as undeliverable.
         let _: hyperactor::ActorRef<HostMeshController> = controller_handle.bind();
 
         tracing::info!(name = "HostMeshStatus", status = "Allocate::Created");
@@ -665,12 +614,7 @@ impl HostMesh {
             );
         }
 
-        match &mut self.allocation {
-            HostMeshAllocation::ProcMesh { proc_mesh, .. } => {
-                proc_mesh.stop(cx, "host mesh shutdown".to_string()).await?;
-            }
-            HostMeshAllocation::Owned { .. } => {}
-        }
+        // Owned hosts are shut down via the host agent messages above.
         Ok(())
     }
 }
@@ -709,19 +653,13 @@ impl Drop for HostMesh {
         );
         // Snapshot the owned hosts we're responsible for.
         let hosts: Vec<HostRef> = match &self.allocation {
-            HostMeshAllocation::ProcMesh { hosts, .. } | HostMeshAllocation::Owned { hosts } => {
-                hosts.clone()
-            }
+            HostMeshAllocation::Owned { hosts } => hosts.clone(),
         };
 
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let mesh_name = self.name.clone();
-            let allocation_label = match &self.allocation {
-                HostMeshAllocation::ProcMesh { .. } => "proc_mesh",
-                HostMeshAllocation::Owned { .. } => "owned",
-            }
-            .to_string();
+            let allocation_label = "owned".to_string();
 
             handle.spawn(async move {
                 let span = tracing::info_span!(

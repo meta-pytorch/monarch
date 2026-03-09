@@ -46,12 +46,10 @@ use serde::Serialize;
 use serde::Serializer;
 use tokio::sync::watch;
 
-use crate::CommActor;
 use crate::Error;
 use crate::Name;
 use crate::ProcMeshRef;
 use crate::ValueMesh;
-use crate::casting;
 use crate::comm::multicast;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
@@ -61,7 +59,6 @@ use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
 use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
-use crate::reference::ActorMeshId;
 use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
@@ -433,7 +430,7 @@ impl<A: Referable> ActorMeshRef<A> {
     fn cast_with_selection<M>(
         &self,
         cx: &impl context::Actor,
-        sel: Selection,
+        _sel: Selection,
         message: M,
     ) -> crate::Result<()>
     where
@@ -471,79 +468,32 @@ impl<A: Referable> ActorMeshRef<A> {
             },
         });
 
-        // Now that we know these ranks are active, send out the actual messages.
-        if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, sel, root_comm_actor)
-        } else {
-            for (point, actor) in self.iter() {
-                let create_rank = point.rank();
-                let mut headers = Flattrs::new();
-                headers.set(
-                    multicast::CAST_ORIGINATING_SENDER,
-                    cx.instance().self_id().clone(),
-                );
-                headers.set(multicast::CAST_POINT, point);
+        // Send messages directly to each actor in the selection.
+        for (point, actor) in self.iter() {
+            let create_rank = point.rank();
+            let mut headers = Flattrs::new();
+            headers.set(
+                multicast::CAST_ORIGINATING_SENDER,
+                cx.instance().self_id().clone(),
+            );
+            headers.set(multicast::CAST_POINT, point);
 
-                // Make sure that we re-bind ranks, as these may be used for
-                // bootstrapping comm actors.
-                let mut unbound = Unbound::try_from_message(message.clone())
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                unbound
-                    .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                        *rank = Some(create_rank);
-                        Ok(())
-                    })
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                let rebound_message = unbound
-                    .bind()
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                actor
-                    .send_with_headers(cx, headers, rebound_message)
-                    .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
-            }
-            Ok(())
+            let mut unbound = Unbound::try_from_message(message.clone())
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            unbound
+                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+                    *rank = Some(create_rank);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            let rebound_message = unbound
+                .bind()
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            actor
+                .send_with_headers(cx, headers, rebound_message)
+                .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
         }
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn cast_v0<M>(
-        &self,
-        cx: &impl context::Actor,
-        message: M,
-        sel: Selection,
-        root_comm_actor: &ActorRef<CommActor>,
-    ) -> crate::Result<()>
-    where
-        A: RemoteHandles<IndexedErasedUnbound<M>>,
-        M: Castable + RemoteMessage + Clone, // Clone is required until we are fully onto comm actor
-    {
-        let cast_mesh_shape = view::Ranked::region(self).into();
-        let actor_mesh_id = ActorMeshId(self.name.clone());
-        match &self.proc_mesh.root_region {
-            Some(root_region) => {
-                let root_mesh_shape = root_region.into();
-                casting::cast_to_sliced_mesh::<A, M>(
-                    cx,
-                    actor_mesh_id,
-                    root_comm_actor,
-                    &sel,
-                    message,
-                    &cast_mesh_shape,
-                    &root_mesh_shape,
-                )
-                .map_err(|e| Error::CastingError(self.name.clone(), e.into()))
-            }
-            None => casting::actor_mesh_cast::<A, M>(
-                cx,
-                actor_mesh_id,
-                root_comm_actor,
-                sel,
-                &cast_mesh_shape,
-                &cast_mesh_shape,
-                message,
-            )
-            .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
-        }
+        Ok(())
     }
 
     /// Query the state of all actors in this mesh.

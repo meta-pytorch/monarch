@@ -661,7 +661,7 @@ mod tests {
         let launcher = NativeProcLauncher::new();
 
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::default();
+        let bootstrap = Bootstrap::dummy();
         let proc_id = test_proc_id("7");
         let opts = LaunchOptions {
             command: with_sh(script),
@@ -748,7 +748,7 @@ mod tests {
         {
             let launcher = NativeProcLauncher::new();
             // v0 bootstrap by default but it doesn't matter here.
-            let bootstrap = Bootstrap::default();
+            let bootstrap = Bootstrap::dummy();
             let proc_id = ProcId::with_name(any_unix_addr(), "stdio-captured");
             let opts = LaunchOptions {
                 command: with_sh(script),
@@ -782,7 +782,7 @@ mod tests {
         {
             let launcher = NativeProcLauncher::new();
             // v0 bootstrap by default but it doesn't matter here.
-            let bootstrap = Bootstrap::default();
+            let bootstrap = Bootstrap::dummy();
             let proc_id = ProcId::with_name(any_unix_addr(), "stdio-inherited");
             let opts = LaunchOptions {
                 command: with_sh(script),
@@ -820,7 +820,7 @@ mod tests {
     async fn exit_kind_maps_exit_code() {
         let launcher = NativeProcLauncher::new();
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::default();
+        let bootstrap = Bootstrap::dummy();
         let proc_id = ProcId::with_name(any_unix_addr(), "exit-7");
         let opts = LaunchOptions {
             command: with_sh("exit 7"),
@@ -859,7 +859,7 @@ mod tests {
     async fn kill_results_in_signaled_and_pid_table_is_removed() {
         let launcher = NativeProcLauncher::new();
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::default();
+        let bootstrap = Bootstrap::dummy();
         let proc_id = ProcId::with_name(any_unix_addr(), "killed");
         let opts = LaunchOptions {
             command: with_sh("sleep 30"),
@@ -931,7 +931,7 @@ mod tests {
         let script = r#"exec python3 -c 'import signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("READY"); sys.stdout.flush(); time.sleep(30)'"#;
 
         // v0 bootstrap by default but it doesn't matter here.
-        let bootstrap = Bootstrap::default();
+        let bootstrap = Bootstrap::dummy();
         let proc_id = ProcId::with_name(any_unix_addr(), "term-escalate");
         let opts = LaunchOptions {
             command: with_sh(script),
@@ -1019,7 +1019,7 @@ while True:
             ..Default::default()
         };
 
-        let bootstrap = Bootstrap::default();
+        let bootstrap = Bootstrap::dummy();
         let proc_id = ProcId::with_name(any_unix_addr(), "drop-cleanup-test");
         let opts = LaunchOptions {
             command,
