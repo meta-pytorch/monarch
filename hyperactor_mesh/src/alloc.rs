@@ -752,7 +752,7 @@ pub(crate) mod testing {
         let client_proc_id =
             ProcId::with_name(ChannelAddr::any(ChannelTransport::Local), "test_stuck_0");
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
-        let client_proc = Proc::new(
+        let client_proc = Proc::configured(
             client_proc_id.clone(),
             BoxedMailboxSender::new(router.clone()),
         );
