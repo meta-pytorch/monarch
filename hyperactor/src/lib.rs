@@ -112,7 +112,6 @@ pub use actor::ActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
 pub use actor::RemoteHandles;
-pub use remote::Accepts;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;
 #[doc(inline)]
@@ -170,6 +169,7 @@ pub use reference::OncePortRef;
 pub use reference::PortId;
 pub use reference::PortRef;
 pub use reference::ProcId;
+pub use remote::Accepts;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
 #[doc(inline)]
