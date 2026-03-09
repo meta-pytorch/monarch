@@ -18,8 +18,6 @@ use ratatui::widgets::Paragraph;
 use crate::App;
 use crate::format::format_uptime;
 use crate::model::NodeType;
-use crate::theme::ColorScheme;
-use crate::theme::Labels;
 use crate::theme::LangName;
 use crate::theme::ThemeName;
 
@@ -152,7 +150,7 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
             Span::styled(&node.label, app.theme.scheme.stat_selection),
         ]);
 
-        // Classification tag only for actors (system/failed/stopped/live)
+        // Classification tag only for actors (failed/stopped/system/user)
         if matches!(node.node_type, NodeType::Actor) {
             let (class_label, class_style) = if node.failed {
                 ("failed", app.theme.scheme.node_failed)
@@ -161,7 +159,7 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
             } else if node.is_system {
                 ("system", app.theme.scheme.node_system_actor)
             } else {
-                ("live", type_style)
+                ("user", app.theme.scheme.node_user_actor)
             };
             line2_spans.extend(vec![
                 Span::styled(" [", app.theme.scheme.header_class_bracket),
@@ -184,18 +182,19 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
 
 /// Render the bottom help bar showing the keyboard shortcuts.
 ///
-/// This is a static hint line
-/// (quit/navigation/expand-collapse/filter) separated from the main
-/// UI with a top border so it reads like a persistent status/help
-/// footer.
-pub(crate) fn render_footer(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    scheme: &ColorScheme,
-    labels: &Labels,
-) {
-    let footer = Paragraph::new(labels.footer_help_text)
-        .style(scheme.footer_help)
+/// Shows mode-specific hints: topology navigation when the tree is
+/// active, diagnostics navigation when the diagnostics pane is
+/// active.
+pub(crate) fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+    let text = if app.diag_running {
+        app.theme.labels.footer_diag_running_help_text
+    } else if !app.diag_results.is_empty() {
+        app.theme.labels.footer_diag_help_text
+    } else {
+        app.theme.labels.footer_help_text
+    };
+    let footer = Paragraph::new(text)
+        .style(app.theme.scheme.footer_help)
         .block(Block::default().borders(Borders::TOP));
     frame.render_widget(footer, area);
 }

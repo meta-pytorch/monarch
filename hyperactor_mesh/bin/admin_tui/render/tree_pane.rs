@@ -27,6 +27,11 @@ use crate::App;
 /// selected row highlighted.
 pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let rows = app.visible_rows();
+    let scheme = &app.theme.scheme;
+
+    // When the diagnostics overlay is active the tree is non-interactive.
+    // Render it uniformly dim so the user can see it is inactive.
+    let diag_active = app.diag_running || !app.diag_results.is_empty();
 
     let items: Vec<ListItem> = rows
         .as_slice()
@@ -52,21 +57,25 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
                 "  "
             };
 
-            // Style precedence: selected > failed > stopped > system > node-type.
-            // Failed actors render red; stopped actors render gray.
-            let style = if vis_idx == app.cursor.pos() {
-                app.theme.scheme.stat_selection.add_modifier(Modifier::BOLD)
+            // Style precedence: diag-inactive > selected > failed > stopped >
+            // system > node-type.  When diag_active the entire pane is dimmed
+            // and the selection/failed/system colours must not bleed through.
+            let style = if diag_active {
+                scheme.detail_stopped
+            } else if vis_idx == app.cursor.pos() {
+                scheme.stat_selection.add_modifier(Modifier::BOLD)
             } else if node.failed {
-                app.theme.scheme.node_failed
+                scheme.node_failed
             } else if node.stopped {
-                app.theme.scheme.detail_stopped
+                scheme.detail_stopped
             } else if node.is_system {
-                app.theme.scheme.node_system_actor
+                scheme.node_system_actor
             } else {
-                app.theme.scheme.node_style(node.node_type)
+                scheme.node_user_actor
             };
 
-            let marker = if vis_idx == app.cursor.pos() {
+            // Hide the selection caret while the pane is inactive.
+            let marker = if !diag_active && vis_idx == app.cursor.pos() {
                 app.theme.labels.selection_caret
             } else {
                 "  "
@@ -79,10 +88,20 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
         })
         .collect();
 
-    let block = Block::default()
-        .title(app.theme.labels.pane_topology)
-        .borders(Borders::ALL)
-        .border_style(app.theme.scheme.border);
+    let block = if diag_active {
+        Block::default()
+            .title(Span::styled(
+                app.theme.labels.pane_topology,
+                scheme.detail_stopped,
+            ))
+            .borders(Borders::ALL)
+            .border_style(scheme.detail_stopped)
+    } else {
+        Block::default()
+            .title(app.theme.labels.pane_topology)
+            .borders(Borders::ALL)
+            .border_style(scheme.border)
+    };
 
     let list = List::new(items)
         .block(block)

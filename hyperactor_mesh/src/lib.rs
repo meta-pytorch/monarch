@@ -28,16 +28,16 @@ pub mod casting;
 pub mod comm;
 pub mod config;
 pub mod connect;
-pub mod global_client;
+pub mod global_context;
 pub mod host_mesh;
 pub mod logging;
 pub mod mesh;
 pub mod mesh_admin;
-pub mod mesh_agent;
 pub mod mesh_controller;
 pub mod mesh_selection;
 mod metrics;
 pub mod namespace;
+pub mod proc_agent;
 pub mod proc_launcher;
 pub mod proc_mesh;
 pub mod reference;
@@ -67,8 +67,11 @@ pub use casting::CastError;
 pub use comm::CommActor;
 pub use dashmap;
 use enum_as_inner::EnumAsInner;
-pub use global_client::GlobalClientActor;
-pub use global_client::global_root_client;
+pub use global_context::GlobalClientActor;
+pub use global_context::GlobalContext;
+pub use global_context::context;
+pub use global_context::this_host;
+pub use global_context::this_proc;
 pub use host_mesh::HostMeshRef;
 use hyperactor::ActorId;
 use hyperactor::ActorRef;
@@ -88,9 +91,9 @@ use serde::Serialize;
 use typeuri::Named;
 pub use value_mesh::ValueMesh;
 
-use crate::host_mesh::HostMeshAgent;
+use crate::host_mesh::HostAgent;
 use crate::host_mesh::HostMeshRefParseError;
-use crate::host_mesh::mesh_agent::ProcState;
+use crate::host_mesh::host_agent::ProcState;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::shortuuid::ShortUuid;
@@ -172,7 +175,7 @@ pub enum Error {
     ProcCreationError {
         state: Box<resource::State<ProcState>>,
         host_rank: usize,
-        mesh_agent: ActorRef<HostMeshAgent>,
+        mesh_agent: ActorRef<HostAgent>,
     },
 
     #[error(
@@ -284,6 +287,22 @@ impl From<view::InvalidCardinality> for Error {
 
 /// The type of result used in `hyperactor_mesh`.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Construct a per-actor display name from a mesh-level base name and a
+/// rank's coordinates. Inserts `point.format_as_dict()` before the last
+/// `>` in `base`, or appends it if no `>` is found. Returns `base`
+/// unchanged for scalar (empty) points.
+pub(crate) fn actor_display_name(base: &str, point: &view::Point) -> String {
+    if point.is_empty() {
+        return base.to_string();
+    }
+    let coords = point.format_as_dict();
+    if let Some(pos) = base.rfind('>') {
+        format!("{}{}{}", &base[..pos], coords, &base[pos..])
+    } else {
+        format!("{}{}", base, coords)
+    }
+}
 
 /// Names are used to identify objects in the system. They have a user-provided name,
 /// and a unique UUID.

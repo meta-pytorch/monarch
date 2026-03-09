@@ -31,9 +31,8 @@ jobs:
             torch-spec: 'torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/'
     with:
       timeout: 60
-      runner: linux.rocm.gpu.gfx942.1.meta-pytorch
-      gpu-arch-type: rocm
-      gpu-arch-version: ${{ matrix.name }}
+      runner: linux.c7i.2xlarge
+      docker-image: pytorch/almalinux-builder:rocm${{ matrix.name }}
       submodules: recursive
       upload-artifact: monarch-rocm${{ matrix.name }}-${{ github.sha }}
       script: |

@@ -1,0 +1,5 @@
+frontend/build/
+frontend/node_modules/
+__pycache__/
+fake_data/fake_data.db-shm
+fake_data/fake_data.db-wal
