@@ -75,7 +75,10 @@ declare_attrs! {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
-    Success { rank: usize, actor_id: hyperactor_reference::ActorId },
+    Success {
+        rank: usize,
+        actor_id: hyperactor_reference::ActorId,
+    },
     Error(String),
 }
 wirevalue::register_type!(GspawnResult);

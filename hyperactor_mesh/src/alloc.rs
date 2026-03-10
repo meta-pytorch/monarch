@@ -748,8 +748,10 @@ pub(crate) mod testing {
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
-        let client_proc_id =
-            hyperactor_reference::ProcId::with_name(ChannelAddr::any(ChannelTransport::Local), "test_stuck_0");
+        let client_proc_id = hyperactor_reference::ProcId::with_name(
+            ChannelAddr::any(ChannelTransport::Local),
+            "test_stuck_0",
+        );
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
         let client_proc = Proc::configured(
             client_proc_id.clone(),
@@ -808,7 +810,9 @@ pub(crate) mod testing {
             .unwrap();
         let result = completed_receiver.recv().await.unwrap();
         match result {
-            GspawnResult::Success { actor_id, .. } => hyperactor_reference::ActorRef::attest(actor_id),
+            GspawnResult::Success { actor_id, .. } => {
+                hyperactor_reference::ActorRef::attest(actor_id)
+            }
             GspawnResult::Error(error_msg) => {
                 panic!("gspawn failed: {}", error_msg);
             }
