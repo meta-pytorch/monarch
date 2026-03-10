@@ -140,23 +140,25 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent.
     let mesh_admin_url = this_host().await.spawn_admin(instance, None).await?;
-    let cacert = if mesh_admin_url.starts_with("https") {
-        "--cacert /var/facebook/rootcanal/ca.pem "
+    let mtls_flags = if mesh_admin_url.starts_with("https") {
+        "--cacert /var/facebook/rootcanal/ca.pem \
+         --cert /var/facebook/x509_identities/server.pem \
+         --key /var/facebook/x509_identities/server.pem "
     } else {
         ""
     };
     println!("Mesh admin server listening on {}", mesh_admin_url);
     println!(
         "  - Root node:     curl {}{}/v1/root",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - Mesh tree:     curl {}{}/v1/tree",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - API docs:      curl {}{}/SKILL.md",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- --addr {}",

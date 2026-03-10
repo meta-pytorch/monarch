@@ -7,13 +7,39 @@
 
 # Integration test for the mesh admin tree endpoint.
 #
-# Spins up the dining philosophers example, waits for the admin server
-# to start, then verifies that GET /v1/tree and GET /v1/root return
-# the expected structure.
+# Generates a self-signed CA + cert + key, launches the dining
+# philosophers example with those certs (via HYPERACTOR_TLS_* env
+# vars), then verifies /v1/tree and /v1/root via mTLS curl, and
+# confirms that connections without a client cert are rejected.
 
 set -euo pipefail
 
 BIN="$1"
+
+# --- Generate test PKI (self-signed CA + server/client cert) ---
+CERTDIR=$(mktemp -d)
+
+# CA key + cert
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "$CERTDIR/ca.key" -out "$CERTDIR/ca.crt" \
+    -days 1 -nodes -subj "/CN=test-ca" 2>/dev/null
+
+# Server/client key + CSR + cert (signed by CA)
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "$CERTDIR/server.key" -out "$CERTDIR/server.csr" \
+    -nodes -subj "/CN=localhost" 2>/dev/null
+openssl x509 -req -in "$CERTDIR/server.csr" \
+    -CA "$CERTDIR/ca.crt" -CAkey "$CERTDIR/ca.key" -CAcreateserial \
+    -out "$CERTDIR/server.crt" -days 1 2>/dev/null
+
+# Combined PEM (cert + key) — matches Meta's server.pem format.
+cat "$CERTDIR/server.crt" "$CERTDIR/ca.crt" "$CERTDIR/server.key" \
+    > "$CERTDIR/combined.pem"
+
+# Point hyperactor at our test certs.
+export HYPERACTOR_TLS_CERT="$CERTDIR/combined.pem"
+export HYPERACTOR_TLS_KEY="$CERTDIR/combined.pem"
+export HYPERACTOR_TLS_CA="$CERTDIR/ca.crt"
 
 # Launch dining philosophers in background; capture output.
 OUTFILE=$(mktemp)
@@ -24,6 +50,7 @@ cleanup() {
     kill "$BIN_PID" 2>/dev/null || true
     wait "$BIN_PID" 2>/dev/null || true
     rm -f "$OUTFILE"
+    rm -rf "$CERTDIR"
 }
 trap cleanup EXIT
 
@@ -46,11 +73,13 @@ fi
 
 echo "Admin server at: $ADMIN_ADDR"
 
-# For HTTPS, skip certificate verification — the server's x509 identity
-# may not match the hostname in CI environments (Sandcastle).
+# Build curl flags. For HTTPS (mTLS), supply client cert and skip
+# hostname verification (test cert CN=localhost may not match the
+# advertised hostname).
 CURL_FLAGS=(-sf)
 if [[ "$ADMIN_ADDR" == https://* ]]; then
-    CURL_FLAGS+=(--insecure)
+    CURL_FLAGS+=(--insecure --cacert "$CERTDIR/ca.crt" \
+                 --cert "$CERTDIR/combined.pem" --key "$CERTDIR/combined.pem")
 fi
 
 # --- Test /v1/root ---
@@ -105,5 +134,15 @@ echo "  tree: OK"
 echo ""
 echo "--- tree output ---"
 echo "$TREE_RESP"
+
+# --- Test mTLS rejection (no client cert) ---
+if [[ "$ADMIN_ADDR" == https://* ]]; then
+    echo "Testing mTLS rejection (no client cert)..."
+    if curl -sf --insecure "$ADMIN_ADDR/v1/root" 2>/dev/null; then
+        echo "FAIL: connection without client cert should be rejected"
+        exit 1
+    fi
+    echo "  mTLS rejection: OK"
+fi
 
 echo "PASS: All mesh admin integration checks passed"
