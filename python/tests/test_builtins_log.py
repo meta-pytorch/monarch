@@ -20,7 +20,6 @@ def testing_context():
         yield
 
 
-@pytest.mark.skip(reason="flaky interaction with logger actor across tests")
 @pytest.mark.timeout(120)
 class TestLogFunctions:
     @classmethod
