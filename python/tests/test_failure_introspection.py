@@ -16,6 +16,7 @@ Verifies that when an actor fails, the introspection API exposes:
 
 import asyncio
 import json
+import os
 import ssl
 import urllib.parse
 import urllib.request
@@ -64,6 +65,10 @@ def _fetch_json(url: str) -> dict:
     if url.startswith("https"):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        # mTLS: the admin server requires a client cert in fbcode builds.
+        cert = "/var/facebook/x509_identities/server.pem"
+        if os.path.exists(cert):
+            ctx.load_cert_chain(cert, cert)
     # Bypass proxy to avoid env-variable proxy handlers adding latency
     # or flaking under stress.
     opener = urllib.request.build_opener(
