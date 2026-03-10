@@ -697,6 +697,7 @@ impl<M: RemoteMessage> Deliveries<M> {
 
     /// Resolves when the oldest queued message (outbox or unacked)
     /// exceeds the delivery timeout. Pends forever if no messages.
+    #[allow(dead_code)] // used in later commit
     pub(super) async fn expired(&self) {
         match self.expiry_time() {
             Some(t) => RealClock.sleep_until(t).await,
@@ -1078,7 +1079,7 @@ impl<L: Link> Session<L, Disconnected> {
                     Some(Err(_)) => {
                         // Brief pause so the timer driver can process
                         // the deadline on current-thread runtimes.
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        RealClock.sleep(std::time::Duration::from_millis(1)).await;
                         continue;
                     }
                     None => {
@@ -1131,6 +1132,7 @@ impl<S: Stream> Deref for ConnectionStream<'_, S> {
 /// Wait for the next task in a `JoinSet` to complete. If the set is
 /// empty, pend forever (so it can be used in a `select!` branch
 /// without busy-spinning).
+#[allow(dead_code)] // used in later commit
 pub(super) async fn join_nonempty<T: 'static>(
     set: &mut tokio::task::JoinSet<T>,
 ) -> Result<T, tokio::task::JoinError> {
