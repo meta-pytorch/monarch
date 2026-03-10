@@ -16,6 +16,7 @@ Verifies that when an actor fails, the introspection API exposes:
 
 import asyncio
 import json
+import os
 import ssl
 import urllib.parse
 import urllib.request
@@ -44,6 +45,19 @@ class FailWorker(Actor):
         raise ActorCrash("GPU memory corruption")
 
 
+def _to_loopback(url: str) -> str:
+    """Rewrite an admin URL to use 127.0.0.1 loopback.
+
+    The admin server returns a URL with the machine's FQDN. Under stress,
+    DNS/NSS resolution of the hostname can be slow or flaky. Since the
+    admin is local to the test process, we can connect via loopback.
+    """
+    parsed = urllib.parse.urlparse(url)
+    netloc = f"127.0.0.1:{parsed.port}" if parsed.port else "127.0.0.1"
+    # pyre-fixme[7]: urlunparse returns str for str input
+    return str(urllib.parse.urlunparse(parsed._replace(netloc=netloc)))
+
+
 def _fetch_json(url: str) -> dict:
     # Skip hostname verification — in CI the server's x509 identity cert
     # may not match the machine hostname.
@@ -51,7 +65,17 @@ def _fetch_json(url: str) -> dict:
     if url.startswith("https"):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(url, timeout=5, context=ctx) as resp:
+        # mTLS: the admin server requires a client cert in fbcode builds.
+        cert = "/var/facebook/x509_identities/server.pem"
+        if os.path.exists(cert):
+            ctx.load_cert_chain(cert, cert)
+    # Bypass proxy to avoid env-variable proxy handlers adding latency
+    # or flaking under stress.
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=ctx),
+    )
+    with opener.open(url, timeout=5) as resp:
         return json.loads(resp.read())
 
 
@@ -69,7 +93,7 @@ async def test_failed_actor_has_failure_info() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = await host._spawn_admin(admin_addr="[::]:0")
+        base = _to_loopback(await host._spawn_admin(admin_addr="[::]:0"))
 
         procs = host.spawn_procs(per_host={"replica": 2})
         workers = procs.spawn("worker", FailWorker)
@@ -141,7 +165,7 @@ async def test_healthy_procs_not_poisoned() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: faulted.set()
     try:
         host = this_host()
-        base = await host._spawn_admin(admin_addr="[::]:0")
+        base = _to_loopback(await host._spawn_admin(admin_addr="[::]:0"))
 
         procs = host.spawn_procs(per_host={"replica": 3})
         workers = procs.spawn("worker", FailWorker)

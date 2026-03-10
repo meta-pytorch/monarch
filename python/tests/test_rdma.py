@@ -79,6 +79,57 @@ def test_memoryview_addr_and_contiguity():
         _assert_1d_contiguous(mv[::2])
 
 
+def test_host_memory_handle_read_write():
+    """read_at/write_at round-trip through host memory."""
+    from monarch._src.rdma.rdma import _make_local_memory_handle
+
+    data = torch.tensor([1, 2, 3, 4, 5], dtype=torch.uint8)
+    handle = _make_local_memory_handle(data)
+
+    # read_at
+    result = handle.read_at(1, 3)
+    assert list(result) == [2, 3, 4]
+
+    # write_at
+    handle.write_at(0, bytes([10, 20]))
+    assert data[0].item() == 10
+    assert data[1].item() == 20
+
+    # out-of-bounds read
+    with pytest.raises(RuntimeError):
+        handle.read_at(3, 5)
+
+    # out-of-bounds write
+    with pytest.raises(RuntimeError):
+        handle.write_at(4, bytes([1, 2, 3]))
+
+
+@needs_cuda
+def test_device_memory_handle_read_write():
+    """read_at/write_at round-trip through device memory."""
+    from monarch._src.rdma.rdma import _make_local_memory_handle
+
+    data = torch.tensor([10, 20, 30, 40, 50], dtype=torch.uint8, device="cuda")
+    handle = _make_local_memory_handle(data)
+
+    # read_at
+    result = handle.read_at(1, 3)
+    assert list(result) == [20, 30, 40]
+
+    # write_at
+    handle.write_at(0, bytes([99, 88]))
+    readback = handle.read_at(0, 5)
+    assert list(readback) == [99, 88, 30, 40, 50]
+
+    # out-of-bounds read
+    with pytest.raises(RuntimeError):
+        handle.read_at(3, 5)
+
+    # out-of-bounds write
+    with pytest.raises(RuntimeError):
+        handle.write_at(4, bytes([1, 2, 3]))
+
+
 # ---------------------------------------------------------------------------
 # RDMA tests (require hardware)
 # ---------------------------------------------------------------------------

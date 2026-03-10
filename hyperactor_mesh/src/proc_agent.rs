@@ -73,7 +73,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ORPHAN_TIMEOUT".to_string()),
         Some("mesh_orphan_timeout".to_string()),
     ))
-    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(0);
+    pub attr MESH_ORPHAN_TIMEOUT: Duration = Duration::from_secs(60);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
@@ -241,7 +241,7 @@ struct SelfCheck {}
 ///
 /// We **export** `ActorSupervisionEvent` as a handler so that other
 /// procs—most importantly the process-global root client created by
-/// `global_root_client()`—can forward undeliverables as supervision
+/// `context()`—can forward undeliverables as supervision
 /// events to the *currently active* mesh.
 ///
 /// Without exporting this handler, `ActorSupervisionEvent` cannot be
@@ -250,7 +250,7 @@ struct SelfCheck {}
 /// degrade to log-only behavior (events become undeliverable again or
 /// are dropped).
 ///
-/// See `global_client.rs` for the invariant and the forwarding path
+/// See `global_context.rs` for the invariant and the forwarding path
 /// ("last sink wins").
 #[hyperactor::export(
     handlers=[
@@ -411,7 +411,6 @@ impl ProcAgent {
             .publish_properties(PublishedPropertiesKind::Proc {
                 proc_name: self.proc.proc_id().to_string(),
                 num_actors: num_live,
-                is_system: false,
                 children,
                 system_children,
                 stopped_children,
@@ -508,7 +507,6 @@ impl Actor for ProcAgent {
                         properties: NodeProperties::Proc {
                             proc_name: proc_id.to_string(),
                             num_actors: num_live,
-                            is_system: false,
                             system_children,
                             stopped_children,
                             stopped_retention_cap,

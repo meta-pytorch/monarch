@@ -8,8 +8,8 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-anyhow = "1.0.101"
-chrono = { version = "0.4.41", features = ["clock", "serde", "std"], default-features = false }
+anyhow = "1.0.102"
+chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 erased-serde = "0.4.9"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
@@ -17,9 +17,10 @@ hdrhistogram = "7.5"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 lazy_static = "1.5"
 libc = "0.2.139"
-opentelemetry = "0.29"
-opentelemetry_sdk = { version = "0.29.0", features = ["rt-tokio"] }
-prost = { version = "0.13.4", default-features = false }
+opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "logs", "metrics", "reqwest-blocking-client", "trace", "zstd-tonic"], default-features = false }
+opentelemetry_sdk = { version = "0.31", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }
+prost = { version = "0.14.3", default-features = false }
 rand = { version = "0.9", features = ["small_rng"] }
 rusqlite = { version = "0.37.0", features = ["backup", "blob", "bundled", "column_decltype", "functions", "limits", "modern_sqlite", "serde_json"] }
 scuba = { version = "0.1.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
@@ -33,7 +34,7 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-appender = "0.2.4"
 tracing-core = { version = "0.1.33", features = ["valuable"] }
 tracing-glog = { version = "0.4.1", features = ["ansi", "tracing-log"] }
-tracing-perfetto-sdk-schema = "0.12.0"
+tracing-perfetto-sdk-schema = "0.13.1"
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 urlencoding = "2.1.0"
 whoami = "1.5"

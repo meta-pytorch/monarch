@@ -15,7 +15,7 @@ use criterion::criterion_group;
 use criterion::criterion_main;
 use hyperactor::context::Mailbox;
 use hyperactor_mesh::ActorMesh;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::test_utils;
 use ndslice::extent;
 use ndslice::view::Ranked as _;
@@ -28,7 +28,7 @@ use tokio::runtime::Runtime;
 
 /// Single process-wide Runtime shared across all benchmark functions.
 ///
-/// `global_root_client()` is a `OnceLock` singleton whose background
+/// `context()` is a `OnceLock` singleton whose background
 /// tasks (mailbox server, actor run loop) are spawned on whatever
 /// tokio Runtime is active at first call. If each `bench_function`
 /// creates its own `Runtime::new()`, the singleton's tasks die when
@@ -50,7 +50,8 @@ fn bench_actor_scaling(c: &mut Criterion) {
         group.bench_function(BenchmarkId::from_parameter(host_count), |b| {
             let mut b = b.to_async(shared_runtime());
             b.iter_custom(|iters| async move {
-                let instance = global_root_client();
+                let cx = context().await;
+                let instance = cx.actor_instance;
                 let mut host_mesh = test_utils::local_host_mesh(host_count).await;
                 let mut proc_mesh = host_mesh
                     .spawn(instance, "bench", extent!(gpus = gpus))
@@ -140,7 +141,8 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                 |b| {
                     let mut b = b.to_async(shared_runtime());
                     b.iter_custom(|iters| async move {
-                        let instance = global_root_client();
+                        let cx = context().await;
+                        let instance = cx.actor_instance;
                         let mut host_mesh = test_utils::local_host_mesh(1).await;
                         let mut proc_mesh = host_mesh
                             .spawn(instance, "bench", extent!(gpus = actor_count))
