@@ -243,8 +243,9 @@ impl MessageEnvelope {
     pub(crate) fn new_unknown(dest: PortId, data: wirevalue::Any) -> Self {
         // Create a synthetic "unknown" actor ID for messages with no known sender
         let unknown_addr = ChannelAddr::any(ChannelTransport::Local);
-        let unknown_proc_id = crate::reference::ProcId(unknown_addr, "unknown".to_string());
-        let unknown_actor_id = crate::reference::ActorId(unknown_proc_id, "unknown".to_string(), 0);
+        let unknown_proc_id = crate::reference::ProcId::unique(unknown_addr, "unknown");
+        let unknown_actor_id =
+            crate::reference::ActorId::root(unknown_proc_id, "unknown".to_string());
         Self::new(unknown_actor_id, dest, data, Flattrs::new())
     }
 
@@ -1019,7 +1020,7 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
             static NEXT_RANK: AtomicUsize = AtomicUsize::new(0);
             let rank = NEXT_RANK.fetch_add(1, Ordering::Relaxed);
             let addr = ChannelAddr::any(ChannelTransport::Local);
-            let proc_id = ProcId(addr, format!("mailbox_server_{}", rank));
+            let proc_id = ProcId::unique(addr, format!("mailbox_server_{}", rank));
             // Use this mailbox server as the forwarder, so we can use it to
             // return message back to the sender.
             let proc = Proc::new(proc_id, BoxedMailboxSender::new(server));
@@ -1195,7 +1196,7 @@ impl MailboxSender for MailboxClient {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.0, "port"= envelope.dest.1, "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
+        tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
             self.buffer.send((envelope, return_handle))
         {
@@ -1277,7 +1278,7 @@ impl Mailbox {
     pub fn open_port<M: Message>(&self) -> (PortHandle<M>, PortReceiver<M>) {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = mpsc::unbounded_channel::<M>();
-        let port_id = PortId(self.inner.actor_id.clone(), port_index);
+        let port_id = PortId::new(self.inner.actor_id.clone(), port_index);
         tracing::trace!(
             name = "open_port",
             "opening port for {} at {}",
@@ -1332,7 +1333,7 @@ impl Mailbox {
     {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = mpsc::unbounded_channel::<A::State>();
-        let port_id = PortId(self.inner.actor_id.clone(), port_index);
+        let port_id = PortId::new(self.inner.actor_id.clone(), port_index);
         let state = Mutex::new(A::State::default());
         let reducer_spec = accum.reducer_spec();
         let enqueue = move |_, update: A::Update| {
@@ -1376,7 +1377,7 @@ impl Mailbox {
     /// receiver may receive a single message.
     pub fn open_once_port<M: Message>(&self) -> (OncePortHandle<M>, OncePortReceiver<M>) {
         let port_index = self.inner.allocate_port();
-        let port_id = PortId(self.inner.actor_id.clone(), port_index);
+        let port_id = PortId::new(self.inner.actor_id.clone(), port_index);
         let (sender, receiver) = oneshot::channel::<M>();
         (
             OncePortHandle {
@@ -1417,7 +1418,7 @@ impl Mailbox {
     {
         let port_index = self.inner.allocate_port();
         let (sender, receiver) = oneshot::channel::<T>();
-        let port_id = PortId(self.inner.actor_id.clone(), port_index);
+        let port_id = PortId::new(self.inner.actor_id.clone(), port_index);
         let reducer_spec = accum.reducer_spec();
         assert!(
             reducer_spec.is_some(),
@@ -1583,7 +1584,7 @@ impl MailboxSender for Mailbox {
             1,
             hyperactor_telemetry::kv_pairs!(
                 "actor_id" => envelope.sender.to_string(),
-                "dest_actor_id" => envelope.dest.0.to_string(),
+                "dest_actor_id" => envelope.dest.actor_id().to_string(),
             ),
         );
         tracing::trace!(
@@ -2006,11 +2007,11 @@ impl<M> PortReceiver<M> {
     }
 
     fn port(&self) -> u64 {
-        self.port_id.1
+        self.port_id.index()
     }
 
     fn actor_id(&self) -> &ActorId {
-        &self.port_id.0
+        self.port_id.actor_id()
     }
 }
 
@@ -2058,11 +2059,11 @@ impl<M> OncePortReceiver<M> {
     }
 
     fn port(&self) -> u64 {
-        self.port_id.1
+        self.port_id.index()
     }
 
     fn actor_id(&self) -> &ActorId {
-        &self.port_id.0
+        self.port_id.actor_id()
     }
 }
 
@@ -3400,7 +3401,7 @@ mod tests {
                 dummy_actor_id.clone(),
                 BOXED_PANICKING_MAILBOX_SENDER.clone(),
             );
-            let dummy_port_id = PortId(dummy_actor_id, 0);
+            let dummy_port_id = PortId::new(dummy_actor_id, 0);
             let (sender, receiver) = mpsc::unbounded_channel::<M>();
             let receiver = PortReceiver {
                 receiver,
@@ -4042,7 +4043,7 @@ mod tests {
         // Create a destination not owned by this mailbox to force
         // forwarding.
         let remote_actor = test_actor_id("remote_world_1", "remote");
-        let dest = PortId(remote_actor.clone(), /*port index*/ 4242);
+        let dest = PortId::new(remote_actor.clone(), /*port index*/ 4242);
 
         // Build an envelope (TTL is seeded in `MessageEnvelope::new` /
         // `::serialize`).

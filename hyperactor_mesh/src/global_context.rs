@@ -532,7 +532,7 @@ mod tests {
     ) {
         let env = MessageEnvelope::new(
             client.self_id().clone(),
-            PortId(dest_actor, 0),
+            PortId::new(dest_actor, 0),
             wirevalue::Any::serialize(&0u64).unwrap(),
             Flattrs::new(),
         );
