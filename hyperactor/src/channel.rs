@@ -909,6 +909,21 @@ impl ChannelAddr {
         }
     }
 
+    /// Render as a ZMQ-style URL, the inverse of [`from_zmq_url`](Self::from_zmq_url).
+    pub fn to_zmq_url(&self) -> String {
+        match self {
+            Self::Tcp(addr) => format!("tcp://{}", addr),
+            Self::MetaTls(addr) => format!("metatls://{}:{}", addr.hostname, addr.port),
+            Self::Tls(addr) => format!("tls://{}:{}", addr.hostname, addr.port),
+            Self::Local(index) => format!("inproc://{}", index),
+            Self::Unix(addr) => format!("ipc://{}", addr),
+            Self::Sim(sim_addr) => format!("sim://{}", sim_addr),
+            Self::Alias { dial_to, bind_to } => {
+                format!("{}@{}", dial_to.to_zmq_url(), bind_to.to_zmq_url())
+            }
+        }
+    }
+
     /// Resolve hostname to SocketAddr, handling both IP addresses and hostnames
     fn resolve_hostname_to_socket_addr(host: &str, port: u16) -> Result<SocketAddr, anyhow::Error> {
         // Handle IPv6 addresses in brackets by stripping the brackets
