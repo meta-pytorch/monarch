@@ -49,10 +49,10 @@ Each child reference can be resolved via `/v1/{reference}`.
 ## Navigation algorithm
 
 1. Fetch root:
-   `curl '{base}/v1/root'`
+   `curl --cacert /var/facebook/rootcanal/ca.pem --cert /var/facebook/x509_identities/server.pem --key /var/facebook/x509_identities/server.pem '{base}/v1/root'`
 
 2. Select a child reference:
-   `curl '{base}/v1/{child_reference}'`
+   `curl --cacert /var/facebook/rootcanal/ca.pem --cert /var/facebook/x509_identities/server.pem --key /var/facebook/x509_identities/server.pem '{base}/v1/{child_reference}'`
 
 3. Repeat. Each node describes its next traversal step.
 
@@ -75,15 +75,21 @@ Common examples include:
 
 ## Examples
 
+In Meta environments, the admin server requires mutual TLS. All `curl`
+commands need:
+```
+--cacert /var/facebook/rootcanal/ca.pem --cert /var/facebook/x509_identities/server.pem --key /var/facebook/x509_identities/server.pem
+```
+
 List root children:
 
-`curl '{base}/v1/root' | jq -r '.children[]'`
+`curl --cacert /var/facebook/rootcanal/ca.pem --cert /var/facebook/x509_identities/server.pem --key /var/facebook/x509_identities/server.pem '{base}/v1/root' | jq -r '.children[]'`
 
 Resolve a child (URL-encoded):
 
-`curl '{base}/v1/'$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" '{example_ref}')`
+`curl --cacert /var/facebook/rootcanal/ca.pem --cert /var/facebook/x509_identities/server.pem --key /var/facebook/x509_identities/server.pem '{base}/v1/'$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" '{example_ref}')`
 
 Actor nodes include a `flight_recorder` field with recent trace events.
 To focus on structure and stats, filter it out:
 
-`curl '{base}/v1/{reference}' | jq '{identity, properties, children}'`
+`curl --cacert /var/facebook/rootcanal/ca.pem --cert /var/facebook/x509_identities/server.pem --key /var/facebook/x509_identities/server.pem '{base}/v1/{reference}' | jq '{identity, properties, children}'`
