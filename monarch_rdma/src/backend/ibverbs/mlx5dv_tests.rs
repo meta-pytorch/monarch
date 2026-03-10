@@ -13,11 +13,11 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::context;
@@ -109,9 +109,9 @@ enum SenderMessage {
         buf0_size: usize,
         buf1_offset: usize,
         buf1_size: usize,
-        rdma_manager: ActorRef<RdmaManagerActor>,
+        rdma_manager: reference::ActorRef<RdmaManagerActor>,
         #[reply]
-        reply: hyperactor::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
+        reply: reference::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
     },
 }
 
@@ -126,7 +126,7 @@ impl SenderMessageHandler for SenderActor {
         buf0_size: usize,
         buf1_offset: usize,
         buf1_size: usize,
-        rdma_manager: ActorRef<RdmaManagerActor>,
+        rdma_manager: reference::ActorRef<RdmaManagerActor>,
     ) -> Result<(RdmaRemoteBuffer, RdmaRemoteBuffer), anyhow::Error> {
         let (dptr, padded_size) = unsafe {
             let ctx = self.cuda_ctx as rdmaxcel_sys::CUcontext;
@@ -233,7 +233,7 @@ enum ReceiverMessage {
         size: usize,
         timeout_secs: u64,
         #[reply]
-        reply: hyperactor::OncePortRef<Result<(), String>>,
+        reply: reference::OncePortRef<Result<(), String>>,
     },
 }
 

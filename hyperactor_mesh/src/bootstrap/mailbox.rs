@@ -108,12 +108,11 @@ mod tests {
     use std::assert_matches::assert_matches;
 
     use hyperactor::Mailbox;
-    use hyperactor::PortId;
-    use hyperactor::ProcId;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::Rx;
     use hyperactor::channel::{self};
+    use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
 
@@ -145,11 +144,14 @@ mod tests {
         // construct the IDs directly rather than via test_proc_id.
         let local_addr: ChannelAddr = "tcp:3.4.5.6:123".parse().unwrap();
         let first_actor_id =
-            ProcId::with_name(local_addr.clone(), first.to_string()).actor_id("actor", 0);
+            hyperactor_reference::ProcId::with_name(local_addr.clone(), first.to_string())
+                .actor_id("actor", 0);
         let second_actor_id =
-            ProcId::with_name(local_addr.clone(), second.to_string()).actor_id("actor", 0);
+            hyperactor_reference::ProcId::with_name(local_addr.clone(), second.to_string())
+                .actor_id("actor", 0);
         let third_notexist_actor_id =
-            ProcId::with_name(local_addr.clone(), third.to_string()).actor_id("actor", 0);
+            hyperactor_reference::ProcId::with_name(local_addr.clone(), third.to_string())
+                .actor_id("actor", 0);
         let proc_dialer = LocalProcDialer::new(
             local_addr.clone(),
             dir.path().to_owned(),
@@ -163,7 +165,7 @@ mod tests {
         // Existing address on the host:
         let envelope = MessageEnvelope::new(
             third_notexist_actor_id.clone(),
-            PortId::new(first_actor_id.clone(), 0),
+            hyperactor_reference::PortId::new(first_actor_id.clone(), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -176,7 +178,7 @@ mod tests {
         // Nonexistant address on the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId::new(third_notexist_actor_id.clone(), 0),
+            hyperactor_reference::PortId::new(third_notexist_actor_id.clone(), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -189,7 +191,7 @@ mod tests {
         // Outside the host:
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId::new(test_actor_id("external_0", "actor"), 0),
+            hyperactor_reference::PortId::new(test_actor_id("external_0", "actor"), 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );
@@ -198,10 +200,11 @@ mod tests {
 
         // System proc on the host (name must be exactly "system"):
         let system_actor_id =
-            ProcId::with_name(local_addr.clone(), "system".to_string()).actor_id("actor", 0);
+            hyperactor_reference::ProcId::with_name(local_addr.clone(), "system".to_string())
+                .actor_id("actor", 0);
         let envelope = MessageEnvelope::new(
             second_actor_id.clone(),
-            PortId::new(system_actor_id, 0),
+            hyperactor_reference::PortId::new(system_actor_id, 0),
             wirevalue::Any::serialize(&()).unwrap(),
             Flattrs::new(),
         );

@@ -60,15 +60,14 @@ use async_trait::async_trait;
 use clap::Arg;
 use clap::Command as ClapCommand;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -265,7 +264,7 @@ pub struct CudaRdmaActor {
     // RDMA buffer handle for the CUDA memory
     rdma_buffer_handle: Option<RdmaRemoteBuffer>,
     // Reference to the RDMA manager actor
-    rdma_manager: ActorRef<RdmaManagerActor>,
+    rdma_manager: reference::ActorRef<RdmaManagerActor>,
 }
 
 #[async_trait]
@@ -283,7 +282,7 @@ impl Actor for CudaRdmaActor {
 
 #[async_trait]
 impl RemoteSpawn for CudaRdmaActor {
-    type Params = (ActorRef<RdmaManagerActor>, usize, usize);
+    type Params = (reference::ActorRef<RdmaManagerActor>, usize, usize);
 
     async fn new(params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let (rdma_manager, device_id, buffer_size) = params;
@@ -383,21 +382,21 @@ impl RemoteSpawn for CudaRdmaActor {
 
 // Message to initialize the buffer with data
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct InitializeBuffer(pub u8, pub OncePortRef<bool>);
+struct InitializeBuffer(pub u8, pub reference::OncePortRef<bool>);
 
 // Message to perform an RDMA ping-pong operation with another actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PerformPingPong(
-    pub ActorRef<CudaRdmaActor>,
+    pub reference::ActorRef<CudaRdmaActor>,
     pub RdmaRemoteBuffer,
     pub i32,
     pub i32,
-    pub OncePortRef<bool>,
+    pub reference::OncePortRef<bool>,
 );
 
 // Message to verify the buffer contents
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct VerifyBuffer(pub Box<[u8]>, pub OncePortRef<bool>);
+struct VerifyBuffer(pub Box<[u8]>, pub reference::OncePortRef<bool>);
 
 #[async_trait]
 impl Handler<InitializeBuffer> for CudaRdmaActor {
@@ -649,7 +648,7 @@ impl Handler<VerifyBuffer> for CudaRdmaActor {
 
 // Message to get the buffer handle from an actor
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-struct GetBufferHandle(#[binding(include)] pub OncePortRef<RdmaRemoteBuffer>);
+struct GetBufferHandle(#[binding(include)] pub reference::OncePortRef<RdmaRemoteBuffer>);
 
 #[async_trait]
 impl Handler<GetBufferHandle> for CudaRdmaActor {

@@ -1500,12 +1500,11 @@ pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResul
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::PortRef;
     use hyperactor::accum::ReducerSpec;
     use hyperactor::accum::StreamingReducerOpts;
     use hyperactor::message::ErasedUnbound;
     use hyperactor::message::Unbound;
-    use hyperactor::reference::UnboundPort;
+    use hyperactor::reference;
     use hyperactor::testing::ids::test_port_id;
     use hyperactor_mesh::Error as MeshError;
     use hyperactor_mesh::Name;
@@ -1523,7 +1522,7 @@ mod tests {
             typehash: 123,
             builder_params: Some(wirevalue::Any::serialize(&"abcdefg12345".to_string()).unwrap()),
         };
-        let port_ref = PortRef::<PythonMessage>::attest_reducible(
+        let port_ref = reference::PortRef::<PythonMessage>::attest_reducible(
             test_port_id("world_0", "client", 123),
             Some(reducer_spec),
             StreamingReducerOpts::default(),
@@ -1541,12 +1540,12 @@ mod tests {
             let mut erased = ErasedUnbound::try_from_message(message.clone()).unwrap();
             let mut bindings = vec![];
             erased
-                .visit_mut::<UnboundPort>(|b| {
+                .visit_mut::<reference::UnboundPort>(|b| {
                     bindings.push(b.clone());
                     Ok(())
                 })
                 .unwrap();
-            assert_eq!(bindings, vec![UnboundPort::from(&port_ref)]);
+            assert_eq!(bindings, vec![reference::UnboundPort::from(&port_ref)]);
             let unbound = Unbound::try_from_message(message.clone()).unwrap();
             assert_eq!(message, unbound.bind().unwrap());
         }
@@ -1564,7 +1563,7 @@ mod tests {
             let mut erased = ErasedUnbound::try_from_message(no_port_message.clone()).unwrap();
             let mut bindings = vec![];
             erased
-                .visit_mut::<UnboundPort>(|b| {
+                .visit_mut::<reference::UnboundPort>(|b| {
                     bindings.push(b.clone());
                     Ok(())
                 })
@@ -1585,8 +1584,10 @@ mod tests {
         };
 
         // A ProcCreationError
-        let mesh_agent: hyperactor::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
-            hyperactor::ActorRef::attest(test_port_id("hello_0", "actor", 0).actor_id().clone());
+        let mesh_agent: hyperactor::reference::ActorRef<hyperactor_mesh::host_mesh::HostAgent> =
+            hyperactor::reference::ActorRef::attest(
+                test_port_id("hello_0", "actor", 0).actor_id().clone(),
+            );
         let expected_prefix = format!(
             "error creating proc (host rank 0) on host mesh agent {}",
             mesh_agent

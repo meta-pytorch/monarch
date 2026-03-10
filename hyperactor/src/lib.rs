@@ -163,12 +163,9 @@ pub use proc::Instance;
 pub use proc::InstanceCell;
 pub use proc::Proc;
 pub use proc::WeakProc;
-pub use reference::ActorId;
+// Re-exported because `hyperactor_macros::RefClient` generates code referencing `hyperactor::ActorRef`.
+#[doc(hidden)]
 pub use reference::ActorRef;
-pub use reference::OncePortRef;
-pub use reference::PortId;
-pub use reference::PortRef;
-pub use reference::ProcId;
 pub use remote::Accepts;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
