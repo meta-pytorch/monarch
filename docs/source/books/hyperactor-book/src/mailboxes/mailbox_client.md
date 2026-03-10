@@ -146,7 +146,7 @@ impl MailboxSender for MailboxClient {
         let (return_channel, return_receiver) = oneshot::channel();
         // Set up for delivery failure.
         let return_handle_clone = return_handle.clone();
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             let result = return_receiver.await;
             if let Ok(SendError { error: e, message, .. }) = result {
                 message.undeliverable(
