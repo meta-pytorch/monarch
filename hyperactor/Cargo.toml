@@ -91,7 +91,7 @@ indoc = "2.0.2"
 maplit = "1.0"
 proptest = "1.10.0"
 serde_bytes = "0.11"
-tempfile = "3.22"
+tempfile = "3.26.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio-test = "0.4.5"
 tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
