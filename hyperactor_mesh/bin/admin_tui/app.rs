@@ -38,6 +38,7 @@ use crate::VisibleRows;
 use crate::build_tree_node;
 use crate::collapse_all;
 use crate::collect_expanded_refs;
+use crate::collect_failed_refs;
 use crate::collect_refs;
 use crate::derive_label;
 use crate::diagnostics::DiagResult;
@@ -278,13 +279,14 @@ impl App {
         self.error = None;
         self.refresh_gen += 1;
 
-        // Save expanded state before rebuilding.
+        // Save expanded and failed state before rebuilding.
         // Track (reference, depth) pairs to handle dual appearances correctly.
         let mut expanded_keys = HashSet::new();
+        let mut failed_keys = HashSet::new();
         if let Some(root) = self.tree() {
-            // Start at depth -1 so root's children are at depth 0
             for child in &root.children {
                 collect_expanded_refs(child, 0, &mut expanded_keys);
+                collect_failed_refs(child, 0, &mut failed_keys);
             }
         }
 
@@ -324,6 +326,7 @@ impl App {
                 child_ref,
                 0,
                 &expanded_keys,
+                &failed_keys,
                 self.refresh_gen,
                 &mut self.seq_counter,
             )

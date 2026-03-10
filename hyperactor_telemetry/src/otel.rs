@@ -26,4 +26,10 @@ pub fn init_metrics() {
     {
         opentelemetry::global::set_meter_provider(crate::meta::meter_provider());
     }
+    #[cfg(not(fbcode_build))]
+    {
+        if let Some(provider) = crate::otlp::otlp_meter_provider() {
+            opentelemetry::global::set_meter_provider(provider);
+        }
+    }
 }

@@ -286,9 +286,8 @@ async fn walk(client: &reqwest::Client, base_url: &str, tx: &mpsc::Sender<DiagRe
         None => return,
     };
 
-    // Root-level system procs (e.g. mesh_root_client_proc) are admin
-    // infrastructure managed by the framework. Skip them here — they
-    // are not host agents and their children are not user procs.
+    // Root system_children is always empty (procs are never system,
+    // standalone procs removed from root). Filter kept for robustness.
     let root_system_refs: HashSet<&str> = match &root_payload.properties {
         NodeProperties::Root {
             system_children, ..

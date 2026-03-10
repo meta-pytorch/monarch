@@ -263,15 +263,13 @@ impl HostAgent {
 
         let addr = host.addr().to_string();
         let mut children = Vec::new();
-        let mut system_children = Vec::new();
+        let system_children = Vec::new();
 
-        // System procs — plain ProcId strings, no prefix needed.
-        // The admin server's resolve_proc_node handles routing via
-        // QueryChild to the host agent.
+        // Procs are not system — only actors are. Both service and
+        // local appear as regular children; 's' in the TUI toggles
+        // actor visibility, not proc visibility.
         let sys_ref = host.system_proc().proc_id().to_string();
         let local_ref = host.local_proc().proc_id().to_string();
-        system_children.push(sys_ref.clone());
-        system_children.push(local_ref.clone());
         children.push(sys_ref);
         children.push(local_ref);
 
@@ -361,7 +359,6 @@ impl Actor for HostAgent {
                         properties: NodeProperties::Proc {
                             proc_name: label.to_string(),
                             num_actors: actors.len(),
-                            is_system: true,
                             system_children: system_actors,
                             stopped_children: Vec::new(),
                             stopped_retention_cap: 0,

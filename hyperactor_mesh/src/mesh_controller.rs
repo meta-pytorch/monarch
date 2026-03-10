@@ -27,6 +27,7 @@ use hyperactor::actor::handle_undeliverable_message;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::kv_pairs;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::supervision::ActorSupervisionEvent;
@@ -34,6 +35,7 @@ use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
 use hyperactor_config::attrs::declare_attrs;
+use hyperactor_telemetry::declare_static_counter;
 use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
 use ndslice::view::Point;
@@ -56,6 +58,9 @@ use crate::resource;
 use crate::supervision::MeshFailure;
 use crate::supervision::Unhealthy;
 
+/// Actor name for `ActorMeshController` when spawned as a named child.
+pub const ACTOR_MESH_CONTROLLER_NAME: &str = "actor_mesh_controller";
+
 declare_attrs! {
     /// Time between checks of actor states to create supervision events for
     /// owners. The longer this is, the longer it will take to detect a failure
@@ -70,6 +75,11 @@ declare_attrs! {
     ))
     pub attr SUPERVISION_POLL_FREQUENCY: Duration = Duration::from_secs(10);
 }
+
+declare_static_counter!(
+    ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS,
+    "actor.actor_mesh_controller.num_stalls"
+);
 
 #[derive(Debug)]
 struct HealthState {
@@ -118,8 +128,10 @@ pub struct GetSubscriberCount(#[binding(include)] pub PortRef<usize>);
 
 /// Check state of the actors in the mesh. This is used as a self message to
 /// periodically check.
+/// Stores the next time we expect to start running a check state message.
+/// Used to check for stalls in message handling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
-pub struct CheckState();
+pub struct CheckState(pub std::time::SystemTime);
 
 /// The implementation of monitoring works as follows:
 /// * ActorMesh and ActorMeshRef subscribe for updates from this controller,
@@ -188,10 +200,10 @@ impl<A: Referable> ActorMeshController<A> {
     fn self_check_state_message(&self, cx: &Instance<Self>) -> Result<(), ActorError> {
         // Only schedule a self message if the monitor has not been dropped.
         if self.monitor.is_some() {
-            cx.self_message_with_delay(
-                CheckState {},
-                hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY),
-            )
+            // Save when we expect the next check state message, so we can automatically
+            // detect stalls as they accumulate.
+            let delay = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
+            cx.self_message_with_delay(CheckState(RealClock.system_time_now() + delay), delay)
         } else {
             Ok(())
         }
@@ -625,6 +637,41 @@ fn actor_state_to_supervision_events(
     (rank, events)
 }
 
+/// Map a process-level [`ProcStatus`] to an actor-level [`ActorStatus`].
+///
+/// When the supervision poll discovers that a process is terminating, this
+/// function decides whether to treat it as a clean stop or a failure.
+/// Notably, [`ProcStatus::Stopping`] (SIGTERM sent, process not yet exited)
+/// is mapped to [`ActorStatus::Stopped`] rather than [`ActorStatus::Failed`]
+/// so that a graceful shutdown in progress does not trigger unhandled
+/// supervision errors.
+fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
+    match proc_status {
+        Some(ProcStatus::Stopped { exit_code: 0, .. }) => {
+            ActorStatus::Stopped("process exited cleanly".to_string())
+        }
+        Some(ProcStatus::Stopped { exit_code, .. }) => ActorStatus::Failed(
+            ActorErrorKind::Generic(format!("process exited with non-zero code {}", exit_code)),
+        ),
+        // Stopping is a transient state during graceful shutdown. Treat it the
+        // same as a clean stop rather than a failure.
+        Some(ProcStatus::Stopping { .. }) => {
+            ActorStatus::Stopped("process is stopping".to_string())
+        }
+        // Conservatively treat lack of status as stopped
+        None => ActorStatus::Stopped("no status received from process".to_string()),
+        Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
+            "process failure: {}",
+            status
+        ))),
+    }
+}
+
+fn format_system_time(time: std::time::SystemTime) -> String {
+    let datetime: chrono::DateTime<chrono::Local> = time.into();
+    datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 #[async_trait]
 impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
     /// Checks actor states and reschedules as a self-message.
@@ -638,13 +685,35 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
     ///
     /// * SUPERVISION_POLL_FREQUENCY controls how frequently to poll.
     /// * self-messaging stops when self.monitor is set to None.
-    async fn handle(&mut self, cx: &Context<Self>, _: CheckState) -> Result<(), anyhow::Error> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        CheckState(expected_time): CheckState,
+    ) -> Result<(), anyhow::Error> {
         // This implementation polls every "time_between_checks" duration, checking
         // for changes in the actor states. It can be improved in two ways:
         // 1. Use accumulation, to get *any* actor with a change in state, not *all*
         //    actors.
         // 2. Use a push-based mode instead of polling.
         // Wait in between checking to avoid using too much network.
+
+        // Check for stalls in the supervision loop. These delays can cause the
+        // subscribers to think the controller is dead.
+        // Allow a little slack time to avoid logging for innocuous delays.
+        // If it's greater than 2x the expected time, log a warning.
+        if RealClock.system_time_now()
+            > expected_time + hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY)
+        {
+            // Current time is included by default in the log message.
+            let expected_time = format_system_time(expected_time);
+            // Track in both metrics and tracing.
+            ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS.add(1, kv_pairs!("actor_id" => cx.self_id().to_string(), "expected_time" => expected_time.clone()));
+            tracing::warn!(
+                actor_id = %cx.self_id(),
+                "Handler<CheckState> is being stalled, expected at {}",
+                expected_time,
+            );
+        }
         let mesh = &self.mesh;
         let supervision_display_name = &self.supervision_display_name;
         // First check if the proc mesh is dead before trying to query their agents.
@@ -678,23 +747,8 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 // TODO: allow "actor supervision event" to be general, and
                 // make the proc failure the cause. It is a hack to try to determine
                 // the correct status based on process exit status.
-                let actor_status = match state.state.and_then(|s| s.proc_status) {
-                    Some(ProcStatus::Stopped { exit_code: 0, .. }) => {
-                        ActorStatus::Stopped("process exited cleanly".to_string())
-                    }
-                    Some(ProcStatus::Stopped { exit_code, .. }) => {
-                        ActorStatus::Failed(ActorErrorKind::Generic(format!(
-                            "process exited with non-zero code {}",
-                            exit_code
-                        )))
-                    }
-                    // Conservatively treat lack of status as stopped
-                    None => ActorStatus::Stopped("no status received from process".to_string()),
-                    Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
-                        "process failure: {}",
-                        status
-                    ))),
-                };
+                let actor_status =
+                    proc_status_to_actor_status(state.state.and_then(|s| s.proc_status));
                 let display_name = crate::actor_display_name(supervision_display_name, &point);
                 send_state_change(
                     cx,
@@ -913,14 +967,17 @@ mod tests {
     use std::ops::Deref;
     use std::time::Duration;
 
+    use hyperactor::actor::ActorStatus;
     use hyperactor::clock::Clock;
     use hyperactor::clock::RealClock;
     use ndslice::Extent;
     use ndslice::ViewExt;
 
     use super::SUPERVISION_POLL_FREQUENCY;
+    use super::proc_status_to_actor_status;
     use crate::ActorMesh;
     use crate::Name;
+    use crate::bootstrap::ProcStatus;
     use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
     use crate::resource;
     use crate::supervision::MeshFailure;
@@ -1142,5 +1199,78 @@ mod tests {
 
         let _ = actor_hm.shutdown(instance).await;
         let _ = controller_hm.shutdown(instance).await;
+    }
+
+    #[test]
+    fn test_proc_status_to_actor_status_stopped_cleanly() {
+        let status = proc_status_to_actor_status(Some(ProcStatus::Stopped {
+            exit_code: 0,
+            stderr_tail: vec![],
+        }));
+        assert!(
+            matches!(status, ActorStatus::Stopped(ref msg) if msg.contains("cleanly")),
+            "expected Stopped, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_proc_status_to_actor_status_nonzero_exit() {
+        let status = proc_status_to_actor_status(Some(ProcStatus::Stopped {
+            exit_code: 1,
+            stderr_tail: vec![],
+        }));
+        assert!(
+            matches!(status, ActorStatus::Failed(_)),
+            "expected Failed, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_proc_status_to_actor_status_stopping_is_not_a_failure() {
+        let status = proc_status_to_actor_status(Some(ProcStatus::Stopping {
+            started_at: std::time::SystemTime::now(),
+        }));
+        assert!(
+            matches!(status, ActorStatus::Stopped(ref msg) if msg.contains("stopping")),
+            "expected Stopped, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_proc_status_to_actor_status_none() {
+        let status = proc_status_to_actor_status(None);
+        assert!(
+            matches!(status, ActorStatus::Stopped(_)),
+            "expected Stopped, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_proc_status_to_actor_status_killed() {
+        let status = proc_status_to_actor_status(Some(ProcStatus::Killed {
+            signal: 9,
+            core_dumped: false,
+        }));
+        assert!(
+            matches!(status, ActorStatus::Failed(_)),
+            "expected Failed, got {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_proc_status_to_actor_status_failed() {
+        let status = proc_status_to_actor_status(Some(ProcStatus::Failed {
+            reason: "oom".to_string(),
+        }));
+        assert!(
+            matches!(status, ActorStatus::Failed(_)),
+            "expected Failed, got {:?}",
+            status
+        );
     }
 }

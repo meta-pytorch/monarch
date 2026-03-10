@@ -364,7 +364,7 @@ impl MessageEnvelope {
         error: DeliveryError,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
-        tracing::error!(
+        tracing::debug!(
             name = "undelivered_message_attempt",
             sender = self.sender.to_string(),
             dest = self.dest.to_string(),

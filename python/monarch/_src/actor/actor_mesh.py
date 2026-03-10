@@ -48,7 +48,6 @@ from monarch._rust_bindings.monarch_hyperactor.actor import (
     PythonMessage,
     PythonMessageKind,
 )
-from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.buffers import FrozenBuffer
 from monarch._rust_bindings.monarch_hyperactor.channel import BindSpec, ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
@@ -262,6 +261,11 @@ class Instance(abc.ABC):
         Use ``ActorMesh.stop()`` when you need coordinated, mesh-wide
         shutdown.
         """
+        ...
+
+    @abstractmethod
+    def set_system(self) -> None:
+        """Mark this actor as system/infrastructure."""
         ...
 
     def _stop_instance(self, reason: Optional[str] = None) -> None:
@@ -1127,6 +1131,19 @@ class _Actor:
     error handling.
     """
 
+    class QueuePanicFlag:
+        """Panic flag for queue dispatch mode.
+
+        Unlike the DummyPanicFlag, this one stores the exception so it can
+        be re-raised after handle() returns, ensuring proper cleanup.
+        """
+
+        def __init__(self) -> None:
+            self.panic_exception: BaseException | None = None
+
+        def signal_panic(self, ex: BaseException) -> None:
+            self.panic_exception = ex
+
     def __init__(self) -> None:
         self.instance: object | None = None
         # TODO: (@pzhang) remove this with T229200522
@@ -1184,6 +1201,12 @@ class _Actor:
                             ins._mock_tensor_engine_factory = (
                                 lambda proc_mesh: mock_factory(proc_mesh)
                             )
+                        # PY-SYS-2: If Class._is_system_actor is true,
+                        # ins.set_system() must run during
+                        # MethodSpecifier::Init before first
+                        # introspection publish.
+                        if getattr(Class, "_is_system_actor", False):
+                            ins.set_system()
                         self._maybe_exit_debugger()
                     except Exception as e:
                         self._saved_error = ActorError(
@@ -1277,7 +1300,6 @@ class _Actor:
                 # The channel might be closed if the Rust side has already detected the error
                 pass
             raise
-        return
 
     def _maybe_exit_debugger(self, do_continue: bool = True) -> None:
         if (pdb_wrapper := DebugContext.get().pdb_wrapper) is not None:
@@ -1406,20 +1428,7 @@ class _Actor:
     async def _handle_queued_message(self, msg: "QueuedMessage") -> None:
         """Handle a single queued message."""
 
-        class QueuePanicFlag:
-            """Panic flag for queue dispatch mode.
-
-            Unlike the DummyPanicFlag, this one stores the exception so it can
-            be re-raised after handle() returns, ensuring proper cleanup.
-            """
-
-            def __init__(self) -> None:
-                self.panic_exception: BaseException | None = None
-
-            def signal_panic(self, ex: BaseException) -> None:
-                self.panic_exception = ex
-
-        panic_flag = QueuePanicFlag()
+        panic_flag = self.QueuePanicFlag()
         await self.handle(
             msg.context,
             msg.method,

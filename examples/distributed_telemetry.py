@@ -36,9 +36,6 @@ from monarch.distributed_telemetry import start_telemetry
 from monarch.job import ProcessJob
 
 
-NUM_WORKERS = 4  # Match MAST total: WORKERS_PER_HOST * MAST_HOSTS
-
-
 class ComputeActor(Actor):
     """Actor that does some work to generate tracing events."""
 
@@ -73,6 +70,20 @@ class ComputeActor(Actor):
         return child.compute.call_one(100).get()
 
 
+class SenderActor(Actor):
+    """Actor that sends messages to another actor mesh.
+
+    The sent_messages table records this actor's ID as sender_actor_id,
+    joinable with actors.id to retrieve display_name.
+    """
+
+    @endpoint
+    def send_compute(self, target: ComputeActor, iterations: int) -> int:
+        """Send a compute request to the target actor mesh."""
+        # pyre-ignore[29]: target is an ActorMesh
+        return sum(target.compute.call(iterations).get().values())
+
+
 def print_table(table: pa.Table, max_rows: int = 50) -> None:
     """Pretty print a PyArrow table."""
     if table.num_rows == 0:
@@ -88,42 +99,6 @@ def print_table(table: pa.Table, max_rows: int = 50) -> None:
 
 # Shared queries for telemetry tables
 QUERIES = [
-    # Show table schemas first
-    (
-        "Schema of 'spans' table",
-        """SELECT column_name, data_type, is_nullable
-           FROM information_schema.columns
-           WHERE table_name = 'spans'
-           ORDER BY ordinal_position""",
-    ),
-    (
-        "Schema of 'span_events' table",
-        """SELECT column_name, data_type, is_nullable
-           FROM information_schema.columns
-           WHERE table_name = 'span_events'
-           ORDER BY ordinal_position""",
-    ),
-    (
-        "Schema of 'events' table",
-        """SELECT column_name, data_type, is_nullable
-           FROM information_schema.columns
-           WHERE table_name = 'events'
-           ORDER BY ordinal_position""",
-    ),
-    (
-        "Schema of 'actors' table",
-        """SELECT column_name, data_type, is_nullable
-           FROM information_schema.columns
-           WHERE table_name = 'actors'
-           ORDER BY ordinal_position""",
-    ),
-    (
-        "Schema of 'meshes' table",
-        """SELECT column_name, data_type, is_nullable
-           FROM information_schema.columns
-           WHERE table_name = 'meshes'
-           ORDER BY ordinal_position""",
-    ),
     # Show available spans
     ("Count of spans", "SELECT COUNT(*) as total_spans FROM spans"),
     (
@@ -197,14 +172,14 @@ QUERIES = [
     # Actors by name pattern
     (
         "Actors by full_name",
-        """SELECT full_name
+        """SELECT id, full_name
            FROM actors
            ORDER BY full_name""",
     ),
     # Actors by name pattern
     (
         "Actors by display_name",
-        """SELECT display_name
+        """SELECT id, display_name
            FROM actors
            WHERE display_name IS NOT NULL
            ORDER BY display_name""",
@@ -295,14 +270,6 @@ QUERIES = [
            WHERE hm.class = 'Host'
            ORDER BY host_mesh_name, proc_mesh_name, actor_mesh_name, rank""",
     ),
-    # Actor status events schema
-    (
-        "Schema of 'actor_status_events' table",
-        """SELECT column_name, data_type, is_nullable
-           FROM information_schema.columns
-           WHERE table_name = 'actor_status_events'
-           ORDER BY ordinal_position""",
-    ),
     # Actor status events by status
     (
         "Actor status transitions",
@@ -337,6 +304,27 @@ QUERIES = [
         "Meshes detail",
         """SELECT given_name, class, shape_json
            FROM meshes""",
+    ),
+    (
+        "Count of sent messages",
+        "SELECT COUNT(*) as total_sent_messages FROM sent_messages",
+    ),
+    (
+        "Sent messages to 'compute' actor mesh",
+        """SELECT sm.id, sm.timestamp_us, a.display_name AS sender, m.given_name AS mesh_name
+           FROM sent_messages sm
+           LEFT JOIN meshes m ON sm.actor_mesh_id = m.id
+           LEFT JOIN actors a ON sm.sender_actor_id = a.id
+           WHERE m.given_name = 'compute'""",
+    ),
+    (
+        "Sample sent messages",
+        """SELECT sm.timestamp_us, a.display_name AS sender,
+                  sm.view_json, sm.shape_json
+           FROM sent_messages sm
+           JOIN actors a ON sm.sender_actor_id = a.id
+           ORDER BY sm.timestamp_us DESC
+           LIMIT 10""",
     ),
 ]
 
@@ -393,16 +381,21 @@ def run_queries(engine, summary: bool = False) -> None:
         print()
 
 
-def run_workload(procs, summary=False, spawn_child=None):
-    """Shared workload: start telemetry, spawn actors, run work, and query.
+def run_workload(job, summary=False):
+    """Run the full telemetry demo: spawn actors, run work, query, and shut down.
 
     Args:
-        procs: The proc mesh to spawn actors on.
+        job: JobTrait whose state has a "workers" HostMesh.
         summary: If True, print summary output instead of full tables.
-        spawn_child: Optional callable(actors) to spawn a child process and do work.
     """
-    print("Starting telemetry with real data collection...")
+    print("=" * 50)
+    print()
+
     engine = start_telemetry()
+
+    hosts = job.state(cached_path=None).hosts
+
+    procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers")
 
     print("Spawning compute actors...")
     # pyre-ignore[29]: procs is a ProcMesh
@@ -418,8 +411,18 @@ def run_workload(procs, summary=False, spawn_child=None):
     nested_results = actors.nested_work.call(3).get()
     print(f"Nested work results: {list(nested_results)}")
 
-    if spawn_child is not None:
-        spawn_child(actors)
+    print("Spawning sender actor for actor-to-actor messaging...")
+    # pyre-ignore[29]: procs is a ProcMesh
+    sender = procs.slice(hosts=0, workers=0).spawn("sender", SenderActor)
+
+    print("Sending from sender actor to compute actors...")
+    # pyre-ignore[29]: sender is an ActorMesh
+    result = sender.send_compute.call_one(actors, 42).get()
+    print(f"Sender-to-compute result: {result}")
+
+    print("Spawning a child process...")
+    # pyre-ignore[29]: actors is an ActorMesh
+    actors.slice(hosts=0, workers=0).spawn_child_work.call_one().get()
 
     # Give a moment for all trace events to be flushed
     print("Waiting for trace events to flush...")
@@ -434,28 +437,14 @@ def run_workload(procs, summary=False, spawn_child=None):
 
     print("Demo complete!")
 
+    hosts.shutdown().get()
+
 
 def main(summary: bool = False) -> None:
-    print("Distributed Telemetry - Real Tracing Data Demo")
-    print("=" * 50)
-    print()
-
-    # Spawn worker processes - telemetry automatically tracks them
-    print(f"Spawning {NUM_WORKERS} worker processes...")
-    hosts = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    procs = hosts.spawn_procs(per_host={"workers": NUM_WORKERS}, name="workers")
-
-    def spawn_child(_actors):
-        print("Spawning a child process...")
-        child_procs = hosts.spawn_procs(name="child_worker")
-        child_actors = child_procs.spawn("child_compute", ComputeActor)
-        # pyre-ignore[29]: child_actors is an ActorMesh
-        child_actors.compute.call(100).get()
-
-    run_workload(procs, summary, spawn_child=spawn_child)
-
-    # Clean up
-    hosts.shutdown().get()
+    run_workload(
+        ProcessJob({"hosts": 2}),
+        summary,
+    )
 
 
 if __name__ == "__main__":

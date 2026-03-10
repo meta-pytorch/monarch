@@ -28,7 +28,7 @@ use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::comm::multicast::CastInfo;
-use hyperactor_mesh::global_root_client;
+use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
 use ndslice::extent;
@@ -258,28 +258,31 @@ async fn main() -> Result<ExitCode> {
     };
 
     let group_size = 5;
-    let instance = global_root_client();
+    let cx = context().await;
+    let instance = cx.actor_instance;
 
     // Start the mesh admin agent, which aggregates admin state
     // across all hosts and serves an HTTP API.
     let mesh_admin_url = host_mesh.spawn_admin(instance, None).await?;
-    let cacert = if mesh_admin_url.starts_with("https") {
-        "--cacert /var/facebook/rootcanal/ca.pem "
+    let mtls_flags = if mesh_admin_url.starts_with("https") {
+        "--cacert /var/facebook/rootcanal/ca.pem \
+         --cert /var/facebook/x509_identities/server.pem \
+         --key /var/facebook/x509_identities/server.pem "
     } else {
         ""
     };
     println!("Mesh admin server listening on {}", mesh_admin_url);
     println!(
         "  - Root node:     curl {}{}/v1/root",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - Mesh tree:     curl {}{}/v1/tree",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - API docs:      curl {}{}/SKILL.md",
-        cacert, mesh_admin_url
+        mtls_flags, mesh_admin_url
     );
     println!(
         "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- --addr {}",

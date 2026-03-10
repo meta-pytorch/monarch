@@ -15,6 +15,8 @@ use std::time::Duration;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Proc;
+use hyperactor::clock::Clock;
+use hyperactor::clock::RealClock;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::host;
@@ -326,6 +328,10 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
             .map_err(|e| PyException::new_err(e.to_string()))?;
 
+        // Register C so MeshAdminAgent can discover it ("A/C
+        // invariant" - hyperactor_mesh/src/mesh_admin.rs).
+        hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
+
         // We require a temporary instance to make a call to the host/proc agent.
         let temp_proc = Proc::local();
         let (temp_instance, _) = temp_proc
@@ -357,6 +363,79 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             PythonActor::bootstrap_client_inner(py, local_proc, &ROOT_CLIENT_INSTANCE_FOR_HOST)
         })
         .await;
+
+        // Notify telemetry of the bootstrap host mesh, proc mesh, and client actor.
+        {
+            let now = RealClock.system_time_now();
+
+            let host_name_str = host_mesh.name().to_string();
+            let host_mesh_id = hyperactor_telemetry::hash_to_u64(&host_name_str);
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: host_mesh_id,
+                timestamp: now,
+                class: "Host".to_string(),
+                given_name: host_mesh.name().name().to_string(),
+                full_name: host_name_str,
+                shape_json: host_mesh.region().extent().to_string(),
+                parent_mesh_id: None,
+                parent_view_json: None,
+            });
+
+            let host_agent_id = host_mesh_agent.actor_id();
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(host_agent_id),
+                timestamp: now,
+                mesh_id: host_mesh_id,
+                rank: 0,
+                full_name: host_agent_id.to_string(),
+                display_name: None,
+            });
+
+            let proc_name_str = proc_mesh.name().to_string();
+            let proc_mesh_id = hyperactor_telemetry::hash_to_u64(&proc_name_str);
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: proc_mesh_id,
+                timestamp: now,
+                class: "Proc".to_string(),
+                given_name: proc_mesh.name().name().to_string(),
+                full_name: proc_name_str,
+                shape_json: proc_mesh.region().extent().to_string(),
+                parent_mesh_id: Some(host_mesh_id),
+                parent_view_json: None,
+            });
+
+            let proc_agent_id = local_proc_agent.actor_id();
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(proc_agent_id),
+                timestamp: now,
+                mesh_id: proc_mesh_id,
+                rank: 0,
+                full_name: proc_agent_id.to_string(),
+                display_name: None,
+            });
+
+            let client_mesh_name = format!("{}/client", proc_mesh.name());
+            let client_mesh_id = hyperactor_telemetry::hash_to_u64(&client_mesh_name);
+            hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
+                id: client_mesh_id,
+                timestamp: now,
+                class: <PythonActor as typeuri::Named>::typename().to_string(),
+                given_name: "client".to_string(),
+                full_name: client_mesh_name,
+                shape_json: proc_mesh.region().extent().to_string(),
+                parent_mesh_id: Some(proc_mesh_id),
+                parent_view_json: None,
+            });
+
+            hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
+                id: hyperactor_telemetry::hash_to_u64(instance.self_id()),
+                timestamp: now,
+                mesh_id: client_mesh_id,
+                rank: 0,
+                full_name: instance.self_id().to_string(),
+                display_name: Some("<root>".to_string()),
+            });
+        }
 
         Ok((
             PyHostMesh::new_ref(host_mesh),

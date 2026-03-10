@@ -146,9 +146,10 @@ struct ProcState {
     /// Sender used to forward messages outside of the proc.
     forwarder: BoxedMailboxSender,
 
-    /// All of the roots (i.e., named actors with pid=0) in the proc.
-    /// These are also known as "global actors", since they may be
-    /// spawned remotely.
+    /// Per-name atomic index allocator. Used by `allocate_root_id`
+    /// (index 0, counter starts at 1) and `allocate_child_id`
+    /// (increments the parent's counter). Each root name gets its
+    /// own independent counter.
     roots: DashMap<String, AtomicUsize>,
 
     /// All actor instances in this proc.
@@ -583,6 +584,19 @@ impl Proc {
         self.spawn_inner(actor_id, actor, Some(parent))
     }
 
+    /// Spawn a named child actor. Same as `spawn_child` but the child
+    /// gets a descriptive name instead of inheriting the parent's.
+    /// Supervision linkage to parent is preserved.
+    pub(crate) fn spawn_named_child<A: Actor>(
+        &self,
+        parent: InstanceCell,
+        name: &str,
+        actor: A,
+    ) -> Result<ActorHandle<A>, anyhow::Error> {
+        let actor_id = self.allocate_named_child_id(parent.actor_id(), name)?;
+        self.spawn_inner(actor_id, actor, Some(parent))
+    }
+
     /// Call `abort` on the `JoinHandle` associated with the given
     /// root actor. If successful return `Some(root.clone())` else
     /// `None`.
@@ -833,6 +847,41 @@ impl Proc {
             Some(next_pid) => next_pid.fetch_add(1, Ordering::Relaxed),
         };
         Ok(parent_id.child_id(pid))
+    }
+
+    /// Allocate an actor ID with a custom name on this proc.
+    ///
+    /// **AI-1 (named-child pid):** The pid of a named child must
+    /// remain in the parent's sibling pid domain (allocated via the
+    /// parent's counter in `roots`). The name field is presentation
+    /// /identity flavor only — it does not affect pid allocation,
+    /// supervision linkage, or the parent's `children` DashMap keying.
+    /// Violating this (e.g. allocating pids from a separate per-name
+    /// counter) causes sibling pid collisions in the parent's
+    /// `children: DashMap<Index, InstanceCell>`.
+    ///
+    /// Named children use plain infrastructure-style strings (e.g.
+    /// `"actor_mesh_controller"`), not the mesh `Name` system with
+    /// `ShortUuid` suffixes.
+    ///
+    /// **AI-3 (controller ActorId uniqueness):** Callers must ensure
+    /// `name` is unique proc-wide, not just unique within the parent.
+    /// Pid allocation is parent-scoped, so a fixed `name` across
+    /// different parents produces duplicate `(proc_id, name, pid)`
+    /// tuples. Controller actors include mesh identity in the name
+    /// to satisfy this (see spawn sites in `proc_mesh.rs` /
+    /// `host_mesh.rs`).
+    pub(crate) fn allocate_named_child_id(
+        &self,
+        parent_id: &ActorId,
+        name: &str,
+    ) -> Result<ActorId, anyhow::Error> {
+        let inherited = self.allocate_child_id(parent_id)?;
+        Ok(ActorId(
+            inherited.proc_id().clone(),
+            name.to_string(),
+            inherited.pid(),
+        ))
     }
 
     /// Downgrade to a weak reference that doesn't prevent the proc from being dropped.
@@ -1721,7 +1770,6 @@ impl<A: Actor> Instance<A> {
         }
     }
 
-    #[tracing::instrument(level = "debug", skip_all)]
     async unsafe fn handle_message<M: Message>(
         &self,
         actor: &mut A,
@@ -1737,14 +1785,31 @@ impl<A: Actor> Instance<A> {
             Some(info) => {
                 // SAFETY: The caller promises to pass the correct type info.
                 let arm = unsafe { info.arm_unchecked(&message as *const M as *const ()) };
-                Some(HandlerInfo::from_static(info.typename(), arm))
+                HandlerInfo::from_static(info.typename(), arm)
             }
             None => {
                 // Fall back to std::any::type_name (also static, zero-copy).
-                Some(HandlerInfo::from_static(std::any::type_name::<M>(), None))
+                HandlerInfo::from_static(std::any::type_name::<M>(), None)
             }
         };
+        // Use a helper function for a better instrument log.
+        self.handle_message_with_handler_info(actor, handler_info, headers, message)
+            .await
+    }
 
+    // Skip serializing all fields except HandlerInfo which includes the typename.
+    #[tracing::instrument(level = "debug", name = "handle_message", skip_all, fields(actor_id = %self.self_id(), message_type = %handler_info))]
+    async fn handle_message_with_handler_info<M: Message>(
+        &self,
+        actor: &mut A,
+        handler_info: HandlerInfo,
+        headers: Flattrs,
+        message: M,
+    ) -> Result<(), anyhow::Error>
+    where
+        A: Handler<M>,
+    {
+        let handler_info = Some(handler_info);
         self.change_status(ActorStatus::Processing(
             self.clock().system_time_now(),
             handler_info.clone(),
@@ -1778,6 +1843,19 @@ impl<A: Actor> Instance<A> {
     /// Spawn on child on this instance.
     pub fn spawn<C: Actor>(&self, actor: C) -> anyhow::Result<ActorHandle<C>> {
         self.inner.proc.spawn_child(self.inner.cell.clone(), actor)
+    }
+
+    /// Spawn a named child actor on this instance. The child gets a
+    /// descriptive name in its ActorId instead of inheriting this
+    /// instance's name. Supervision linkage is preserved.
+    pub fn spawn_with_name<C: Actor>(
+        &self,
+        name: &str,
+        actor: C,
+    ) -> anyhow::Result<ActorHandle<C>> {
+        self.inner
+            .proc
+            .spawn_named_child(self.inner.cell.clone(), name, actor)
     }
 
     /// Create a new direct child instance.
@@ -3775,6 +3853,160 @@ mod tests {
             }
             other => panic!("expected NodeProperties::Actor, got {:?}", other),
         }
+    }
+
+    /// AI-1: name is presentation only, pid
+    /// comes from parent's counter.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_with_name_creates_descriptive_name() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let handle = proc
+            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
+            .unwrap();
+        assert_eq!(handle.actor_id().name(), "my_controller");
+        assert_eq!(handle.actor_id().pid(), 1);
+    }
+
+    /// AI-1: same-name children increment from
+    /// parent's counter.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_with_name_increments_index() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let first = proc
+            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
+            .unwrap();
+        let second = proc
+            .spawn_named_child(root.cell().clone(), "my_controller", TestActor)
+            .unwrap();
+        assert_eq!(first.actor_id().pid(), 1);
+        assert_eq!(second.actor_id().pid(), 2);
+    }
+
+    /// AI-1: named children preserve supervision linkage to parent.
+    /// spawn_named_child passes Some(parent) to spawn_inner.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_with_name_preserves_supervision() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let child = proc
+            .spawn_named_child(root.cell().clone(), "supervised_child", TestActor)
+            .unwrap();
+        let child_cell = child.cell();
+        let parent = child_cell.parent().expect("named child must have a parent");
+        assert_eq!(parent.actor_id(), root.actor_id());
+    }
+
+    /// AI-1: existing spawn path is unaffected — unnamed children
+    /// still inherit the parent's name.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_unchanged() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let child = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
+        assert_eq!(child.actor_id().name(), root.actor_id().name());
+    }
+
+    /// AI-1: named children with different names
+    /// still get unique pids from the parent's counter.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_with_name_different_names_different_pids() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let a = proc
+            .spawn_named_child(root.cell().clone(), "controller_a", TestActor)
+            .unwrap();
+        let b = proc
+            .spawn_named_child(root.cell().clone(), "controller_b", TestActor)
+            .unwrap();
+        assert_ne!(a.actor_id().pid(), b.actor_id().pid());
+        assert_eq!(a.actor_id().name(), "controller_a");
+        assert_eq!(b.actor_id().name(), "controller_b");
+    }
+
+    /// AI-1: no DashMap overwrite — all children
+    /// visible via parent child_count().
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_with_name_no_child_overwrite() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let _a = proc
+            .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
+            .unwrap();
+        let _b = proc
+            .spawn_named_child(root.cell().clone(), "ctrl", TestActor)
+            .unwrap();
+        let _c = proc.spawn_child(root.cell().clone(), TestActor).unwrap();
+        assert_eq!(root.cell().child_count(), 3);
+    }
+
+    /// AI-1: named children do not pollute the roots map — a root
+    /// actor with a different name can still be spawned.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_spawn_with_name_does_not_pollute_roots() {
+        let proc = Proc::local();
+        let root = proc.spawn::<TestActor>("root", TestActor).unwrap();
+        let _child = proc
+            .spawn_named_child(root.cell().clone(), "foo", TestActor)
+            .unwrap();
+        // "foo" was used as a named child name but should NOT
+        // prevent spawning a root actor with that name.
+        let result = proc.spawn::<TestActor>("foo", TestActor);
+        assert!(result.is_ok(), "named child should not pollute roots");
+    }
+
+    /// AI-3: named children with the same fixed name under different
+    /// parents produce duplicate ActorIds. Controller names must
+    /// include mesh identity to stay unique proc-wide.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_ai3_controller_actor_ids_unique_across_parents_same_proc() {
+        let proc = Proc::local();
+        let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
+        let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
+
+        // Simulate the correct pattern: include mesh identity in name.
+        let ctrl_a = proc
+            .spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor)
+            .unwrap();
+        let ctrl_b = proc
+            .spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor)
+            .unwrap();
+
+        assert_ne!(
+            ctrl_a.actor_id(),
+            ctrl_b.actor_id(),
+            "controller ActorIds must be unique across parents"
+        );
+    }
+
+    /// AI-3: both controllers remain resolvable after spawn — no
+    /// silent overwrite in proc instance maps.
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_ai3_no_controller_overwrite_in_parent_or_proc_maps() {
+        let proc = Proc::local();
+        let parent_a = proc.spawn::<TestActor>("parent_a", TestActor).unwrap();
+        let parent_b = proc.spawn::<TestActor>("parent_b", TestActor).unwrap();
+
+        let ctrl_a = proc
+            .spawn_named_child(parent_a.cell().clone(), "controller_mesh_a", TestActor)
+            .unwrap();
+        let ctrl_b = proc
+            .spawn_named_child(parent_b.cell().clone(), "controller_mesh_b", TestActor)
+            .unwrap();
+
+        // Both must be independently resolvable via the proc's instances.
+        assert!(
+            proc.get_instance(ctrl_a.actor_id()).is_some(),
+            "ctrl_a must be resolvable"
+        );
+        assert!(
+            proc.get_instance(ctrl_b.actor_id()).is_some(),
+            "ctrl_b must be resolvable"
+        );
+        // Parents each see exactly one child.
+        assert_eq!(parent_a.cell().child_count(), 1);
+        assert_eq!(parent_b.cell().child_count(), 1);
     }
 
     // INV-6: cleanly stopped actor has no failure_info.

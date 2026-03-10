@@ -156,9 +156,6 @@ pub enum NodeProperties {
         proc_name: String,
         /// Number of actors currently hosted by this proc.
         num_actors: usize,
-        /// Whether this proc is infrastructure-owned rather than
-        /// user-created.
-        is_system: bool,
         /// References of children that are system/infrastructure
         /// actors. Allows the TUI to filter lazily without fetching
         /// each child individually.
@@ -350,8 +347,6 @@ pub enum PublishedPropertiesKind {
         proc_name: String,
         /// Number of actors currently hosted by this proc.
         num_actors: usize,
-        /// Whether this proc is infrastructure-owned.
-        is_system: bool,
         /// Custom children list (all actors in the proc).
         children: Vec<String>,
         /// Children that are system/infrastructure actors, reported
@@ -547,7 +542,6 @@ pub async fn serve_introspect(
                                 PublishedPropertiesKind::Proc {
                                     proc_name,
                                     num_actors,
-                                    is_system,
                                     system_children,
                                     stopped_children,
                                     stopped_retention_cap,
@@ -557,7 +551,6 @@ pub async fn serve_introspect(
                                 } => NodeProperties::Proc {
                                     proc_name,
                                     num_actors,
-                                    is_system,
                                     system_children,
                                     stopped_children,
                                     stopped_retention_cap,
