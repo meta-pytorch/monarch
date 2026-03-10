@@ -1172,7 +1172,7 @@ impl MailboxSender for MailboxClient {
         let (return_channel, return_receiver) = oneshot::channel::<SendError<MessageEnvelope>>();
         // Set up for delivery failure.
         let return_handle_0 = return_handle.clone();
-        tokio::spawn(async move {
+        crate::init::get_runtime().spawn(async move {
             if let Ok(SendError {
                 error,
                 message,
