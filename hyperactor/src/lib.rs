@@ -80,6 +80,7 @@ pub mod port;
 pub mod proc;
 pub mod ref_;
 pub mod reference;
+pub mod remote;
 mod signal_handler;
 pub mod simnet;
 mod stdio_redirect;
@@ -168,6 +169,7 @@ pub use reference::OncePortRef;
 pub use reference::PortId;
 pub use reference::PortRef;
 pub use reference::ProcId;
+pub use remote::Accepts;
 #[doc(inline)]
 pub use signal_handler::SignalCleanupGuard;
 #[doc(inline)]
