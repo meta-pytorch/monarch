@@ -917,7 +917,6 @@ impl ChannelAddr {
             Self::Tls(addr) => format!("tls://{}:{}", addr.hostname, addr.port),
             Self::Local(index) => format!("inproc://{}", index),
             Self::Unix(addr) => format!("ipc://{}", addr),
-            Self::Sim(sim_addr) => format!("sim://{}", sim_addr),
             Self::Alias { dial_to, bind_to } => {
                 format!("{}@{}", dial_to.to_zmq_url(), bind_to.to_zmq_url())
             }

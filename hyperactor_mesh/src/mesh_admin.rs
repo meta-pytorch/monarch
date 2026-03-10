@@ -94,10 +94,18 @@
 //!
 //! ## TLS transport invariant
 //!
-//! The admin HTTP server auto-detects TLS certificates at startup via
-//! [`try_tls_acceptor`](hyperactor::channel::try_tls_acceptor): OSS
-//! config attrs → Meta well-known paths → plain HTTP fallback. When
-//! certs are found, the server serves HTTPS; otherwise HTTP.
+//! **At Meta (`fbcode_build`):** The admin HTTP server **requires**
+//! mutual TLS. At startup it probes for certificates via
+//! [`try_tls_acceptor`](hyperactor::channel::try_tls_acceptor) with
+//! client cert enforcement enabled. If no usable certificate bundle
+//! is found, `init()` returns an error — there is no plain HTTP
+//! fallback. Clients must present a valid certificate signed by
+//! Meta's root CA; connections without a client cert are rejected
+//! during the TLS handshake.
+//!
+//! **In OSS:** TLS is best-effort. The server probes for certificates
+//! but falls back to plain HTTP if none are found. Client certificates
+//! are not required.
 //!
 //! **`admin_host` includes the scheme**: the URL returned by
 //! `GetAdminAddr` is always `https://host:port` or
@@ -569,13 +577,15 @@ impl Actor for MeshAdminAgent {
     ///    call `bind()` — unlike `gspawn` — so the actor must do it
     ///    itself before becoming reachable).
     /// 2. Binds a TCP listener (ephemeral or fixed port).
-    /// 3. Probes for TLS certificates (explicit env vars, then Meta
-    ///    default paths, then falls back to plain HTTP).
+    /// 3. Builds a TLS acceptor (explicit env vars, then Meta default
+    ///    paths). At Meta (`fbcode_build`), mTLS is mandatory and
+    ///    init fails if no certs are found. In OSS, falls back to
+    ///    plain HTTP.
     /// 4. Creates a dedicated `Instance<()>` client mailbox on
     ///    system_proc for the HTTP bridge's reply ports, keeping
     ///    bridge traffic off the actor's own mailbox.
-    /// 5. Spawns the axum server in a background task (HTTPS or HTTP
-    ///    depending on step 3).
+    /// 5. Spawns the axum server in a background task (HTTPS with
+    ///    mTLS at Meta, HTTPS or HTTP in OSS depending on step 3).
     ///
     /// The hostname-based listen address is stored in `admin_host` so
     /// it can be returned via `GetAdminAddr`. The scheme (`https://`
@@ -606,15 +616,25 @@ impl Actor for MeshAdminAgent {
             .unwrap_or_else(|_| "localhost".to_string());
         self.admin_addr = Some(bound_addr);
 
-        // Probe for TLS certificates (OSS config, then Meta paths,
-        // then plain HTTP fallback). See `try_tls_acceptor` docs.
-        let tls_acceptor = try_tls_acceptor();
+        // At Meta: mTLS is mandatory — fail if no certs are found.
+        // In OSS: TLS is best-effort with plain HTTP fallback.
+        // See "TLS transport invariant" in module docs.
+        let enforce_mtls = cfg!(fbcode_build);
+        let tls_acceptor = try_tls_acceptor(enforce_mtls);
+
+        if enforce_mtls && tls_acceptor.is_none() {
+            return Err(anyhow::anyhow!(
+                "mesh admin requires mTLS but no TLS certificates found; \
+                 set HYPERACTOR_TLS_CERT/KEY/CA or ensure Meta cert paths exist \
+                 (/var/facebook/x509_identities/server.pem, /var/facebook/rootcanal/ca.pem)"
+            ));
+        }
+
         let scheme = if tls_acceptor.is_some() {
             "https"
         } else {
             "http"
         };
-
         self.admin_host = Some(format!("{}://{}:{}", scheme, host, bound_addr.port()));
 
         // Create a dedicated client mailbox on system_proc for the
@@ -638,10 +658,11 @@ impl Actor for MeshAdminAgent {
             };
             tokio::spawn(async move {
                 if let Err(e) = axum::serve(tls_listener, router).await {
-                    tracing::error!("mesh admin server (TLS) error: {}", e);
+                    tracing::error!("mesh admin server (mTLS) error: {}", e);
                 }
             });
         } else {
+            // OSS fallback: plain HTTP (only reachable when !fbcode_build).
             tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, router).await {
                     tracing::error!("mesh admin server error: {}", e);
@@ -1331,14 +1352,14 @@ const TREE_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// Output format:
 /// ```text
-/// unix:@hash  ->  http://127.0.0.1:port/v1/...
-/// ├── service  ->  http://127.0.0.1:port/v1/...
-/// │   ├── agent[0]  ->  http://127.0.0.1:port/v1/...
-/// │   └── client[0]  ->  http://127.0.0.1:port/v1/...
-/// ├── local  ->  http://127.0.0.1:port/v1/...
-/// └── philosophers_0  ->  http://127.0.0.1:port/v1/...
-///     ├── agent[0]  ->  http://127.0.0.1:port/v1/...
-///     └── philosopher[0]  ->  http://127.0.0.1:port/v1/...
+/// unix:@hash  ->  https://host:port/v1/...  (or http:// in OSS)
+/// ├── service  ->  https://host:port/v1/...
+/// │   ├── agent[0]  ->  https://host:port/v1/...
+/// │   └── client[0]  ->  https://host:port/v1/...
+/// ├── local  ->  https://host:port/v1/...
+/// └── philosophers_0  ->  https://host:port/v1/...
+///     ├── agent[0]  ->  https://host:port/v1/...
+///     └── philosopher[0]  ->  https://host:port/v1/...
 /// ```
 async fn tree_dump(
     State(state): State<Arc<BridgeState>>,
