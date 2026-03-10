@@ -176,7 +176,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                         &mut dptr,
                         padded_size,
                         0,
-                        std::ptr::null_mut(),
+                        0,
                         0,
                     ));
 
