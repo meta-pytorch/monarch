@@ -1737,19 +1737,20 @@ pub fn try_tls_pem_bundle() -> Option<crate::config::PemBundle> {
 /// 3. **None** — no usable certificates found; caller should fall
 ///    back to plain HTTP.
 ///
-/// The returned acceptor does **not** require client certificates
-/// (`with_no_client_auth`), matching the convention for HTTP admin
-/// endpoints where the server authenticates itself but does not
-/// demand mutual TLS from browsers or CLI tools.
-pub fn try_tls_acceptor() -> Option<tokio_rustls::TlsAcceptor> {
+/// When `enforce_client_tls` is `true`, the returned acceptor
+/// requires clients to present a valid certificate signed by the
+/// configured CA (mutual TLS via `WebPkiClientVerifier`). When
+/// `false`, the acceptor authenticates itself but does not demand
+/// client certificates.
+pub fn try_tls_acceptor(enforce_client_tls: bool) -> Option<tokio_rustls::TlsAcceptor> {
     let oss_bundle = oss_pem_bundle();
-    if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&oss_bundle, false) {
+    if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&oss_bundle, enforce_client_tls) {
         return Some(acceptor);
     }
     tracing::debug!("OSS TLS acceptor failed, trying Meta paths");
 
     let meta_bundle = meta::get_server_pem_bundle();
-    if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&meta_bundle, false) {
+    if let Ok(acceptor) = tls::tls_acceptor_from_bundle(&meta_bundle, enforce_client_tls) {
         return Some(acceptor);
     }
     tracing::debug!("Meta TLS acceptor failed, no TLS available");
