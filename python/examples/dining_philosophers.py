@@ -145,15 +145,17 @@ async def async_main() -> None:
 
     # Spawn the admin agent so the TUI can attach.
     admin_url = await host._spawn_admin()
-    cacert = (
+    mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
+        "--cert /var/facebook/x509_identities/server.pem "
+        "--key /var/facebook/x509_identities/server.pem "
         if admin_url.startswith("https")
         else ""
     )
     print(f"\nMesh admin server listening on {admin_url}")
-    print(f"  - Root node:     curl {cacert}{admin_url}/v1/root")
-    print(f"  - Mesh tree:     curl {cacert}{admin_url}/v1/tree")
-    print(f"  - API docs:      curl {cacert}{admin_url}/SKILL.md")
+    print(f"  - Root node:     curl {mtls_flags}{admin_url}/v1/root")
+    print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
+    print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print(
         f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )

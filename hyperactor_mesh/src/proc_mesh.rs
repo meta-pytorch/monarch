@@ -1572,36 +1572,18 @@ mod tests {
 
         hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
 
-        use hyperactor::Proc;
-        use hyperactor::mailbox::BoxableMailboxSender;
-        use hyperactor::mailbox::DialMailboxRouter;
-        use hyperactor::testing::ids::test_proc_id;
-
-        let proc = Proc::new(test_proc_id("0"), DialMailboxRouter::new().boxed());
-        let instance = proc
-            .actor_instance::<testing::TestRootClient>("test_client")
-            .unwrap()
-            .instance;
-        let first_instance = proc
-            .actor_instance::<testing::TestRootClient>("first_client")
-            .unwrap()
-            .instance;
-        let second_instance = proc
-            .actor_instance::<testing::TestRootClient>("second_client")
-            .unwrap()
-            .instance;
-        let third_instance = proc
-            .actor_instance::<testing::TestRootClient>("third_client")
-            .unwrap()
-            .instance;
+        let instance = testing::instance();
+        let (first_instance, _) = instance.proc().instance("first_client_ds").unwrap();
+        let (second_instance, _) = instance.proc().instance("second_client_ds").unwrap();
+        let (third_instance, _) = instance.proc().instance("third_client_ds").unwrap();
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2))
+            .spawn(instance, "test", extent!(gpus = 2))
             .await
             .unwrap();
 
-        let actor_mesh = spawn_for_seq_test(&instance, &proc_mesh).await;
+        let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
 
         // Sequence numbers are calculated based on the sequencer, i.e. the
         // client name. So three casts would result in seq 1 for all actors.
@@ -1616,7 +1598,7 @@ mod tests {
             .await;
         }
 
-        let _ = hm.shutdown(&instance).await;
+        let _ = hm.shutdown(instance).await;
     }
 
     #[tokio::test]
