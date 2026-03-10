@@ -25,12 +25,12 @@ use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
 
 use crate::IbvConfig;
-use crate::RawLocalMemory;
-use crate::RdmaLocalMemory;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
 use crate::cu_check;
+use crate::local_memory::RdmaLocalMemory;
+use crate::local_memory::UnsafeLocalMemory;
 use crate::register_segment_scanner;
 
 // ---------------------------------------------------------------------------
@@ -191,11 +191,11 @@ impl SenderMessageHandler for SenderActor {
             .ok_or_else(|| anyhow::anyhow!("failed to get rdma handle"))?;
 
         let buf0_local: Arc<dyn RdmaLocalMemory> =
-            Arc::new(RawLocalMemory::new(base + buf0_offset, buf0_size));
+            Arc::new(UnsafeLocalMemory::new(base + buf0_offset, buf0_size));
         let remote0 = handle.request_buffer(cx, buf0_local).await?;
 
         let buf1_local: Arc<dyn RdmaLocalMemory> =
-            Arc::new(RawLocalMemory::new(base + buf1_offset, buf1_size));
+            Arc::new(UnsafeLocalMemory::new(base + buf1_offset, buf1_size));
         let remote1 = handle.request_buffer(cx, buf1_local).await?;
 
         Ok((remote0, remote1))
@@ -249,7 +249,7 @@ impl ReceiverMessageHandler for ReceiverActor {
     ) -> Result<Result<(), String>, anyhow::Error> {
         let buf = vec![0u8; size].into_boxed_slice();
         let ptr = Box::into_raw(buf) as *mut u8 as usize;
-        let local: Arc<dyn RdmaLocalMemory> = Arc::new(RawLocalMemory::new(ptr, size));
+        let local: Arc<dyn RdmaLocalMemory> = Arc::new(UnsafeLocalMemory::new(ptr, size));
 
         let result = remote
             .read_into_local(cx, local, timeout_secs)
