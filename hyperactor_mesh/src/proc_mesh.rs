@@ -1588,10 +1588,7 @@ mod tests {
         let (third_instance, _) = instance.proc().instance("third_client_ds").unwrap();
 
         let mut hm = testing::host_mesh(4).await;
-        let proc_mesh = hm
-            .spawn(instance, "test", extent!(gpus = 2))
-            .await
-            .unwrap();
+        let proc_mesh = hm.spawn(instance, "test", extent!(gpus = 2)).await.unwrap();
 
         let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
 
