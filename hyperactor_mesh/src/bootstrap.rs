@@ -47,7 +47,6 @@ use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
 use hyperactor::host::ProcManager;
 use hyperactor::host::TerminateSummary;
-use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
@@ -337,9 +336,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    // REMOVE(V0): forward unknown destinations to the default sender.
-    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
-        .await?;
+    let host = Host::new(manager, addr).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside HostAgent::init
