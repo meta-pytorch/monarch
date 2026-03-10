@@ -63,10 +63,11 @@
 //!    locations.
 //! 3. Fallback to plain HTTP when no usable CA is found.
 //!
-//! When TLS is enabled, the returned client verifies the server
-//! certificate against the configured CA. When mutual TLS material is
-//! present, a client identity is attached on a best-effort basis
-//! (failure to parse the identity does not disable TLS).
+//! **Note:** At Meta (`fbcode_build`), the mesh admin server requires
+//! mutual TLS. If the client cannot load a CA certificate or fails to
+//! parse a client identity, the connection will be rejected at the TLS
+//! handshake. In OSS, the server falls back to plain HTTP when no
+//! certs are available, so the client's HTTP fallback still works.
 
 use std::time::Duration;
 
@@ -206,11 +207,69 @@ fn add_tls(
     let mut builder = builder.add_root_certificate(root_cert);
 
     if let (Some(cert), Some(key)) = (cert_bytes, key_bytes) {
-        let mut id_pem = cert;
-        id_pem.extend_from_slice(&key);
-        match reqwest::Identity::from_pem(&id_pem) {
-            Ok(identity) => builder = builder.identity(identity),
-            Err(e) => eprintln!("TLS: invalid client identity PEM: {}", e),
+        // reqwest's Identity type is backend-specific: from_pkcs8_pem
+        // creates a native-tls identity, from_pem creates a rustls
+        // identity. When both features are compiled (fbcode Buck builds),
+        // using the wrong variant silently fails at connect time with
+        // "incompatible TLS identity type".
+        //
+        // Meta's server.pem bundles certs + key in one file.
+        // from_pkcs8_pem requires the key as a separate buffer, so we
+        // split it out by finding the private key marker.
+        let combined = if cert == key {
+            cert
+        } else {
+            let mut c = cert;
+            c.extend_from_slice(&key);
+            c
+        };
+        let identity_result = {
+            // Split PEM into cert-only and key-only buffers for native-tls.
+            // reqwest 0.11 with both native-tls and rustls features compiled
+            // (fbcode Buck builds) defaults to the native-tls connector.
+            // Identity::from_pem creates a rustls-flavored identity that is
+            // silently rejected by native-tls at connect time. We must use
+            // from_pkcs8_pem (native-tls) in fbcode, and from_pem (rustls)
+            // in OSS where native-tls is excluded (D93626607).
+            let combined_str = String::from_utf8_lossy(&combined);
+            let key_markers = [
+                // @lint-ignore PRIVATEKEY
+                "-----BEGIN PRIVATE KEY-----",
+                // @lint-ignore PRIVATEKEY
+                "-----BEGIN RSA PRIVATE KEY-----",
+                // @lint-ignore PRIVATEKEY
+                "-----BEGIN EC PRIVATE KEY-----",
+            ];
+            let key_pos = key_markers
+                .iter()
+                .filter_map(|m| combined_str.find(m))
+                .min();
+            #[cfg(fbcode_build)]
+            {
+                if let Some(key_start) = key_pos {
+                    let cert_pem = combined_str[..key_start].trim().as_bytes();
+                    let key_pem = combined_str[key_start..].trim().as_bytes();
+                    reqwest::Identity::from_pkcs8_pem(cert_pem, key_pem)
+                } else {
+                    reqwest::Identity::from_pem(&combined)
+                }
+            }
+            #[cfg(not(fbcode_build))]
+            {
+                let _ = key_pos; // suppress unused warning
+                reqwest::Identity::from_pem(&combined)
+            }
+        };
+        match identity_result {
+            Ok(identity) => {
+                builder = builder.identity(identity);
+            }
+            Err(e) => eprintln!(
+                "WARNING: TLS: failed to parse client identity PEM: {}. \
+                 The mesh admin server requires mTLS — connection will fail \
+                 without a valid client certificate.",
+                e
+            ),
         }
     }
 
@@ -293,9 +352,11 @@ fn add_tls_from_bundle(
 /// 1. If `--tls-ca` is provided, attempt to load the CA (and
 ///    optionally `--tls-cert` + `--tls-key` for a client identity)
 ///    from those paths.
-/// 2. Otherwise, if no explicit scheme was given, try auto-detection
-///    via [`hyperactor::channel::try_tls_pem_bundle`] (OSS config
-///    first, then Meta well-known paths).
+/// 2. Otherwise, if no `--tls-ca` was given, try auto-detection via
+///    [`hyperactor::channel::try_tls_pem_bundle`] (OSS config first,
+///    then Meta well-known paths). This runs even when the user
+///    provides an explicit `https://` scheme, so the mTLS client
+///    identity is picked up from well-known paths.
 /// 3. If no CA can be loaded, fall back to plain HTTP.
 ///
 /// Returns `(base_url, client)` where `base_url` always includes the
@@ -318,12 +379,14 @@ pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
         use_tls = use_tls || ok;
     }
 
-    // 2. Auto-detect (only when no explicit scheme or CLI certs).
-    if explicit_scheme.is_none() && !use_tls {
+    // 2. Auto-detect (when no CLI certs were provided).
+    // This runs even with an explicit https:// scheme, so the client
+    // picks up the mTLS identity from Meta well-known paths.
+    if args.tls_ca.is_none() {
         if let Some(bundle) = hyperactor::channel::try_tls_pem_bundle() {
             let (b, ok) = add_tls_from_bundle(builder, &bundle);
             builder = b;
-            use_tls = ok;
+            use_tls = use_tls || ok;
         }
     }
 
