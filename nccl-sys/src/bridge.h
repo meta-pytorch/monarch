@@ -128,11 +128,8 @@ const char* ncclGetErrorString(ncclResult_t result);
 const char* ncclGetLastError(ncclComm_t comm);
 
 // Communicator creation and management
-ncclResult_t ncclCommInitRank(
-    ncclComm_t* comm,
-    int nranks,
-    ncclUniqueId commId,
-    int rank);
+ncclResult_t
+ncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank);
 ncclResult_t ncclCommInitAll(ncclComm_t* comm, int ndev, const int* devlist);
 ncclResult_t ncclCommInitRankConfig(
     ncclComm_t* comm,
@@ -162,11 +159,8 @@ ncclResult_t ncclCommCuDevice(const ncclComm_t comm, int* device);
 ncclResult_t ncclCommUserRank(const ncclComm_t comm, int* rank);
 
 // Memory management
-ncclResult_t ncclCommRegister(
-    const ncclComm_t comm,
-    void* buff,
-    size_t size,
-    void** handle);
+ncclResult_t
+ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t ncclCommDeregister(const ncclComm_t comm, void* handle);
 ncclResult_t ncclMemAlloc(void** ptr, size_t size);
 ncclResult_t ncclMemFree(void* ptr);

@@ -79,10 +79,8 @@ CUresult rdmaxcel_cuMemcpyDtoH_v2(
     CUdeviceptr srcDevice,
     size_t ByteCount);
 
-CUresult rdmaxcel_cuMemsetD8_v2(
-    CUdeviceptr dstDevice,
-    unsigned char uc,
-    size_t N);
+CUresult
+rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N);
 
 // Pointer queries
 CUresult rdmaxcel_cuPointerGetAttribute(
@@ -97,16 +95,12 @@ CUresult rdmaxcel_cuDeviceGet(CUdevice* device, int ordinal);
 
 CUresult rdmaxcel_cuDeviceGetCount(int* count);
 
-CUresult rdmaxcel_cuDeviceGetAttribute(
-    int* pi,
-    CUdevice_attribute attrib,
-    CUdevice dev);
+CUresult
+rdmaxcel_cuDeviceGetAttribute(int* pi, CUdevice_attribute attrib, CUdevice dev);
 
 // Context management
-CUresult rdmaxcel_cuCtxCreate_v2(
-    CUcontext* pctx,
-    unsigned int flags,
-    CUdevice dev);
+CUresult
+rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx);
 

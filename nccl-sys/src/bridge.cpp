@@ -275,11 +275,8 @@ const char* ncclGetLastError(ncclComm_t comm) {
 }
 
 // Communicator creation and management
-ncclResult_t ncclCommInitRank(
-    ncclComm_t* comm,
-    int nranks,
-    ncclUniqueId commId,
-    int rank) {
+ncclResult_t
+ncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank) {
   GET_NCCL_API(api);
   return api->ncclCommInitRank_(comm, nranks, commId, rank);
 }

@@ -244,10 +244,8 @@ CUresult rdmaxcel_cuMemcpyDtoH_v2(
   return rdmaxcel::DriverAPI::get()->memcpyDtoH_(dstHost, srcDevice, ByteCount);
 }
 
-CUresult rdmaxcel_cuMemsetD8_v2(
-    CUdeviceptr dstDevice,
-    unsigned char uc,
-    size_t N) {
+CUresult
+rdmaxcel_cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc, size_t N) {
   return rdmaxcel::DriverAPI::get()->memsetD8_(dstDevice, uc, N);
 }
 
@@ -280,10 +278,8 @@ CUresult rdmaxcel_cuDeviceGetAttribute(
 }
 
 // Context management
-CUresult rdmaxcel_cuCtxCreate_v2(
-    CUcontext* pctx,
-    unsigned int flags,
-    CUdevice dev) {
+CUresult
+rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
   return rdmaxcel::DriverAPI::get()->ctxCreate_(pctx, flags, dev);
 }
 
