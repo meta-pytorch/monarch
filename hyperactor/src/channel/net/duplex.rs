@@ -58,7 +58,6 @@ use crate::channel::Tx;
 use crate::channel::TxStatus;
 use crate::clock::Clock;
 use crate::clock::RealClock;
-use crate::config;
 use crate::metrics;
 use crate::sync::mvar::MVar;
 
