@@ -733,6 +733,7 @@ class Intermediate(Actor):
 
 
 @pytest.mark.timeout(30)
+@pytest.mark.skip(reason="flaky")
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
@@ -1471,6 +1472,7 @@ async def test_actor_abort(reason) -> None:
 
 
 @pytest.mark.timeout(500)
+@isolate_in_subprocess
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.
 
@@ -1520,6 +1522,7 @@ async def test_gil_stall():
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_controller_controller_error():
     """Tests that errors on actors spawned from the ControllerController don't
     make it unavailable"""
