@@ -90,7 +90,7 @@ pub(crate) fn get_proc_runtime() -> &'static Proc {
     RUNTIME_PROC.get_or_init(|| {
         let addr = ChannelAddr::any(ChannelTransport::Local);
         let proc_id = ProcId::unique(addr, "monarch_hyperactor_runtime");
-        Proc::new(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
+        Proc::configured(proc_id, BoxedMailboxSender::new(PanickingMailboxSender))
     })
 }
 

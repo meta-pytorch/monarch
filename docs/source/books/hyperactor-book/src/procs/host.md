@@ -75,13 +75,13 @@ impl<M: ProcManager> Host<M> {
             frontend_addr.clone(),
             "service".to_string()
         );
-        let service_proc = Proc::new(service_proc_id.clone(), router.boxed());
+        let service_proc = Proc::configured(service_proc_id.clone(), router.boxed());
 
         let local_proc_id = ProcId(
             frontend_addr.clone(),
             "local".to_string()
         );
-        let local_proc = Proc::new(local_proc_id.clone(), router.boxed());
+        let local_proc = Proc::configured(local_proc_id.clone(), router.boxed());
 
         let host = Host {
             procs: HashSet::new(),
@@ -135,7 +135,7 @@ let service_proc_id = ProcId(
     frontend_addr.clone(),
     "service".to_string()
 );
-let service_proc = Proc::new(service_proc_id, router.boxed());
+let service_proc = Proc::configured(service_proc_id, router.boxed());
 ```
 
 **Local Proc:**
@@ -144,7 +144,7 @@ let local_proc_id = ProcId(
     frontend_addr.clone(),
     "local".to_string()
 );
-let local_proc = Proc::new(local_proc_id, router.boxed());
+let local_proc = Proc::configured(local_proc_id, router.boxed());
 ```
 
 Both procs:

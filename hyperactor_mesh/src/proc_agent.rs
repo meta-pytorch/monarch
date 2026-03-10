@@ -294,7 +294,7 @@ impl ProcAgent {
         proc_id: ProcId,
     ) -> Result<(Proc, ActorHandle<Self>), anyhow::Error> {
         let sender = ReconfigurableMailboxSender::new();
-        let proc = Proc::new(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
+        let proc = Proc::configured(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
 
         let agent = ProcAgent {
             proc: proc.clone(),
