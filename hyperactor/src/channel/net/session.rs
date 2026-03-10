@@ -1380,7 +1380,9 @@ where
                     );
                     (State::Running(deliveries), Conn::reconnect_with_default())
                 }
-                Ok(SendLoopStatus::Eof) => (State::Running(deliveries), Conn::reconnect_with_default()),
+                Ok(SendLoopStatus::Eof) => {
+                    (State::Running(deliveries), Conn::reconnect_with_default())
+                }
                 Ok(SendLoopStatus::AppClosed) => (
                     State::Closing {
                         deliveries,
