@@ -291,6 +291,219 @@ impl<'de> Deserialize<'de> for Uid {
     }
 }
 
+/// Errors that can occur when parsing a [`ProcId`] or [`ActorId`] from a string.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum IdParseError {
+    /// Error parsing a [`ProcId`].
+    #[error("invalid proc id: {0}")]
+    InvalidProcId(#[from] UidParseError),
+    /// Error parsing an [`ActorId`] (missing `.` separator).
+    #[error("invalid actor id: expected format `<actor_uid>.<proc_uid>`")]
+    InvalidActorIdFormat,
+    /// Error parsing the actor uid component of an [`ActorId`].
+    #[error("invalid actor uid: {0}")]
+    InvalidActorUid(UidParseError),
+    /// Error parsing the proc uid component of an [`ActorId`].
+    #[error("invalid proc uid in actor id: {0}")]
+    InvalidActorProcUid(UidParseError),
+}
+
+/// Identifies a process in the actor system.
+///
+/// Identity (Eq, Hash, Ord) is determined solely by `uid`; `label` is
+/// informational and excluded from comparisons.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProcId {
+    uid: Uid,
+    label: Option<Label>,
+}
+
+impl ProcId {
+    /// Create a new [`ProcId`].
+    pub fn new(uid: Uid, label: Option<Label>) -> Self {
+        Self { uid, label }
+    }
+
+    /// Returns the uid.
+    pub fn uid(&self) -> &Uid {
+        &self.uid
+    }
+
+    /// Returns the label.
+    pub fn label(&self) -> Option<&Label> {
+        self.label.as_ref()
+    }
+}
+
+impl PartialEq for ProcId {
+    fn eq(&self, other: &Self) -> bool {
+        self.uid == other.uid
+    }
+}
+
+impl Eq for ProcId {}
+
+impl Hash for ProcId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uid.hash(state);
+    }
+}
+
+impl PartialOrd for ProcId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ProcId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.uid.cmp(&other.uid)
+    }
+}
+
+impl fmt::Display for ProcId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.uid)
+    }
+}
+
+impl fmt::Debug for ProcId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.label {
+            Some(label) => write!(f, "<'{}' {}>", label, self.uid),
+            None => write!(f, "<{}>", self.uid),
+        }
+    }
+}
+
+impl FromStr for ProcId {
+    type Err = IdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let uid: Uid = s.parse()?;
+        Ok(Self { uid, label: None })
+    }
+}
+
+/// Identifies an actor within a process.
+///
+/// Identity (Eq, Hash, Ord) is determined by `(proc_id, uid)`; `label` is
+/// informational and excluded from comparisons.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ActorId {
+    uid: Uid,
+    proc_id: ProcId,
+    label: Option<Label>,
+}
+
+impl ActorId {
+    /// Create a new [`ActorId`].
+    pub fn new(uid: Uid, proc_id: ProcId, label: Option<Label>) -> Self {
+        Self {
+            uid,
+            proc_id,
+            label,
+        }
+    }
+
+    /// Returns the uid.
+    pub fn uid(&self) -> &Uid {
+        &self.uid
+    }
+
+    /// Returns the proc id.
+    pub fn proc_id(&self) -> &ProcId {
+        &self.proc_id
+    }
+
+    /// Returns the label.
+    pub fn label(&self) -> Option<&Label> {
+        self.label.as_ref()
+    }
+}
+
+impl PartialEq for ActorId {
+    fn eq(&self, other: &Self) -> bool {
+        self.proc_id == other.proc_id && self.uid == other.uid
+    }
+}
+
+impl Eq for ActorId {}
+
+impl Hash for ActorId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.proc_id.hash(state);
+        self.uid.hash(state);
+    }
+}
+
+impl PartialOrd for ActorId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ActorId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.proc_id
+            .cmp(&other.proc_id)
+            .then_with(|| self.uid.cmp(&other.uid))
+    }
+}
+
+impl fmt::Display for ActorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.uid, self.proc_id.uid)
+    }
+}
+
+impl fmt::Debug for ActorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.label, &self.proc_id.label) {
+            (Some(actor_label), Some(proc_label)) => {
+                write!(
+                    f,
+                    "<'{}.{}' {}.{}>",
+                    actor_label, proc_label, self.uid, self.proc_id.uid
+                )
+            }
+            (Some(actor_label), None) => {
+                write!(f, "<'{}' {}.{}>", actor_label, self.uid, self.proc_id.uid)
+            }
+            (None, Some(proc_label)) => {
+                write!(f, "<'.{}' {}.{}>", proc_label, self.uid, self.proc_id.uid)
+            }
+            (None, None) => {
+                write!(f, "<{}.{}>", self.uid, self.proc_id.uid)
+            }
+        }
+    }
+}
+
+impl FromStr for ActorId {
+    type Err = IdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let dot = s.find('.').ok_or(IdParseError::InvalidActorIdFormat)?;
+        let actor_part = &s[..dot];
+        let proc_part = &s[dot + 1..];
+
+        let actor_uid: Uid = actor_part.parse().map_err(IdParseError::InvalidActorUid)?;
+        let proc_uid: Uid = proc_part
+            .parse()
+            .map_err(IdParseError::InvalidActorProcUid)?;
+
+        Ok(Self {
+            uid: actor_uid,
+            proc_id: ProcId {
+                uid: proc_uid,
+                label: None,
+            },
+            label: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +663,291 @@ mod tests {
     fn test_short_hex_parse() {
         let parsed: Uid = "1".parse().unwrap();
         assert_eq!(parsed, Uid::Instance(1));
+    }
+
+    #[test]
+    fn test_proc_id_construction_and_accessors() {
+        let uid = Uid::Instance(0xabc);
+        let label = Label::new("my-proc").unwrap();
+        let pid = ProcId::new(uid.clone(), Some(label.clone()));
+        assert_eq!(pid.uid(), &uid);
+        assert_eq!(pid.label(), Some(&label));
+    }
+
+    #[test]
+    fn test_proc_id_eq_ignores_label() {
+        let uid = Uid::Instance(0x42);
+        let a = ProcId::new(uid.clone(), Some(Label::new("alpha").unwrap()));
+        let b = ProcId::new(uid, Some(Label::new("beta").unwrap()));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_proc_id_hash_ignores_label() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let uid = Uid::Instance(0x42);
+        let a = ProcId::new(uid.clone(), Some(Label::new("alpha").unwrap()));
+        let b = ProcId::new(uid, Some(Label::new("beta").unwrap()));
+
+        let hash = |pid: &ProcId| {
+            let mut h = DefaultHasher::new();
+            pid.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn test_proc_id_ord_ignores_label() {
+        let a = ProcId::new(Uid::Instance(1), Some(Label::new("zzz").unwrap()));
+        let b = ProcId::new(Uid::Instance(2), Some(Label::new("aaa").unwrap()));
+        assert!(a < b);
+    }
+
+    #[test]
+    fn test_proc_id_display() {
+        let pid = ProcId::new(
+            Uid::Instance(0xd5d54d7201103869),
+            Some(Label::new("my-proc").unwrap()),
+        );
+        assert_eq!(pid.to_string(), "d5d54d7201103869");
+
+        let pid_singleton = ProcId::new(
+            Uid::singleton(Label::new("my-proc").unwrap()),
+            Some(Label::new("my-proc").unwrap()),
+        );
+        assert_eq!(pid_singleton.to_string(), "_my-proc");
+    }
+
+    #[test]
+    fn test_proc_id_debug() {
+        let pid = ProcId::new(
+            Uid::Instance(0xd5d54d7201103869),
+            Some(Label::new("my-proc").unwrap()),
+        );
+        assert_eq!(format!("{:?}", pid), "<'my-proc' d5d54d7201103869>");
+
+        let pid_no_label = ProcId::new(Uid::Instance(0xd5d54d7201103869), None);
+        assert_eq!(format!("{:?}", pid_no_label), "<d5d54d7201103869>");
+    }
+
+    #[test]
+    fn test_proc_id_fromstr_roundtrip() {
+        let pid = ProcId::new(
+            Uid::Instance(0xd5d54d7201103869),
+            Some(Label::new("my-proc").unwrap()),
+        );
+        let s = pid.to_string();
+        let parsed: ProcId = s.parse().unwrap();
+        assert_eq!(pid, parsed);
+    }
+
+    #[test]
+    fn test_proc_id_fromstr_singleton() {
+        let parsed: ProcId = "_my-proc".parse().unwrap();
+        assert_eq!(
+            *parsed.uid(),
+            Uid::singleton(Label::new("my-proc").unwrap())
+        );
+        assert_eq!(parsed.label(), None);
+    }
+
+    #[test]
+    fn test_proc_id_serde_roundtrip() {
+        let pid = ProcId::new(
+            Uid::Instance(0xabcdef),
+            Some(Label::new("my-proc").unwrap()),
+        );
+        let json = serde_json::to_string(&pid).unwrap();
+        let parsed: ProcId = serde_json::from_str(&json).unwrap();
+        assert_eq!(pid, parsed);
+        assert_eq!(parsed.label().map(|l| l.as_str()), Some("my-proc"));
+
+        let pid_none = ProcId::new(Uid::Instance(0xabcdef), None);
+        let json_none = serde_json::to_string(&pid_none).unwrap();
+        let parsed_none: ProcId = serde_json::from_str(&json_none).unwrap();
+        assert_eq!(parsed_none.label(), None);
+    }
+
+    #[test]
+    fn test_actor_id_construction_and_accessors() {
+        let actor_uid = Uid::Instance(0xabc);
+        let proc_id = ProcId::new(Uid::Instance(0xdef), Some(Label::new("my-proc").unwrap()));
+        let label = Label::new("my-actor").unwrap();
+        let aid = ActorId::new(actor_uid.clone(), proc_id.clone(), Some(label.clone()));
+        assert_eq!(aid.uid(), &actor_uid);
+        assert_eq!(aid.proc_id(), &proc_id);
+        assert_eq!(aid.label(), Some(&label));
+    }
+
+    #[test]
+    fn test_actor_id_eq_ignores_label() {
+        let actor_uid = Uid::Instance(0x42);
+        let proc_id = ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap()));
+        let a = ActorId::new(
+            actor_uid.clone(),
+            proc_id.clone(),
+            Some(Label::new("alpha").unwrap()),
+        );
+        let b = ActorId::new(actor_uid, proc_id, Some(Label::new("beta").unwrap()));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_actor_id_neq_different_proc() {
+        let actor_uid = Uid::Instance(0x42);
+        let proc_a = ProcId::new(Uid::Instance(1), Some(Label::new("proc").unwrap()));
+        let proc_b = ProcId::new(Uid::Instance(2), Some(Label::new("proc").unwrap()));
+        let a = ActorId::new(
+            actor_uid.clone(),
+            proc_a,
+            Some(Label::new("actor").unwrap()),
+        );
+        let b = ActorId::new(actor_uid, proc_b, Some(Label::new("actor").unwrap()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_actor_id_hash_ignores_label() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let actor_uid = Uid::Instance(0x42);
+        let proc_id = ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap()));
+        let a = ActorId::new(
+            actor_uid.clone(),
+            proc_id.clone(),
+            Some(Label::new("alpha").unwrap()),
+        );
+        let b = ActorId::new(actor_uid, proc_id, Some(Label::new("beta").unwrap()));
+
+        let hash = |aid: &ActorId| {
+            let mut h = DefaultHasher::new();
+            aid.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn test_actor_id_ord_proc_first() {
+        let a = ActorId::new(
+            Uid::Instance(0xff),
+            ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap())),
+            Some(Label::new("a").unwrap()),
+        );
+        let b = ActorId::new(
+            Uid::Instance(0x01),
+            ProcId::new(Uid::Instance(2), Some(Label::new("p").unwrap())),
+            Some(Label::new("a").unwrap()),
+        );
+        assert!(a < b, "proc_id should be compared first");
+    }
+
+    #[test]
+    fn test_actor_id_ord_then_uid() {
+        let proc_id = ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap()));
+        let a = ActorId::new(
+            Uid::Instance(1),
+            proc_id.clone(),
+            Some(Label::new("a").unwrap()),
+        );
+        let b = ActorId::new(Uid::Instance(2), proc_id, Some(Label::new("a").unwrap()));
+        assert!(a < b);
+    }
+
+    #[test]
+    fn test_actor_id_display() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        assert_eq!(aid.to_string(), "0000000000abc123.0000000000def456");
+    }
+
+    #[test]
+    fn test_actor_id_debug() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        assert_eq!(
+            format!("{:?}", aid),
+            "<'my-actor.my-proc' 0000000000abc123.0000000000def456>"
+        );
+
+        let aid_no_labels = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(Uid::Instance(0xdef456), None),
+            None,
+        );
+        assert_eq!(
+            format!("{:?}", aid_no_labels),
+            "<0000000000abc123.0000000000def456>"
+        );
+    }
+
+    #[test]
+    fn test_actor_id_fromstr_roundtrip() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let s = aid.to_string();
+        let parsed: ActorId = s.parse().unwrap();
+        assert_eq!(aid, parsed);
+    }
+
+    #[test]
+    fn test_actor_id_fromstr_with_singletons() {
+        let parsed: ActorId = "_my-actor._my-proc".parse().unwrap();
+        assert_eq!(
+            *parsed.uid(),
+            Uid::singleton(Label::new("my-actor").unwrap())
+        );
+        assert_eq!(
+            *parsed.proc_id().uid(),
+            Uid::singleton(Label::new("my-proc").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_actor_id_fromstr_errors() {
+        assert!("no-dot-here".parse::<ActorId>().is_err());
+        assert!(".".parse::<ActorId>().is_err());
+        assert!("abc.".parse::<ActorId>().is_err());
+        assert!(".abc".parse::<ActorId>().is_err());
+    }
+
+    #[test]
+    fn test_actor_id_serde_roundtrip() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabcdef),
+            ProcId::new(
+                Uid::Instance(0x123456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let json = serde_json::to_string(&aid).unwrap();
+        let parsed: ActorId = serde_json::from_str(&json).unwrap();
+        assert_eq!(aid, parsed);
+        assert_eq!(parsed.label().map(|l| l.as_str()), Some("my-actor"));
+        assert_eq!(
+            parsed.proc_id().label().map(|l| l.as_str()),
+            Some("my-proc")
+        );
     }
 }
