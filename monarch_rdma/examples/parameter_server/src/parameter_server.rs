@@ -58,17 +58,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox as _;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
@@ -108,7 +106,7 @@ pub struct ParameterServerActor {
     grad_buffer_data: Box<[Box<[u8]>]>,
     weights_handle: Option<RdmaRemoteBuffer>,
     grad_buffer_handles: HashMap<usize, RdmaRemoteBuffer>,
-    owner_ref: ActorRef<RdmaManagerActor>,
+    owner_ref: reference::ActorRef<RdmaManagerActor>,
 }
 
 #[async_trait]
@@ -128,7 +126,7 @@ impl Actor for ParameterServerActor {
 
 #[async_trait]
 impl RemoteSpawn for ParameterServerActor {
-    type Params = (ActorRef<RdmaManagerActor>, usize);
+    type Params = (reference::ActorRef<RdmaManagerActor>, usize);
 
     async fn new(_params: Self::Params, _environment: Flattrs) -> Result<Self, anyhow::Error> {
         let (owner_ref, worker_world_size) = _params;
@@ -149,17 +147,17 @@ impl RemoteSpawn for ParameterServerActor {
 }
 
 // Message to get handles to the parameter server's weights and gradient buffers.
-// - OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>: OncePortRef to the parameter server's weights and gradient buffers.
+// - reference::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>: OncePortRef to the parameter server's weights and gradient buffers.
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
 struct PsGetBuffers(
     pub usize,
-    pub OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
+    pub reference::OncePortRef<(RdmaRemoteBuffer, RdmaRemoteBuffer)>,
 );
 
 // Message to update the parameter server's weights with its current gradient buffer.
-// - OncePortRef<bool>: OncePortRef used primarily for workload synchronization.
+// - reference::OncePortRef<bool>: OncePortRef used primarily for workload synchronization.
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-struct PsUpdate(pub OncePortRef<bool>);
+struct PsUpdate(pub reference::OncePortRef<bool>);
 
 // Message to log actors' weights and gradients.
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
@@ -296,21 +294,21 @@ impl RemoteSpawn for WorkerActor {
 // This message is sent to workers to establish their connection with the parameter server
 // and obtain handles to the shared weights and gradient buffers.
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerInit(pub ActorRef<ParameterServerActor>);
+pub struct WorkerInit(pub reference::ActorRef<ParameterServerActor>);
 
 // Message to signal the worker to update its gradients and transmit them to the server.
-// The PortRef<bool> is used to notify the main process when the operation completes.
+// The reference::PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers compute local gradients (weights + 1)
 // - Workers write these gradients to their assigned buffer on the parameter server using RDMA
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerStep(#[binding(include)] PortRef<bool>);
+pub struct WorkerStep(#[binding(include)] reference::PortRef<bool>);
 
 // Message to signal the worker to pull updated weights from the parameter server.
-// The PortRef<bool> is used to notify the main process when the operation completes.
+// The reference::PortRef<bool> is used to notify the main process when the operation completes.
 // - Workers read the updated weights from the parameter server using RDMA
 // - This happens after the parameter server has applied all gradients to update the weights
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
-pub struct WorkerUpdate(#[binding(include)] PortRef<bool>);
+pub struct WorkerUpdate(#[binding(include)] reference::PortRef<bool>);
 
 #[async_trait]
 impl Handler<WorkerInit> for WorkerActor {

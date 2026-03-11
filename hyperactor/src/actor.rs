@@ -32,7 +32,6 @@ use tokio::task::JoinHandle;
 use typeuri::Named;
 
 use crate as hyperactor; // for macros
-use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
@@ -55,8 +54,7 @@ use crate::proc::Instance;
 use crate::proc::InstanceCell;
 use crate::proc::Ports;
 use crate::proc::Proc;
-use crate::reference::ActorId;
-use crate::reference::Index;
+use crate::reference;
 use crate::supervision::ActorSupervisionEvent;
 
 pub mod remote;
@@ -294,7 +292,7 @@ pub trait RemoteSpawn: Actor + Referable + Binds<Self> {
         name: &str,
         serialized_params: Data,
         environment: Flattrs,
-    ) -> Pin<Box<dyn Future<Output = Result<ActorId, anyhow::Error>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<reference::ActorId, anyhow::Error>> + Send>> {
         let proc = proc.clone();
         let name = name.to_string();
         Box::pin(async move {
@@ -353,7 +351,7 @@ where
 #[derive(Debug)]
 pub struct ActorError {
     /// The ActorId for the actor that generated this error.
-    pub actor_id: Box<ActorId>,
+    pub actor_id: Box<reference::ActorId>,
     /// The kind of error that occurred.
     pub kind: Box<ActorErrorKind>,
 }
@@ -433,7 +431,7 @@ impl ActorErrorKind {
 
 impl ActorError {
     /// Create a new actor server error with the provided id and kind.
-    pub(crate) fn new(actor_id: &ActorId, kind: ActorErrorKind) -> Self {
+    pub(crate) fn new(actor_id: &reference::ActorId, kind: ActorErrorKind) -> Self {
         Self {
             actor_id: Box::new(actor_id.clone()),
             kind: Box::new(kind),
@@ -487,7 +485,7 @@ pub enum Signal {
     Stop(String),
 
     /// The direct child with the given PID was stopped.
-    ChildStopped(Index),
+    ChildStopped(reference::Index),
 
     /// Abort the actor. This will exit the actor loop with an error,
     /// causing a supervision event to propagate up the supervision
@@ -687,7 +685,7 @@ impl<A: Actor> ActorHandle<A> {
     }
 
     /// The [`ActorId`] of the actor represented by this handle.
-    pub fn actor_id(&self) -> &ActorId {
+    pub fn actor_id(&self) -> &reference::ActorId {
         self.cell.actor_id()
     }
 
@@ -725,7 +723,7 @@ impl<A: Actor> ActorHandle<A> {
 
     /// TEMPORARY: bind...
     /// TODO: we shoudl also have a default binding(?)
-    pub fn bind<R: Binds<A>>(&self) -> ActorRef<R> {
+    pub fn bind<R: Binds<A>>(&self) -> reference::ActorRef<R> {
         self.cell.bind(self.ports.as_ref())
     }
 }
@@ -847,7 +845,6 @@ mod tests {
     use crate as hyperactor;
     use crate::Actor;
     use crate::OncePortHandle;
-    use crate::PortRef;
     use crate::checkpoint::CheckpointError;
     use crate::checkpoint::Checkpointable;
     use crate::clock::Clock;
@@ -865,14 +862,13 @@ mod tests {
     use crate::mailbox::monitored_return_handle;
     use crate::ordering::SEQ_INFO;
     use crate::ordering::SeqInfo;
-    use crate::reference::Reference;
     use crate::testing::ids::test_proc_id;
     use crate::testing::pingpong::PingPongActor;
     use crate::testing::pingpong::PingPongMessage;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator; // for macros
 
     #[derive(Debug)]
-    struct EchoActor(PortRef<u64>);
+    struct EchoActor(reference::PortRef<u64>);
 
     #[async_trait]
     impl Actor for EchoActor {}
@@ -1004,7 +1000,7 @@ mod tests {
     struct CheckpointActor {
         // The actor does nothing but sum the values of messages.
         sum: u64,
-        port: PortRef<u64>,
+        port: reference::PortRef<u64>,
     }
 
     #[async_trait]
@@ -1021,7 +1017,7 @@ mod tests {
 
     #[async_trait]
     impl Checkpointable for CheckpointActor {
-        type State = (u64, PortRef<u64>);
+        type State = (u64, reference::PortRef<u64>);
 
         async fn save(&self) -> Result<Self::State, CheckpointError> {
             Ok((self.sum, self.port.clone()))
@@ -1128,7 +1124,7 @@ mod tests {
         test.sync().await;
         assert_eq!(test.get_values(), (123u64, "foo".to_string()));
 
-        let myref: ActorRef<MultiActor> = test.handle.bind();
+        let myref: reference::ActorRef<MultiActor> = test.handle.bind();
 
         myref.port().send(&test.client, 321u64).unwrap();
         test.sync().await;
@@ -1148,7 +1144,7 @@ mod tests {
 
         hyperactor::behavior!(MyActorBehavior, u64, String);
 
-        let myref: ActorRef<MyActorBehavior> = test.handle.bind();
+        let myref: reference::ActorRef<MyActorBehavior> = test.handle.bind();
         myref.port().send(&test.client, "biz".to_string()).unwrap();
         myref.port().send(&test.client, 999u64).unwrap();
 
@@ -1180,7 +1176,7 @@ mod tests {
     // Returning the sequence number assigned to the message.
     #[derive(Debug)]
     #[hyperactor::export(handlers = [String, Callback])]
-    struct GetSeqActor(PortRef<(String, SeqInfo)>);
+    struct GetSeqActor(reference::PortRef<(String, SeqInfo)>);
 
     #[async_trait]
     impl Actor for GetSeqActor {}
@@ -1204,7 +1200,7 @@ mod tests {
     // handler will reply that port with its own callback port. Then sender can
     // send the string message through this callback port.
     #[derive(Clone, Debug, Serialize, Deserialize, Named)]
-    struct Callback(PortRef<PortRef<String>>);
+    struct Callback(reference::PortRef<reference::PortRef<String>>);
 
     #[async_trait]
     impl Handler<Callback> for GetSeqActor {
@@ -1236,7 +1232,7 @@ mod tests {
             ("unbound".to_string(), SeqInfo::Direct)
         );
 
-        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
 
         let session_id = client.sequencer().session_id();
         let mut expected_seq = 0;
@@ -1285,7 +1281,7 @@ mod tests {
         let (non_actor_tx, mut non_actor_rx) = mpsc::unbounded_channel::<Option<SeqInfo>>();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(actor_tx.bind())).unwrap();
-        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Create a non-actor port using open_enqueue_port
         let non_actor_tx_clone = non_actor_tx.clone();
@@ -1362,7 +1358,7 @@ mod tests {
         let (tx, mut rx) = client1.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
-        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
 
         // Each client should have a different session_id
         let session_id_1 = client1.sequencer().session_id();
@@ -1471,7 +1467,7 @@ mod tests {
         let (tx, mut rx) = client.open_port();
 
         let actor_handle = proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
-        let actor_ref: ActorRef<GetSeqActor> = actor_handle.bind();
+        let actor_ref: reference::ActorRef<GetSeqActor> = actor_handle.bind();
 
         let (callback_tx, mut callback_rx) = client.open_port();
         // Client sends the 1st message
@@ -1558,9 +1554,9 @@ mod tests {
         let (tx, mut rx) = client.open_port();
 
         let handle = local_proc.spawn("get_seq", GetSeqActor(tx.bind())).unwrap();
-        let actor_ref: ActorRef<GetSeqActor> = handle.bind();
+        let actor_ref: reference::ActorRef<GetSeqActor> = handle.bind();
 
-        let remote_proc = Proc::new(
+        let remote_proc = Proc::configured(
             test_proc_id("remote_0"),
             DelayedMailboxSender::new(local_proc.clone(), relay_orders).boxed(),
         );
@@ -1672,7 +1668,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_introspect", actor).unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1718,9 +1714,10 @@ mod tests {
         let actor = EchoActor(tx.bind());
         let handle = proc.spawn::<EchoActor>("echo_qc", actor).unwrap();
 
-        let child_ref = Reference::Actor(test_proc_id("nonexistent").actor_id("child", 0));
+        let child_ref =
+            reference::Reference::Actor(test_proc_id("nonexistent").actor_id("child", 0));
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::QueryChild {
@@ -1770,7 +1767,7 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1815,7 +1812,7 @@ mod tests {
 
         // Query the child — supervisor should be the parent.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(child_handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(child_handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1838,7 +1835,7 @@ mod tests {
 
         // Query the parent — children should include the child.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(parent_handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(parent_handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1882,7 +1879,7 @@ mod tests {
             .unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1926,7 +1923,7 @@ mod tests {
         let _ = rx.recv().await.unwrap();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1980,7 +1977,7 @@ mod tests {
 
         // First introspect query.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -1993,7 +1990,7 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2107,7 +2104,7 @@ mod tests {
         let handle = proc.spawn::<EchoActor>("echo_qch", actor).unwrap();
 
         // Before registering, query_child returns None.
-        let test_ref = Reference::Actor(test_proc_id("test").actor_id("child", 0));
+        let test_ref = reference::Reference::Actor(test_proc_id("test").actor_id("child", 0));
         assert!(handle.cell().query_child(&test_ref).is_none());
 
         // Register a callback.
@@ -2198,7 +2195,7 @@ mod tests {
 
         // Send introspect query via the dedicated introspect port.
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2262,7 +2259,7 @@ mod tests {
 
         // First introspect query.
         let (reply_port1, reply_rx1) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2275,7 +2272,7 @@ mod tests {
 
         // Second introspect query.
         let (reply_port2, reply_rx2) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
+        reference::PortRef::<IntrospectMessage>::attest_message_port(handle.actor_id())
             .send(
                 &client,
                 IntrospectMessage::Query {
@@ -2334,7 +2331,7 @@ mod tests {
         let actor_id = handle.actor_id().clone();
 
         let (reply_port, reply_rx) = bridge.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(&actor_id)
+        reference::PortRef::<IntrospectMessage>::attest_message_port(&actor_id)
             .send(
                 &bridge,
                 IntrospectMessage::Query {
@@ -2377,7 +2374,7 @@ mod tests {
         let mailbox_id = mailbox_handle.actor_id().clone();
 
         let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
-        PortRef::<IntrospectMessage>::attest_message_port(&mailbox_id)
+        reference::PortRef::<IntrospectMessage>::attest_message_port(&mailbox_id)
             .send(
                 &client,
                 IntrospectMessage::Query {
