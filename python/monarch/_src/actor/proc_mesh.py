@@ -908,6 +908,22 @@ def get_or_spawn_controller(
 _BOOTSTRAP_MAIN = "monarch._src.actor.bootstrap_main"
 
 
+def _get_python_executable() -> str:
+    """Return a Python path that preserves the active virtual environment.
+
+    ``sys.executable`` may resolve through symlinks to the base interpreter
+    (e.g. ``/usr/local/bin/python3.12``).  When a subprocess is spawned with
+    that path, Python won't find the venv's ``pyvenv.cfg`` and will not add
+    the venv's site-packages to ``sys.path``.  Using the venv's own
+    ``bin/python`` avoids this.
+    """
+    if sys.prefix != sys.base_prefix:
+        venv_python = os.path.join(sys.prefix, "bin", "python")
+        if os.path.exists(venv_python):
+            return venv_python
+    return sys.executable
+
+
 def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
     if IN_PAR:
         cmd = sys.argv[0]
@@ -916,7 +932,7 @@ def _get_bootstrap_args() -> tuple[str, Optional[list[str]], dict[str, str]]:
             "PAR_MAIN_OVERRIDE": _BOOTSTRAP_MAIN,
         }
     else:
-        cmd = sys.executable
+        cmd = _get_python_executable()
         args = ["-m", _BOOTSTRAP_MAIN]
         env = {}
 
