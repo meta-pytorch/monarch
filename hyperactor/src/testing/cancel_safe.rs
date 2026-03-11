@@ -297,7 +297,6 @@ mod tests {
     }
 
     // A future that waits for two sleeps (1ms each), then returns 7.
-    #[allow(clippy::disallowed_methods)]
     async fn two_sleeps() -> u8 {
         time::sleep(Duration::from_millis(1)).await;
         time::sleep(Duration::from_millis(1)).await;

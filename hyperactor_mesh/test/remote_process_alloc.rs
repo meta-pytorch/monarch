@@ -12,8 +12,6 @@ use clap::Parser;
 use hyperactor::channel;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Tx;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_mesh::alloc::Alloc;
 use hyperactor_mesh::alloc::AllocName;
 use hyperactor_mesh::alloc::AllocSpec;
@@ -120,5 +118,5 @@ async fn main() {
         .unwrap()
         .post(());
 
-    RealClock.sleep(Duration::from_secs(100)).await;
+    tokio::time::sleep(Duration::from_secs(100)).await;
 }
