@@ -15,25 +15,27 @@ use serde::Serialize;
 
 use crate as hyperactor; // for macros
 use crate::Actor;
-use crate::ActorRef;
 use crate::Context;
 use crate::Handler;
 use crate::Instance;
-use crate::OncePortRef;
-use crate::PortRef;
 use crate::RemoteSpawn;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
+use crate::reference;
 
 /// A message that can be passed around. It contains
 /// 0. the TTL of this PingPong game
 /// 1. the next actor to send the message to
 /// 2. a port to send a true value to when TTL = 0.
 #[derive(Serialize, Deserialize, Debug, typeuri::Named)]
-pub struct PingPongMessage(pub u64, pub ActorRef<PingPongActor>, pub OncePortRef<bool>);
+pub struct PingPongMessage(
+    pub u64,
+    pub reference::ActorRef<PingPongActor>,
+    pub reference::OncePortRef<bool>,
+);
 wirevalue::register_type!(PingPongMessage);
 
 /// A PingPong actor that can play the PingPong game by sending messages around.
@@ -41,7 +43,7 @@ wirevalue::register_type!(PingPongMessage);
 #[hyperactor::export(spawn = true, handlers = [PingPongMessage])]
 pub struct PingPongActor {
     /// A port to send undeliverable messages to.
-    undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
+    undeliverable_port_ref: Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
     /// The TTL at which the actor will exit with error.
     error_ttl: Option<u64>,
     /// Manual delay before sending handling the message.
@@ -55,7 +57,7 @@ impl PingPongActor {
     /// - `error_ttl`: The TTL at which the actor will exit with error.
     /// - `delay`: Manual delay before sending handling the message.
     pub fn new(
-        undeliverable_port_ref: Option<PortRef<Undeliverable<MessageEnvelope>>>,
+        undeliverable_port_ref: Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
         error_ttl: Option<u64>,
         delay: Option<Duration>,
     ) -> Self {
@@ -70,7 +72,7 @@ impl PingPongActor {
 #[async_trait]
 impl RemoteSpawn for PingPongActor {
     type Params = (
-        Option<PortRef<Undeliverable<MessageEnvelope>>>,
+        Option<reference::PortRef<Undeliverable<MessageEnvelope>>>,
         Option<u64>,
         Option<Duration>,
     );

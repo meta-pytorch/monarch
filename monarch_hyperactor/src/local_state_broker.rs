@@ -11,13 +11,12 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::OncePortHandle;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::reference;
 use pyo3::prelude::*;
 
 #[derive(Debug)]
@@ -90,8 +89,9 @@ impl BrokerId {
         use std::time::Duration;
 
         let broker_name = format!("{:?}", self);
-        let actor_id = ActorId(cx.proc().proc_id().clone(), self.0, self.1);
-        let actor_ref: ActorRef<LocalStateBrokerActor> = ActorRef::attest(actor_id);
+        let actor_id = reference::ActorId::new(cx.proc().proc_id().clone(), self.0.clone(), self.1);
+        let actor_ref: reference::ActorRef<LocalStateBrokerActor> =
+            reference::ActorRef::attest(actor_id);
 
         let mut delay_ms = 1;
         loop {
