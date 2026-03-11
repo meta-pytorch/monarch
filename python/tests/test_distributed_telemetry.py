@@ -1091,3 +1091,39 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 
     # Clean up
     hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_per_table_row_retention(cleanup_callbacks) -> None:
+    """Test that time-based retention deletes old rows from message tables."""
+    import time
+
+    # Use a 1-second retention window so rows expire quickly.
+    engine = start_telemetry(batch_size=2, retention_secs=1)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 8}, name="worker_procs")
+    workers = worker_procs.spawn("workers", WorkerActor)
+    workers.initialized.get()
+
+    for _ in range(50):
+        workers.ping.call().get()
+
+    # Verify events exist before retention kicks in.
+    before = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
+    before_count = before.to_pydict()["cnt"][0]
+    assert before_count > 0, "Expected message_status_events rows before retention"
+
+    # Wait for the 1-second retention window to expire, then query again.
+    # The query triggers flush(), which applies retention and trims old rows.
+    time.sleep(2)
+
+    after = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
+    after_count = after.to_pydict()["cnt"][0]
+    assert after_count < before_count, (
+        f"Expected fewer rows after retention, got {after_count} vs {before_count}"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
