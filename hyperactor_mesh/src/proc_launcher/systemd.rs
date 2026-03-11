@@ -1676,8 +1676,7 @@ mod tests {
 
         // Assert exit_rx has NOT resolved. We use a short timeout
         // that we EXPECT to time out.
-        let poll = tokio::time::timeout(Duration::from_millis(100), &mut lr.exit_rx)
-            .await;
+        let poll = tokio::time::timeout(Duration::from_millis(100), &mut lr.exit_rx).await;
 
         assert!(
             poll.is_err(),
