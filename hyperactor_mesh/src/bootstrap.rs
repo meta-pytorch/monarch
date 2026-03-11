@@ -36,8 +36,6 @@ use hyperactor::channel::ChannelError;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::host::Host;
 use hyperactor::host::HostError;
@@ -248,7 +246,7 @@ async fn exit_if_missed_heartbeat(bootstrap_index: usize, bootstrap_addr: Channe
         "Heartbeat connection established to allocator (idx: {bootstrap_index}, addr: {bootstrap_addr:?})",
     );
     loop {
-        RealClock.sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         let result = tx
             .send(Process2Allocator(
@@ -1031,7 +1029,7 @@ impl BootstrapProcHandle {
                 // Unexpected: we should be Running before Ready, but
                 // handle gracefully with current time.
                 *st = ProcStatus::Ready {
-                    started_at: RealClock.system_time_now(),
+                    started_at: std::time::SystemTime::now(),
                     addr,
                     agent,
                 };
@@ -1060,7 +1058,7 @@ impl BootstrapProcHandle {
     /// graceful shutdown via SIGTERM), but the underlying process has
     /// not yet fully exited.
     pub(crate) fn mark_stopping(&self) -> bool {
-        let now = hyperactor::clock::RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
 
         self.transition(|st| match *st {
             ProcStatus::Running { started_at } => {
@@ -1249,7 +1247,7 @@ impl BootstrapProcHandle {
     /// already been sent. It waits for exit, then escalates through
     /// terminate and kill if needed.
     pub(crate) async fn wait_or_brutally_kill(&self, timeout: Duration) {
-        match RealClock.timeout(timeout, self.wait_inner()).await {
+        match tokio::time::timeout(timeout, self.wait_inner()).await {
             Ok(st) if st.is_exit() => return,
             _ => {}
         }
@@ -1296,7 +1294,7 @@ impl BootstrapProcHandle {
         )?;
         // The agent handling Stop should exit the process, if it doesn't within
         // the time window, we escalate to SIGTERM.
-        match RealClock.timeout(timeout, self.wait()).await {
+        match tokio::time::timeout(timeout, self.wait()).await {
             Ok(Ok(st)) => Ok(st),
             Ok(Err(e)) => Err(anyhow::anyhow!("agent did not exit the process: {:?}", e)),
             Err(_) => Err(anyhow::anyhow!("agent did not exit the process in time")),
@@ -2485,7 +2483,6 @@ mod tests {
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
     use hyperactor::channel::TcpMode;
-    use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
     use hyperactor::reference as hyperactor_reference;
@@ -2704,8 +2701,7 @@ mod tests {
         });
 
         // Assert we see it via the tap.
-        let line = RealClock
-            .timeout(Duration::from_secs(2), tap_rx.recv())
+        let line = tokio::time::timeout(Duration::from_secs(2), tap_rx.recv())
             .await
             .expect("timed out waiting for log line")
             .expect("tap channel closed unexpectedly");
@@ -2782,7 +2778,7 @@ mod tests {
         async fn starting_to_running_ok() {
             let h = handle_for_test();
             assert!(matches!(h.status(), ProcStatus::Starting));
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             match h.status() {
                 ProcStatus::Running { started_at } => {
@@ -2795,7 +2791,7 @@ mod tests {
         #[tokio::test]
         async fn running_to_stopping_to_stopped_ok() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_stopping());
             assert!(matches!(h.status(), ProcStatus::Stopping { .. }));
@@ -2809,7 +2805,7 @@ mod tests {
         #[tokio::test]
         async fn running_to_killed_ok() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_killed(9, true));
             assert!(matches!(
@@ -2824,7 +2820,7 @@ mod tests {
         #[tokio::test]
         async fn running_to_failed_ok() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             assert!(h.mark_running(child_started_at));
             assert!(h.mark_failed("bootstrap error"));
             match h.status() {
@@ -2838,10 +2834,10 @@ mod tests {
         #[tokio::test]
         async fn illegal_transitions_are_rejected() {
             let h = handle_for_test();
-            let child_started_at = RealClock.system_time_now();
+            let child_started_at = std::time::SystemTime::now();
             // Starting -> Running is fine; second Running should be rejected.
             assert!(h.mark_running(child_started_at));
-            assert!(!h.mark_running(RealClock.system_time_now()));
+            assert!(!h.mark_running(std::time::SystemTime::now()));
             assert!(matches!(h.status(), ProcStatus::Running { .. }));
             // Once Stopped, we can't go to Running/Killed/Failed/etc.
             assert!(h.mark_stopping());
@@ -2861,7 +2857,7 @@ mod tests {
             let h = handle_for_test();
             let addr = ChannelAddr::any(ChannelTransport::Unix);
             // Mark Running.
-            let t0 = RealClock.system_time_now();
+            let t0 = std::time::SystemTime::now();
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
@@ -2880,7 +2876,7 @@ mod tests {
             let h = handle_for_test();
             let addr = ChannelAddr::any(ChannelTransport::Unix);
             // Starting -> Running
-            let t0 = RealClock.system_time_now();
+            let t0 = std::time::SystemTime::now();
             assert!(h.mark_running(t0));
             // Build a consistent AgentRef for Ready using the
             // handle's ProcId.
@@ -2960,7 +2956,7 @@ mod tests {
         let mut rx = handle.watch();
 
         // Starting -> Running
-        let now = RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
         assert!(handle.mark_running(now));
         rx.changed().await.ok(); // Observe the transition.
         match &*rx.borrow() {
@@ -3015,7 +3011,7 @@ mod tests {
         let proc_id = test_proc_id("42");
         let handle = test_handle(proc_id.clone());
 
-        let started_at = RealClock.system_time_now();
+        let started_at = std::time::SystemTime::now();
         assert!(handle.mark_running(started_at));
 
         let actor_id = proc_id.actor_id("proc_agent", 0);
@@ -3050,7 +3046,7 @@ mod tests {
 
     #[test]
     fn display_running_includes_uptime() {
-        let started_at = RealClock.system_time_now() - Duration::from_secs(42);
+        let started_at = std::time::SystemTime::now() - Duration::from_secs(42);
         let st = ProcStatus::Running { started_at };
 
         let s = format!("{}", st);
@@ -3060,7 +3056,7 @@ mod tests {
 
     #[test]
     fn display_ready_includes_addr() {
-        let started_at = RealClock.system_time_now() - Duration::from_secs(5);
+        let started_at = std::time::SystemTime::now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
         let agent = hyperactor_reference::ActorRef::attest(
             test_proc_id_with_addr(addr.clone(), "proc")
@@ -3094,10 +3090,10 @@ mod tests {
         let samples = vec![
             ProcStatus::Starting,
             ProcStatus::Stopping {
-                started_at: RealClock.system_time_now(),
+                started_at: std::time::SystemTime::now(),
             },
             ProcStatus::Ready {
-                started_at: RealClock.system_time_now(),
+                started_at: std::time::SystemTime::now(),
                 addr: ChannelAddr::any(ChannelTransport::Unix),
                 agent: hyperactor_reference::ActorRef::attest(
                     test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
@@ -3125,7 +3121,7 @@ mod tests {
         let handle = test_handle(proc_id.clone());
 
         // Starting -> Running
-        let t0 = RealClock.system_time_now();
+        let t0 = std::time::SystemTime::now();
         assert!(handle.mark_running(t0));
 
         // Synthesize Ready data
@@ -3229,12 +3225,11 @@ mod tests {
         handle.ready().await.expect("ready");
 
         let deadline = Duration::from_secs(2);
-        match RealClock
-            .timeout(
-                deadline * 2,
-                handle.terminate(&instance, deadline, "test terminate"),
-            )
-            .await
+        match tokio::time::timeout(
+            deadline * 2,
+            handle.terminate(&instance, deadline, "test terminate"),
+        )
+        .await
         {
             Err(_) => panic!("terminate() future hung"),
             Ok(Ok(st)) => {
@@ -3303,7 +3298,7 @@ mod tests {
         // Force-kill the child and assert we observe a Killed
         // terminal status.
         let deadline = Duration::from_secs(5);
-        match RealClock.timeout(deadline, handle.kill()).await {
+        match tokio::time::timeout(deadline, handle.kill()).await {
             Err(_) => panic!("kill() future hung"),
             Ok(Ok(st)) => {
                 // We expect a KILLED terminal state.
@@ -3546,7 +3541,7 @@ mod tests {
                     }
                 }
             }
-            RealClock.sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(
             ok,
@@ -3630,7 +3625,7 @@ mod tests {
             });
             Ok(LaunchResult {
                 pid: None,
-                started_at: RealClock.system_time_now(),
+                started_at: std::time::SystemTime::now(),
                 stdio: StdioHandling::ManagedByLauncher,
                 exit_rx: rx,
             })

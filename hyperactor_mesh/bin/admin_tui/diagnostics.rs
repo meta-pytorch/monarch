@@ -31,7 +31,6 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
-use hyperactor::clock::Clock;
 use hyperactor::host::LOCAL_PROC_NAME;
 use hyperactor::introspect::NodeProperties;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
@@ -201,12 +200,11 @@ async fn probe(
     let reference = reference.into();
     let t0 = Instant::now();
 
-    let result = hyperactor::clock::RealClock
-        .timeout(
-            Duration::from_millis(TIMEOUT_MS),
-            fetch_node_raw(client, base_url, &reference),
-        )
-        .await;
+    let result = tokio::time::timeout(
+        Duration::from_millis(TIMEOUT_MS),
+        fetch_node_raw(client, base_url, &reference),
+    )
+    .await;
 
     let elapsed_ms = t0.elapsed().as_millis() as u64;
 

@@ -147,8 +147,6 @@ use crossterm::terminal::enable_raw_mode;
 pub(crate) use fetch::*;
 pub(crate) use filter::*;
 pub(crate) use format::*;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 // Re-exports so #[cfg(test)] mod tests can use `use super::*`.
 #[allow(unused_imports)]
 pub(crate) use hyperactor::introspect::NodePayload;
@@ -217,14 +215,13 @@ async fn run_diagnose(client: reqwest::Client, base_url: String) -> io::Result<(
     let mut rx = run_diagnostics(client, base_url);
     let mut results = Vec::new();
 
-    let timed_out = RealClock
-        .timeout(Duration::from_secs(GLOBAL_TIMEOUT_SECS), async {
-            while let Some(r) = rx.recv().await {
-                results.push(r);
-            }
-        })
-        .await
-        .is_err();
+    let timed_out = tokio::time::timeout(Duration::from_secs(GLOBAL_TIMEOUT_SECS), async {
+        while let Some(r) = rx.recv().await {
+            results.push(r);
+        }
+    })
+    .await
+    .is_err();
 
     let s = DiagSummary::from_results(&results);
     let healthy = s.passed == s.total && !timed_out;
@@ -291,12 +288,12 @@ async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
     spinner.set_message(format!("mesh-admin — Connecting to {} ...", app.base_url));
     spinner.enable_steady_tick(Duration::from_millis(80));
 
-    let splash_start = RealClock.now();
+    let splash_start = tokio::time::Instant::now();
     app.refresh().await;
     let elapsed = splash_start.elapsed();
     let min_splash = Duration::from_secs(2);
     if elapsed < min_splash {
-        RealClock.sleep(min_splash - elapsed).await;
+        tokio::time::sleep(min_splash - elapsed).await;
     }
 
     spinner.finish_and_clear();

@@ -17,9 +17,6 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio::time::sleep_until;
 
-use crate::clock::Clock;
-use crate::clock::RealClock;
-
 /// An alarm that can be Armed to fire at some future time.
 ///
 /// Alarm is itself owned, and may have multiple sleepers attached
@@ -56,7 +53,7 @@ impl Alarm {
     /// Arm the alarm to fire after the provided duration.
     pub fn arm(&mut self, duration: Duration) {
         let mut status = self.status.lock().unwrap();
-        let armed_at = RealClock.now();
+        let armed_at = tokio::time::Instant::now();
         *status = AlarmStatus::Armed {
             version: self.version,
             deadline: armed_at + duration,
@@ -73,7 +70,7 @@ impl Alarm {
     pub fn rearm(&mut self, duration: Duration) {
         let remaining = match *self.status.lock().unwrap() {
             AlarmStatus::Armed { armed_at, .. } => {
-                let elapsed = RealClock.now() - armed_at;
+                let elapsed = tokio::time::Instant::now() - armed_at;
                 duration.saturating_sub(elapsed)
             }
             AlarmStatus::Unarmed | AlarmStatus::Dropped => duration,
@@ -145,7 +142,7 @@ impl AlarmSleeper {
                 AlarmStatus::Armed { version, .. } if version < self.min_version => None,
                 AlarmStatus::Armed {
                     version, deadline, ..
-                } if RealClock.now() >= deadline => {
+                } if tokio::time::Instant::now() >= deadline => {
                     self.min_version = version + 1;
                     return true;
                 }
