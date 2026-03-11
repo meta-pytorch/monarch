@@ -30,9 +30,6 @@ use futures::StreamExt;
 use futures::stream;
 use humantime::format_duration;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
-use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -47,12 +44,12 @@ use hyperactor::host::HostError;
 use hyperactor::host::ProcHandle;
 use hyperactor::host::ProcManager;
 use hyperactor::host::TerminateSummary;
-use hyperactor::mailbox::BoxableMailboxSender;
 use hyperactor::mailbox::IntoBoxedMailboxSender;
 use hyperactor::mailbox::MailboxClient;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::attrs::Attrs;
@@ -207,7 +204,11 @@ pub(crate) enum Process2AllocatorMessage {
     /// served at the provided channel address. Procs are started
     /// after instruction by the allocator through the corresponding
     /// [`Allocator2Process`] message.
-    StartedProc(ProcId, ActorRef<ProcAgent>, ChannelAddr),
+    StartedProc(
+        hyperactor_reference::ProcId,
+        hyperactor_reference::ActorRef<ProcAgent>,
+        ChannelAddr,
+    ),
 
     Heartbeat,
 }
@@ -218,7 +219,7 @@ wirevalue::register_type!(Process2AllocatorMessage);
 pub(crate) enum Allocator2Process {
     /// Request to start a new proc with the provided ID, listening
     /// to an address on the indicated channel transport.
-    StartProc(ProcId, ChannelTransport),
+    StartProc(hyperactor_reference::ProcId, ChannelTransport),
 
     /// A request for the process to shut down its procs and exit the
     /// process with the provided code.
@@ -337,9 +338,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    // REMOVE(V0): forward unknown destinations to the default sender.
-    let host = Host::new_with_default(manager, addr, Some(crate::router::global().clone().boxed()))
-        .await?;
+    let host = Host::new(manager, addr).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost handler will call host.serve() inside HostAgent::init
@@ -385,7 +384,7 @@ pub enum Bootstrap {
     /// Bootstrap as a "v1" proc
     Proc {
         /// The ProcId of the proc to be bootstrapped.
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         /// The backend address to which messages are forwarded.
         /// See [`hyperactor::host`] for channel topology details.
         backend_addr: ChannelAddr,
@@ -570,7 +569,7 @@ impl Bootstrap {
                     ok!(MailboxClient::dial(backend_addr)),
                 );
 
-                let proc = Proc::new(proc_id.clone(), proc_sender.into_boxed());
+                let proc = Proc::configured(proc_id.clone(), proc_sender.into_boxed());
 
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<i32>();
                 let agent_handle = ok!(ProcAgent::boot_v1(proc.clone(), Some(shutdown_tx))
@@ -678,7 +677,7 @@ pub enum ProcStatus {
     Ready {
         started_at: SystemTime,
         addr: ChannelAddr,
-        agent: ActorRef<ProcAgent>,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
     },
     /// A stop has been requested (SIGTERM, graceful shutdown, etc.),
     /// but the OS process has not yet fully exited. (Proc-level:
@@ -815,7 +814,7 @@ impl std::error::Error for ReadyError {}
 #[derive(Clone)]
 pub struct BootstrapProcHandle {
     /// Logical identity of the proc in the mesh.
-    proc_id: ProcId,
+    proc_id: hyperactor_reference::ProcId,
 
     /// Live lifecycle snapshot (see [`ProcStatus`]). Kept in a mutex
     /// so [`BootstrapProcHandle::status`] can return a synchronous
@@ -885,7 +884,10 @@ impl BootstrapProcHandle {
     /// This is the canonical entry point used by
     /// `BootstrapProcManager` when it launches a proc into a new
     /// process.
-    pub(crate) fn new(proc_id: ProcId, launcher: Weak<dyn ProcLauncher>) -> Self {
+    pub(crate) fn new(
+        proc_id: hyperactor_reference::ProcId,
+        launcher: Weak<dyn ProcLauncher>,
+    ) -> Self {
         let (tx, rx) = watch::channel(ProcStatus::Starting);
         Self {
             proc_id,
@@ -900,7 +902,7 @@ impl BootstrapProcHandle {
 
     /// Return the logical proc identity in the mesh.
     #[inline]
-    pub fn proc_id(&self) -> &ProcId {
+    pub fn proc_id(&self) -> &hyperactor_reference::ProcId {
         &self.proc_id
     }
 
@@ -1018,7 +1020,11 @@ impl BootstrapProcHandle {
     /// `Running`), or `false` if the current state did not allow
     /// moving to `Ready`. In the latter case the state is left
     /// unchanged and a warning is logged.
-    pub(crate) fn mark_ready(&self, addr: ChannelAddr, agent: ActorRef<ProcAgent>) -> bool {
+    pub(crate) fn mark_ready(
+        &self,
+        addr: ChannelAddr,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
+    ) -> bool {
         tracing::info!(proc_id = %self.proc_id, %addr, "{} ready at {}", self.proc_id, addr);
         self.transition(|st| match st {
             ProcStatus::Starting => {
@@ -1270,7 +1276,7 @@ impl BootstrapProcHandle {
     async fn send_stop_all(
         &self,
         cx: &impl context::Actor,
-        agent: ActorRef<ProcAgent>,
+        agent: hyperactor_reference::ActorRef<ProcAgent>,
         timeout: Duration,
         reason: &str,
     ) -> anyhow::Result<ProcStatus> {
@@ -1304,7 +1310,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     type TerminalStatus = ProcStatus;
 
     #[inline]
-    fn proc_id(&self) -> &ProcId {
+    fn proc_id(&self) -> &hyperactor_reference::ProcId {
         &self.proc_id
     }
 
@@ -1317,7 +1323,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
     }
 
     #[inline]
-    fn agent_ref(&self) -> Option<ActorRef<Self::Agent>> {
+    fn agent_ref(&self) -> Option<hyperactor_reference::ActorRef<Self::Agent>> {
         match &*self.status.lock().expect("status mutex poisoned") {
             ProcStatus::Ready { agent, .. } => Some(agent.clone()),
             _ => None,
@@ -1663,7 +1669,7 @@ pub struct BootstrapProcManager {
     /// Async registry of running children, keyed by [`ProcId`]. Holds
     /// [`BootstrapProcHandle`]s so callers can query or monitor
     /// status.
-    children: Arc<tokio::sync::Mutex<HashMap<ProcId, BootstrapProcHandle>>>,
+    children: Arc<tokio::sync::Mutex<HashMap<hyperactor_reference::ProcId, BootstrapProcHandle>>>,
 
     /// FileMonitor that aggregates logs from all children. None if
     /// file monitor creation failed.
@@ -1761,7 +1767,7 @@ impl BootstrapProcManager {
     ///
     /// Returns `None` if the manager has no record of the proc (e.g.
     /// never spawned here, or entry already removed).
-    pub async fn status(&self, proc_id: &ProcId) -> Option<ProcStatus> {
+    pub async fn status(&self, proc_id: &hyperactor_reference::ProcId) -> Option<ProcStatus> {
         self.children.lock().await.get(proc_id).map(|h| h.status())
     }
 
@@ -1774,7 +1780,7 @@ impl BootstrapProcManager {
     pub(crate) async fn request_stop(
         &self,
         cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &hyperactor_reference::ProcId,
         timeout: Duration,
         reason: &str,
     ) {
@@ -1809,7 +1815,7 @@ impl BootstrapProcManager {
 
     fn spawn_exit_monitor(
         &self,
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         handle: BootstrapProcHandle,
         exit_rx: tokio::sync::oneshot::Receiver<ProcExitResult>,
     ) {
@@ -1952,13 +1958,14 @@ impl ProcManager for BootstrapProcManager {
     #[hyperactor::instrument(fields(proc_id=proc_id.to_string(), addr=backend_addr.to_string()))]
     async fn spawn(
         &self,
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         backend_addr: ChannelAddr,
         config: BootstrapProcConfig,
     ) -> Result<Self::Handle, HostError> {
-        let (callback_addr, mut callback_rx) = channel::serve::<(ChannelAddr, ActorRef<ProcAgent>)>(
-            ChannelAddr::any(ChannelTransport::Unix),
-        )?;
+        let (callback_addr, mut callback_rx) =
+            channel::serve::<(ChannelAddr, hyperactor_reference::ActorRef<ProcAgent>)>(
+                ChannelAddr::any(ChannelTransport::Unix),
+            )?;
 
         // Decide whether we need to capture stdio.
         let overrides = &config.client_config_override;
@@ -2103,10 +2110,16 @@ impl hyperactor::host::SingleTerminate for BootstrapProcManager {
     async fn terminate_proc(
         &self,
         cx: &impl context::Actor,
-        proc: &ProcId,
+        proc: &hyperactor_reference::ProcId,
         timeout: Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+    ) -> Result<
+        (
+            Vec<hyperactor_reference::ActorId>,
+            Vec<hyperactor_reference::ActorId>,
+        ),
+        anyhow::Error,
+    > {
         // Snapshot to avoid holding the lock across awaits.
         let proc_handle: Option<BootstrapProcHandle> = {
             let mut guard = self.children.lock().await;
@@ -2468,8 +2481,6 @@ fn runtime_dir() -> io::Result<TempDir> {
 mod tests {
     use std::path::PathBuf;
 
-    use hyperactor::ActorRef;
-    use hyperactor::ProcId;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
@@ -2477,6 +2488,7 @@ mod tests {
     use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::host::ProcHandle;
+    use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_proc_id;
     use hyperactor::testing::ids::test_proc_id_with_addr;
     use hyperactor_config::Flattrs;
@@ -2644,7 +2656,7 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, proc_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(
+        let proc = Proc::configured(
             test_proc_id("client_0"),
             BoxedMailboxSender::new(router.clone()),
         );
@@ -2664,7 +2676,7 @@ mod tests {
         // Spawn the log client and disable aggregation (immediate
         // print + tap push).
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
+        let log_client: hyperactor_reference::ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         log_client.set_aggregate(&client, None).await.unwrap();
 
@@ -2673,7 +2685,7 @@ mod tests {
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let _log_forwarder: ActorRef<LogForwardActor> = proc
+        let _log_forwarder: hyperactor_reference::ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();
@@ -2709,8 +2721,8 @@ mod tests {
         use std::time::Duration;
 
         use async_trait::async_trait;
-        use hyperactor::ProcId;
         use hyperactor::host::ProcHandle;
+        use hyperactor::reference as hyperactor_reference;
         use hyperactor::testing::ids::test_proc_id;
 
         use super::super::*;
@@ -2732,7 +2744,7 @@ mod tests {
         impl ProcLauncher for TestProcLauncher {
             async fn launch(
                 &self,
-                _proc_id: &ProcId,
+                _proc_id: &hyperactor_reference::ProcId,
                 _opts: LaunchOptions,
             ) -> Result<LaunchResult, ProcLauncherError> {
                 panic!("TestProcLauncher::launch should not be called in unit tests");
@@ -2740,13 +2752,16 @@ mod tests {
 
             async fn terminate(
                 &self,
-                _proc_id: &ProcId,
+                _proc_id: &hyperactor_reference::ProcId,
                 _timeout: Duration,
             ) -> Result<(), ProcLauncherError> {
                 panic!("TestProcLauncher::terminate should not be called in unit tests");
             }
 
-            async fn kill(&self, _proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+            async fn kill(
+                &self,
+                _proc_id: &hyperactor_reference::ProcId,
+            ) -> Result<(), ProcLauncherError> {
                 panic!("TestProcLauncher::kill should not be called in unit tests");
             }
         }
@@ -2852,7 +2867,8 @@ mod tests {
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
             let actor_id = proc_id.actor_id("proc_agent", 0);
-            let agent_ref: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
+            let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
+                hyperactor_reference::ActorRef::attest(actor_id);
             // Ready -> Stopping -> Stopped should be legal.
             assert!(h.mark_ready(addr, agent_ref));
             assert!(h.mark_stopping());
@@ -2870,7 +2886,8 @@ mod tests {
             // handle's ProcId.
             let proc_id = <BootstrapProcHandle as ProcHandle>::proc_id(&h);
             let actor_id = proc_id.actor_id("proc_agent", 0);
-            let agent: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
+            let agent: hyperactor_reference::ActorRef<ProcAgent> =
+                hyperactor_reference::ActorRef::attest(actor_id);
             // Running -> Ready
             assert!(h.mark_ready(addr, agent));
             // Ready -> Killed
@@ -2907,7 +2924,7 @@ mod tests {
     impl crate::proc_launcher::ProcLauncher for TestLauncher {
         async fn launch(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _opts: crate::proc_launcher::LaunchOptions,
         ) -> Result<crate::proc_launcher::LaunchResult, crate::proc_launcher::ProcLauncherError>
         {
@@ -2916,7 +2933,7 @@ mod tests {
 
         async fn terminate(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _timeout: std::time::Duration,
         ) -> Result<(), crate::proc_launcher::ProcLauncherError> {
             panic!("TestLauncher::terminate should not be called in unit tests");
@@ -2924,13 +2941,13 @@ mod tests {
 
         async fn kill(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
         ) -> Result<(), crate::proc_launcher::ProcLauncherError> {
             panic!("TestLauncher::kill should not be called in unit tests");
         }
     }
 
-    fn test_handle(proc_id: ProcId) -> BootstrapProcHandle {
+    fn test_handle(proc_id: hyperactor_reference::ProcId) -> BootstrapProcHandle {
         let launcher: std::sync::Arc<dyn crate::proc_launcher::ProcLauncher> =
             std::sync::Arc::new(TestLauncher);
         BootstrapProcHandle::new(proc_id, std::sync::Arc::downgrade(&launcher))
@@ -3002,7 +3019,8 @@ mod tests {
         assert!(handle.mark_running(started_at));
 
         let actor_id = proc_id.actor_id("proc_agent", 0);
-        let agent_ref: ActorRef<ProcAgent> = ActorRef::attest(actor_id);
+        let agent_ref: hyperactor_reference::ActorRef<ProcAgent> =
+            hyperactor_reference::ActorRef::attest(actor_id);
 
         // Pick any addr to carry in Ready (what the child would have
         // called back with).
@@ -3044,7 +3062,7 @@ mod tests {
     fn display_ready_includes_addr() {
         let started_at = RealClock.system_time_now() - Duration::from_secs(5);
         let addr = ChannelAddr::any(ChannelTransport::Unix);
-        let agent = ActorRef::attest(
+        let agent = hyperactor_reference::ActorRef::attest(
             test_proc_id_with_addr(addr.clone(), "proc")
                 .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
         );
@@ -3081,7 +3099,7 @@ mod tests {
             ProcStatus::Ready {
                 started_at: RealClock.system_time_now(),
                 addr: ChannelAddr::any(ChannelTransport::Unix),
-                agent: ActorRef::attest(
+                agent: hyperactor_reference::ActorRef::attest(
                     test_proc_id_with_addr(ChannelAddr::any(ChannelTransport::Unix), "x")
                         .actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0),
                 ),
@@ -3112,7 +3130,8 @@ mod tests {
 
         // Synthesize Ready data
         let addr = ChannelAddr::any(ChannelTransport::Unix);
-        let agent: ActorRef<ProcAgent> = ActorRef::attest(proc_id.actor_id("proc_agent", 0));
+        let agent: hyperactor_reference::ActorRef<ProcAgent> =
+            hyperactor_reference::ActorRef::attest(proc_id.actor_id("proc_agent", 0));
         assert!(handle.mark_ready(addr, agent));
 
         // Call the trait method (not ready_inner).
@@ -3169,7 +3188,7 @@ mod tests {
     async fn make_proc_id_and_backend_addr(
         instance: &hyperactor::Instance<()>,
         _tag: &str,
-    ) -> (ProcId, ChannelAddr) {
+    ) -> (hyperactor_reference::ProcId, ChannelAddr) {
         // Serve a Unix channel as the "backend_addr" and hook it into
         // this test proc.
         let (backend_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
@@ -3336,7 +3355,7 @@ mod tests {
         //
         // (2) Host::serve(..) sets up a Host in the same OS process
         //     (no new process). It binds front/back channels, creates
-        //     an in-process service proc (`Proc::new(..)`), and
+        //     an in-process service proc (`Proc::configured(..)`), and
         //     stores the `BootstrapProcManager` for later spawns.
         //
         // (3) Install HostAgent (still no new OS process).
@@ -3600,7 +3619,7 @@ mod tests {
     impl ProcLauncher for DummyLauncher {
         async fn launch(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _opts: LaunchOptions,
         ) -> Result<LaunchResult, ProcLauncherError> {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3619,13 +3638,16 @@ mod tests {
 
         async fn terminate(
             &self,
-            _proc_id: &ProcId,
+            _proc_id: &hyperactor_reference::ProcId,
             _timeout: Duration,
         ) -> Result<(), ProcLauncherError> {
             Ok(())
         }
 
-        async fn kill(&self, _proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+        async fn kill(
+            &self,
+            _proc_id: &hyperactor_reference::ProcId,
+        ) -> Result<(), ProcLauncherError> {
             Ok(())
         }
     }
