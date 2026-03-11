@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![allow(clippy::disallowed_methods)] // Instant::now — no actor clock in a standalone benchmark.
-
 //! Ping-pong latency benchmark using hyperactor channels.
 //!
 //! Equivalent to the ZMQ-based Python ping-pong benchmark, but uses hyperactor

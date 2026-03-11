@@ -81,7 +81,6 @@ fn bench_actor_scaling(c: &mut Criterion) {
 
                     let mut msg_rcv = 0;
                     while msg_rcv < num_actors {
-                        #[allow(clippy::disallowed_methods)]
                         let _ = tokio::time::timeout(Duration::from_secs(10), rx.recv())
                             .await
                             .unwrap();
@@ -177,7 +176,6 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
 
                             let mut msg_rcv = 0;
                             while msg_rcv < num_actors {
-                                #[allow(clippy::disallowed_methods)]
                                 let _ =
                                     tokio::time::timeout(recv_timeout, rx.recv()).await.unwrap();
                                 msg_rcv += 1;

@@ -14,14 +14,11 @@ use std::fmt::Write;
 use std::time::SystemTime;
 
 use derivative::Derivative;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_config::Flattrs;
 use indenter::indented;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate as hyperactor; // for macros
 use crate::actor::ActorErrorKind;
 use crate::actor::ActorStatus;
 use crate::reference;
@@ -56,7 +53,7 @@ impl ActorSupervisionEvent {
         Self {
             actor_id,
             display_name,
-            occurred_at: RealClock.system_time_now(),
+            occurred_at: std::time::SystemTime::now(),
             actor_status,
             message_headers,
         }
