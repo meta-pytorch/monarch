@@ -14,10 +14,7 @@ use std::sync::Arc;
 
 use hyperactor::Mailbox;
 use hyperactor::OncePortHandle;
-use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
-use hyperactor::PortId;
-use hyperactor::PortRef;
 use hyperactor::accum::Accumulator;
 use hyperactor::accum::CommReducer;
 use hyperactor::accum::ReducerFactory;
@@ -31,6 +28,7 @@ use hyperactor::mailbox::monitored_return_handle;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
 use hyperactor::message::Unbind;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use monarch_types::PickledPyObject;
 use monarch_types::py_global;
@@ -158,16 +156,16 @@ impl PyMailbox {
 )]
 #[derive(Clone)]
 pub struct PyPortId {
-    inner: PortId,
+    inner: reference::PortId,
 }
 
-impl From<PortId> for PyPortId {
-    fn from(port_id: PortId) -> Self {
+impl From<reference::PortId> for PyPortId {
+    fn from(port_id: reference::PortId) -> Self {
         Self { inner: port_id }
     }
 }
 
-impl From<PyPortId> for PortId {
+impl From<PyPortId> for reference::PortId {
     fn from(port_id: PyPortId) -> Self {
         port_id.inner
     }
@@ -185,7 +183,7 @@ impl PyPortId {
     #[pyo3(signature = (*, actor_id, port))]
     fn new(actor_id: &PyActorId, port: u64) -> Self {
         Self {
-            inner: PortId(actor_id.inner.clone(), port),
+            inner: reference::PortId::new(actor_id.inner.clone(), port),
         }
     }
 
@@ -276,7 +274,7 @@ impl PythonPortHandle {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub struct PythonPortRef {
-    pub(crate) inner: PortRef<PythonMessage>,
+    pub(crate) inner: reference::PortRef<PythonMessage>,
 }
 
 #[pymethods]
@@ -284,7 +282,7 @@ impl PythonPortRef {
     #[new]
     fn new(port: PyPortId) -> Self {
         Self {
-            inner: PortRef::attest(port.into()),
+            inner: reference::PortRef::attest(port.into()),
         }
     }
     fn __reduce__<'py>(
@@ -321,8 +319,8 @@ impl PythonPortRef {
     }
 }
 
-impl From<PortRef<PythonMessage>> for PythonPortRef {
-    fn from(port_ref: PortRef<PythonMessage>) -> Self {
+impl From<reference::PortRef<PythonMessage>> for PythonPortRef {
+    fn from(port_ref: reference::PortRef<PythonMessage>) -> Self {
         Self { inner: port_ref }
     }
 }
@@ -455,7 +453,7 @@ impl PythonOncePortHandle {
     module = "monarch._rust_bindings.monarch_hyperactor.mailbox"
 )]
 pub struct PythonOncePortRef {
-    pub(crate) inner: Option<OncePortRef<PythonMessage>>,
+    pub(crate) inner: Option<reference::OncePortRef<PythonMessage>>,
 }
 
 #[pymethods]
@@ -463,7 +461,7 @@ impl PythonOncePortRef {
     #[new]
     fn new(port: Option<PyPortId>) -> Self {
         Self {
-            inner: port.map(|port| PortRef::attest(port.inner).into_once()),
+            inner: port.map(|port| reference::PortRef::attest(port.inner).into_once()),
         }
     }
     fn __reduce__<'py>(
@@ -510,8 +508,8 @@ impl PythonOncePortRef {
     }
 }
 
-impl From<OncePortRef<PythonMessage>> for PythonOncePortRef {
-    fn from(port_ref: OncePortRef<PythonMessage>) -> Self {
+impl From<reference::OncePortRef<PythonMessage>> for PythonOncePortRef {
+    fn from(port_ref: reference::OncePortRef<PythonMessage>) -> Self {
         Self {
             inner: Some(port_ref),
         }

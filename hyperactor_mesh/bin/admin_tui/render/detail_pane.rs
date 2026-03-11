@@ -8,11 +8,11 @@
 
 use std::str::FromStr;
 
-use hyperactor::ProcId;
 use hyperactor::introspect::FailureInfo;
 use hyperactor::introspect::NodePayload;
 use hyperactor::introspect::NodeProperties;
 use hyperactor::introspect::RecordedEvent;
+use hyperactor::reference as hyperactor_reference;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;
@@ -245,7 +245,7 @@ fn render_host_detail(
         Line::default(),
     ];
     for child in &payload.children {
-        let short = ProcId::from_str(child)
+        let short = hyperactor_reference::ProcId::from_str(child)
             .map(|pid| pid.name().to_string())
             .unwrap_or_else(|_| child.clone());
         lines.push(Line::from(vec![
