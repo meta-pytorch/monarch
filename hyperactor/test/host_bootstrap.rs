@@ -14,7 +14,7 @@ use hyperactor::host::ProcessProcManager;
 /// It just boots a proc with `hyperactor::host::testing::EchoActor`.
 #[tokio::main]
 async fn main() {
-    hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+    hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
     let proc =
         ProcessProcManager::<hyperactor::host::testing::EchoActor>::boot_proc(|proc| async move {
