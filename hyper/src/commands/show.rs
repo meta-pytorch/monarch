@@ -6,10 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::ActorRef;
 use hyperactor::host::SERVICE_PROC_NAME;
-use hyperactor::reference::ProcId;
-use hyperactor::reference::Reference;
+use hyperactor::reference;
 use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use hyperactor_mesh::host_mesh::host_agent::HostAgent;
@@ -19,21 +17,21 @@ use hyperactor_mesh::resource::GetStateClient;
 pub struct ShowCommand {
     /// The string repsentation of what we want to show, such as world, proc,
     /// actor, etc.
-    reference: Reference,
+    reference: reference::Reference,
 }
 
 impl ShowCommand {
     pub async fn run(self) -> anyhow::Result<()> {
         match self.reference {
-            Reference::Proc(proc_id) => {
+            reference::Reference::Proc(proc_id) => {
                 let host = proc_id.addr().clone();
                 let proc = proc_id.name().to_string();
                 let cx = context().await;
                 let client = cx.actor_instance;
 
                 // Codify obtaining a proc's agent in `hyperactor_mesh` somewhere.
-                let agent: ActorRef<HostAgent> = ActorRef::attest(
-                    ProcId(host, SERVICE_PROC_NAME.to_string())
+                let agent: reference::ActorRef<HostAgent> = reference::ActorRef::attest(
+                    reference::ProcId::with_name(host, SERVICE_PROC_NAME)
                         .actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0),
                 );
 
