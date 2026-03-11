@@ -39,12 +39,12 @@ use serde::de::DeserializeOwned;
 use typeuri::Named;
 
 // for macros
-use crate::ActorRef;
 use crate::Mailbox;
 use crate::RemoteHandles;
 use crate::RemoteMessage;
 use crate::actor::Referable;
 use crate::context;
+use crate::reference;
 
 /// An object `T` that is [`Unbind`] can extract a set of parameters from itself,
 /// and store in [`Bindings`]. The extracted parameters in [`Bindings`] can be
@@ -233,7 +233,7 @@ impl<M: Bind> IndexedErasedUnbound<M> {
     /// Used in unit tests to bind CastBlobT<M> to the given actor. Do not use in
     /// production.
     pub fn bind_for_test_only<A, C>(
-        actor_ref: ActorRef<A>,
+        actor_ref: reference::ActorRef<A>,
         cx: C,
         mailbox: Mailbox,
     ) -> anyhow::Result<()>
@@ -321,11 +321,9 @@ mod tests {
     use super::*;
     use crate as hyperactor; // for macros
     use crate::Bind;
-    use crate::PortRef;
     use crate::Unbind;
     use crate::accum::ReducerSpec;
     use crate::accum::StreamingReducerOpts;
-    use crate::reference::UnboundPort;
     use crate::testing::ids::test_port_id_with_pid;
 
     // Used to demonstrate a user defined reply type.
@@ -347,15 +345,16 @@ mod tests {
         arg0: bool,
         arg1: u32,
         #[binding(include)]
-        reply0: PortRef<String>,
+        reply0: reference::PortRef<String>,
         #[binding(include)]
-        reply1: PortRef<MyReply>,
+        reply1: reference::PortRef<MyReply>,
     }
 
     #[test]
     fn test_castable() {
-        let original_port0 = PortRef::attest(test_port_id_with_pid("world_0", "actor", 0, 123));
-        let original_port1 = PortRef::attest_reducible(
+        let original_port0 =
+            reference::PortRef::attest(test_port_id_with_pid("world_0", "actor", 0, 123));
+        let original_port1 = reference::PortRef::attest_reducible(
             test_port_id_with_pid("world_1", "actor1", 0, 456),
             Some(ReducerSpec {
                 typehash: 123,
@@ -381,12 +380,18 @@ mod tests {
                 bindings: Bindings(
                     [
                         (
-                            UnboundPort::typehash(),
-                            wirevalue::Any::serialize(&UnboundPort::from(&original_port0)).unwrap(),
+                            reference::UnboundPort::typehash(),
+                            wirevalue::Any::serialize(&reference::UnboundPort::from(
+                                &original_port0
+                            ))
+                            .unwrap(),
                         ),
                         (
-                            UnboundPort::typehash(),
-                            wirevalue::Any::serialize(&UnboundPort::from(&original_port1)).unwrap(),
+                            reference::UnboundPort::typehash(),
+                            wirevalue::Any::serialize(&reference::UnboundPort::from(
+                                &original_port1
+                            ))
+                            .unwrap(),
                         ),
                     ]
                     .into_iter()
@@ -403,15 +408,15 @@ mod tests {
 
         let mut new_ports = vec![&new_port_id0, &new_port_id1].into_iter();
         erased
-            .visit_mut::<UnboundPort>(|b| {
+            .visit_mut::<reference::UnboundPort>(|b| {
                 let port = new_ports.next().unwrap();
                 b.update(port.clone());
                 Ok(())
             })
             .unwrap();
 
-        let new_port0 = PortRef::<String>::attest(new_port_id0);
-        let new_port1 = PortRef::<MyReply>::attest_reducible(
+        let new_port0 = reference::PortRef::<String>::attest(new_port_id0);
+        let new_port1 = reference::PortRef::<MyReply>::attest_reducible(
             new_port_id1,
             Some(ReducerSpec {
                 typehash: 123,
@@ -422,12 +427,12 @@ mod tests {
         let new_bindings = Bindings(
             [
                 (
-                    UnboundPort::typehash(),
-                    wirevalue::Any::serialize(&UnboundPort::from(&new_port0)).unwrap(),
+                    reference::UnboundPort::typehash(),
+                    wirevalue::Any::serialize(&reference::UnboundPort::from(&new_port0)).unwrap(),
                 ),
                 (
-                    UnboundPort::typehash(),
-                    wirevalue::Any::serialize(&UnboundPort::from(&new_port1)).unwrap(),
+                    reference::UnboundPort::typehash(),
+                    wirevalue::Any::serialize(&reference::UnboundPort::from(&new_port1)).unwrap(),
                 ),
             ]
             .into_iter()

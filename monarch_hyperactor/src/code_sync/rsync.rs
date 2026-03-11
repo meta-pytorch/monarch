@@ -26,11 +26,11 @@ use futures::try_join;
 use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
 use hyperactor::context;
+use hyperactor::reference;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -329,9 +329,9 @@ impl RsyncDaemon {
 #[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct RsyncMessage {
     /// The connect message to create a duplex bytestream with the client.
-    pub connect: PortRef<Connect>,
+    pub connect: reference::PortRef<Connect>,
     /// A port to send back the rsync result or any errors.
-    pub result: PortRef<Result<RsyncResult, String>>,
+    pub result: reference::PortRef<Result<RsyncResult, String>>,
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
 }
