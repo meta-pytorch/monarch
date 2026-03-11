@@ -32,8 +32,6 @@ use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::channel::ChannelTransport;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::context::Mailbox as _;
 use hyperactor::host::Host;
@@ -369,7 +367,7 @@ impl Actor for HostAgent {
                         },
                         children: actors,
                         parent: Some(HostId(self_id.clone()).to_string()),
-                        as_of: humantime::format_rfc3339_millis(RealClock.system_time_now())
+                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
                             .to_string(),
                     }
                 }
@@ -381,7 +379,7 @@ impl Actor for HostAgent {
                     },
                     children: Vec::new(),
                     parent: None,
-                    as_of: humantime::format_rfc3339_millis(RealClock.system_time_now())
+                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
                         .to_string(),
                 },
             }
