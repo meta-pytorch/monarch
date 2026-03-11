@@ -528,10 +528,10 @@ def test_actor_status_events_table() -> None:
 
     # Verify the schema has the expected columns
     expected_columns = {
+        "id",
         "timestamp_us",
         "actor_id",
         "new_status",
-        "prev_status",
         "reason",
     }
     actual_columns = set(result_dict.keys())
