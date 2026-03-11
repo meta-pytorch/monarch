@@ -20,10 +20,10 @@ use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ActorMeshRef;
@@ -71,13 +71,13 @@ struct PhilosopherActor {
     /// Total size of the group.
     size: usize,
     /// The waiter's port
-    waiter: OnceCell<PortRef<WaiterMessage>>,
+    waiter: OnceCell<reference::PortRef<WaiterMessage>>,
 }
 
 /// Message from the waiter to a philosopher
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum PhilosopherMessage {
-    Start(#[binding(include)] PortRef<WaiterMessage>),
+    Start(#[binding(include)] reference::PortRef<WaiterMessage>),
     GrantChopstick(usize),
 }
 

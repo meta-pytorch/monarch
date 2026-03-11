@@ -7,11 +7,10 @@
  */
 
 use derive_more::Display;
-use hyperactor::ActorRef;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
-use hyperactor::reference::ActorId;
+use hyperactor::reference;
 use pyo3::FromPyObject;
 use pyo3::IntoPyObject;
 use pyo3::IntoPyObjectExt;
@@ -130,7 +129,7 @@ pub struct WorkerError {
 
     /// Actor id of the worker that had the error.
     // TODO: arguably at this level we only care about the rank
-    pub worker_actor_id: ActorId,
+    pub worker_actor_id: reference::ActorId,
 }
 
 /// Device operation failures.
@@ -145,7 +144,7 @@ pub struct DeviceFailure {
 
     /// Actor id of the worker that had the error.
     // TODO: arguably at this level we only care about the rank
-    pub actor_id: ActorId,
+    pub actor_id: reference::ActorId,
 }
 
 /// Controller messages. These define the contract that the controller has with the client
@@ -156,11 +155,11 @@ pub enum ControllerMessage {
     /// and allow the controller to send messages back to the client.
     Attach {
         /// The client actor that is being attached.
-        client_actor: ActorRef<ClientActor>,
+        client_actor: reference::ActorRef<ClientActor>,
 
         /// The response to indicate if the client was successfully attached.
         #[reply]
-        response_port: hyperactor::OncePortRef<()>,
+        response_port: reference::OncePortRef<()>,
     },
 
     /// Notify the controller of the dependencies for a worker operation with the same seq.
@@ -206,7 +205,7 @@ pub enum ControllerMessage {
     // TODO: T212094401 take a ActorRef
     Status {
         seq: Seq,
-        worker_actor_id: ActorId,
+        worker_actor_id: reference::ActorId,
         controller: bool,
     },
 
@@ -223,7 +222,7 @@ pub enum ControllerMessage {
     /// by the controller.
     GetFirstIncompleteSeqsUnitTestsOnly {
         #[reply]
-        response_port: hyperactor::OncePortRef<Vec<Seq>>,
+        response_port: reference::OncePortRef<Vec<Seq>>,
     },
 
     /// The message to schedule next supervision check task on the controller.
@@ -231,7 +230,7 @@ pub enum ControllerMessage {
 
     /// Debugger message sent from a debugger to be forwarded back to the client.
     DebuggerMessage {
-        debugger_actor_id: ActorId,
+        debugger_actor_id: reference::ActorId,
         action: DebuggerAction,
     },
 }
