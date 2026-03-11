@@ -350,6 +350,26 @@ QUERIES = [
            WHERE sm.given_name = 'sender' AND rm.given_name = 'compute'
            ORDER BY m.timestamp_us DESC""",
     ),
+    (
+        "Message Status Events",
+        "SELECT * FROM message_status_events ORDER BY timestamp_us LIMIT 10",
+    ),
+    (
+        "Lifecycle: sender -> compute messages",
+        """SELECT sender.display_name AS from_actor,
+                  receiver.display_name AS to_actor,
+                  m.endpoint,
+                  mse.status,
+                  mse.timestamp_us
+           FROM messages m
+           INNER JOIN message_status_events mse ON m.id = mse.message_id
+           LEFT JOIN actors sender ON m.from_actor_id = sender.id
+           LEFT JOIN actors receiver ON m.to_actor_id = receiver.id
+           LEFT JOIN meshes sm ON sender.mesh_id = sm.id
+           LEFT JOIN meshes rm ON receiver.mesh_id = rm.id
+           WHERE sm.given_name = 'sender' AND rm.given_name = 'compute'
+           ORDER BY m.id, mse.timestamp_us""",
+    ),
 ]
 
 

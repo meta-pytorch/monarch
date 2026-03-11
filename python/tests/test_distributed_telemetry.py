@@ -755,6 +755,58 @@ def test_messages_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_message_status_events_table(cleanup_callbacks) -> None:
+    """Test that message_status_events captures queued/active/complete transitions."""
+    engine = start_telemetry(batch_size=10)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 1}, name="status_workers_procs"
+    )
+    workers = worker_procs.spawn("status_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    workers.ping.call().get()
+
+    # Verify schema
+    result = engine.query(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'message_status_events' ORDER BY ordinal_position"
+    )
+    column_names = result.to_pydict().get("column_name", [])
+    assert column_names == [
+        "id",
+        "timestamp_us",
+        "message_id",
+        "status",
+    ], f"Unexpected columns: {column_names}"
+
+    # Verify status values include queued, active, complete
+    result = engine.query("SELECT DISTINCT status FROM message_status_events")
+    statuses = set(result.to_pydict().get("status", []))
+    expected_statuses = {"queued", "active", "complete"}
+    assert expected_statuses.issubset(statuses), (
+        f"Expected statuses {expected_statuses} to be subset of {statuses}"
+    )
+
+    # Verify at least one message has all 3 status events (queued, active, complete)
+    result = engine.query(
+        "SELECT message_id, COUNT(*) as cnt "
+        "FROM message_status_events "
+        "GROUP BY message_id "
+        "HAVING COUNT(*) = 3"
+    )
+    result_dict = result.to_pydict()
+    assert len(result_dict.get("message_id", [])) > 0, (
+        "Expected at least one message with all 3 status events"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     engine = start_telemetry(batch_size=10)
