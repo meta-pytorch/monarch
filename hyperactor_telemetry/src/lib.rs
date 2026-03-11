@@ -433,6 +433,23 @@ pub fn notify_message(event: MessageEvent) {
     dispatch_or_buffer(EntityEvent::Message(event));
 }
 
+/// Event fired when a received message changes status.
+#[derive(Debug, Clone)]
+pub struct MessageStatusEvent {
+    pub timestamp: SystemTime,
+    /// Unique identifier for this status event.
+    pub id: u64,
+    /// The message whose status changed (FK to MessageEvent.id).
+    pub message_id: u64,
+    /// New status: "queued", "active", or "complete".
+    pub status: String,
+}
+
+/// Notify the registered dispatcher that a message changed status.
+pub fn notify_message_status(event: MessageStatusEvent) {
+    dispatch_or_buffer(EntityEvent::MessageStatus(event));
+}
+
 static ACTOR_STATUS_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Generate a globally unique ActorStatusEvent ID.
@@ -463,6 +480,17 @@ pub fn generate_message_id(to_actor_id: u64) -> u64 {
     hash_to_u64(&(to_actor_id, seq))
 }
 
+static STATUS_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique message-status-event ID (cross-process unique).
+///
+/// Hashes (message_id, seq) following the same pattern as
+/// `generate_sent_message_id`.
+pub fn generate_status_event_id(message_id: u64) -> u64 {
+    let seq = STATUS_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(message_id, seq))
+}
+
 /// Unified event enum for all entity lifecycle events.
 ///
 /// This enum wraps all entity events (actors, meshes, and future event types)
@@ -480,6 +508,8 @@ pub enum EntityEvent {
     SentMessage(SentMessageEvent),
     /// A message was received.
     Message(MessageEvent),
+    /// A received message changed status.
+    MessageStatus(MessageStatusEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -505,6 +535,7 @@ pub enum EntityEvent {
 ///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
 ///             EntityEvent::SentMessage(msg) => println!("Sent: {}", msg.id),
 ///             EntityEvent::Message(msg) => println!("Recv: {}", msg.id),
+///             EntityEvent::MessageStatus(s) => println!("Status: {}", s.status),
 ///         }
 ///         Ok(())
 ///     }
