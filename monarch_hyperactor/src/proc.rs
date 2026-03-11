@@ -20,9 +20,7 @@ use hyperactor::clock::ClockKind;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Instance;
 use hyperactor::proc::Proc;
-use hyperactor::reference::ActorId;
-use hyperactor::reference::Index;
-use hyperactor::reference::ProcId;
+use hyperactor::reference;
 use monarch_types::PickledPyObject;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -143,16 +141,16 @@ impl PyProc {
 )]
 #[derive(Clone)]
 pub struct PyActorId {
-    pub(super) inner: ActorId,
+    pub(super) inner: reference::ActorId,
 }
 
-impl From<ActorId> for PyActorId {
-    fn from(actor_id: ActorId) -> Self {
+impl From<reference::ActorId> for PyActorId {
+    fn from(actor_id: reference::ActorId) -> Self {
         Self { inner: actor_id }
     }
 }
 
-impl From<PyActorId> for ActorId {
+impl From<PyActorId> for reference::ActorId {
     fn from(val: PyActorId) -> Self {
         val.inner
     }
@@ -162,14 +160,14 @@ impl From<PyActorId> for ActorId {
 impl PyActorId {
     #[new]
     #[pyo3(signature = (*, addr, proc_name, actor_name, pid = 0))]
-    fn new(addr: &str, proc_name: &str, actor_name: &str, pid: Index) -> PyResult<Self> {
+    fn new(addr: &str, proc_name: &str, actor_name: &str, pid: reference::Index) -> PyResult<Self> {
         let addr: ChannelAddr = addr.parse().map_err(|e| {
             PyValueError::new_err(format!("Failed to parse channel address '{}': {}", addr, e))
         })?;
         Ok(Self {
-            inner: ActorId(
-                ProcId(addr, proc_name.to_string()),
-                actor_name.to_string(),
+            inner: reference::ActorId::new(
+                reference::ProcId::with_name(addr, proc_name),
+                actor_name,
                 pid,
             ),
         })
@@ -203,7 +201,7 @@ impl PyActorId {
     }
 
     #[getter]
-    fn pid(&self) -> Index {
+    fn pid(&self) -> reference::Index {
         self.inner.pid()
     }
 
@@ -235,7 +233,7 @@ impl PyActorId {
     }
 }
 
-impl From<&PyActorId> for ActorId {
+impl From<&PyActorId> for reference::ActorId {
     fn from(actor_id: &PyActorId) -> Self {
         actor_id.inner.clone()
     }
@@ -303,7 +301,7 @@ pub struct InstanceWrapper<M: RemoteMessage> {
     status: InstanceStatus,
 
     clock: ClockKind,
-    actor_id: ActorId,
+    actor_id: reference::ActorId,
 }
 
 impl<M: RemoteMessage> InstanceWrapper<M> {
@@ -436,7 +434,7 @@ impl<M: RemoteMessage> InstanceWrapper<M> {
         &self.instance
     }
 
-    pub fn actor_id(&self) -> &ActorId {
+    pub fn actor_id(&self) -> &reference::ActorId {
         &self.actor_id
     }
 }
