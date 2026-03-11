@@ -538,9 +538,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 /// use hyperactor::HandleClient;
 /// use hyperactor::Handler;
 /// use hyperactor::Instance;
-/// use hyperactor::OncePortRef;
 /// use hyperactor::RefClient;
 /// use hyperactor::proc::Proc;
+/// use hyperactor::reference;
 /// use serde::Deserialize;
 /// use serde::Serialize;
 /// use typeuri::Named;
@@ -553,9 +553,9 @@ fn parse_messages(input: DeriveInput) -> Result<Vec<Message>, syn::Error> {
 ///
 ///     // Call messages dispatch a request, expecting a reply to the
 ///     // provided port, which must be in the last position.
-///     Exists(String, #[reply] OncePortRef<bool>),
+///     Exists(String, #[reply] reference::OncePortRef<bool>),
 ///
-///     List(#[reply] OncePortRef<Vec<String>>),
+///     List(#[reply] reference::OncePortRef<Vec<String>>),
 /// }
 ///
 /// // Define an actor.
@@ -1378,6 +1378,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     for ty in &tys {
         handles.push(quote! {
             impl #impl_generics hyperactor::actor::RemoteHandles<#ty> for #data_type_name #ty_generics #where_clause {}
+            impl #impl_generics hyperactor::remote::Accepts<#ty> for #data_type_name #ty_generics #where_clause {}
         });
         bindings.push(quote! {
             ports.bind::<#ty>();
@@ -1398,9 +1399,11 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Always export the `Signal` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
+        impl #impl_generics hyperactor::remote::Accepts<hyperactor::actor::Signal> for #data_type_name #ty_generics #where_clause {}
 
         // Always export the `IntrospectMessage` type.
         impl #impl_generics hyperactor::actor::RemoteHandles<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
+        impl #impl_generics hyperactor::remote::Accepts<hyperactor::introspect::IntrospectMessage> for #data_type_name #ty_generics #where_clause {}
 
         impl #impl_generics hyperactor::actor::Binds<#data_type_name #ty_generics> for #data_type_name #ty_generics #where_clause {
             fn bind(ports: &hyperactor::proc::Ports<Self>) {
@@ -1581,6 +1584,7 @@ pub fn behavior(input: TokenStream) -> TokenStream {
 
         #(
             impl #impl_generics hyperactor::actor::RemoteHandles<#tys> for #behavior #ty_generics #where_clause {}
+            impl #impl_generics hyperactor::remote::Accepts<#tys> for #behavior #ty_generics #where_clause {}
         )*
     };
 
