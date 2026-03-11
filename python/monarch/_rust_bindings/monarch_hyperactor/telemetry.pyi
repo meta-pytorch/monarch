@@ -49,15 +49,6 @@ def use_real_clock() -> None:
     """
     ...
 
-def use_sim_clock() -> None:
-    """
-    Convenience function to switch to simulated clock.
-
-    This switches the telemetry system to use simulated time, which is useful for
-    testing and simulation environments where you want deterministic time control.
-    """
-    ...
-
 def get_execution_id() -> str:
     """
     Get the current execution ID.
