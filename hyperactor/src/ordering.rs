@@ -25,8 +25,7 @@ use tokio::sync::mpsc::error::SendError;
 use typeuri::Named;
 use uuid::Uuid;
 
-use crate::ActorId;
-use crate::PortId;
+use crate::reference;
 
 /// A client's re-ordering buffer state.
 struct BufferState<T> {
@@ -180,9 +179,9 @@ impl<T> OrderedSender<T> {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 enum SeqKey {
     /// Shared sequence for all actor ports of an actor
-    Actor(ActorId),
+    Actor(reference::ActorId),
     /// Individual sequence for a specific non-actor port
-    Port(PortId),
+    Port(reference::PortId),
 }
 
 /// A message's sequencer number infomation.
@@ -256,7 +255,7 @@ impl Sequencer {
     ///
     /// - Actor ports: share the same sequence scheme per actor (keyed by ActorId)
     /// - Non-actor ports: get individual sequence schemes (keyed by PortId)
-    pub fn assign_seq(&self, port_id: &PortId) -> SeqInfo {
+    pub fn assign_seq(&self, port_id: &reference::PortId) -> SeqInfo {
         let key = if port_id.is_actor_port() {
             SeqKey::Actor(port_id.actor_id().clone())
         } else {

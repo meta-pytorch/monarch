@@ -15,9 +15,9 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
-use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::proc::Proc;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -30,9 +30,9 @@ enum ShoppingList {
 
     // Call messages dispatch a request, expecting a reply to the
     // provided port, which must be in the last position.
-    Exists(String, #[reply] OncePortRef<bool>),
+    Exists(String, #[reply] reference::OncePortRef<bool>),
 
-    List(#[reply] OncePortRef<Vec<String>>),
+    List(#[reply] reference::OncePortRef<Vec<String>>),
 }
 
 // Example struct-based message types (demonstrating the new struct support)
@@ -45,7 +45,7 @@ struct ClearList {
 struct GetItemCount<C> {
     category_filter: String,
     #[reply]
-    reply: OncePortRef<C>,
+    reply: reference::OncePortRef<C>,
 }
 
 // Define an actor.
@@ -135,7 +135,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Spawn our actor, and get a handle for rank 0.
     let shopping_list_actor: hyperactor::ActorHandle<ShoppingListActor> =
         proc.spawn("shopping", ShoppingListActor::default())?;
-    let shopping_api: hyperactor::ActorRef<ShoppingApi> = shopping_list_actor.bind();
+    let shopping_api: reference::ActorRef<ShoppingApi> = shopping_list_actor.bind();
     // We join the system, so that we can send messages to actors.
     let (client, _) = proc.instance("client").unwrap();
 

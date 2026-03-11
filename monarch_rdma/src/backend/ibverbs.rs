@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::ActorRef;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -56,5 +56,5 @@ pub struct IbvOp {
     pub op_type: RdmaOpType,
     pub local_memory: Arc<dyn RdmaLocalMemory>,
     pub remote_buffer: IbvBuffer,
-    pub remote_manager: ActorRef<IbvManagerActor>,
+    pub remote_manager: reference::ActorRef<IbvManagerActor>,
 }

@@ -24,13 +24,12 @@ use derive_more::Display;
 use derive_more::From;
 use derive_more::TryInto;
 use enum_as_inner::EnumAsInner;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::reference::ActorId;
+use hyperactor::reference;
 use monarch_types::SerializablePyErr;
 use monarch_types::py_global;
 use ndslice::Slice;
@@ -858,7 +857,7 @@ pub enum WorkerMessage {
         /// - optional actor id to indicate the source of the error
         /// - error message or stacktrace
         /// The worker process will be stopped if the error is provided.
-        error: Option<(Option<ActorId>, String)>,
+        error: Option<(Option<reference::ActorId>, String)>,
     },
 
     /// Defines (part of) a new recording on the worker. This is a list of commands
@@ -934,7 +933,7 @@ pub enum WorkerMessage {
         /// The stream to retrieve from.
         stream: StreamRef,
         #[reply]
-        response_port: hyperactor::OncePortRef<Option<Result<WireValue, String>>>,
+        response_port: reference::OncePortRef<Option<Result<WireValue, String>>>,
     },
 }
 
@@ -952,7 +951,7 @@ pub struct WorkerParams {
     pub device_index: Option<i8>,
 
     // Actor Ref for the controller that the worker is associated with.
-    pub controller_actor: ActorRef<ControllerActor>,
+    pub controller_actor: reference::ActorRef<ControllerActor>,
 }
 wirevalue::register_type!(WorkerParams);
 
