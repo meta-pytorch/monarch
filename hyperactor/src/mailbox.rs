@@ -1677,9 +1677,26 @@ impl MailboxSender for Mailbox {
                 // sort of reference across .await points.
                 match entry.get().send_serialized(headers, data) {
                     Ok(false) => {
+                        hyperactor_telemetry::notify_message_status(
+                            hyperactor_telemetry::MessageStatusEvent {
+                                timestamp: std::time::SystemTime::now(),
+                                id: hyperactor_telemetry::generate_status_event_id(message_id),
+                                message_id,
+                                status: "queued".to_string(),
+                            },
+                        );
                         entry.remove();
                     }
-                    Ok(true) => (),
+                    Ok(true) => {
+                        hyperactor_telemetry::notify_message_status(
+                            hyperactor_telemetry::MessageStatusEvent {
+                                timestamp: std::time::SystemTime::now(),
+                                id: hyperactor_telemetry::generate_status_event_id(message_id),
+                                message_id,
+                                status: "queued".to_string(),
+                            },
+                        );
+                    }
                     Err(SerializedSenderError {
                         data,
                         error: sender_error,
