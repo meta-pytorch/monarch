@@ -174,6 +174,7 @@ async def test_structured_logging():
     pm = this_host().spawn_procs()
     actor = pm.spawn("logger", Logger)
     result = await actor.log_structured.call_one()
+    await pm.stop()
 
     assert result["is_empty"], (
         f"Actor prefix corrupted empty message: got {result['captured']!r}"
