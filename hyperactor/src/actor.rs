@@ -41,12 +41,16 @@ use crate as hyperactor; // for macros
 /// an indefinite hang. `poll_for` has the same signature and return type as
 /// `wait_for` but avoids the issue by periodically sleeping and re-checking
 /// the condition rather than relying on wake notifications.
+///
+/// The sleep interval starts at 1ms and doubles on each miss up to a cap of
+/// 1s, reducing overhead for long-running waits.
 pub trait ReceiverPollExt<T: 'static> {
     /// Drop-in replacement for [`watch::Receiver::wait_for`].
     ///
-    /// Polls `condition` every 1ms until it returns `true` or the sender is
-    /// dropped, returning the same `Result<Ref<'_, T>, RecvError>` as
-    /// `wait_for`. Timeout, if desired, should be applied externally (e.g. via
+    /// Polls `condition` with exponential back-off (1ms → 1s) until it returns
+    /// `true` or the sender is dropped, returning the same
+    /// `Result<Ref<'_, T>, RecvError>` as `wait_for`. Timeout, if desired,
+    /// should be applied externally (e.g. via
     /// `RealClock.timeout(…, recv.poll_for(…))`), same as with `wait_for`.
     async fn poll_for<F>(
         &mut self,
@@ -64,6 +68,7 @@ impl<T: Send + Sync + 'static> ReceiverPollExt<T> for watch::Receiver<T> {
     where
         F: FnMut(&T) -> bool,
     {
+        let mut sleep_ms = 1u64;
         loop {
             {
                 let val = self.borrow();
@@ -77,7 +82,8 @@ impl<T: Send + Sync + 'static> ReceiverPollExt<T> for watch::Receiver<T> {
                 return Err(e);
             }
             #[allow(clippy::disallowed_methods)]
-            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
+            sleep_ms = (sleep_ms * 2).min(1000);
         }
     }
 }
