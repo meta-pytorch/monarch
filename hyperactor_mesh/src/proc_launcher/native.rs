@@ -82,8 +82,6 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::reference as hyperactor_reference;
 use tokio::sync::oneshot;
 use tracing::Instrument;
@@ -304,7 +302,7 @@ impl ProcLauncher for NativeProcLauncher {
             });
         }
 
-        let started_at = hyperactor::clock::RealClock.system_time_now();
+        let started_at = std::time::SystemTime::now();
 
         let mut child = cmd.spawn().map_err(ProcLauncherError::Launch)?;
         let pid = child.id().expect("spawned child pid unavailable");
@@ -415,7 +413,7 @@ impl ProcLauncher for NativeProcLauncher {
     /// ## Implementation notes
     ///
     /// - Escalation is performed by a background task that sleeps for
-    ///   `timeout` using [`RealClock`], re-checks `pid_table`, and
+    ///   `timeout` using `tokio::time::sleep`, re-checks `pid_table`, and
     ///   sends SIGKILL if the proc is still present.
     /// - We rely on the exit-monitor task spawned in `launch` to
     ///   remove the proc from `pid_table` and resolve the `exit_rx`
@@ -460,7 +458,7 @@ impl ProcLauncher for NativeProcLauncher {
 
         tokio::spawn(
             async move {
-                RealClock.sleep(timeout).await;
+                tokio::time::sleep(timeout).await;
 
                 let pid = {
                     let table = pid_table.lock().expect("pid_table mutex poisoned");
@@ -710,8 +708,7 @@ mod tests {
         assert_eq!(log_env.as_str(), log_channel.to_string().as_str());
 
         // Ensure the exit channel resolves cleanly.
-        let exit = RealClock
-            .timeout(Duration::from_secs(2), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -771,8 +768,7 @@ mod tests {
                 String::from_utf8_lossy(&stderr_bytes)
             );
 
-            let exit = RealClock
-                .timeout(Duration::from_secs(2), lr.exit_rx)
+            let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
                 .await
                 .expect("timed out waiting for exit_rx")
                 .expect("exit_rx dropped");
@@ -798,8 +794,7 @@ mod tests {
 
             assert!(matches!(lr.stdio, StdioHandling::Inherited));
 
-            let exit = RealClock
-                .timeout(Duration::from_secs(2), lr.exit_rx)
+            let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
                 .await
                 .expect("timed out waiting for exit_rx")
                 .expect("exit_rx dropped");
@@ -834,8 +829,7 @@ mod tests {
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
-        let exit = RealClock
-            .timeout(Duration::from_secs(2), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -882,8 +876,7 @@ mod tests {
 
         launcher.kill(&proc_id).await.expect("kill");
 
-        let exit = RealClock
-            .timeout(Duration::from_secs(2), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(2), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -956,8 +949,7 @@ mod tests {
 
         let mut out = BufReader::new(stdout);
         let mut line = String::new();
-        RealClock
-            .timeout(Duration::from_secs(2), out.read_line(&mut line))
+        tokio::time::timeout(Duration::from_secs(2), out.read_line(&mut line))
             .await
             .expect("timed out waiting for READY")
             .expect("read_line failed");
@@ -978,8 +970,7 @@ mod tests {
 
         // Give enough time for: sleep(timeout) + SIGKILL delivery +
         // wait() + oneshot send.
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -1049,8 +1040,7 @@ while True:
 
             // Wait for "READY".
             let mut line = String::new();
-            RealClock
-                .timeout(Duration::from_secs(2), stdout_reader.read_line(&mut line))
+            tokio::time::timeout(Duration::from_secs(2), stdout_reader.read_line(&mut line))
                 .await
                 .expect("timeout waiting for READY")
                 .expect("read_line failed");
@@ -1058,8 +1048,7 @@ while True:
 
             // Prove child is alive by reading one dot.
             let mut b = [0u8; 1];
-            RealClock
-                .timeout(Duration::from_secs(2), stdout_reader.read_exact(&mut b))
+            tokio::time::timeout(Duration::from_secs(2), stdout_reader.read_exact(&mut b))
                 .await
                 .expect("timeout waiting for dot")
                 .expect("read_exact failed");
@@ -1082,8 +1071,7 @@ while True:
             }
         };
 
-        RealClock
-            .timeout(Duration::from_secs(2), drain_eof)
+        tokio::time::timeout(Duration::from_secs(2), drain_eof)
             .await
             .expect("never observed EOF after launcher drop - child likely still alive");
     }

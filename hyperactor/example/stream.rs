@@ -94,7 +94,6 @@ async fn main() {
                 CountClient::new(counter_actor.port().bind()),
             )
             .unwrap();
-        #[allow(clippy::disallowed_methods)]
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

@@ -2828,8 +2828,6 @@ mod tests {
     use crate::accum;
     use crate::accum::ReducerMode;
     use crate::channel::ChannelTransport;
-    use crate::clock::Clock;
-    use crate::clock::RealClock;
     use crate::context::Mailbox as MailboxContext;
     use crate::proc::Proc;
     use crate::testing::ids::test_actor_id;
@@ -3300,9 +3298,7 @@ mod tests {
         );
         return_handle.send(&client, Undeliverable(message)).unwrap();
 
-        RealClock
-            .sleep(tokio::time::Duration::from_millis(100))
-            .await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let foo_status = foo.status();
         assert!(matches!(*foo_status.borrow(), ActorStatus::Failed(_)));
@@ -3338,8 +3334,7 @@ mod tests {
             .unwrap();
         // Check we receive the undelivered message.
         assert!(
-            RealClock
-                .timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), return_receiver.recv())
                 .await
                 .is_ok()
         );
@@ -3356,8 +3351,7 @@ mod tests {
         });
         drop(return_handle);
         assert!(
-            RealClock
-                .timeout(tokio::time::Duration::from_secs(1), monitor_handle)
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), monitor_handle)
                 .await
                 .is_ok()
         );
@@ -3453,8 +3447,7 @@ mod tests {
         {
             let (sender, mut receiver) = create_receiver::<u64>(coalesce);
             assert!(
-                RealClock
-                    .timeout(tokio::time::Duration::from_secs(1), receiver.recv())
+                tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
                     .await
                     .is_err()
             );
@@ -3486,8 +3479,7 @@ mod tests {
                 );
             } else {
                 assert!(
-                    RealClock
-                        .timeout(tokio::time::Duration::from_secs(1), receiver.recv())
+                    tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
                         .await
                         .is_err()
                 );
@@ -3595,7 +3587,7 @@ mod tests {
         assert_eq!(receiver.recv().await.unwrap(), 4);
 
         // no more messages
-        RealClock.sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
     }
@@ -3607,17 +3599,16 @@ mod tests {
     ) -> anyhow::Result<Vec<u64>> {
         let mut messeges = vec![];
 
-        RealClock
-            .timeout(timeout_duration, async {
-                loop {
-                    let msg = receiver.recv().await.unwrap();
-                    messeges.push(msg);
-                    if messeges.len() == expected_size {
-                        break;
-                    }
+        tokio::time::timeout(timeout_duration, async {
+            loop {
+                let msg = receiver.recv().await.unwrap();
+                messeges.push(msg);
+                if messeges.len() == expected_size {
+                    break;
                 }
-            })
-            .await?;
+            }
+        })
+        .await?;
         Ok(messeges)
     }
 
@@ -3651,7 +3642,7 @@ mod tests {
         assert_eq!(messages, vec![1, 2, 3, 4]);
 
         // no more messages
-        RealClock.sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
     }
@@ -3694,7 +3685,7 @@ mod tests {
 
         // the last message unfortranately will never come because they do not
         // reach batch size.
-        RealClock.sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
     }
@@ -3727,12 +3718,12 @@ mod tests {
         post(&actor1, port_id1.clone(), 30);
 
         // Messages should accumulate for 50ms.
-        RealClock.sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
 
         // Wait until we are flushed.
-        RealClock.sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Now we are reduced and accumulated:
         let msg = receiver.recv().await.unwrap();
@@ -3807,7 +3798,7 @@ mod tests {
         assert_eq!(msg, 60); // 10 + 20 + 30
 
         // No further messages
-        RealClock.sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let msg = receiver.try_recv().unwrap();
         assert_eq!(msg, None);
     }
@@ -3849,11 +3840,11 @@ mod tests {
         actor.mailbox().post(envelope, undeliverable_handle);
 
         // Verify the message was returned as undeliverable
-        let undeliverable = RealClock
-            .timeout(Duration::from_secs(2), undeliverable_receiver.recv())
-            .await
-            .expect("should receive undeliverable message")
-            .expect("receiver should not be closed");
+        let undeliverable =
+            tokio::time::timeout(Duration::from_secs(2), undeliverable_receiver.recv())
+                .await
+                .expect("should receive undeliverable message")
+                .expect("receiver should not be closed");
 
         // Verify the undeliverable message has the correct destination
         assert_eq!(undeliverable.0.dest(), &split_port_id);
@@ -4029,7 +4020,6 @@ mod tests {
         mailbox.post(envelope, return_handle);
 
         // We expect the undeliverable to come back once TTL expires.
-        #[allow(clippy::disallowed_methods)]
         let Undeliverable(undelivered) =
             tokio::time::timeout(Duration::from_secs(5), ret_rx.recv())
                 .await
@@ -4072,7 +4062,6 @@ mod tests {
         mailbox.post(envelope, return_handle);
 
         // We should receive the payload locally.
-        #[allow(clippy::disallowed_methods)]
         let got = tokio::time::timeout(Duration::from_secs(1), user_rx.recv())
             .await
             .expect("timed out waiting for local delivery")
@@ -4080,7 +4069,6 @@ mod tests {
         assert_eq!(got, payload);
 
         // There should be no undeliverables arriving.
-        #[allow(clippy::disallowed_methods)]
         let no_undeliverable =
             tokio::time::timeout(Duration::from_millis(100), undeliverable_rx.recv()).await;
         assert!(
@@ -4166,8 +4154,7 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = RealClock
-            .timeout(Duration::from_secs(1), return_rx.recv())
+        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
             .expect("return port closed");
@@ -4211,8 +4198,7 @@ mod tests {
 
         mailbox.post(envelope, return_handle);
 
-        let undeliverable = RealClock
-            .timeout(Duration::from_secs(1), return_rx.recv())
+        let undeliverable = tokio::time::timeout(Duration::from_secs(1), return_rx.recv())
             .await
             .expect("timed out waiting for undeliverable")
             .expect("return port closed");

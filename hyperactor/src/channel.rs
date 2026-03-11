@@ -1159,9 +1159,6 @@ mod tests {
 
     use super::net::*;
     use super::*;
-    use crate::clock::Clock;
-    use crate::clock::RealClock;
-
     #[test]
     fn test_channel_addr() {
         let cases_ok = vec![
@@ -1434,7 +1431,7 @@ mod tests {
             // which can cause the failure to be delayed. We give it
             // a deadline, but it can still technically fail -- the test
             // should be considered a kind of integration test.
-            let start = RealClock.now();
+            let start = tokio::time::Instant::now();
 
             let result = loop {
                 let (return_tx, return_rx) = oneshot::channel();

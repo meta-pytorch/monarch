@@ -14,8 +14,6 @@ use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::OncePortHandle;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::reference;
 use pyo3::prelude::*;
 
@@ -103,7 +101,7 @@ impl BrokerId {
                 panic!("Failed to resolve broker {} after retries", broker_name);
             }
 
-            RealClock.sleep(Duration::from_millis(delay_ms)).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             delay_ms *= 2;
         }
     }
