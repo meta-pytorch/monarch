@@ -15,8 +15,6 @@ use std::time::Duration;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Proc;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::bootstrap::host;
@@ -366,7 +364,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
 
         // Notify telemetry of the bootstrap host mesh, proc mesh, and client actor.
         {
-            let now = RealClock.system_time_now();
+            let now = std::time::SystemTime::now();
 
             let host_name_str = host_mesh.name().to_string();
             let host_mesh_id = hyperactor_telemetry::hash_to_u64(&host_name_str);

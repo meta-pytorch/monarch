@@ -36,8 +36,6 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -195,14 +193,14 @@ impl Aggregator {
     fn new_with_threshold(threshold: f64) -> Self {
         Aggregator {
             lines: vec![],
-            start_time: RealClock.system_time_now(),
+            start_time: std::time::SystemTime::now(),
             similarity_threshold: threshold,
         }
     }
 
     fn reset(&mut self) {
         self.lines.clear();
-        self.start_time = RealClock.system_time_now();
+        self.start_time = std::time::SystemTime::now();
     }
 
     fn add_line(&mut self, line: &str) -> anyhow::Result<()> {
@@ -248,7 +246,7 @@ impl fmt::Display for Aggregator {
         let start_time_str = format_system_time(self.start_time);
 
         // Get and format the current time
-        let current_time = RealClock.system_time_now();
+        let current_time = std::time::SystemTime::now();
         let end_time_str = format_system_time(current_time);
 
         // Write the header with formatted time window
@@ -1053,7 +1051,7 @@ impl hyperactor::RemoteSpawn for LogForwardActor {
 
         // Dial the same channel to send flush message to drain the log queue.
         let flush_tx = Arc::new(Mutex::new(channel::dial::<LogMessage>(log_channel)?));
-        let now = RealClock.system_time_now();
+        let now = std::time::SystemTime::now();
 
         Ok(Self {
             rx,
@@ -1071,7 +1069,7 @@ impl LogForwardMessageHandler for LogForwardActor {
     async fn forward(&mut self, ctx: &Context<Self>) -> Result<(), anyhow::Error> {
         match self.rx.recv().await {
             Ok(LogMessage::Flush { sync_version }) => {
-                let now = RealClock.system_time_now();
+                let now = std::time::SystemTime::now();
                 match sync_version {
                     None => {
                         // Schedule another flush to keep the log channel from deadlocking.
@@ -1080,7 +1078,7 @@ impl LogForwardMessageHandler for LogForwardActor {
                             self.next_flush_deadline = now + delay;
                             let flush_tx = self.flush_tx.clone();
                             tokio::spawn(async move {
-                                RealClock.sleep(delay).await;
+                                tokio::time::sleep(delay).await;
                                 if let Err(e) = flush_tx
                                     .lock()
                                     .await
@@ -1196,7 +1194,7 @@ impl Default for LogClientActor {
         Self {
             aggregate_window_sec: Some(DEFAULT_AGGREGATE_WINDOW_SEC),
             aggregators,
-            last_flush_time: RealClock.system_time_now(),
+            last_flush_time: std::time::SystemTime::now(),
             next_flush_deadline: None,
             current_flush_version: 0,
             current_flush_port: None,
@@ -1247,7 +1245,7 @@ impl LogClientActor {
 
     fn flush_internal(&mut self) {
         self.print_aggregators();
-        self.last_flush_time = RealClock.system_time_now();
+        self.last_flush_time = std::time::SystemTime::now();
         self.next_flush_deadline = None;
     }
 }
@@ -1280,7 +1278,7 @@ impl LogMessageHandler for LogClientActor {
                 for line in message_lines {
                     Self::print_log_line(hostname, &proc_id, output_target, line);
                 }
-                self.last_flush_time = RealClock.system_time_now();
+                self.last_flush_time = std::time::SystemTime::now();
             }
             Some(window) => {
                 for line in message_lines {
@@ -1298,7 +1296,7 @@ impl LogMessageHandler for LogClientActor {
                 }
 
                 let new_deadline = self.last_flush_time + Duration::from_secs(window);
-                let now = RealClock.system_time_now();
+                let now = std::time::SystemTime::now();
                 if new_deadline <= now {
                     self.flush_internal();
                 } else {
@@ -1852,7 +1850,7 @@ mod tests {
         );
 
         // Wait a bit for set up to be done
-        RealClock.sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Write initial content through the input writer
         writer.write_all(b"Initial log line\n").await.unwrap();
@@ -1868,17 +1866,16 @@ mod tests {
         writer.flush().await.unwrap();
 
         // Wait a bit for the file to be written and the watcher to detect changes
-        RealClock.sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Wait until log sender gets message
         let timeout = Duration::from_secs(1);
-        let _ = RealClock
-            .timeout(timeout, rx.recv())
+        let _ = tokio::time::timeout(timeout, rx.recv())
             .await
             .unwrap_or_else(|_| panic!("Did not get log message within {:?}", timeout));
 
         // Wait a bit more for all lines to be processed
-        RealClock.sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let (recent_lines, _result) = monitor.abort().await;
 

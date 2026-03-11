@@ -34,8 +34,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
 use hyperactor::RefClient;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
@@ -609,7 +607,7 @@ impl IbvManagerActor {
                     if remaining.is_empty() {
                         return Ok(());
                     }
-                    RealClock.sleep(Duration::from_millis(1)).await;
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
@@ -774,7 +772,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             let timeout = Duration::from_secs(1);
 
             loop {
-                RealClock.sleep(Duration::from_micros(200)).await;
+                tokio::time::sleep(Duration::from_micros(200)).await;
 
                 // Check if QP was created while we waited
                 if let Some(device_map) = self.device_qps.get(&self_device) {

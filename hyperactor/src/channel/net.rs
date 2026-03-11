@@ -65,8 +65,6 @@ use tokio::time::Instant;
 
 use super::*;
 use crate::RemoteMessage;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 
 // EnumAsInner generates code that triggers a false positive
 // unused_assignments lint on struct variant fields. #[allow] on the
@@ -232,7 +230,8 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
 
         let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
         if let Err(mpsc::error::SendError((message, return_channel, _))) =
-            self.sender.send((message, return_channel, RealClock.now()))
+            self.sender
+                .send((message, return_channel, tokio::time::Instant::now()))
         {
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
@@ -1620,8 +1619,7 @@ mod tests {
     #[tracing_test::traced_test]
     #[tokio::test]
     async fn test_unix_basic() -> Result<()> {
-        let timestamp = RealClock
-            .system_time_now()
+        let timestamp = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
@@ -1678,8 +1676,7 @@ mod tests {
     #[tokio::test]
     async fn test_unix_basic_client_before_server() -> Result<()> {
         // We run this test on Unix because we can pick our own port names more easily.
-        let timestamp = RealClock
-            .system_time_now()
+        let timestamp = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
@@ -1925,7 +1922,7 @@ mod tests {
                 disconnect_signal: sender,
                 network_flakiness: NetworkFlakiness::default(),
                 disconnected_count: Arc::new(AtomicU64::new(0)),
-                prev_diconnected_at: Arc::new(RwLock::new(RealClock.now())),
+                prev_diconnected_at: Arc::new(RwLock::new(tokio::time::Instant::now())),
                 debug_log_sampling_rate: None,
                 link_id: LinkId::random(),
                 _message_type: PhantomData,
@@ -2037,9 +2034,7 @@ mod tests {
                         let diff = max.abs_diff(min);
                         let factor = rng.gen_range(0.0..=1.0);
                         let latency = min + diff.mul_f64(factor);
-                        RealClock
-                            .sleep_until(queue.front().unwrap().1 + latency)
-                            .await;
+                        tokio::time::sleep_until(queue.front().unwrap().1 + latency).await;
                     }
                 }
 
@@ -2052,7 +2047,7 @@ mod tests {
                         read_res = reader.next() => {
                             match read_res {
                                 Ok(Some((_, data))) => {
-                                    queue.push_back((data, RealClock.now()));
+                                    queue.push_back((data, tokio::time::Instant::now()));
                                 }
                                 Ok(None) | Err(_) => {
                                         tracing::debug!("The upstream is closed or dropped. MockLink disconnects");
@@ -2075,7 +2070,7 @@ mod tests {
                                 );
 
                                 let mut w = prev_diconnected_at.write().unwrap();
-                                *w = RealClock.now();
+                                *w = tokio::time::Instant::now();
                                 break;
                             }
                             let data = queue.pop_front().unwrap().0;
@@ -2366,7 +2361,7 @@ mod tests {
 
             verify_ack(&mut reader2, 5).await;
 
-            RealClock.sleep(Duration::from_secs(5)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
 
             cancel_token2.cancel();
             handle2.await.unwrap().unwrap();
@@ -2403,7 +2398,7 @@ mod tests {
         }
 
         // Wait long enough to ensure server processed everything.
-        RealClock.sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         cancel_token.cancel();
         handle.await.unwrap().unwrap();
@@ -2418,10 +2413,7 @@ mod tests {
 
     #[tracing_test::traced_test]
     async fn verify_tx_closed(tx_status: &mut watch::Receiver<TxStatus>, expected_log: &str) {
-        match RealClock
-            .timeout(Duration::from_secs(5), tx_status.changed())
-            .await
-        {
+        match tokio::time::timeout(Duration::from_secs(5), tx_status.changed()).await {
             Ok(Ok(())) => {
                 let current_status = *tx_status.borrow();
                 assert_eq!(current_status, TxStatus::Closed);
@@ -2536,7 +2528,7 @@ mod tests {
                 .unwrap();
             }
             // Wait for the acks to be processed by NetTx.
-            RealClock.sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
             // Drop both halves to break the in-memory connection (parity with old drop of DuplexStream).
             drop(reader);
             drop(writer);
@@ -2597,7 +2589,7 @@ mod tests {
                     .map_err(|(_, e)| e)
                     .unwrap();
                     // Wait for the acks to be processed by NetTx.
-                    RealClock.sleep(Duration::from_secs(3)).await;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 // client DuplexStream is dropped here. This breaks the connection.
                 drop(reader);
@@ -2679,7 +2671,7 @@ mod tests {
                     .map_err(|(_, e)| e)
                     .unwrap();
                     // Wait for the acks to be processed by NetTx.
-                    RealClock.sleep(Duration::from_secs(3)).await;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 // client DuplexStream is dropped here. This breaks the connection.
                 drop(reader);
@@ -2719,7 +2711,7 @@ mod tests {
                     .map_err(|(_, e)| e)
                     .unwrap();
                     // Wait for the acks to be processed by NetTx.
-                    RealClock.sleep(Duration::from_secs(3)).await;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 // client DuplexStream is dropped here. This breaks the connection.
                 drop(reader);
@@ -2829,7 +2821,7 @@ mod tests {
         .await
         .map_err(|(_, e)| e)
         .unwrap();
-        RealClock.sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         // Channel should be still alive because ack was sent.
         assert!(!tx_status.has_changed().unwrap());
         assert_eq!(*tx_status.borrow(), TxStatus::Active);
@@ -2909,9 +2901,7 @@ mod tests {
                 // not acked before reconnect. Then those message would be redelivered.
                 // The repeated redelivery increases the total time of sending
                 // these messages.
-                RealClock
-                    .sleep(Duration::from_micros(rand::random::<u64>() % 100))
-                    .await;
+                tokio::time::sleep(Duration::from_micros(rand::random::<u64>() % 100)).await;
                 tx.post(message);
             }
             tracing::debug!("NetTx sent all messages");
@@ -2977,12 +2967,10 @@ mod tests {
         // side concurrently.
         let send_task_handle = tokio::spawn(async move {
             for message in messages_clone {
-                RealClock
-                    .sleep(Duration::from_micros(rand::random::<u64>() % 100))
-                    .await;
+                tokio::time::sleep(Duration::from_micros(rand::random::<u64>() % 100)).await;
                 tx.post(message);
             }
-            RealClock.sleep(Duration::from_secs(5)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
             tracing::debug!("NetTx sent all messages");
             tx
         });
@@ -3098,7 +3086,7 @@ mod tests {
 
             // Wait for response to be processed by NetTx before dropping reader/writer. Otherwise
             // the channel will be closed and we will get the wrong error.
-            RealClock.sleep(tokio::time::Duration::from_secs(3)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
 
         verify_tx_closed(&mut tx.status, "server rejected connection").await;

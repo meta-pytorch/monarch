@@ -19,8 +19,6 @@ use crate::Context;
 use crate::Handler;
 use crate::Instance;
 use crate::RemoteSpawn;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::mailbox::MessageEnvelope;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
@@ -126,7 +124,7 @@ impl Handler<PingPongMessage> for PingPongActor {
             done_port.send(cx, true)?;
         } else {
             if let Some(delay) = self.delay {
-                RealClock.sleep(delay).await;
+                tokio::time::sleep(delay).await;
             }
             let next_message = PingPongMessage(ttl - 1, cx.bind(), done_port);
             pong_actor.send(cx, next_message)?;
