@@ -14,6 +14,7 @@
 //! - `actor_status_events`: Actor status change events
 //! - `sent_messages`: Sent message events
 //! - `messages`: Received message events
+//! - `message_status_events`: Received message status transitions
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -121,6 +122,21 @@ pub struct Message {
     pub port_id: Option<u64>,
 }
 
+/// Row data for the message_status_events table.
+///
+/// Logs status transitions for received messages.
+#[derive(RecordBatchRow)]
+pub struct MessageStatusEvent {
+    /// Unique identifier for this status event
+    pub id: u64,
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// FK to messages.id
+    pub message_id: u64,
+    /// Status value: "queued", "active", or "complete"
+    pub status: String,
+}
+
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
     actors_buffer: ActorBuffer,
@@ -128,6 +144,7 @@ struct EntityDispatcherInner {
     actor_status_events_buffer: ActorStatusEventBuffer,
     sent_messages_buffer: SentMessageBuffer,
     messages_buffer: MessageBuffer,
+    message_status_events_buffer: MessageStatusEventBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -157,6 +174,11 @@ impl EntityDispatcherInner {
             &self.flush_callback,
         )?;
         Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+        Self::flush_buffer(
+            &mut self.message_status_events_buffer,
+            "message_status_events",
+            &self.flush_callback,
+        )?;
         Ok(())
     }
 
@@ -202,6 +224,17 @@ impl EntityDispatcherInner {
         }
         Ok(())
     }
+
+    fn flush_message_status_events_if_full(&mut self) -> anyhow::Result<()> {
+        if self.message_status_events_buffer.len() >= self.batch_size {
+            Self::flush_buffer(
+                &mut self.message_status_events_buffer,
+                "message_status_events",
+                &self.flush_callback,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Dispatches entity lifecycle events to Arrow RecordBatches.
@@ -230,6 +263,7 @@ impl EntityDispatcher {
             actor_status_events_buffer: ActorStatusEventBuffer::default(),
             sent_messages_buffer: SentMessageBuffer::default(),
             messages_buffer: MessageBuffer::default(),
+            message_status_events_buffer: MessageStatusEventBuffer::default(),
             batch_size,
             flush_callback,
         }));
@@ -328,6 +362,21 @@ impl EntityEventDispatcher for EntityDispatcher {
                     port_id: event.port_id,
                 });
                 inner.flush_messages_if_full()?;
+            }
+            EntityEvent::MessageStatus(event) => {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+                inner
+                    .message_status_events_buffer
+                    .insert(MessageStatusEvent {
+                        id: event.id,
+                        timestamp_us: timestamp_to_micros(&event.timestamp),
+                        message_id: event.message_id,
+                        status: event.status,
+                    });
+                inner.flush_message_status_events_if_full()?;
             }
         }
         Ok(())
