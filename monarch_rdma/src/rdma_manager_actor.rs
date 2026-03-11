@@ -27,17 +27,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
-use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::context;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
 use serde::Deserialize;
@@ -99,7 +97,7 @@ wirevalue::register_type!(ReleaseBuffer);
 #[derive(Handler, HandleClient, RefClient, Debug, Serialize, Deserialize, Named)]
 pub struct GetIbvActorRef {
     #[reply]
-    pub reply: OncePortRef<Option<ActorRef<IbvManagerActor>>>,
+    pub reply: reference::OncePortRef<Option<reference::ActorRef<IbvManagerActor>>>,
 }
 wirevalue::register_type!(GetIbvActorRef);
 
@@ -150,8 +148,9 @@ impl RdmaManagerActor {
     /// Construct an [`ActorHandle`] for the [`RdmaManagerActor`] co-located
     /// with the caller.
     pub fn local_handle(client: &impl context::Actor) -> ActorHandle<Self> {
-        let proc_id = client.mailbox().actor_id().0.clone();
-        let actor_ref = ActorRef::attest(ActorId(proc_id, "rdma_manager".to_string(), 0));
+        let proc_id = client.mailbox().actor_id().proc_id().clone();
+        let actor_ref =
+            reference::ActorRef::attest(reference::ActorId::new(proc_id, "rdma_manager", 0));
         actor_ref
             .downcast_handle(client)
             .expect("RdmaManagerActor is not in the local process")
@@ -197,7 +196,7 @@ impl GetIbvActorRefHandler for RdmaManagerActor {
     async fn get_ibv_actor_ref(
         &mut self,
         _cx: &Context<Self>,
-    ) -> Result<Option<ActorRef<IbvManagerActor>>, anyhow::Error> {
+    ) -> Result<Option<reference::ActorRef<IbvManagerActor>>, anyhow::Error> {
         Ok(Some(self.ibverbs.handle().bind()))
     }
 }
