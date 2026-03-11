@@ -653,7 +653,6 @@ pub async fn sync(src: &Path, dst: &Path) -> Result<HashMap<PathBuf, Action>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
 mod tests {
     use std::collections::HashMap;
     use std::os::unix::fs::PermissionsExt;
