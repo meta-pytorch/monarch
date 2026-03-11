@@ -21,8 +21,6 @@ use hyperactor::RemoteMessage;
 use hyperactor::accum::ReducerMode;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -346,7 +344,7 @@ fn into_watch<M: Send + Sync + Clone + Default + 'static>(
     }
     tokio::spawn(async move {
         loop {
-            let message = match RealClock.timeout(timeout, rx.recv()).await {
+            let message = match tokio::time::timeout(timeout, rx.recv()).await {
                 Ok(Ok(msg)) => MessageOrFailure::Message(msg),
                 Ok(Err(e)) => MessageOrFailure::Failure(e.to_string()),
                 Err(_) => MessageOrFailure::Timeout,
@@ -471,7 +469,7 @@ impl<A: Referable> ActorMeshRef<A> {
         }
 
         hyperactor_telemetry::notify_sent_message(hyperactor_telemetry::SentMessageEvent {
-            timestamp: RealClock.system_time_now(),
+            timestamp: std::time::SystemTime::now(),
             sender_actor_id: hyperactor_telemetry::hash_to_u64(cx.mailbox().actor_id()),
             actor_mesh_id: hyperactor_telemetry::hash_to_u64(&self.name.to_string()),
             view_json: serde_json::to_string(view::Ranked::region(self)).unwrap_or_default(),
@@ -565,7 +563,7 @@ impl<A: Referable> ActorMeshRef<A> {
         &self,
         cx: &impl context::Actor,
         message: M,
-        root_comm_actor: &ActorRef<CommActor>,
+        root_comm_actor: &hyperactor_reference::ActorRef<CommActor>,
     ) where
         A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
         M: Castable + RemoteMessage,
@@ -1074,8 +1072,6 @@ mod tests {
 
     use hyperactor::actor::ActorErrorKind;
     use hyperactor::actor::ActorStatus;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor::context::Mailbox as _;
     use hyperactor::mailbox;
     use ndslice::Extent;
@@ -1184,13 +1180,11 @@ mod tests {
             .expect("rank 3 exists")
             .send(instance, testactor::GetActorId(port.bind()))
             .expect("send to rank 3 should succeed");
-        let id_a = RealClock
-            .timeout(Duration::from_secs(3), rx.recv())
+        let id_a = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("timed out waiting for first reply")
             .expect("channel closed before first reply");
-        let id_b = RealClock
-            .timeout(Duration::from_secs(3), rx.recv())
+        let id_b = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("timed out waiting for second reply")
             .expect("channel closed before second reply");
@@ -1275,11 +1269,11 @@ mod tests {
 
         // Wait for a supervision event to reach the wrapper actor.
         for _ in 0..num_replicas {
-            let failure = RealClock
-                .timeout(Duration::from_secs(20), supervision_receiver.recv())
-                .await
-                .expect("timeout")
-                .unwrap();
+            let failure =
+                tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
+                    .await
+                    .expect("timeout")
+                    .unwrap();
             check_failure(failure);
         }
 
@@ -1366,11 +1360,11 @@ mod tests {
 
         // Wait for a supervision event to occur on these actors.
         for _ in 0..num_replicas {
-            let failure = RealClock
-                .timeout(Duration::from_secs(20), supervision_receiver.recv())
-                .await
-                .expect("timeout")
-                .unwrap();
+            let failure =
+                tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
+                    .await
+                    .expect("timeout")
+                    .unwrap();
             check_failure(failure);
         }
 
@@ -1419,11 +1413,11 @@ mod tests {
             .unwrap();
 
         for _ in 0..sliced_replicas {
-            let supervision_message = RealClock
-                .timeout(Duration::from_secs(20), supervision_receiver.recv())
-                .await
-                .expect("timeout")
-                .unwrap();
+            let supervision_message =
+                tokio::time::timeout(Duration::from_secs(20), supervision_receiver.recv())
+                    .await
+                    .expect("timeout")
+                    .unwrap();
             let event = supervision_message.event;
             assert_eq!(event.actor_id.name(), format!("{}", child_name.clone()));
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &event.actor_status {
@@ -1557,7 +1551,7 @@ mod tests {
             .unwrap();
 
         // Give it a moment to fully stop
-        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Set message delivery timeout for faster test
         let config = hyperactor_config::global::lock();
@@ -1583,10 +1577,9 @@ mod tests {
         // The fact that we successfully collect them proves the ping actor
         // is still running and handling undeliverables correctly (not crashing).
         let mut count = 0;
-        let deadline = RealClock.now() + std::time::Duration::from_secs(10);
-        while count < n && RealClock.now() < deadline {
-            match RealClock
-                .timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count < n && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(1), undeliverable_rx.recv())
                 .await
             {
                 Ok(Ok(Undeliverable(envelope))) => {
@@ -1647,16 +1640,16 @@ mod tests {
         }
 
         // Give actors time to start sleeping
-        RealClock.sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Count how many actors we spawned (for verification later)
         let expected_actors = sleep_mesh.values().count();
 
         // Now stop the mesh - actors won't respond in time, should be
         // aborted. Time this operation to verify abort behavior.
-        let stop_start = RealClock.now();
+        let stop_start = tokio::time::Instant::now();
         let result = sleep_mesh.stop(instance, "test stop".to_string()).await;
-        let stop_duration = RealClock.now().duration_since(stop_start);
+        let stop_duration = tokio::time::Instant::now().duration_since(stop_start);
 
         // Stop will return an error because actors didn't stop within
         // the timeout. This is expected - the actors were forcibly
@@ -1729,9 +1722,9 @@ mod tests {
         assert!(expected_actors > 0, "Should have spawned some actors");
 
         // Time the stop operation
-        let stop_start = RealClock.now();
+        let stop_start = tokio::time::Instant::now();
         let result = actor_mesh.stop(instance, "test stop".to_string()).await;
-        let stop_duration = RealClock.now().duration_since(stop_start);
+        let stop_duration = tokio::time::Instant::now().duration_since(stop_start);
 
         // Graceful stop should succeed (return Ok)
         assert!(

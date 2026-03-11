@@ -161,7 +161,6 @@ impl Alloc for LocalAlloc {
                                     rank,
                                     err
                                 );
-                                #[allow(clippy::disallowed_methods)]
                                 sleep(Duration::from_secs(1)).await;
                                 continue;
                             }
