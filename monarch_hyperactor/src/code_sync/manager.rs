@@ -25,11 +25,11 @@ use hyperactor::ActorHandle;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::context;
 use hyperactor::handle;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -63,10 +63,10 @@ use crate::code_sync::rsync::RsyncResult;
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum Method {
     Rsync {
-        connect: PortRef<Connect>,
+        connect: reference::PortRef<Connect>,
     },
     CondaSync {
-        connect: PortRef<Connect>,
+        connect: reference::PortRef<Connect>,
         path_prefix_replacements: HashMap<PathBuf, WorkspaceLocation>,
     },
 }
@@ -155,11 +155,11 @@ pub enum CodeSyncMessage {
         /// Whether to hot-reload code after syncing.
         reload: Option<WorkspaceShape>,
         /// A port to send back the result of the sync operation.
-        result: PortRef<Result<(), String>>,
+        result: reference::PortRef<Result<(), String>>,
     },
     Reload {
         sender_rank: Option<usize>,
-        result: PortRef<Result<(), String>>,
+        result: reference::PortRef<Result<(), String>>,
     },
 }
 wirevalue::register_type!(CodeSyncMessage);
@@ -245,7 +245,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
         workspace: WorkspaceLocation,
         method: Method,
         reload: Option<WorkspaceShape>,
-        result: PortRef<Result<(), String>>,
+        result: reference::PortRef<Result<(), String>>,
     ) -> Result<()> {
         let res = async move {
             match method {
@@ -337,7 +337,7 @@ impl CodeSyncMessageHandler for CodeSyncManager {
         &mut self,
         cx: &Context<Self>,
         sender_rank: Option<usize>,
-        result: PortRef<Result<(), String>>,
+        result: reference::PortRef<Result<(), String>>,
     ) -> Result<()> {
         if self
             .rank
