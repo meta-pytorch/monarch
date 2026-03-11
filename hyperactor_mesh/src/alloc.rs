@@ -24,11 +24,10 @@ use std::fmt;
 
 use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
-use hyperactor::ActorRef;
-use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::TlsAddr;
+use hyperactor::reference as hyperactor_reference;
 pub use local::LocalAlloc;
 pub use local::LocalAllocator;
 use mockall::predicate::*;
@@ -186,10 +185,10 @@ pub enum ProcState {
         /// The key used to identify the created proc.
         create_key: ShortUuid,
         /// The proc's assigned ID.
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
         /// Reference to this proc's mesh agent. In the future, we'll reserve a
         /// 'well known' PID (0) for this purpose.
-        mesh_agent: ActorRef<ProcAgent>,
+        mesh_agent: hyperactor_reference::ActorRef<ProcAgent>,
         /// The address of this proc. The endpoint of this address is
         /// the proc's mailbox, which accepts [`hyperactor::mailbox::MessageEnvelope`]s.
         addr: ChannelAddr,
@@ -351,9 +350,9 @@ pub trait Alloc {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct AllocatedProc {
     pub create_key: ShortUuid,
-    pub proc_id: ProcId,
+    pub proc_id: hyperactor_reference::ProcId,
     pub addr: ChannelAddr,
-    pub mesh_agent: ActorRef<ProcAgent>,
+    pub mesh_agent: hyperactor_reference::ActorRef<ProcAgent>,
 }
 
 impl fmt::Display for AllocatedProc {
@@ -749,12 +748,12 @@ pub(crate) mod testing {
             DialMailboxRouter::new_with_default((UndeliverableMailboxSender {}).into_boxed());
         router.clone().serve(router_rx);
 
-        let client_proc_id = ProcId(
+        let client_proc_id = hyperactor_reference::ProcId::with_name(
             ChannelAddr::any(ChannelTransport::Local),
-            "test_stuck_0".to_string(),
+            "test_stuck_0",
         );
         let (client_proc_addr, client_rx) = channel::serve(ChannelAddr::any(transport)).unwrap();
-        let client_proc = Proc::new(
+        let client_proc = Proc::configured(
             client_proc_id.clone(),
             BoxedMailboxSender::new(router.clone()),
         );
@@ -773,8 +772,8 @@ pub(crate) mod testing {
         client_proc: &Proc,
         cx: &impl context::Actor,
         router_channel_addr: ChannelAddr,
-        mesh_agent: ActorRef<ProcAgent>,
-    ) -> ActorRef<TestActor> {
+        mesh_agent: hyperactor_reference::ActorRef<ProcAgent>,
+    ) -> hyperactor_reference::ActorRef<TestActor> {
         let (supervisor, _supervisor_handle) = client_proc.instance("supervisor").unwrap();
         let (supervison_port, _) = supervisor.open_port();
         let (config_handle, _) = cx.mailbox().open_port();
@@ -811,7 +810,9 @@ pub(crate) mod testing {
             .unwrap();
         let result = completed_receiver.recv().await.unwrap();
         match result {
-            GspawnResult::Success { actor_id, .. } => ActorRef::attest(actor_id),
+            GspawnResult::Success { actor_id, .. } => {
+                hyperactor_reference::ActorRef::attest(actor_id)
+            }
             GspawnResult::Error(error_msg) => {
                 panic!("gspawn failed: {}", error_msg);
             }
