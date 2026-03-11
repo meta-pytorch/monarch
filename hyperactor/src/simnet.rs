@@ -43,12 +43,11 @@ use tokio::task::JoinError;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 
-use crate::ActorId;
-use crate::ProcId;
 use crate::channel::ChannelAddr;
 use crate::clock::Clock;
 use crate::clock::RealClock;
 use crate::clock::SimClock;
+use crate::reference;
 
 static HANDLE: OnceLock<SimNetHandle> = OnceLock::new();
 
@@ -140,7 +139,7 @@ pub struct TorchOpEvent {
     done_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     args_string: String,
     kwargs_string: String,
-    worker_actor_id: ActorId,
+    worker_actor_id: reference::ActorId,
 }
 
 #[async_trait]
@@ -188,7 +187,7 @@ impl TorchOpEvent {
         done_tx: oneshot::Sender<()>,
         args_string: String,
         kwargs_string: String,
-        worker_actor_id: ActorId,
+        worker_actor_id: reference::ActorId,
     ) -> Box<Self> {
         Box::new(Self {
             op,
@@ -442,7 +441,7 @@ pub struct SimNetHandle {
     training_script_state_tx: tokio::sync::watch::Sender<TrainingScriptState>,
     /// Signal to stop the simnet loop
     stop_signal: Arc<AtomicBool>,
-    resources: DashMap<ProcId, Point>,
+    resources: DashMap<reference::ProcId, Point>,
     latencies: std::sync::Mutex<LatencyConfig>,
 }
 
@@ -541,12 +540,16 @@ impl SimNetHandle {
     }
 
     /// Register the location in resource space for a Proc
-    pub fn register_proc(&self, proc_id: ProcId, point: Point) {
+    pub fn register_proc(&self, proc_id: reference::ProcId, point: Point) {
         self.resources.insert(proc_id, point);
     }
 
     /// Sample a latency between two procs
-    pub fn sample_latency(&self, src: &ProcId, dest: &ProcId) -> tokio::time::Duration {
+    pub fn sample_latency(
+        &self,
+        src: &reference::ProcId,
+        dest: &reference::ProcId,
+    ) -> tokio::time::Duration {
         let distances = [
             Distance::Region,
             Distance::DataCenter,

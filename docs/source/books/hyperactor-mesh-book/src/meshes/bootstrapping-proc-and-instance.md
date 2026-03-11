@@ -26,7 +26,7 @@ Under the hood it does (cf. `Proc::direct` in the source):
    It builds a `ProcId(bound_addr, name)`. That's just how this proc identifies itself to the rest of the world: "I am this channel, and my human-ish name is `root`."
 
 3. **Create a proc with a dial-able forwarder**
-   It does `Proc::new(proc_id, DialMailboxRouter::new().into_boxed())`. That "dial mailbox router" is the bit that lets this proc send to other procs later — it knows how to connect out.
+   It does `Proc::configured(proc_id, DialMailboxRouter::new().into_boxed())`. That "dial mailbox router" is the bit that lets this proc send to other procs later — it knows how to connect out.
 
 4. **Hook the incoming channel into the proc**
    It calls `proc.clone().serve(rx);` so that anything that shows up on that channel gets demuxed into the proc's mailbox muxer.
