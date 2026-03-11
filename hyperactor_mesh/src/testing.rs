@@ -172,7 +172,7 @@ async fn fresh_instance_with_router() -> (
 ) {
     static INSTANCE: OnceLock<(Instance<TestRootClient>, DialMailboxRouter)> = OnceLock::new();
     let router = DialMailboxRouter::new();
-    let proc = Proc::new(test_proc_id("0"), router.boxed());
+    let proc = Proc::configured(test_proc_id("0"), router.boxed());
     let ai = proc.actor_instance("testclient").unwrap();
     // Use the OnceLock to get a 'static lifetime for the instance.
     INSTANCE

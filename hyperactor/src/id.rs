@@ -25,6 +25,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use smol_str::SmolStr;
 
+use crate::port::Port;
+
 /// Maximum length of an RFC 1035 label.
 const MAX_LABEL_LEN: usize = 63;
 
@@ -306,6 +308,12 @@ pub enum IdParseError {
     /// Error parsing the proc uid component of an [`ActorId`].
     #[error("invalid proc uid in actor id: {0}")]
     InvalidActorProcUid(UidParseError),
+    /// The `<actor_id>:<port>` separator is missing.
+    #[error("invalid port id: expected format `<actor_id>:<port>`")]
+    InvalidPortIdFormat,
+    /// The port component is invalid.
+    #[error("invalid port: {0}")]
+    InvalidPort(String),
 }
 
 /// Identifies a process in the actor system.
@@ -501,6 +509,112 @@ impl FromStr for ActorId {
             },
             label: None,
         })
+    }
+}
+
+/// Identifies a port on an actor.
+///
+/// Identity (Eq, Hash, Ord) is determined by `(actor_id, port)`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PortId {
+    actor_id: ActorId,
+    port: Port,
+}
+
+impl PortId {
+    /// Create a new [`PortId`].
+    pub fn new(actor_id: ActorId, port: Port) -> Self {
+        Self { actor_id, port }
+    }
+
+    /// Returns the actor id.
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
+
+    /// Returns the port.
+    pub fn port(&self) -> Port {
+        self.port
+    }
+
+    /// Returns the proc id (delegates to actor_id).
+    pub fn proc_id(&self) -> &ProcId {
+        self.actor_id.proc_id()
+    }
+}
+
+impl PartialEq for PortId {
+    fn eq(&self, other: &Self) -> bool {
+        self.actor_id == other.actor_id && self.port == other.port
+    }
+}
+
+impl Eq for PortId {}
+
+impl Hash for PortId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.actor_id.hash(state);
+        self.port.hash(state);
+    }
+}
+
+impl PartialOrd for PortId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PortId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.actor_id
+            .cmp(&other.actor_id)
+            .then_with(|| self.port.cmp(&other.port))
+    }
+}
+
+impl fmt::Display for PortId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.actor_id, self.port)
+    }
+}
+
+impl fmt::Debug for PortId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.actor_id.label(), self.actor_id.proc_id().label()) {
+            (Some(actor_label), Some(proc_label)) => {
+                write!(
+                    f,
+                    "<'{}.{}' {}:{}>",
+                    actor_label, proc_label, self.actor_id, self.port
+                )
+            }
+            (Some(actor_label), None) => {
+                write!(f, "<'{}' {}:{}>", actor_label, self.actor_id, self.port)
+            }
+            (None, Some(proc_label)) => {
+                write!(f, "<'.{}' {}:{}>", proc_label, self.actor_id, self.port)
+            }
+            (None, None) => {
+                write!(f, "<{}:{}>", self.actor_id, self.port)
+            }
+        }
+    }
+}
+
+impl FromStr for PortId {
+    type Err = IdParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let colon = s.rfind(':').ok_or(IdParseError::InvalidPortIdFormat)?;
+        let actor_part = &s[..colon];
+        let port_part = &s[colon + 1..];
+
+        let actor_id: ActorId = actor_part.parse()?;
+        let port: Port = port_part
+            .parse()
+            .map_err(|_| IdParseError::InvalidPort(port_part.to_string()))?;
+
+        Ok(Self { actor_id, port })
     }
 }
 
@@ -949,5 +1063,221 @@ mod tests {
             parsed.proc_id().label().map(|l| l.as_str()),
             Some("my-proc")
         );
+    }
+
+    #[test]
+    fn test_port_id_construction_and_accessors() {
+        let actor_uid = Uid::Instance(0xabc);
+        let proc_id = ProcId::new(Uid::Instance(0xdef), Some(Label::new("my-proc").unwrap()));
+        let actor_id = ActorId::new(
+            actor_uid,
+            proc_id.clone(),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let port = Port::from(42);
+        let pid = PortId::new(actor_id.clone(), port);
+        assert_eq!(pid.actor_id(), &actor_id);
+        assert_eq!(pid.port(), port);
+        assert_eq!(pid.proc_id(), &proc_id);
+    }
+
+    #[test]
+    fn test_port_id_eq() {
+        let actor_id = ActorId::new(
+            Uid::Instance(0x42),
+            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Some(Label::new("actor").unwrap()),
+        );
+        let a = PortId::new(actor_id.clone(), Port::from(10));
+        let b = PortId::new(actor_id, Port::from(10));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_port_id_neq_different_port() {
+        let actor_id = ActorId::new(
+            Uid::Instance(0x42),
+            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Some(Label::new("actor").unwrap()),
+        );
+        let a = PortId::new(actor_id.clone(), Port::from(10));
+        let b = PortId::new(actor_id, Port::from(20));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_port_id_hash() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let actor_id = ActorId::new(
+            Uid::Instance(0x42),
+            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Some(Label::new("actor").unwrap()),
+        );
+        let a = PortId::new(actor_id.clone(), Port::from(10));
+        let b = PortId::new(actor_id, Port::from(10));
+        let hash = |pid: &PortId| {
+            let mut h = DefaultHasher::new();
+            pid.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn test_port_id_ord() {
+        let actor_id = ActorId::new(
+            Uid::Instance(0x42),
+            ProcId::new(Uid::Instance(0x99), Some(Label::new("proc").unwrap())),
+            Some(Label::new("actor").unwrap()),
+        );
+        let a = PortId::new(actor_id.clone(), Port::from(1));
+        let b = PortId::new(actor_id, Port::from(2));
+        assert!(a < b);
+    }
+
+    #[test]
+    fn test_port_id_ord_actor_first() {
+        let a = PortId::new(
+            ActorId::new(
+                Uid::Instance(0x01),
+                ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap())),
+                Some(Label::new("a").unwrap()),
+            ),
+            Port::from(99),
+        );
+        let b = PortId::new(
+            ActorId::new(
+                Uid::Instance(0x02),
+                ProcId::new(Uid::Instance(1), Some(Label::new("p").unwrap())),
+                Some(Label::new("a").unwrap()),
+            ),
+            Port::from(1),
+        );
+        assert!(a < b, "actor_id should be compared first");
+    }
+
+    #[test]
+    fn test_port_id_display() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        assert_eq!(pid.to_string(), "0000000000abc123.0000000000def456:42");
+    }
+
+    #[test]
+    fn test_port_id_debug_all_labels() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        assert_eq!(
+            format!("{:?}", pid),
+            "<'my-actor.my-proc' 0000000000abc123.0000000000def456:42>"
+        );
+    }
+
+    #[test]
+    fn test_port_id_debug_no_labels() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(Uid::Instance(0xdef456), None),
+            None,
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        assert_eq!(
+            format!("{:?}", pid),
+            "<0000000000abc123.0000000000def456:42>"
+        );
+    }
+
+    #[test]
+    fn test_port_id_debug_actor_label_only() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(Uid::Instance(0xdef456), None),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        assert_eq!(
+            format!("{:?}", pid),
+            "<'my-actor' 0000000000abc123.0000000000def456:42>"
+        );
+    }
+
+    #[test]
+    fn test_port_id_debug_proc_label_only() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            None,
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        assert_eq!(
+            format!("{:?}", pid),
+            "<'.my-proc' 0000000000abc123.0000000000def456:42>"
+        );
+    }
+
+    #[test]
+    fn test_port_id_fromstr_roundtrip() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabc123),
+            ProcId::new(
+                Uid::Instance(0xdef456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        let s = pid.to_string();
+        let parsed: PortId = s.parse().unwrap();
+        assert_eq!(pid, parsed);
+    }
+
+    #[test]
+    fn test_port_id_fromstr_errors() {
+        // Missing colon.
+        assert!(
+            "0000000000abc123.0000000000def456"
+                .parse::<PortId>()
+                .is_err()
+        );
+        // Invalid port.
+        assert!(
+            "0000000000abc123.0000000000def456:notanumber"
+                .parse::<PortId>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_port_id_serde_roundtrip() {
+        let aid = ActorId::new(
+            Uid::Instance(0xabcdef),
+            ProcId::new(
+                Uid::Instance(0x123456),
+                Some(Label::new("my-proc").unwrap()),
+            ),
+            Some(Label::new("my-actor").unwrap()),
+        );
+        let pid = PortId::new(aid, Port::from(42));
+        let json = serde_json::to_string(&pid).unwrap();
+        let parsed: PortId = serde_json::from_str(&json).unwrap();
+        assert_eq!(pid, parsed);
     }
 }
