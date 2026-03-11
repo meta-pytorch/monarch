@@ -224,7 +224,6 @@ async fn run_client(exe_path: PathBuf, keep_alive: bool) -> Result<(), anyhow::E
         // $USER | grep proxy_test | head -1 | awk '{print "kill -TERM
         // -" $2}'` to interactively test termination.
         loop {
-            #[allow(clippy::disallowed_methods)]
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     }
