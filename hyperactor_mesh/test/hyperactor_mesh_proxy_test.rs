@@ -18,10 +18,10 @@ use hyperactor::Actor;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context::Mailbox;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMesh;
@@ -79,7 +79,7 @@ impl RemoteSpawn for TestActor {
 }
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone)]
-pub struct Echo(pub String, pub PortRef<String>);
+pub struct Echo(pub String, pub reference::PortRef<String>);
 
 #[async_trait]
 impl Handler<Echo> for TestActor {
