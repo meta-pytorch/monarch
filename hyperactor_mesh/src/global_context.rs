@@ -70,7 +70,7 @@ use hyperactor::mailbox::PortReceiver;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
 use hyperactor::proc::WorkCell;
-use hyperactor::reference::PortRef;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -97,12 +97,13 @@ use crate::transport::default_bind_spec;
 ///
 /// Uses `PortRef` (not `PortHandle`) because the sink target
 /// (`ProcAgent`) runs in a remote worker process.
-static GLOBAL_SUPERVISION_SINK: OnceLock<RwLock<Option<PortRef<ActorSupervisionEvent>>>> =
-    OnceLock::new();
+static GLOBAL_SUPERVISION_SINK: OnceLock<
+    RwLock<Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>>,
+> = OnceLock::new();
 
 /// Returns the lazily-initialized container that holds the current
 /// process-global supervision sink.
-fn sink_cell() -> &'static RwLock<Option<PortRef<ActorSupervisionEvent>>> {
+fn sink_cell() -> &'static RwLock<Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>> {
     GLOBAL_SUPERVISION_SINK.get_or_init(|| RwLock::new(None))
 }
 
@@ -122,8 +123,8 @@ fn sink_cell() -> &'static RwLock<Option<PortRef<ActorSupervisionEvent>>> {
 /// destination [`ProcAgent`] may live in a different
 /// process/rank.
 pub(crate) fn set_global_supervision_sink(
-    sink: PortRef<ActorSupervisionEvent>,
-) -> Option<PortRef<ActorSupervisionEvent>> {
+    sink: hyperactor_reference::PortRef<ActorSupervisionEvent>,
+) -> Option<hyperactor_reference::PortRef<ActorSupervisionEvent>> {
     let cell = sink_cell();
     let mut guard = cell.write().unwrap();
     let prev = guard.take();
@@ -142,7 +143,7 @@ pub(crate) fn set_global_supervision_sink(
 /// Cloning a [`PortRef`] is cheap.
 ///
 /// Used only by the process-global root client.
-fn get_global_supervision_sink() -> Option<PortRef<ActorSupervisionEvent>> {
+fn get_global_supervision_sink() -> Option<hyperactor_reference::PortRef<ActorSupervisionEvent>> {
     sink_cell().read().unwrap().clone()
 }
 
@@ -506,7 +507,7 @@ pub fn try_this_host() -> Option<&'static HostMeshRef> {
 mod tests {
     use std::time::Duration;
 
-    use hyperactor::PortId;
+    use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_actor_id;
     use hyperactor_config::Flattrs;
     use ndslice::extent;
@@ -526,17 +527,19 @@ mod tests {
     /// sink is shared across tests running in the same process).
     fn inject_undeliverable(
         client: &'static Instance<GlobalClientActor>,
-        dest_actor: hyperactor::ActorId,
+        dest_actor: hyperactor::reference::ActorId,
     ) {
         let env = MessageEnvelope::new(
             client.self_id().clone(),
-            PortId(dest_actor, 0),
+            hyperactor_reference::PortId::new(dest_actor, 0),
             wirevalue::Any::serialize(&0u64).unwrap(),
             Flattrs::new(),
         );
         // Target the global root client's well-known Undeliverable port.
         let undeliverable_port =
-            PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(client.self_id());
+            hyperactor_reference::PortRef::<Undeliverable<MessageEnvelope>>::attest_message_port(
+                client.self_id(),
+            );
         undeliverable_port
             .send(client, Undeliverable(env))
             .expect("inject_undeliverable: send failed");

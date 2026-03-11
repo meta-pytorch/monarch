@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use hyperactor::ActorHandle;
 use hyperactor::Instance;
 use hyperactor::Mailbox;
-use hyperactor::ProcId;
+use hyperactor::reference;
 use hyperactor_mesh::proc_launcher::LaunchOptions;
 use hyperactor_mesh::proc_launcher::LaunchResult;
 use hyperactor_mesh::proc_launcher::ProcExitKind;
@@ -567,7 +567,7 @@ pub struct ActorProcLauncher {
     ///
     /// Not used for correctness; used for diagnostics and sanity
     /// checks.
-    active_procs: Arc<Mutex<HashSet<ProcId>>>,
+    active_procs: Arc<Mutex<HashSet<reference::ProcId>>>,
 }
 
 impl ActorProcLauncher {
@@ -621,7 +621,7 @@ impl ProcLauncher for ActorProcLauncher {
     ///   resolves to `ProcExitKind::Failed` with a decode error reason.
     async fn launch(
         &self,
-        proc_id: &ProcId,
+        proc_id: &reference::ProcId,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
         let (exit_port, exit_port_rx) = self.mailbox.open_once_port::<PythonMessage>();
@@ -737,7 +737,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// - send the message to the spawner actor.
     async fn terminate(
         &self,
-        proc_id: &ProcId,
+        proc_id: &reference::ProcId,
         timeout: Duration,
     ) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
@@ -780,7 +780,7 @@ impl ProcLauncher for ActorProcLauncher {
     /// Returns `ProcLauncherError::Kill` if we fail to:
     /// - import/serialize the request via `cloudpickle`, or
     /// - send the message to the spawner actor.
-    async fn kill(&self, proc_id: &ProcId) -> Result<(), ProcLauncherError> {
+    async fn kill(&self, proc_id: &reference::ProcId) -> Result<(), ProcLauncherError> {
         let pickled = Python::attach(|py| -> Result<Vec<u8>, ProcLauncherError> {
             let cloudpickle =
                 import_cloudpickle(py).map_err(|e| ProcLauncherError::Kill(format!("{e}")))?;

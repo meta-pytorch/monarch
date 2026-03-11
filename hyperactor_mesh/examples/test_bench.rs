@@ -19,8 +19,8 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::Unbind;
+use hyperactor::reference;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
 use hyperactor_mesh::comm::multicast::CastInfo;
@@ -46,7 +46,7 @@ impl Actor for TestActor {}
 
 #[derive(Debug, Serialize, Deserialize, Named, Clone, Bind, Unbind)]
 enum TestMessage {
-    Ping(#[binding(include)] PortRef<Point>),
+    Ping(#[binding(include)] reference::PortRef<Point>),
 }
 
 #[async_trait]

@@ -13,7 +13,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -22,6 +21,7 @@ use hyperactor::Proc;
 use hyperactor::RefClient;
 use hyperactor::RemoteSpawn;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 
 use super::IbvBuffer;
@@ -94,23 +94,23 @@ impl RemoteSpawn for CudaActor {
 pub enum CudaActorMessage {
     CreateBuffer {
         size: usize,
-        rdma_actor: ActorRef<RdmaManagerActor>,
+        rdma_actor: reference::ActorRef<RdmaManagerActor>,
         #[reply]
-        reply: hyperactor::OncePortRef<(RdmaRemoteBuffer, usize)>,
+        reply: reference::OncePortRef<(RdmaRemoteBuffer, usize)>,
     },
     FillBuffer {
         device_ptr: usize,
         size: usize,
         value: u8,
         #[reply]
-        reply: hyperactor::OncePortRef<()>,
+        reply: reference::OncePortRef<()>,
     },
     VerifyBuffer {
         cpu_buffer_ptr: usize,
         device_ptr: usize,
         size: usize,
         #[reply]
-        reply: hyperactor::OncePortRef<()>,
+        reply: reference::OncePortRef<()>,
     },
 }
 
@@ -452,18 +452,18 @@ pub struct IbvTestEnv {
     buffer_2: Buffer,
     pub client_1: Instance<()>,
     pub client_2: Instance<()>,
-    pub actor_1: ActorRef<RdmaManagerActor>,
-    pub actor_2: ActorRef<RdmaManagerActor>,
-    pub ibv_actor_1: ActorRef<IbvManagerActor>,
-    pub ibv_actor_2: ActorRef<IbvManagerActor>,
+    pub actor_1: reference::ActorRef<RdmaManagerActor>,
+    pub actor_2: reference::ActorRef<RdmaManagerActor>,
+    pub ibv_actor_1: reference::ActorRef<IbvManagerActor>,
+    pub ibv_actor_2: reference::ActorRef<IbvManagerActor>,
     pub rdma_handle_1: RdmaRemoteBuffer,
     pub rdma_handle_2: RdmaRemoteBuffer,
     pub local_memory_1: Arc<dyn RdmaLocalMemory>,
     pub local_memory_2: Arc<dyn RdmaLocalMemory>,
     pub ibv_buffer_1: IbvBuffer,
     pub ibv_buffer_2: IbvBuffer,
-    cuda_actor_1: Option<ActorRef<CudaActor>>,
-    cuda_actor_2: Option<ActorRef<CudaActor>>,
+    cuda_actor_1: Option<reference::ActorRef<CudaActor>>,
+    cuda_actor_2: Option<reference::ActorRef<CudaActor>>,
     device_ptr_1: Option<usize>,
     device_ptr_2: Option<usize>,
 }
@@ -539,11 +539,11 @@ impl IbvTestEnv {
 
         let rdma_actor_1 = RdmaManagerActor::new(Some(config1), Flattrs::default()).await?;
         let rdma_actor_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;
-        let actor_1: ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
+        let actor_1: reference::ActorRef<RdmaManagerActor> = rdma_actor_handle_1.bind();
 
         let rdma_actor_2 = RdmaManagerActor::new(Some(config2), Flattrs::default()).await?;
         let rdma_actor_handle_2 = proc_2.spawn("rdma_manager", rdma_actor_2)?;
-        let actor_2: ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
+        let actor_2: reference::ActorRef<RdmaManagerActor> = rdma_actor_handle_2.bind();
 
         let mut buf_vec = Vec::new();
         let mut cuda_actor_1 = None;
@@ -576,7 +576,7 @@ impl IbvTestEnv {
             // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel1.1 as i32, Flattrs::default()).await?;
             let cuda_handle = proc_1.spawn("cuda_init", cuda_actor)?;
-            let cuda_actor_ref_1: ActorRef<CudaActor> = cuda_handle.bind();
+            let cuda_actor_ref_1: reference::ActorRef<CudaActor> = cuda_handle.bind();
 
             let (rdma_buf, dev_ptr) = cuda_actor_ref_1
                 .create_buffer(&instance_1, buffer_size, actor_1.clone())
@@ -613,7 +613,7 @@ impl IbvTestEnv {
             // CUDA case - spawn CudaActor on the same proc
             let cuda_actor = CudaActor::new(parsed_accel2.1 as i32, Flattrs::default()).await?;
             let cuda_handle = proc_2.spawn("cuda_init", cuda_actor)?;
-            let cuda_actor_ref_2: ActorRef<CudaActor> = cuda_handle.bind();
+            let cuda_actor_ref_2: reference::ActorRef<CudaActor> = cuda_handle.bind();
 
             let (rdma_buf, dev_ptr) = cuda_actor_ref_2
                 .create_buffer(&instance_2, buffer_size, actor_2.clone())

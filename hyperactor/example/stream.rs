@@ -16,22 +16,22 @@ use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::PortRef;
 use hyperactor::proc::Proc;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
 #[derive(Debug, Default)]
 struct CounterActor {
-    subscribers: Vec<PortRef<u64>>,
+    subscribers: Vec<reference::PortRef<u64>>,
     n: u64,
 }
 
 impl Actor for CounterActor {}
 
 #[derive(Serialize, Deserialize, Debug, Named)]
-struct Subscribe(PortRef<u64>);
+struct Subscribe(reference::PortRef<u64>);
 
 #[async_trait]
 impl Handler<Subscribe> for CounterActor {
@@ -51,11 +51,11 @@ impl Handler<Subscribe> for CounterActor {
 
 #[derive(Debug)]
 struct CountClient {
-    counter: PortRef<Subscribe>,
+    counter: reference::PortRef<Subscribe>,
 }
 
 impl CountClient {
-    fn new(counter: PortRef<Subscribe>) -> Self {
+    fn new(counter: reference::PortRef<Subscribe>) -> Self {
         Self { counter }
     }
 }

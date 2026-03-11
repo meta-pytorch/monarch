@@ -22,8 +22,8 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
 use hyperactor::Handler;
-use hyperactor::PortRef;
 use hyperactor::RemoteSpawn;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::context;
 use hyperactor_mesh::this_host;
@@ -56,7 +56,7 @@ pub struct NextNumber {
     /// Candidate number to test.
     pub number: u64,
     /// Port for reporting discovered primes.
-    pub prime_collector: PortRef<u64>,
+    pub prime_collector: reference::PortRef<u64>,
 }
 
 /// Parameters for spawning a `SieveActor`.

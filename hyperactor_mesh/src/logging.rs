@@ -21,14 +21,11 @@ use chrono::DateTime;
 use chrono::Local;
 use hostname;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
-use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::channel;
@@ -39,6 +36,7 @@ use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
 use hyperactor::channel::TxStatus;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
 use hyperactor_config::Flattrs;
@@ -325,9 +323,9 @@ pub enum LogClientMessage {
         /// Expect these many procs to ack the flush message.
         expected_procs: usize,
         /// Return once we have received the acks from all the procs
-        reply: OncePortRef<()>,
+        reply: hyperactor_reference::OncePortRef<()>,
         /// Return to the caller the current flush version
-        version: OncePortRef<u64>,
+        version: hyperactor_reference::OncePortRef<u64>,
     },
 }
 
@@ -368,7 +366,10 @@ pub struct LocalLogSender {
 }
 
 impl LocalLogSender {
-    fn new(log_channel: ChannelAddr, proc_id: &ProcId) -> Result<Self, anyhow::Error> {
+    fn new(
+        log_channel: ChannelAddr,
+        proc_id: &hyperactor_reference::ProcId,
+    ) -> Result<Self, anyhow::Error> {
         let tx = channel::dial::<LogMessage>(log_channel)?;
         let status = tx.status().clone();
 
@@ -852,7 +853,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         local_rank: usize,
     ) -> Self {
         let prefix = match hyperactor_config::global::get(PREFIX_WITH_RANK) {
@@ -881,7 +882,7 @@ impl StreamFwder {
         target: OutputTarget,
         max_buffer_size: usize,
         log_channel: Option<ChannelAddr>,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         prefix: Option<String>,
     ) -> Self {
         // Sanity: when there is no file sink, no log forwarding, and
@@ -991,7 +992,7 @@ pub struct LogForwardActor {
     rx: ChannelRx<LogMessage>,
     flush_tx: Arc<Mutex<ChannelTx<LogMessage>>>,
     next_flush_deadline: SystemTime,
-    logging_client_ref: ActorRef<LogClientActor>,
+    logging_client_ref: hyperactor_reference::ActorRef<LogClientActor>,
     stream_to_client: bool,
 }
 
@@ -1013,7 +1014,7 @@ impl Actor for LogForwardActor {
 
 #[async_trait]
 impl hyperactor::RemoteSpawn for LogForwardActor {
-    type Params = ActorRef<LogClientActor>;
+    type Params = hyperactor_reference::ActorRef<LogClientActor>;
 
     async fn new(logging_client_ref: Self::Params, _environment: Flattrs) -> Result<Self> {
         let log_channel: ChannelAddr = match std::env::var(BOOTSTRAP_LOG_CHANNEL) {
@@ -1179,7 +1180,7 @@ pub struct LogClientActor {
 
     // For flush sync barrier
     current_flush_version: u64,
-    current_flush_port: Option<OncePortRef<()>>,
+    current_flush_port: Option<hyperactor_reference::OncePortRef<()>>,
     current_unflushed_procs: usize,
 }
 
@@ -1391,8 +1392,8 @@ impl LogClientMessageHandler for LogClientActor {
         &mut self,
         cx: &Context<Self>,
         expected_procs_flushed: usize,
-        reply: OncePortRef<()>,
-        version: OncePortRef<u64>,
+        reply: hyperactor_reference::OncePortRef<()>,
+        version: hyperactor_reference::OncePortRef<u64>,
     ) -> Result<(), anyhow::Error> {
         if self.current_unflushed_procs > 0 || self.current_flush_port.is_some() {
             tracing::warn!(
@@ -1594,7 +1595,7 @@ mod tests {
         let router = DialMailboxRouter::new();
         let (proc_addr, client_rx) =
             channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let proc = Proc::new(
+        let proc = Proc::configured(
             test_proc_id("client_0"),
             BoxedMailboxSender::new(router.clone()),
         );
@@ -1609,12 +1610,12 @@ mod tests {
             std::env::set_var(BOOTSTRAP_LOG_CHANNEL, log_channel.to_string());
         }
         let log_client_actor = LogClientActor::new((), Flattrs::default()).await.unwrap();
-        let log_client: ActorRef<LogClientActor> =
+        let log_client: hyperactor_reference::ActorRef<LogClientActor> =
             proc.spawn("log_client", log_client_actor).unwrap().bind();
         let log_forwarder_actor = LogForwardActor::new(log_client.clone(), Flattrs::default())
             .await
             .unwrap();
-        let log_forwarder: ActorRef<LogForwardActor> = proc
+        let log_forwarder: hyperactor_reference::ActorRef<LogForwardActor> = proc
             .spawn("log_forwarder", log_forwarder_actor)
             .unwrap()
             .bind();

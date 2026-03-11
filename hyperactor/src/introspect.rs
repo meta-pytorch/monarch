@@ -68,8 +68,7 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::InstanceCell;
-use crate::OncePortRef;
-use crate::reference::Reference;
+use crate::reference;
 
 /// Structured failure information extracted from an
 /// [`ActorSupervisionEvent`](crate::supervision::ActorSupervisionEvent)
@@ -269,14 +268,14 @@ pub enum IntrospectMessage {
         /// View context - Entity or Actor.
         view: IntrospectView,
         /// Reply port receiving the actor's self-description.
-        reply: OncePortRef<NodePayload>,
+        reply: reference::OncePortRef<NodePayload>,
     },
     /// "Describe one of your children."
     QueryChild {
         /// Reference identifying the child to describe.
-        child_ref: Reference,
+        child_ref: reference::Reference,
         /// Reply port receiving the child's description.
-        reply: OncePortRef<NodePayload>,
+        reply: reference::OncePortRef<NodePayload>,
     },
 }
 wirevalue::register_type!(IntrospectMessage);
