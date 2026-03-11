@@ -23,19 +23,16 @@ use std::sync::atomic::AtomicUsize;
 use async_trait::async_trait;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
-use hyperactor::PortRef;
-use hyperactor::ProcId;
 use hyperactor::actor::ActorErrorKind;
 use hyperactor::actor::ActorStatus;
 use hyperactor::context;
 use hyperactor::mailbox::MailboxSenderError;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMeshRef;
@@ -104,7 +101,7 @@ impl _Controller {
         let proc_mesh = py_proc_mesh.downcast::<PyProcMesh>()?.borrow().mesh_ref()?;
 
         // Build rank map from proc ids to ranks.
-        let rank_map: HashMap<ProcId, usize> = proc_mesh
+        let rank_map: HashMap<reference::ProcId, usize> = proc_mesh
             .iter()
             .map(|(point, proc)| (proc.proc_id().clone(), point.rank()))
             .collect();
@@ -156,7 +153,7 @@ impl _Controller {
         tracebacks: Py<PyAny>,
     ) -> PyResult<()> {
         let response_port: Option<PortInfo> = response_port.map(|(port, ranks)| PortInfo {
-            port: PortRef::attest(port.into()),
+            port: reference::PortRef::attest(port.into()),
             ranks: ranks.into(),
         });
         let msg = ClientToControllerMessage::Node {
@@ -194,7 +191,7 @@ impl _Controller {
             .send(
                 instance.deref(),
                 ClientToControllerMessage::SyncAtExit {
-                    port: PortRef::attest(port.into()),
+                    port: reference::PortRef::attest(port.into()),
                 },
             )
             .map_err(to_py_error)
@@ -425,7 +422,7 @@ struct History {
     // sanity checking.
     seq_lower_bound: Seq,
     unreported_exception: Option<Arc<PythonMessage>>,
-    exit_port: Option<PortRef<PythonMessage>>,
+    exit_port: Option<reference::PortRef<PythonMessage>>,
 }
 
 /// A vector that keeps track of the minimum value.
@@ -626,14 +623,14 @@ impl History {
         invocation.lock().unwrap().set_result(result);
     }
 
-    fn report_exit(&mut self, port: PortRef<PythonMessage>) {
+    fn report_exit(&mut self, port: reference::PortRef<PythonMessage>) {
         self.exit_port = Some(port);
     }
 }
 
 #[derive(Debug)]
 struct PortInfo {
-    port: PortRef<PythonMessage>,
+    port: reference::PortRef<PythonMessage>,
     // the slice of ranks expected to respond
     // to the port. used for error reporting.
     ranks: Slice,
@@ -656,7 +653,7 @@ enum ClientToControllerMessage {
         refs: Vec<Ref>,
     },
     SyncAtExit {
-        port: PortRef<PythonMessage>,
+        port: reference::PortRef<PythonMessage>,
     },
     StopWorkers {
         response_port: OncePortHandle<Result<(), String>>,
@@ -669,15 +666,15 @@ struct MeshControllerActor {
     brokers: Option<ActorMesh<LocalStateBrokerActor>>,
     history: History,
     id: usize,
-    debugger_active: Option<ActorRef<DebuggerActor>>,
-    debugger_paused: VecDeque<ActorRef<DebuggerActor>>,
-    rank_map: HashMap<ProcId, usize>,
+    debugger_active: Option<reference::ActorRef<DebuggerActor>>,
+    debugger_paused: VecDeque<reference::ActorRef<DebuggerActor>>,
+    rank_map: HashMap<reference::ProcId, usize>,
 }
 
 struct MeshControllerActorParams {
     proc_mesh_ref: ProcMeshRef,
     id: usize,
-    rank_map: HashMap<ProcId, usize>,
+    rank_map: HashMap<reference::ProcId, usize>,
 }
 
 impl MeshControllerActor {
@@ -716,12 +713,12 @@ impl MeshControllerActor {
     async fn handle_debug(
         &mut self,
         this: &Context<'_, Self>,
-        debugger_actor_id: ActorId,
+        debugger_actor_id: reference::ActorId,
         action: DebuggerAction,
     ) -> anyhow::Result<()> {
         if matches!(action, DebuggerAction::Paused()) {
             self.debugger_paused
-                .push_back(ActorRef::attest(debugger_actor_id));
+                .push_back(reference::ActorRef::attest(debugger_actor_id));
         } else {
             let debugger_actor = self
                 .debugger_active
@@ -792,7 +789,7 @@ impl MeshControllerActor {
 #[async_trait]
 impl Actor for MeshControllerActor {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
-        let controller_actor_ref: ActorRef<ControllerActor> = this.bind();
+        let controller_actor_ref: reference::ActorRef<ControllerActor> = this.bind();
         let world_size = Ranked::region(&self.proc_mesh_ref).num_ranks();
         let param = WorkerParams {
             world_size,
@@ -829,7 +826,7 @@ impl Debug for MeshControllerActor {
 }
 
 impl MeshControllerActor {
-    fn rank_of_worker(&self, actor_id: &ActorId) -> usize {
+    fn rank_of_worker(&self, actor_id: &reference::ActorId) -> usize {
         *self
             .rank_map
             .get(actor_id.proc_id())
