@@ -43,7 +43,7 @@ async fn bootstrap_canonical_simple() {
     //
     // (2) Host::serve(..) sets up a Host in the same OS process
     //     (no new process). It binds front/back channels, creates
-    //     an in-process service proc (`Proc::new(..)`), and
+    //     an in-process service proc (`Proc::configured(..)`), and
     //     stores the `BootstrapProcManager` for later spawns.
     //
     // (3) Install HostAgent (still no new OS process).

@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use futures::future;
 use futures::future::FutureExt;
 use futures::future::Shared;
-use hyperactor::ActorRef;
 use hyperactor::Instance;
+use hyperactor::reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::actor_mesh::ActorMesh;
 use hyperactor_mesh::actor_mesh::ActorMeshRef;
@@ -634,7 +634,7 @@ impl PythonActorMeshImpl {
         Ok(self
             .mesh_ref()
             .get(rank)
-            .map(|r| ActorRef::into_actor_id(r.clone()))
+            .map(|r| reference::ActorRef::into_actor_id(r.clone()))
             .map(PyActorId::from))
     }
 

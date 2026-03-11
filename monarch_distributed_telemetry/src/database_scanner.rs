@@ -18,8 +18,7 @@ use datafusion::datasource::MemTable;
 use datafusion::datasource::TableProvider;
 use datafusion::prelude::SessionContext;
 use hyperactor::Instance;
-use hyperactor::PortId;
-use hyperactor::PortRef;
+use hyperactor::reference;
 use monarch_hyperactor::actor::PythonActor;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -198,8 +197,8 @@ impl DatabaseScanner {
         let instance: Instance<PythonActor> = py_instance.clone_for_py();
 
         // Build destination PortRef once
-        let dest_port_id: PortId = dest.clone().into();
-        let dest_ref: PortRef<QueryResponse> = PortRef::attest(dest_port_id);
+        let dest_port_id: reference::PortId = dest.clone().into();
+        let dest_ref: reference::PortRef<QueryResponse> = reference::PortRef::attest(dest_port_id);
 
         // Execute scan, streaming batches directly to destination
         self.execute_scan_streaming(
@@ -308,7 +307,7 @@ impl DatabaseScanner {
         where_clause: Option<String>,
         limit: Option<usize>,
         instance: &Instance<PythonActor>,
-        dest_ref: &PortRef<QueryResponse>,
+        dest_ref: &reference::PortRef<QueryResponse>,
     ) -> PyResult<usize> {
         let rank = self.rank;
 
