@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::ActorRef;
+use hyperactor::reference;
 use monarch_hyperactor::ndslice::PySlice;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyActorId;
@@ -410,8 +410,8 @@ impl ClientActor {
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
-            ActorRef::<ControllerActor>::attest((&controller_id).into())
-                .attach(&instance, ActorRef::attest(actor_id))
+            reference::ActorRef::<ControllerActor>::attest((&controller_id).into())
+                .attach(&instance, reference::ActorRef::attest(actor_id))
                 .await
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()))
         })?
@@ -425,7 +425,7 @@ impl ClientActor {
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
 
         signal_safe_block_on(py, async move {
-            ActorRef::<ControllerActor>::attest((&controller_id).into())
+            reference::ActorRef::<ControllerActor>::attest((&controller_id).into())
                 .drop_refs(&instance, refs)
                 .await
                 .map_err(|err| PyRuntimeError::new_err(err.to_string()))

@@ -28,17 +28,15 @@ use async_trait::async_trait;
 use futures::lock::Mutex;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::OncePortHandle;
-use hyperactor::OncePortRef;
 use hyperactor::RefClient;
 use hyperactor::clock::Clock;
 use hyperactor::clock::RealClock;
+use hyperactor::reference;
 use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
@@ -79,53 +77,53 @@ pub enum IbvManagerMessage {
     RequestBuffer {
         remote_buf_id: usize,
         #[reply]
-        reply: OncePortRef<Option<IbvBuffer>>,
+        reply: reference::OncePortRef<Option<IbvBuffer>>,
     },
     /// Release a buffer registration by `remote_buf_id`.
     ReleaseBuffer {
         remote_buf_id: usize,
         #[reply]
-        reply: OncePortRef<()>,
+        reply: reference::OncePortRef<()>,
     },
     RequestQueuePair {
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: OncePortRef<IbvQueuePair>,
+        reply: reference::OncePortRef<IbvQueuePair>,
     },
     Connect {
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
     },
     InitializeQP {
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: OncePortRef<bool>,
+        reply: reference::OncePortRef<bool>,
     },
     ConnectionInfo {
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: OncePortRef<IbvQpInfo>,
+        reply: reference::OncePortRef<IbvQpInfo>,
     },
     ReleaseQueuePair {
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         qp: IbvQueuePair,
     },
     GetQpState {
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         #[reply]
-        reply: OncePortRef<u32>,
+        reply: reference::OncePortRef<u32>,
     },
 }
 wirevalue::register_type!(IbvManagerMessage);
@@ -156,11 +154,11 @@ pub struct IbvManagerActor {
     owner: OnceLock<ActorHandle<RdmaManagerActor>>,
 
     // Nested map: local_device -> (ActorId, remote_device) -> IbvQueuePair
-    device_qps: HashMap<String, HashMap<(ActorId, String), IbvQueuePair>>,
+    device_qps: HashMap<String, HashMap<(reference::ActorId, String), IbvQueuePair>>,
 
     // Track QPs currently being created to prevent duplicate creation
     // Wrapped in Arc<Mutex> to allow safe concurrent access
-    pending_qp_creation: Arc<Mutex<HashSet<(String, ActorId, String)>>>,
+    pending_qp_creation: Arc<Mutex<HashSet<(String, reference::ActorId, String)>>>,
 
     // Map of RDMA device names to their domains and loopback QPs
     // Created lazily when memory is registered for a specific device
@@ -745,11 +743,11 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn request_queue_pair(
         &mut self,
         cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQueuePair, anyhow::Error> {
-        let self_ref: ActorRef<IbvManagerActor> = cx.bind();
+        let self_ref: reference::ActorRef<IbvManagerActor> = cx.bind();
         let other_id = other.actor_id().clone();
 
         // Use the nested map structure: local_device -> (actor_id, remote_device) -> IbvQueuePair
@@ -915,7 +913,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connect(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
         endpoint: IbvQpInfo,
@@ -949,7 +947,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn initialize_qp(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<bool, anyhow::Error> {
@@ -1004,7 +1002,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn connection_info(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<IbvQpInfo, anyhow::Error> {
@@ -1035,7 +1033,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn release_queue_pair(
         &mut self,
         _cx: &Context<Self>,
-        _other: ActorRef<IbvManagerActor>,
+        _other: reference::ActorRef<IbvManagerActor>,
         _self_device: String,
         _other_device: String,
         _qp: IbvQueuePair,
@@ -1046,7 +1044,7 @@ impl IbvManagerMessageHandler for IbvManagerActor {
     async fn get_qp_state(
         &mut self,
         _cx: &Context<Self>,
-        other: ActorRef<IbvManagerActor>,
+        other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
         other_device: String,
     ) -> Result<u32, anyhow::Error> {
