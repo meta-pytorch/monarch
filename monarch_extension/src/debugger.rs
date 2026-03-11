@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use hyperactor::ActorRef;
+use hyperactor::reference;
 use monarch_hyperactor::proc::InstanceWrapper;
 use monarch_hyperactor::proc::PyProc;
 use monarch_hyperactor::proc::PySerialized;
@@ -72,7 +72,7 @@ pub fn get_bytes_from_write_action(
 #[pyclass(module = "monarch._rust_bindings.monarch_extension.debugger")]
 pub struct PdbActor {
     instance: Arc<Mutex<InstanceWrapper<DebuggerMessage>>>,
-    controller_actor_ref: ActorRef<ControllerActor>,
+    controller_actor_ref: reference::ActorRef<ControllerActor>,
 }
 
 #[pymethods]
@@ -151,17 +151,21 @@ pub fn register_python_bindings(debugger: &Bound<'_, PyModule>) -> PyResult<()> 
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::ActorId;
     use hyperactor::Mailbox;
     use hyperactor::mailbox::PortReceiver;
     use hyperactor::proc::Proc;
+    use hyperactor::reference;
     use monarch_hyperactor::runtime::monarch_with_gil_blocking;
     use monarch_messages::controller::ControllerMessage;
     use typeuri::Named;
 
     use super::*;
 
-    fn send_to_debugger(mbox: &Mailbox, debugger_actor_id: &ActorId, action: DebuggerAction) {
+    fn send_to_debugger(
+        mbox: &Mailbox,
+        debugger_actor_id: &reference::ActorId,
+        action: DebuggerAction,
+    ) {
         let debugger_port_id = debugger_actor_id.port_id(DebuggerMessage::port());
         let msg: DebuggerMessage = action.into();
         debugger_port_id.send(
@@ -180,7 +184,7 @@ mod tests {
 
     fn receive_on_controller(
         rx: Arc<Mutex<PortReceiver<ControllerMessage>>>,
-    ) -> (ActorId, DebuggerAction) {
+    ) -> (reference::ActorId, DebuggerAction) {
         let msg = monarch_with_gil_blocking(|py| {
             signal_safe_block_on(py, async move { rx.lock().await.recv().await.unwrap() }).unwrap()
         });

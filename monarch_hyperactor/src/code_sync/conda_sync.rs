@@ -18,9 +18,9 @@ use hyperactor::Actor;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::PortRef;
 use hyperactor::Unbind;
 use hyperactor::context::Mailbox;
+use hyperactor::reference;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::connect::Connect;
 use hyperactor_mesh::connect::accept;
@@ -51,9 +51,9 @@ wirevalue::register_type!(CondaSyncResult);
 #[derive(Debug, Clone, Named, Serialize, Deserialize, Bind, Unbind)]
 pub struct CondaSyncMessage {
     /// The connect message to create a duplex bytestream with the client.
-    pub connect: PortRef<Connect>,
+    pub connect: reference::PortRef<Connect>,
     /// A port to send back the result or any errors.
-    pub result: PortRef<Result<CondaSyncResult, String>>,
+    pub result: reference::PortRef<Result<CondaSyncResult, String>>,
     /// The location of the workspace to sync.
     pub workspace: WorkspaceLocation,
     /// Path prefixes to fixup/replace when copying.
