@@ -9,10 +9,9 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use hyperactor::ActorId;
-use hyperactor::ProcId;
 use hyperactor::introspect::NodePayload;
 use hyperactor::introspect::NodeProperties;
+use hyperactor::reference as hyperactor_reference;
 use serde_json::Value;
 
 /// Derive a human-friendly label for a resolved node payload.
@@ -45,7 +44,7 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
             failed_actor_count,
             ..
         } => {
-            let short = ProcId::from_str(proc_name)
+            let short = hyperactor_reference::ProcId::from_str(proc_name)
                 .map(|pid| pid.name().to_string())
                 .unwrap_or_else(|_| proc_name.clone());
             let num_system = system_children.len();
@@ -77,10 +76,12 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
                 base
             }
         }
-        NodeProperties::Actor { .. } => match ActorId::from_str(&payload.identity) {
-            Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
-            Err(_) => payload.identity.clone(),
-        },
+        NodeProperties::Actor { .. } => {
+            match hyperactor_reference::ActorId::from_str(&payload.identity) {
+                Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
+                Err(_) => payload.identity.clone(),
+            }
+        }
         NodeProperties::Error { code, message } => {
             format!("[error] {}: {}", code, message)
         }
@@ -93,7 +94,7 @@ pub(crate) fn derive_label(payload: &NodePayload) -> String {
 /// If the reference parses as an `ActorId`, format it as `name[pid]`;
 /// otherwise fall back to showing the raw reference.
 pub(crate) fn derive_label_from_ref(reference: &str) -> String {
-    match ActorId::from_str(reference) {
+    match hyperactor_reference::ActorId::from_str(reference) {
         Ok(actor_id) => format!("{}[{}]", actor_id.name(), actor_id.pid()),
         Err(_) => reference.to_string(),
     }

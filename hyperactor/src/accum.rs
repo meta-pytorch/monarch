@@ -22,7 +22,7 @@ use typeuri::Named;
 
 // for macros
 use crate::config;
-use crate::reference::Index;
+use crate::reference;
 
 /// An accumulator is a object that accumulates updates into a state.
 pub trait Accumulator {
@@ -414,7 +414,7 @@ pub use algebra::Min;
 /// reports. "Latest" is determined by logical timestamp, not arrival
 /// order.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct WatermarkUpdate<T>(algebra::LatticeMap<Index, algebra::LWW<T>>);
+pub struct WatermarkUpdate<T>(algebra::LatticeMap<reference::Index, algebra::LWW<T>>);
 
 impl<T: Ord + Clone> WatermarkUpdate<T> {
     /// Get the watermark value (minimum of all ranks' current values).
@@ -430,7 +430,7 @@ impl<T: Ord + Clone> WatermarkUpdate<T> {
     }
 
     /// Get the current value for a specific rank, if present.
-    pub fn get_rank(&self, rank: Index) -> Option<&T> {
+    pub fn get_rank(&self, rank: reference::Index) -> Option<&T> {
         self.0.get(&rank).map(|lww| &lww.value)
     }
 
@@ -440,13 +440,13 @@ impl<T: Ord + Clone> WatermarkUpdate<T> {
     }
 }
 
-impl<T> From<(Index, T, u64)> for WatermarkUpdate<T> {
+impl<T> From<(reference::Index, T, u64)> for WatermarkUpdate<T> {
     /// Create a watermark update from (rank, value, timestamp).
     ///
     /// The timestamp should be a logical clock value (Lamport clock, sequence
     /// number, or monotonic counter) that increases with each update from
     /// the same rank.
-    fn from((rank, value, timestamp): (Index, T, u64)) -> Self {
+    fn from((rank, value, timestamp): (reference::Index, T, u64)) -> Self {
         let mut map = algebra::LatticeMap::new();
         // Use rank as replica ID - each rank is a unique writer
         map.insert(rank, algebra::LWW::new(value, timestamp, rank as u64));
@@ -472,7 +472,7 @@ impl<T: Clone + PartialEq> JoinSemilattice for WatermarkUpdate<T> {
 /// - *Idempotent*: Merging duplicate updates has no effect
 /// - *Convergent*: All replicas converge to the same state
 #[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
-pub struct GCounterUpdate(algebra::LatticeMap<Index, Max<u64>>);
+pub struct GCounterUpdate(algebra::LatticeMap<reference::Index, Max<u64>>);
 wirevalue::register_type!(GCounterUpdate);
 
 impl GCounterUpdate {
@@ -482,7 +482,7 @@ impl GCounterUpdate {
     }
 
     /// Get count for a specific rank.
-    pub fn get_rank(&self, rank: Index) -> Option<u64> {
+    pub fn get_rank(&self, rank: reference::Index) -> Option<u64> {
         self.0.get(&rank).map(|max| max.0)
     }
 
@@ -492,9 +492,9 @@ impl GCounterUpdate {
     }
 }
 
-impl From<(Index, u64)> for GCounterUpdate {
+impl From<(reference::Index, u64)> for GCounterUpdate {
     /// Create a GCounter update from (rank, count).
-    fn from((rank, count): (Index, u64)) -> Self {
+    fn from((rank, count): (reference::Index, u64)) -> Self {
         let mut map = algebra::LatticeMap::new();
         map.insert(rank, Max(count));
         Self(map)
@@ -515,8 +515,8 @@ impl JoinSemilattice for GCounterUpdate {
 /// via pointwise max.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, typeuri::Named)]
 pub struct PNCounterUpdate {
-    p: algebra::LatticeMap<Index, Max<u64>>,
-    n: algebra::LatticeMap<Index, Max<u64>>,
+    p: algebra::LatticeMap<reference::Index, Max<u64>>,
+    n: algebra::LatticeMap<reference::Index, Max<u64>>,
 }
 wirevalue::register_type!(PNCounterUpdate);
 
@@ -529,7 +529,7 @@ impl PNCounterUpdate {
     }
 
     /// Create an increment update for a rank.
-    pub fn inc(rank: Index, delta: u64) -> Self {
+    pub fn inc(rank: reference::Index, delta: u64) -> Self {
         let mut p = algebra::LatticeMap::new();
         p.insert(rank, Max(delta));
         Self {
@@ -539,7 +539,7 @@ impl PNCounterUpdate {
     }
 
     /// Create a decrement update for a rank.
-    pub fn dec(rank: Index, delta: u64) -> Self {
+    pub fn dec(rank: reference::Index, delta: u64) -> Self {
         let mut n = algebra::LatticeMap::new();
         n.insert(rank, Max(delta));
         Self {
@@ -707,7 +707,7 @@ mod tests {
 
         fn verify<T: Ord + Clone + PartialEq + DeserializeOwned + Debug + Named>(
             updates: Vec<wirevalue::Any>,
-            expected: HashMap<Index, T>,
+            expected: HashMap<reference::Index, T>,
         ) {
             let typehash = <SemilatticeReducer<WatermarkUpdate<T>> as Named>::typehash();
             let result = resolve_reducer(typehash, None)
@@ -894,7 +894,7 @@ mod tests {
     fn test_gcounter_accumulator() {
         let accumulator = join_semilattice::<GCounterUpdate>();
         // (rank, count, expected_total)
-        let ranks_counts_expectations: [(Index, u64, u64); 17] = [
+        let ranks_counts_expectations: [(reference::Index, u64, u64); 17] = [
             // initialize all 3 ranks in descending order
             (0, 1000, 1000),
             (1, 100, 1100),
@@ -1014,8 +1014,8 @@ mod tests {
         // Helper to make updates clearer
         #[derive(Clone, Copy, Debug)]
         enum Op {
-            Inc(Index, u64),
-            Dec(Index, u64),
+            Inc(reference::Index, u64),
+            Dec(reference::Index, u64),
         }
         use Op::*;
 
