@@ -21,8 +21,6 @@ use anyhow::bail;
 use anyhow::ensure;
 use async_trait::async_trait;
 use hyperactor::Actor;
-use hyperactor::ActorId;
-use hyperactor::ActorRef;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -33,6 +31,7 @@ use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::proc::Proc;
+use hyperactor::reference;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
 use monarch_hyperactor::local_state_broker::BrokerId;
@@ -83,9 +82,9 @@ pub type TensorCellResult = Result<TensorCell, Arc<SeqError>>;
 
 // These thread locals are accessed by the python runtime for debugging sessions.
 thread_local! {
-    pub static CONTROLLER_ACTOR_REF: OnceCell<ActorRef<ControllerActor>> = const { OnceCell::new() };
+    pub static CONTROLLER_ACTOR_REF: OnceCell<reference::ActorRef<ControllerActor>> = const { OnceCell::new() };
     pub static PROC: OnceCell<Proc> = const { OnceCell::new() };
-    pub static ROOT_ACTOR_ID: OnceCell<ActorId> = const { OnceCell::new() };
+    pub static ROOT_ACTOR_ID: OnceCell<reference::ActorId> = const { OnceCell::new() };
 }
 
 fn pickle_python_result(
@@ -204,7 +203,7 @@ pub enum StreamMessage {
 
     SendValue {
         seq: Seq,
-        worker_actor_id: ActorId,
+        worker_actor_id: reference::ActorId,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
@@ -429,7 +428,7 @@ pub struct StreamActor {
     /// Communicator for this stream. Optional as we lazily initialize it.
     comm: Option<ActorHandle<NcclCommActor>>,
     /// Actor ref of the controller that created this stream.
-    controller_actor: ActorRef<ControllerActor>,
+    controller_actor: reference::ActorRef<ControllerActor>,
     remote_process_groups: HashMap<Ref, Py<PyAny>>,
     recordings: HashMap<Ref, Recording>,
     active_recording: Option<RecordingState>,
@@ -450,7 +449,7 @@ pub struct StreamParams {
     /// synchronization.
     pub device: Option<CudaDevice>,
     /// Actor ref of the controller that created this stream.
-    pub controller_actor: ActorRef<ControllerActor>,
+    pub controller_actor: reference::ActorRef<ControllerActor>,
     pub respond_with_python_message: bool,
 }
 
@@ -496,7 +495,7 @@ impl Actor for StreamActor {
         PROC.with(|proc| proc.set(cx.proc().clone()).ok());
         ROOT_ACTOR_ID.with(|root_actor_id| {
             root_actor_id
-                .set(ActorId::root(
+                .set(reference::ActorId::root(
                     cx.self_id().proc_id().clone(),
                     cx.self_id().name().to_string(),
                 ))
@@ -1444,7 +1443,7 @@ impl StreamMessageHandler for StreamActor {
         &mut self,
         cx: &Context<Self>,
         seq: Seq,
-        worker_actor_id: ActorId,
+        worker_actor_id: reference::ActorId,
         mutates: Vec<Ref>,
         function: Option<ResolvableFunction>,
         args_kwargs: ArgsKwargs,
@@ -1958,7 +1957,7 @@ mod tests {
         #[allow(dead_code)]
         controller_rx: PortReceiver<ControllerMessage>,
         #[allow(dead_code)]
-        controller_actor: ActorRef<ControllerActor>,
+        controller_actor: reference::ActorRef<ControllerActor>,
         next_ref: Ref,
     }
 

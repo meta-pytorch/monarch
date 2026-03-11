@@ -15,12 +15,12 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor::ProcId;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::mailbox::MailboxServerHandle;
 use hyperactor::proc::Proc;
+use hyperactor::reference as hyperactor_reference;
 use ndslice::view::Extent;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -172,7 +172,7 @@ impl Alloc for LocalAlloc {
                         Some(name) => name.clone(),
                         None => format!("{}_{}", self.alloc_name.name(), rank),
                     };
-                    let proc_id = ProcId(addr.clone(), proc_name);
+                    let proc_id = hyperactor_reference::ProcId::with_name(addr.clone(), proc_name);
 
                     let bspan = tracing::info_span!("mesh_agent_bootstrap");
                     let (proc, mesh_agent) = match ProcAgent::bootstrap(proc_id.clone()).await {
