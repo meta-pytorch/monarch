@@ -113,19 +113,12 @@ pub fn global_root_client() -> &'static Instance<()> {
     static GLOBAL_INSTANCE: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
     &GLOBAL_INSTANCE.get_or_init(|| {
         // 1. Make a direct proc for the client to live in.
-        let client_proc = Proc::direct_with_default(
+        let client_proc = Proc::direct(
             ChannelAddr::any(default_transport()),
             "mesh_root_client_proc".into(),
-            router::global().clone().boxed(),
         ).unwrap();
 
-        // 2. Register that proc in the *global* router so messages can reach it.
-        router::global().bind(
-            client_proc.proc_id().clone().into(),
-            client_proc.clone(),
-        );
-
-        // 3. Start an actual actor instance in that proc, called "client".
+        // 2. Start an actual actor instance in that proc, called "client".
         let (client, handle) = client_proc.instance("client").expect("root instance create");
 
         (client, handle)
@@ -134,9 +127,8 @@ pub fn global_root_client() -> &'static Instance<()> {
 ```
 So when `_root_client_context()` runs, it is really:
 1. Ensuring there is a single, global, direct-addressed proc called "`mesh_root_client_proc`".
-2. Putting that proc in the global router.
-3. Spawning a "client" actor in it.
-4. Wrapping that actor as a Python `PyContext` and giving it rank 0.
+2. Spawning a "client" actor in it.
+3. Wrapping that actor as a Python `PyContext` and giving it rank 0.
 
 Notice what it doesn't do: it does not attach a proc mesh or a host mesh. Those Python-only fields are still `None` at this point.
 
