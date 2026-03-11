@@ -193,7 +193,6 @@ where
                             // Acquiring the GIL in a loop is sad, hopefully once
                             // every 100ms is fine.
                             Python::attach(|py| py.check_signals())?;
-                            #[allow(clippy::disallowed_methods)]
                             tokio::time::sleep(sleep_for).await;
                         }
                     } => signal
@@ -217,7 +216,6 @@ pub fn sleep_indefinitely_for_unit_tests(py: Python) -> PyResult<()> {
     let future = async {
         loop {
             tracing::info!("idef sleeping for 100ms");
-            #[allow(clippy::disallowed_methods)]
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
