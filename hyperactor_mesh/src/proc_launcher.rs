@@ -45,8 +45,8 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hyperactor::ProcId;
 use hyperactor::channel::ChannelAddr;
+use hyperactor::reference as hyperactor_reference;
 use tokio::process::ChildStderr;
 use tokio::process::ChildStdout;
 use tokio::sync::oneshot;
@@ -243,7 +243,7 @@ pub struct LaunchOptions {
 ///   non-UTF8 we fall back to `"unknown_host"`.
 /// - This is **not** guaranteed to be unique and should not be parsed
 ///   for program logic.
-pub fn format_process_name(proc_id: &ProcId) -> String {
+pub fn format_process_name(proc_id: &hyperactor_reference::ProcId) -> String {
     let who = proc_id.name();
 
     let host = hostname::get()
@@ -299,7 +299,7 @@ pub trait ProcLauncher: Send + Sync + 'static {
     /// (pipes vs inherit, log streaming, etc.).
     async fn launch(
         &self,
-        proc_id: &ProcId,
+        proc_id: &hyperactor_reference::ProcId,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError>;
 
@@ -315,8 +315,11 @@ pub trait ProcLauncher: Send + Sync + 'static {
     ///
     /// This is a fallback mechanism used when higher-level
     /// (agent-first) termination cannot be applied or fails.
-    async fn terminate(&self, proc_id: &ProcId, timeout: Duration)
-    -> Result<(), ProcLauncherError>;
+    async fn terminate(
+        &self,
+        proc_id: &hyperactor_reference::ProcId,
+        timeout: Duration,
+    ) -> Result<(), ProcLauncherError>;
 
     /// Initiate a force-kill.
     ///
@@ -340,5 +343,5 @@ pub trait ProcLauncher: Send + Sync + 'static {
     /// Idempotent behavior is preferred: killing an already-dead proc
     /// should not be treated as an error unless the backend cannot
     /// determine state.
-    async fn kill(&self, proc_id: &ProcId) -> Result<(), ProcLauncherError>;
+    async fn kill(&self, proc_id: &hyperactor_reference::ProcId) -> Result<(), ProcLauncherError>;
 }
