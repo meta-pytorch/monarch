@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -40,48 +42,77 @@ use crate::serialize_schema;
 pub struct LiveTableData {
     /// The MemTable that queries use
     mem_table: Arc<MemTable>,
-    /// Maximum number of batches to keep (0 = unlimited)
-    max_batches: usize,
 }
 
 impl LiveTableData {
-    fn new(schema: SchemaRef, max_batches: usize) -> Self {
-        // Create MemTable with one empty partition
-        // try_new requires at least one partition, but the partition can be empty
+    fn new(schema: SchemaRef) -> Self {
         let mem_table = MemTable::try_new(schema, vec![vec![]])
             .expect("failed to create MemTable with empty partition");
         Self {
             mem_table: Arc::new(mem_table),
-            max_batches,
         }
     }
 
-    /// Push a new batch to the table. If max_batches is reached, removes the oldest.
-    /// Empty batches are ignored (no-op).
+    /// Push a new batch to the table.
     pub async fn push(&self, batch: RecordBatch) {
-        // Ignore empty batches
         if batch.num_rows() == 0 {
             return;
         }
-        // The MemTable has a single partition, push to it
+
         let partition = &self.mem_table.batches[0];
         let mut guard = partition.write().await;
-        if self.max_batches > 0 && guard.len() >= self.max_batches {
-            guard.remove(0);
-        }
         guard.push(batch);
     }
 
-    /// Get the schema
+    /// Filter the table's data, keeping only rows that match the WHERE clause.
+    ///
+    /// Holds the write lock for the entire operation to prevent data loss
+    /// from concurrent `push()` calls.
+    pub async fn apply_retention(
+        &self,
+        table_name: &str,
+        where_clause: &str,
+    ) -> anyhow::Result<()> {
+        use futures::TryStreamExt;
+
+        let partition = &self.mem_table.batches[0];
+        let mut guard = partition.write().await;
+
+        // Drain current batches into a temporary MemTable for querying.
+        let current_batches: Vec<RecordBatch> = guard.drain(..).collect();
+        let tmp = MemTable::try_new(self.mem_table.schema(), vec![current_batches])?;
+
+        let ctx = SessionContext::new();
+        ctx.register_table(table_name, Arc::new(tmp))?;
+
+        let query = format!("SELECT * FROM {table_name} WHERE {where_clause}");
+        let df = ctx.sql(&query).await?;
+        let filtered: Vec<RecordBatch> = df.execute_stream().await?.try_collect().await?;
+
+        for batch in filtered {
+            if batch.num_rows() > 0 {
+                guard.push(batch);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the schema.
     pub fn schema(&self) -> SchemaRef {
         self.mem_table.schema()
     }
 
-    /// Get the MemTable for registering with a SessionContext
+    /// Get the MemTable for registering with a SessionContext.
     pub fn mem_table(&self) -> Arc<MemTable> {
         self.mem_table.clone()
     }
 }
+
+/// Default retention duration: 10 minutes in seconds.
+const DEFAULT_RETENTION_SECS: u64 = 10 * 60;
+
+/// Tables that keep only recent data; all others have unlimited retention.
+const RETENTION_TABLES: &[&str] = &["sent_messages", "messages", "message_status_events"];
 
 #[pyclass(
     name = "DatabaseScanner",
@@ -91,7 +122,8 @@ pub struct DatabaseScanner {
     /// Tables stored by name - each holds the schema and shared PartitionData
     table_data: Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
     rank: usize,
-    max_batches: usize,
+    /// Retention window in microseconds.
+    retention_us: i64,
     /// Handle to flush the RecordBatchSink for trace events (spans, events)
     sink: Option<RecordBatchSink>,
     /// Handle to flush the EntityDispatcher for entity events (actors, meshes)
@@ -101,12 +133,12 @@ pub struct DatabaseScanner {
 #[pymethods]
 impl DatabaseScanner {
     #[new]
-    #[pyo3(signature = (rank, max_batches=100, batch_size=1000))]
-    fn new(rank: usize, max_batches: usize, batch_size: usize) -> PyResult<Self> {
+    #[pyo3(signature = (rank, batch_size=1000, retention_secs=DEFAULT_RETENTION_SECS))]
+    fn new(rank: usize, batch_size: usize, retention_secs: u64) -> PyResult<Self> {
         let mut scanner = Self {
             table_data: Arc::new(StdMutex::new(HashMap::new())),
             rank,
-            max_batches,
+            retention_us: retention_secs as i64 * 1_000_000,
             sink: None,
             dispatcher: None,
         };
@@ -124,7 +156,8 @@ impl DatabaseScanner {
         Ok(scanner)
     }
 
-    /// Flush any pending trace events and entity events to the tables.
+    /// Flush any pending trace events and entity events to the tables,
+    /// then apply time-based retention policies.
     fn flush(&self) -> PyResult<()> {
         if let Some(ref sink) = self.sink {
             sink.flush()
@@ -135,7 +168,31 @@ impl DatabaseScanner {
                 .flush()
                 .map_err(|e| PyException::new_err(format!("failed to flush dispatcher: {}", e)))?;
         }
+        self.apply_retention_policies()?;
         Ok(())
+    }
+
+    /// Filter a single table, keeping only rows that match the WHERE clause.
+    fn apply_retention(&self, table_name: &str, where_clause: &str) -> PyResult<()> {
+        let table = {
+            let guard = self
+                .table_data
+                .lock()
+                .map_err(|_| PyException::new_err("lock poisoned"))?;
+            match guard.get(table_name) {
+                Some(t) => t.clone(),
+                None => return Ok(()),
+            }
+        };
+
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(table.apply_retention(table_name, where_clause))
+            })
+        } else {
+            get_tokio_runtime().block_on(table.apply_retention(table_name, where_clause))
+        };
+        result.map_err(|e| PyException::new_err(e.to_string()))
     }
 
     /// Get list of table names.
@@ -219,7 +276,7 @@ impl DatabaseScanner {
     /// If the batch is empty, creates the table with the schema but doesn't append.
     /// This method is used both by the Python push_batch and by the Rust RecordBatchSink.
     pub fn push_batch_internal(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
-        Self::push_batch_to_tables(&self.table_data, self.max_batches, table_name, batch)
+        Self::push_batch_to_tables(&self.table_data, table_name, batch)
     }
 
     /// Static method to push a batch to the table_data map.
@@ -228,18 +285,16 @@ impl DatabaseScanner {
     /// If the batch is empty, creates the table with the schema but doesn't append data.
     fn push_batch_to_tables(
         table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
-        max_batches: usize,
         table_name: &str,
         batch: RecordBatch,
     ) -> anyhow::Result<()> {
-        // Get or create the table
         let table = {
             let mut guard = table_data
                 .lock()
                 .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
             guard
                 .entry(table_name.to_string())
-                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema(), max_batches)))
+                .or_insert_with(|| Arc::new(LiveTableData::new(batch.schema())))
                 .clone()
         };
 
@@ -261,14 +316,11 @@ impl DatabaseScanner {
     /// to receive trace events and store them as queryable tables.
     pub fn create_record_batch_sink(&self, batch_size: usize) -> RecordBatchSink {
         let table_data = self.table_data.clone();
-        let max_batches = self.max_batches;
 
         RecordBatchSink::new(
             batch_size,
             Box::new(move |table_name, batch| {
-                if let Err(e) =
-                    Self::push_batch_to_tables(&table_data, max_batches, table_name, batch)
-                {
+                if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
                     tracing::error!("Failed to push batch to table {}: {}", table_name, e);
                 }
             }),
@@ -281,18 +333,35 @@ impl DatabaseScanner {
     /// to receive entity events (actors, meshes) and store them as queryable tables.
     pub fn create_entity_dispatcher(&self, batch_size: usize) -> EntityDispatcher {
         let table_data = self.table_data.clone();
-        let max_batches = self.max_batches;
 
         EntityDispatcher::new(
             batch_size,
             Box::new(move |table_name, batch| {
-                if let Err(e) =
-                    Self::push_batch_to_tables(&table_data, max_batches, table_name, batch)
-                {
+                if let Err(e) = Self::push_batch_to_tables(&table_data, table_name, batch) {
                     tracing::error!("Failed to push batch to table {}: {}", table_name, e);
                 }
             }),
         )
+    }
+
+    /// Apply retention policies for all configured tables.
+    /// Skipped when retention_us is 0 (unlimited).
+    fn apply_retention_policies(&self) -> PyResult<()> {
+        if self.retention_us == 0 {
+            return Ok(());
+        }
+
+        let now_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_micros() as i64;
+        let cutoff = now_us - self.retention_us;
+        let where_clause = format!("timestamp_us > {cutoff}");
+
+        for &table_name in RETENTION_TABLES {
+            self.apply_retention(table_name, &where_clause)?;
+        }
+        Ok(())
     }
 
     /// Get a clone of the table_data Arc for sharing with sinks.
@@ -411,4 +480,85 @@ impl DatabaseScanner {
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<DatabaseScanner>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::datatypes::DataType;
+    use datafusion::arrow::datatypes::Field;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::record_batch::RecordBatch;
+
+    use super::*;
+
+    fn make_batch(values: &[i64]) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        let col = Int64Array::from(values.to_vec());
+        RecordBatch::try_new(schema, vec![Arc::new(col)]).unwrap()
+    }
+
+    async fn row_count(table: &LiveTableData) -> usize {
+        table.mem_table.batches[0]
+            .read()
+            .await
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn test_empty_batch_ignored() {
+        let table = LiveTableData::new(make_batch(&[]).schema());
+
+        table.push(make_batch(&[])).await;
+        assert_eq!(row_count(&table).await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_apply_retention_filters_rows() {
+        // Push rows with x values 1..=5, then keep only x >= 3.
+        let table = LiveTableData::new(make_batch(&[]).schema());
+        table.push(make_batch(&[1, 2, 3, 4, 5])).await;
+
+        table.apply_retention("t", "x >= 3").await.unwrap();
+
+        // 3 rows should remain (3, 4, 5).
+        assert_eq!(row_count(&table).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_apply_retention_keeps_all() {
+        let table = LiveTableData::new(make_batch(&[]).schema());
+        table.push(make_batch(&[1, 2, 3])).await;
+
+        table.apply_retention("t", "1=1").await.unwrap();
+
+        assert_eq!(row_count(&table).await, 3);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_push_during_retention() {
+        // Verify that a push() concurrent with apply_retention() is not lost.
+        let table = Arc::new(LiveTableData::new(make_batch(&[]).schema()));
+        table.push(make_batch(&[1, 2, 3, 4, 5])).await;
+
+        let table_clone = table.clone();
+        let push_handle = tokio::spawn(async move {
+            // This push races with apply_retention. The write lock ensures
+            // it either completes before or after retention, never lost.
+            table_clone.push(make_batch(&[10, 11])).await;
+        });
+
+        // Retain only x >= 3 from the original batch.
+        table.apply_retention("t", "x >= 3").await.unwrap();
+        push_handle.await.unwrap();
+
+        // The pushed batch (10, 11) must survive regardless of ordering.
+        // If push ran first: 1,2,3,4,5,10,11 -> retain x>=3 -> 3,4,5,10,11 = 5 rows
+        // If push ran after: 1,2,3,4,5 -> retain x>=3 -> 3,4,5 -> push 10,11 = 5 rows
+        assert_eq!(row_count(&table).await, 5);
+    }
 }
