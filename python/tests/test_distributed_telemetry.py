@@ -702,6 +702,59 @@ def test_sent_messages_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_messages_table(cleanup_callbacks) -> None:
+    """Test that the messages table is populated when messages are received."""
+    engine = start_telemetry(batch_size=10)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="msg_workers_procs")
+    workers = worker_procs.spawn("msg_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Send several messages to trigger telemetry
+    for _ in range(5):
+        workers.ping.call().get()
+
+    # Verify schema
+    result = engine.query(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'messages' ORDER BY ordinal_position"
+    )
+    column_names = result.to_pydict().get("column_name", [])
+    assert column_names == [
+        "id",
+        "timestamp_us",
+        "from_actor_id",
+        "to_actor_id",
+        "endpoint",
+        "port_id",
+    ], f"Unexpected columns: {column_names}"
+
+    # Verify rows exist
+    result = engine.query("SELECT * FROM messages")
+    result_dict = result.to_pydict()
+    row_count = len(result_dict.get("id", []))
+    assert row_count > 0, f"Expected messages, got {row_count}"
+
+    # Verify to_actor_id joins with actors table (receiver is a known actor)
+    joined = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'msg_test_worker'"
+    )
+    joined_count = len(joined.to_pydict().get("id", []))
+    # 5 casts x 2 workers = 10 messages received by msg_test_worker actors
+    assert joined_count == 10, (
+        f"Expected 10 messages received by msg_test_worker, got {joined_count}"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
     engine = start_telemetry(batch_size=10)
