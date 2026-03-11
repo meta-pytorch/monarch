@@ -10,8 +10,6 @@ mod commands;
 
 use clap::Parser;
 use clap::Subcommand;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 // tokio is used by #[tokio::main] in OSS builds
 // (cfg(not(fbcode_build))). In fbcode builds fbinit-tokio provides
 // the runtime, so the compiler doesn't see a direct reference. This
@@ -115,7 +113,7 @@ async fn run(fb: Option<fbinit::FacebookInit>) -> Result<(), anyhow::Error> {
     // broken link (30 s ack timeout) and the resulting undeliverable
     // message crashes the HostAgent, tearing down the entire
     // mesh.  The ack interval is 500 ms, so 1 s is sufficient.
-    RealClock.sleep(std::time::Duration::from_secs(1)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     result
 }

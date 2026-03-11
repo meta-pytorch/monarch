@@ -16,7 +16,6 @@
 - In Rust, make illegal state *unrepresentable*. For example, if you find structs with Option<> that are always Some in certain contexts but not in others, consider using an enum instead to explicitly enumerate the legal states of the data structure.
 - Do NOT engage in defensive coding. If the program is in an illegal state (e.g., violated some invariant), *panic* instead of returning errors. In Rust use panic! and .unwrap() for these cases.
 - Where appropriate, embrace the actor model: use actors for concurrency, fault tolerance, and messaging.  Use the supervision tree model for fault tolerance. Actors can be organized into a tree, where failures propagate up the tree. The root actor is the supervisor of all other actors.
-- In Rust, use `hyperactor::clock::{Clock, RealClock}` for `sleep`, `timeout`, and `system_time_now` — never `tokio::time` or `std::time::SystemTime::now()` directly.
 - Prefer `use` at module scope, not inside functions. In test modules, place imports at the top of `mod tests`.
 
 ## Style
