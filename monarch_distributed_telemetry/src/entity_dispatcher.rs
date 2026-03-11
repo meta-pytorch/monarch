@@ -13,6 +13,7 @@
 //! - `meshes`: Mesh creation events
 //! - `actor_status_events`: Actor status change events
 //! - `sent_messages`: Sent message events
+//! - `messages`: Received message events
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -101,12 +102,32 @@ pub struct SentMessage {
     pub shape_json: String,
 }
 
+/// Row data for the messages table.
+///
+/// Tracks messages from the receiver's perspective.
+#[derive(RecordBatchRow)]
+pub struct Message {
+    /// Unique identifier for this received message
+    pub id: u64,
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// Hash of sender's ActorId
+    pub from_actor_id: u64,
+    /// Hash of receiver's ActorId
+    pub to_actor_id: u64,
+    /// Message handler type name
+    pub endpoint: Option<String>,
+    /// Port identifier (reserved)
+    pub port_id: Option<u64>,
+}
+
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
     actors_buffer: ActorBuffer,
     meshes_buffer: MeshBuffer,
     actor_status_events_buffer: ActorStatusEventBuffer,
     sent_messages_buffer: SentMessageBuffer,
+    messages_buffer: MessageBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -135,6 +156,7 @@ impl EntityDispatcherInner {
             "sent_messages",
             &self.flush_callback,
         )?;
+        Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
         Ok(())
     }
 
@@ -173,6 +195,13 @@ impl EntityDispatcherInner {
         }
         Ok(())
     }
+
+    fn flush_messages_if_full(&mut self) -> anyhow::Result<()> {
+        if self.messages_buffer.len() >= self.batch_size {
+            Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+        }
+        Ok(())
+    }
 }
 
 /// Dispatches entity lifecycle events to Arrow RecordBatches.
@@ -200,6 +229,7 @@ impl EntityDispatcher {
             meshes_buffer: MeshBuffer::default(),
             actor_status_events_buffer: ActorStatusEventBuffer::default(),
             sent_messages_buffer: SentMessageBuffer::default(),
+            messages_buffer: MessageBuffer::default(),
             batch_size,
             flush_callback,
         }));
@@ -283,6 +313,21 @@ impl EntityEventDispatcher for EntityDispatcher {
                     shape_json: event.shape_json,
                 });
                 inner.flush_sent_messages_if_full()?;
+            }
+            EntityEvent::Message(event) => {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+                inner.messages_buffer.insert(Message {
+                    id: event.id,
+                    timestamp_us: timestamp_to_micros(&event.timestamp),
+                    from_actor_id: event.from_actor_id,
+                    to_actor_id: event.to_actor_id,
+                    endpoint: event.endpoint,
+                    port_id: event.port_id,
+                });
+                inner.flush_messages_if_full()?;
             }
         }
         Ok(())
