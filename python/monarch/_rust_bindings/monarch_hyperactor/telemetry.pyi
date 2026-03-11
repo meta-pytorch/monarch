@@ -42,22 +42,6 @@ def get_current_span_id() -> int:
     """
     ...
 
-def use_real_clock() -> None:
-    """
-    Convenience function to switch to real-time clock.
-    This switches the telemetry system to use real system time.
-    """
-    ...
-
-def use_sim_clock() -> None:
-    """
-    Convenience function to switch to simulated clock.
-
-    This switches the telemetry system to use simulated time, which is useful for
-    testing and simulation environments where you want deterministic time control.
-    """
-    ...
-
 def get_execution_id() -> str:
     """
     Get the current execution ID.
