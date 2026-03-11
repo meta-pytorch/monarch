@@ -653,6 +653,8 @@ impl MeshAgentMessageHandler for ProcAgent {
         );
 
         let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
+            // IF YOU REMOVE THIS YIELD THEN repro_timeout.py WILL HANG
+            tokio::task::yield_now().await;
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
