@@ -412,6 +412,27 @@ pub fn notify_sent_message(event: SentMessageEvent) {
     dispatch_or_buffer(EntityEvent::SentMessage(event));
 }
 
+/// Event fired when a message is received (from receiver's perspective).
+#[derive(Debug, Clone)]
+pub struct MessageEvent {
+    pub timestamp: SystemTime,
+    /// Unique identifier for this received message.
+    pub id: u64,
+    /// Hash of sender's ActorId.
+    pub from_actor_id: u64,
+    /// Hash of receiver's ActorId.
+    pub to_actor_id: u64,
+    /// Endpoint name if this message targets a specific actor endpoint
+    pub endpoint: Option<String>,
+    /// Destination port ID
+    pub port_id: Option<u64>,
+}
+
+/// Notify the registered dispatcher that a message was received.
+pub fn notify_message(event: MessageEvent) {
+    dispatch_or_buffer(EntityEvent::Message(event));
+}
+
 static ACTOR_STATUS_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Generate a globally unique ActorStatusEvent ID.
@@ -431,6 +452,17 @@ pub fn generate_sent_message_id(sender_actor_id: u64) -> u64 {
     hash_to_u64(&(sender_actor_id, seq))
 }
 
+static RECV_MSG_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique received-message ID (cross-process unique).
+///
+/// Hashes (to_actor_id, seq) following the same pattern as
+/// `generate_sent_message_id`.
+pub fn generate_message_id(to_actor_id: u64) -> u64 {
+    let seq = RECV_MSG_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(to_actor_id, seq))
+}
+
 /// Unified event enum for all entity lifecycle events.
 ///
 /// This enum wraps all entity events (actors, meshes, and future event types)
@@ -446,6 +478,8 @@ pub enum EntityEvent {
     ActorStatus(ActorStatusEvent),
     /// A message was sent.
     SentMessage(SentMessageEvent),
+    /// A message was received.
+    Message(MessageEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -470,6 +504,7 @@ pub enum EntityEvent {
 ///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
 ///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
 ///             EntityEvent::SentMessage(msg) => println!("Sent: {}", msg.id),
+///             EntityEvent::Message(msg) => println!("Recv: {}", msg.id),
 ///         }
 ///         Ok(())
 ///     }

@@ -93,6 +93,7 @@ use dashmap::mapref::entry::Entry;
 use futures::Sink;
 use futures::Stream;
 use hyperactor_config::Flattrs;
+use hyperactor_telemetry::hash_to_u64;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -1646,13 +1647,26 @@ impl MailboxSender for Mailbox {
 
                 let (metadata, data) = envelope.open();
                 let MessageMetadata {
-                    headers,
+                    mut headers,
                     sender,
                     dest,
                     errors: metadata_errors,
                     ttl,
                     return_undeliverable,
                 } = metadata;
+
+                let to_actor_id = hash_to_u64(&dest);
+                let message_id = hyperactor_telemetry::generate_message_id(to_actor_id);
+                headers.set(crate::mailbox::headers::TELEMETRY_MESSAGE_ID, message_id);
+                // Only set sender hash if not already present (cast path
+                // pre-sets it with the originating actor).
+                if !headers.contains_key(crate::mailbox::headers::SENDER_ACTOR_ID_HASH) {
+                    headers.set(
+                        crate::mailbox::headers::SENDER_ACTOR_ID_HASH,
+                        hash_to_u64(&sender),
+                    );
+                }
+                headers.set(crate::mailbox::headers::TELEMETRY_PORT_ID, dest.index());
 
                 // We use the entry API here so that we can remove the
                 // entry while holding an (entry) reference. The DashMap
