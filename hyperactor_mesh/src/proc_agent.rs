@@ -27,7 +27,6 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
-use hyperactor::ActorId;
 use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::ReceiverPollExt;
@@ -35,10 +34,7 @@ use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortRef;
 use hyperactor::PortHandle;
-use hyperactor::PortRef;
-use hyperactor::ProcId;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorStatus;
@@ -55,6 +51,7 @@ use hyperactor::mailbox::MailboxSender;
 use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::proc::Proc;
+use hyperactor::reference as hyperactor_reference;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::CONFIG;
 use hyperactor_config::ConfigAttr;
@@ -80,7 +77,10 @@ declare_attrs! {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Named)]
 pub enum GspawnResult {
-    Success { rank: usize, actor_id: ActorId },
+    Success {
+        rank: usize,
+        actor_id: hyperactor_reference::ActorId,
+    },
     Error(String),
 }
 wirevalue::register_type!(GspawnResult);
@@ -129,12 +129,12 @@ pub(crate) enum MeshAgentMessage {
         /// The forwarder to send messages to unknown destinations.
         forwarder: ChannelAddr,
         /// The supervisor port to which the agent should report supervision events.
-        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
         /// An address book to use for direct dialing.
-        address_book: HashMap<ProcId, ChannelAddr>,
+        address_book: HashMap<hyperactor_reference::ProcId, ChannelAddr>,
         /// The agent should write its rank to this port when it successfully
         /// configured.
-        configured: PortRef<usize>,
+        configured: hyperactor_reference::PortRef<usize>,
         /// If true, and supervisor is None, record supervision events to be reported
         record_supervision_events: bool,
     },
@@ -143,7 +143,7 @@ pub(crate) enum MeshAgentMessage {
         /// The status of the proc.
         /// To be replaced with fine-grained lifecycle status,
         /// and to use aggregation.
-        status: PortRef<(usize, bool)>,
+        status: hyperactor_reference::PortRef<(usize, bool)>,
     },
 
     /// Spawn an actor on the proc to the provided name.
@@ -155,20 +155,20 @@ pub(crate) enum MeshAgentMessage {
         /// serialized parameters
         params_data: Data,
         /// reply port; the proc should send its rank to indicated a spawned actor
-        status_port: PortRef<GspawnResult>,
+        status_port: hyperactor_reference::PortRef<GspawnResult>,
     },
 
     /// Stop actors of a specific mesh name
     StopActor {
         /// The actor to stop
-        actor_id: ActorId,
+        actor_id: hyperactor_reference::ActorId,
         /// The timeout for waiting for the actor to stop
         timeout_ms: u64,
         /// The reason for stopping the actor
         reason: String,
         /// The result when trying to stop the actor
         #[reply]
-        stopped: OncePortRef<StopActorResult>,
+        stopped: hyperactor_reference::OncePortRef<StopActorResult>,
     },
 }
 
@@ -182,7 +182,7 @@ enum State {
     ConfiguredV0 {
         sender: ReconfigurableMailboxSender,
         rank: usize,
-        supervisor: Option<PortRef<ActorSupervisionEvent>>,
+        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
     },
 
     V1,
@@ -199,7 +199,7 @@ impl State {
         }
     }
 
-    fn supervisor(&self) -> Option<PortRef<ActorSupervisionEvent>> {
+    fn supervisor(&self) -> Option<hyperactor_reference::PortRef<ActorSupervisionEvent>> {
         match self {
             State::ConfiguredV0 { supervisor, .. } => supervisor.clone(),
             _ => None,
@@ -211,7 +211,7 @@ impl State {
 #[derive(Debug)]
 struct ActorInstanceState {
     create_rank: usize,
-    spawn: Result<ActorId, anyhow::Error>,
+    spawn: Result<hyperactor_reference::ActorId, anyhow::Error>,
     /// If true, the actor has been stopped. There is no way to restart it, a new
     /// actor must be spawned.
     stopped: bool,
@@ -278,7 +278,7 @@ pub struct ProcAgent {
     record_supervision_events: bool,
     /// If record_supervision_events is true, then this will contain the list
     /// of all events that were received.
-    supervision_events: HashMap<ActorId, Vec<ActorSupervisionEvent>>,
+    supervision_events: HashMap<hyperactor_reference::ActorId, Vec<ActorSupervisionEvent>>,
     /// True when supervision events have arrived but introspect
     /// properties haven't been republished yet.
     introspect_dirty: bool,
@@ -293,14 +293,10 @@ pub struct ProcAgent {
 impl ProcAgent {
     #[hyperactor::observe_result("MeshAgent")]
     pub(crate) async fn bootstrap(
-        proc_id: ProcId,
+        proc_id: hyperactor_reference::ProcId,
     ) -> Result<(Proc, ActorHandle<Self>), anyhow::Error> {
         let sender = ReconfigurableMailboxSender::new();
-        let proc = Proc::new(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
-
-        // Wire up this proc to the global router so that any meshes managed by
-        // this process can reach actors in this proc.
-        crate::router::global().bind(proc_id.into(), proc.clone());
+        let proc = Proc::configured(proc_id.clone(), BoxedMailboxSender::new(sender.clone()));
 
         let agent = ProcAgent {
             proc: proc.clone(),
@@ -351,7 +347,13 @@ impl ProcAgent {
         cx: &Context<'a, Self>,
         timeout: tokio::time::Duration,
         reason: &str,
-    ) -> Result<(Vec<ActorId>, Vec<ActorId>), anyhow::Error> {
+    ) -> Result<
+        (
+            Vec<hyperactor_reference::ActorId>,
+            Vec<hyperactor_reference::ActorId>,
+        ),
+        anyhow::Error,
+    > {
         self.proc
             .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
@@ -438,9 +440,8 @@ impl Actor for ProcAgent {
             use hyperactor::introspect::NodePayload;
             use hyperactor::introspect::NodeProperties;
             use hyperactor::introspect::PublishedPropertiesKind;
-            use hyperactor::reference::Reference;
 
-            if let Reference::Actor(id) = child_ref {
+            if let hyperactor::reference::Reference::Actor(id) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(id) {
                     return snapshot;
                 }
@@ -453,7 +454,7 @@ impl Actor for ProcAgent {
             // next QueryChild(Reference::Proc) response without an
             // extra publish event. See
             // test_query_child_proc_returns_live_children.
-            if let Reference::Proc(proc_id) = child_ref {
+            if let hyperactor::reference::Reference::Proc(proc_id) = child_ref {
                 if proc_id == proc.proc_id() {
                     let live_ids = proc.all_actor_ids();
                     let num_live = live_ids.len();
@@ -555,9 +556,9 @@ impl MeshAgentMessageHandler for ProcAgent {
         cx: &Context<Self>,
         rank: usize,
         forwarder: ChannelAddr,
-        supervisor: Option<PortRef<ActorSupervisionEvent>>,
-        address_book: HashMap<ProcId, ChannelAddr>,
-        configured: PortRef<usize>,
+        supervisor: Option<hyperactor_reference::PortRef<ActorSupervisionEvent>>,
+        address_book: HashMap<hyperactor_reference::ProcId, ChannelAddr>,
+        configured: hyperactor_reference::PortRef<usize>,
         record_supervision_events: bool,
     ) -> Result<(), anyhow::Error> {
         anyhow::ensure!(
@@ -566,19 +567,9 @@ impl MeshAgentMessageHandler for ProcAgent {
         );
         self.record_supervision_events = record_supervision_events;
 
-        // Wire up the local proc to the global (process) router. This ensures that child
-        // meshes are reachable from any actor created by this mesh.
         let client = MailboxClient::new(channel::dial(forwarder)?);
-
-        // `HYPERACTOR_MESH_ROUTER_CONFIG_NO_GLOBAL_FALLBACK` may be
-        // set as a means of failure injection in the testing of
-        // supervision codepaths.
-        let router = if std::env::var("HYPERACTOR_MESH_ROUTER_NO_GLOBAL_FALLBACK").is_err() {
-            let default = crate::router::global().fallback(client.into_boxed());
-            DialMailboxRouter::new_with_default_direct_addressed_remote_only(default.into_boxed())
-        } else {
-            DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed())
-        };
+        let router =
+            DialMailboxRouter::new_with_default_direct_addressed_remote_only(client.into_boxed());
 
         for (proc_id, addr) in address_book {
             router.bind(proc_id.into(), addr);
@@ -606,7 +597,7 @@ impl MeshAgentMessageHandler for ProcAgent {
         actor_type: String,
         actor_name: String,
         params_data: Data,
-        status_port: PortRef<GspawnResult>,
+        status_port: hyperactor_reference::PortRef<GspawnResult>,
     ) -> Result<(), anyhow::Error> {
         anyhow::ensure!(
             self.state.is_configured_v0(),
@@ -643,7 +634,7 @@ impl MeshAgentMessageHandler for ProcAgent {
     async fn stop_actor(
         &mut self,
         cx: &Context<Self>,
-        actor_id: ActorId,
+        actor_id: hyperactor_reference::ActorId,
         timeout_ms: u64,
         reason: String,
     ) -> Result<StopActorResult, anyhow::Error> {
@@ -675,7 +666,7 @@ impl MeshAgentMessageHandler for ProcAgent {
     async fn status(
         &mut self,
         cx: &Context<Self>,
-        status_port: PortRef<(usize, bool)>,
+        status_port: hyperactor_reference::PortRef<(usize, bool)>,
     ) -> Result<(), anyhow::Error> {
         match &self.state {
             State::ConfiguredV0 { rank, .. } => {
@@ -787,7 +778,7 @@ wirevalue::register_type!(ActorSpec);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 pub struct ActorState {
     /// The actor's ID.
-    pub actor_id: ActorId,
+    pub actor_id: hyperactor_reference::ActorId,
     /// The rank of the proc that created the actor. This is before any slicing.
     pub create_rank: usize,
     // TODO status: ActorStatus,
@@ -1162,7 +1153,7 @@ impl Handler<SelfCheck> for ProcAgent {
         let now = RealClock.system_time_now();
 
         // Collect expired actors before mutating, since stop_actor borrows &mut self.
-        let expired: Vec<(Name, ActorId)> = self
+        let expired: Vec<(Name, hyperactor_reference::ActorId)> = self
             .actor_states
             .iter()
             .filter_map(|(name, state)| {
@@ -1495,14 +1486,13 @@ mod tests {
     // mesh_admin::tests::test_proc_children_reflect_directly_spawned_actors.
     #[tokio::test]
     async fn test_query_child_proc_returns_live_children() {
-        use hyperactor::PortRef;
         use hyperactor::Proc;
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::introspect::IntrospectMessage;
         use hyperactor::introspect::NodePayload;
         use hyperactor::introspect::NodeProperties;
-        use hyperactor::reference::Reference;
+        use hyperactor::reference as hyperactor_reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
@@ -1519,7 +1509,8 @@ mod tests {
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
-        let port = PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
 
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
@@ -1528,7 +1519,7 @@ mod tests {
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
-                    child_ref: Reference::Proc(proc.proc_id().clone()),
+                    child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
                     reply: reply_port.bind(),
                 },
             )
