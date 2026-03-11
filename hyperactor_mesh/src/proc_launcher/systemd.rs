@@ -72,8 +72,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::reference as hyperactor_reference;
 use tokio::sync::oneshot;
 use tracing::Instrument;
@@ -577,7 +575,7 @@ async fn monitor_exit(
             break;
         }
 
-        RealClock.sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
     // Map exit to ProcExitKind using the helper function.
@@ -938,7 +936,7 @@ impl ProcLauncher for SystemdProcLauncher {
                 )))
             })?;
 
-        let started_at = hyperactor::clock::RealClock.system_time_now();
+        let started_at = std::time::SystemTime::now();
 
         tracing::debug!("spawned");
 
@@ -1101,8 +1099,6 @@ mod tests {
 
     use hyperactor::channel::ChannelAddr;
     use hyperactor::channel::ChannelTransport;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor::testing::ids::test_proc_id;
 
     use super::*;
@@ -1158,8 +1154,7 @@ mod tests {
             "{}/monarch-env-vars-{}-{}.txt",
             runtime_dir,
             std::process::id(),
-            RealClock
-                .system_time_now()
+            std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
@@ -1220,8 +1215,7 @@ mod tests {
         );
 
         // Wait for exit
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -1306,8 +1300,7 @@ mod tests {
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
 
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -1358,12 +1351,11 @@ mod tests {
         }
 
         // Give the process a moment to start
-        RealClock.sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         launcher.kill(&proc_id).await.expect("kill");
 
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -1411,15 +1403,14 @@ mod tests {
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
 
         // Give the process a moment to start
-        RealClock.sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         launcher
             .terminate(&proc_id, Duration::from_secs(5))
             .await
             .expect("terminate");
 
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit_rx")
             .expect("exit_rx dropped");
@@ -1543,8 +1534,7 @@ mod tests {
             "{}/monarch-drop-cleanup-{}-{}.marker",
             runtime_dir,
             std::process::id(),
-            RealClock
-                .system_time_now()
+            std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
@@ -1610,7 +1600,7 @@ mod tests {
                     std::time::Instant::now() < deadline,
                     "Marker file never showed 'running' - child may have failed or died early"
                 );
-                RealClock.sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
 
             // Launcher drops here - Drop should stop the unit
@@ -1619,8 +1609,7 @@ mod tests {
         // After drop: process should exit within timeout. Use
         // generous timeout because Drop cleanup is multi-step: spawn
         // thread → build runtime → connect D-Bus → call StopUnit.
-        let exit = RealClock
-            .timeout(Duration::from_secs(30), exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(30), exit_rx)
             .await
             .expect(
                 "timed out waiting for process to exit after Drop - cleanup may be slow or stuck",
@@ -1683,13 +1672,11 @@ mod tests {
         let mut lr = launcher.launch(&proc_id, opts).await.expect("launch");
 
         // Wait 12 seconds — longer than the old buggy 10s timeout.
-        RealClock.sleep(Duration::from_secs(12)).await;
+        tokio::time::sleep(Duration::from_secs(12)).await;
 
         // Assert exit_rx has NOT resolved. We use a short timeout
         // that we EXPECT to time out.
-        let poll = RealClock
-            .timeout(Duration::from_millis(100), &mut lr.exit_rx)
-            .await;
+        let poll = tokio::time::timeout(Duration::from_millis(100), &mut lr.exit_rx).await;
 
         assert!(
             poll.is_err(),
@@ -1699,8 +1686,7 @@ mod tests {
         // Now kill the proc and verify exit_rx resolves.
         launcher.kill(&proc_id).await.expect("kill");
 
-        let exit = RealClock
-            .timeout(Duration::from_secs(5), lr.exit_rx)
+        let exit = tokio::time::timeout(Duration::from_secs(5), lr.exit_rx)
             .await
             .expect("timed out waiting for exit after kill")
             .expect("exit_rx dropped");
