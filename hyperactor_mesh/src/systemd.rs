@@ -62,8 +62,6 @@
 // assuage the "unused dependencies" linter.
 #[cfg(all(target_os = "linux", feature = "systemd"))]
 use ::systemd as _;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use zbus::Connection;
 use zbus::Result;
 use zbus::proxy;
@@ -285,7 +283,7 @@ async fn wait_unit_gone(conn: &Connection, name: &str, timeout: std::time::Durat
             return;
         }
 
-        RealClock.sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -335,8 +333,6 @@ mod tests {
     use std::time::Duration;
 
     use futures::StreamExt;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use tokio::io::AsyncBufReadExt;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -454,7 +450,7 @@ mod tests {
                 return;
             }
 
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -507,7 +503,7 @@ mod tests {
                     want_active, want_sub, timeout, active, sub
                 );
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -645,7 +641,7 @@ mod tests {
                     a, s
                 );
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         };
 
         let initial_state = UnitState::Active {
@@ -728,7 +724,7 @@ mod tests {
 
         // Wait for monitor to be set up (or time out and keep going;
         // the test will fail meaningfully).
-        let _ = RealClock.timeout(Duration::from_secs(1), ready_rx).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), ready_rx).await;
 
         // Stop the unit — IMPORTANT: do NOT
         // "cleanup_unit_best_effort" yet, it races away the
@@ -769,7 +765,7 @@ mod tests {
             if std::time::Instant::now() >= wait_deadline {
                 break;
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         // Now do best-effort cleanup (stop/reset/wait-gone).
@@ -957,10 +953,7 @@ mod tests {
         // ~4s).
         let mut seen_marker = false;
         for _ in 0..4 {
-            match RealClock
-                .timeout(Duration::from_secs(1), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_secs(1), log_rx.recv()).await {
                 Ok(Some(line)) => {
                     println!("[{}] {}", unit_name, line);
                     if line.contains(marker) {
@@ -1084,10 +1077,7 @@ mod tests {
         // Wait for the marker to appear in the forwarded logs.
         let mut seen_marker = false;
         for _ in 0..10 {
-            match RealClock
-                .timeout(Duration::from_secs(1), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_secs(1), log_rx.recv()).await {
                 Ok(Some(line)) => {
                     if line.contains(marker) {
                         seen_marker = true;
@@ -1158,9 +1148,7 @@ mod tests {
                         break;
                     }
 
-                    match RealClock
-                        .timeout(Duration::from_millis(100), lines.next_line())
-                        .await
+                    match tokio::time::timeout(Duration::from_millis(100), lines.next_line()).await
                     {
                         Ok(Ok(Some(line))) => {
                             println!("  [fd-async] {}", line);
@@ -1206,10 +1194,7 @@ mod tests {
         // Wait for the marker to appear in the forwarded logs.
         let mut seen_marker = false;
         for _ in 0..10 {
-            match RealClock
-                .timeout(Duration::from_secs(1), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_secs(1), log_rx.recv()).await {
                 Ok(Some(line)) => {
                     if line.contains(marker) {
                         seen_marker = true;
@@ -1319,9 +1304,11 @@ mod tests {
                     let mut any_read = false;
                     for (idx, lines_reader) in readers.iter_mut() {
                         // Try to read with a small timeout.
-                        match RealClock
-                            .timeout(Duration::from_millis(10), lines_reader.next_line())
-                            .await
+                        match tokio::time::timeout(
+                            Duration::from_millis(10),
+                            lines_reader.next_line(),
+                        )
+                        .await
                         {
                             Ok(Ok(Some(line))) => {
                                 let unit_name = units[*idx].0.clone();
@@ -1343,7 +1330,7 @@ mod tests {
 
                     // If no data from any reader, sleep briefly.
                     if !any_read {
-                        RealClock.sleep(Duration::from_millis(50)).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
             }
@@ -1389,10 +1376,7 @@ mod tests {
 
         // Wait for markers from all units (up to 15 seconds total).
         for _ in 0..150 {
-            match RealClock
-                .timeout(Duration::from_millis(100), log_rx.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_millis(100), log_rx.recv()).await {
                 Ok(Some((unit_name, line))) => {
                     // Check if this line contains the expected marker
                     // for this unit.
@@ -1449,8 +1433,6 @@ mod tests {
     async fn test_service_exec_main_status_nonzero_exit() -> Result<()> {
         use std::time::Duration;
 
-        use hyperactor::clock::Clock;
-        use hyperactor::clock::RealClock;
         use zbus::Connection;
         use zbus::zvariant::Value;
 
@@ -1521,7 +1503,7 @@ mod tests {
             if active == "failed" {
                 break;
             }
-            RealClock.sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         // Now wait for ExecMainStatus to reflect the exit code
@@ -1536,7 +1518,7 @@ mod tests {
             if status == exit_code && !result.is_empty() {
                 break;
             }
-            RealClock.sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         // Assertions.

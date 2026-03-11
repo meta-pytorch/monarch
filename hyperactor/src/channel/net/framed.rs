@@ -16,7 +16,6 @@ use std::task::Poll;
 
 use bytes::Buf;
 use bytes::Bytes;
-use enum_as_inner::EnumAsInner;
 use futures::future::poll_fn;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
@@ -318,81 +317,6 @@ impl<W: AsyncWrite + Unpin, B: Buf> FrameWrite<W, B> {
         match res {
             Ok(()) => Ok(writer),
             Err(e) => Err((writer, e)),
-        }
-    }
-}
-
-/// A state machine to manage cancellable writes. Notably, writes have
-/// values associated with them in order to maintain additional state
-/// for bookeeping purposes. WriteState ensures that an underlying
-/// `W`-typed writer is correctly owned by a [`FrameWrite`], or else
-/// is Idled.
-#[derive(EnumAsInner)]
-pub enum WriteState<W, F, T> {
-    /// No frame being written; the writer `W` is idle.
-    Idle(W),
-
-    /// Currently writing a frame, with associated T-typed bookeeping value.
-    /// The writer is owned by the [`FrameWrite`].
-    Writing(FrameWrite<W, F>, T),
-
-    /// Internal state to manage completions.
-    Broken,
-}
-
-impl<W, F: bytes::Buf, T> fmt::Debug for WriteState<W, F, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WriteState::Idle(_) => f.debug_tuple("Idle").finish(),
-            WriteState::Writing(frame_write, _) => {
-                f.debug_tuple("Writing").field(frame_write).finish()
-            }
-            WriteState::Broken => f.debug_tuple("Broken").finish(),
-        }
-    }
-}
-
-impl<W, F, T> WriteState<W, F, T> {
-    /// Current bookeeping value, if it exists.
-    pub fn value(&self) -> Option<&T> {
-        match self {
-            Self::Writing(_, v) => Some(v),
-            Self::Idle(_) | Self::Broken => None,
-        }
-    }
-}
-
-impl<W: AsyncWrite + Unpin, F: Buf, T> WriteState<W, F, T> {
-    /// Drive the send operation. (Cancellation safe.) This is a no-op
-    /// if the write state isn't sending anything; in this case, the operations
-    /// never returns, but may be canceled.
-    pub async fn send(&mut self) -> io::Result<T> {
-        match self {
-            Self::Idle(_) => futures::future::pending().await,
-            Self::Writing(fw, _value) => {
-                fw.send().await?;
-                let Ok((fw, value)) = std::mem::replace(self, Self::Broken).into_writing() else {
-                    panic!("illegal state");
-                };
-                *self = Self::Idle(fw.complete());
-                Ok(value)
-            }
-            Self::Broken => panic!("illegal state"),
-        }
-    }
-
-    /// Consume the state and return the underlying writer, if the
-    /// stream is not broken.
-    ///
-    /// For `Idle`, this returns the stored writer. For `Writing`,
-    /// this assumes no more frames will be sent and calls
-    /// `complete()` to recover the writer. For `Broken`, this returns
-    /// `None`.
-    pub fn into_writer(self) -> Option<W> {
-        match self {
-            Self::Idle(w) => Some(w),
-            Self::Writing(w, _) => Some(w.complete()),
-            Self::Broken => None,
         }
     }
 }
@@ -1023,7 +947,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::disallowed_methods)]
     async fn test_writer_cancellation_resume() {
         const MAX_LEN: usize = 1024 * 1024;
 
@@ -1272,7 +1195,6 @@ mod property_tests {
                 // wakeups or budget logic regresses and the future
                 // stalls forever, the test fails quickly instead of
                 // hanging the fuzz run.
-                #[allow(clippy::disallowed_methods)]
                 tokio::time::timeout(std::time::Duration::from_secs(2), async {
                     assert_cancel_safe_async!(
                         // `mk`: Build a *fresh* send future each attempt.
@@ -1396,7 +1318,6 @@ mod property_tests {
                 let step_ticks = pending_ticks.clone();
                 let step_drips = drips.clone();
 
-                #[allow(clippy::disallowed_methods)]
                 tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     assert_cancel_safe_async!(
                         // `mk`: Build a *fresh* send future each attempt.
@@ -1516,7 +1437,6 @@ mod property_tests {
                 let step_ticks = pending_ticks.clone();
                 let step_drips = drips.clone();
 
-                #[allow(clippy::disallowed_methods)]
                 tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     assert_cancel_safe_async!(
                         // `mk`: Build a *fresh* send future each attempt.

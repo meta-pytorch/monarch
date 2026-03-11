@@ -12,8 +12,6 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use hyperactor::Instance;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor_mesh::sel;
 use monarch_types::py_global;
@@ -271,7 +269,7 @@ async fn collect_valuemesh(
     instance: &Instance<PythonActor>,
     qualified_endpoint_name: Option<String>,
 ) -> PyResult<Py<PyAny>> {
-    let start = RealClock.now();
+    let start = tokio::time::Instant::now();
 
     let expected_count = extent.num_ranks();
 
@@ -330,7 +328,7 @@ fn value_collector(
     adverb: EndpointAdverb,
 ) -> PyResult<PyPythonTask> {
     Ok(PythonTask::new(async move {
-        let start = RealClock.now();
+        let start = tokio::time::Instant::now();
 
         let record_guard = RecordEndpointGuard::new(start, method_name, 1, adverb);
 
@@ -586,7 +584,7 @@ pub(crate) trait Endpoint {
         self.send_message(py, args, kwargs, Some(&port_ref), sel!(*), &instance)?;
 
         let actor_count = extent.num_ranks();
-        let start = RealClock.now();
+        let start = tokio::time::Instant::now();
         let supervision_monitor = self.get_supervision_monitor();
         let qualified_endpoint_name = self.get_qualified_name();
         let future_class = make_future(py).unbind();
