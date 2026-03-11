@@ -32,8 +32,12 @@ except ImportError:
 async def main() -> None:
     from monarch._rust_bindings.monarch_hyperactor.bootstrap import bootstrap_main
 
+    # This will return when the process is done, and we can exit this script.
+    # That will run Py_FinalizeEx which has to be done in the main thread after
+    # all other threads have exited.
     # pyre-ignore[12]: bootstrap_main is async but imported from Rust bindings
-    await bootstrap_main()
+    exit_code = await bootstrap_main()
+    sys.exit(exit_code)
 
 
 def invoke_main() -> None:
