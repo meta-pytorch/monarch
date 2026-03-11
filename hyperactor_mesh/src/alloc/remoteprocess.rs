@@ -35,7 +35,6 @@ use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
 use hyperactor::observe_async;
 use hyperactor::observe_result;
-use hyperactor::reference::Reference;
 use mockall::automock;
 use ndslice::Region;
 use ndslice::Slice;
@@ -448,7 +447,7 @@ impl RemoteProcessAllocator {
                                     match mesh_agents_by_create_key.remove(&create_key) {
                                         Some(mesh_agent) => {
                                             tracing::debug!("unmapping mesh_agent {}", mesh_agent);
-                                            let agent_ref: Reference = mesh_agent.actor_id().proc_id().clone().into();
+                                            let agent_ref: hyperactor::reference::Reference = mesh_agent.actor_id().proc_id().clone().into();
                                             router.unbind(&agent_ref);
                                         },
                                         None => {
@@ -1364,9 +1363,9 @@ impl Drop for RemoteProcessAlloc {
 mod test {
     use std::assert_matches::assert_matches;
 
-    use hyperactor::ActorRef;
     use hyperactor::channel::ChannelRx;
     use hyperactor::clock::ClockKind;
+    use hyperactor::reference as hyperactor_reference;
     use hyperactor::testing::ids::test_proc_id;
     use ndslice::extent;
     use tokio::sync::oneshot;
@@ -1437,7 +1436,9 @@ mod test {
             .enumerate()
         {
             let proc_id = test_proc_id(&format!("{i}"));
-            let mesh_agent = ActorRef::<ProcAgent>::attest(proc_id.actor_id("mesh_agent", i));
+            let mesh_agent = hyperactor_reference::ActorRef::<ProcAgent>::attest(
+                proc_id.actor_id("mesh_agent", i),
+            );
             alloc.expect_next().times(1).return_once(move || {
                 Some(ProcState::Running {
                     create_key,
@@ -1563,7 +1564,7 @@ mod test {
                     assert_eq!(got_alloc_key, alloc_key);
                     assert_eq!(create_key, create_keys[rank]);
                     let expected_proc_id = test_proc_id(&format!("{}", rank));
-                    let expected_mesh_agent = ActorRef::<ProcAgent>::attest(
+                    let expected_mesh_agent = hyperactor_reference::ActorRef::<ProcAgent>::attest(
                         expected_proc_id.actor_id("mesh_agent", rank),
                     );
                     assert_eq!(proc_id, expected_proc_id);
