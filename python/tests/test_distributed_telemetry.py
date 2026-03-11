@@ -1003,3 +1003,91 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
 
     # Clean up
     hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
+    """Test that stopping a user ActorMesh does not affect telemetry queries.
+
+    Stopping an ActorMesh is a user-initiated action that does not trigger
+    __supervise__ on the telemetry coordinator. The telemetry actors on the
+    ProcMesh remain alive, so all data (including process-local tables like
+    messages) is still queryable.
+    """
+    engine = start_telemetry(batch_size=10)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 2}, name="actor_stop_test_procs"
+    )
+
+    # Spawn and initialize a user actor
+    workers = worker_procs.spawn("actor_stop_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Send messages so the messages table is populated on child processes
+    workers.ping.call().get()
+
+    # Verify received messages exist before stopping
+    pre_stop_msgs = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'actor_stop_worker'"
+    )
+    pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+    assert pre_stop_msg_count > 0, (
+        "Expected received messages for actor_stop_worker before stopping"
+    )
+
+    # Stop only the user ActorMesh, not the ProcMesh.
+    # The telemetry actors on the ProcMesh remain alive.
+    # pyre-ignore[29]: workers is an ActorMesh
+    workers.stop().get()
+
+    # The actor_status_events table should show a Stopped status for the
+    # stopped actors. This event fires on the child process, and is
+    # queryable because the ProcMesh (and its telemetry actor) is still alive.
+    status_result = engine.query(
+        "SELECT ase.new_status FROM actor_status_events ase "
+        "JOIN actors a ON ase.actor_id = a.id "
+        "JOIN meshes m ON a.mesh_id = m.id "
+        "WHERE m.given_name = 'actor_stop_worker'"
+    )
+    statuses = set(status_result.to_pydict().get("new_status", []))
+    assert "Stopped" in statuses, (
+        f"Expected 'Stopped' in actor status events after ActorMesh.stop(), "
+        f"got: {statuses}"
+    )
+
+    # Query should still work — the telemetry children are unaffected
+    result = engine.query("SELECT * FROM actors")
+    result_dict = result.to_pydict()
+    actor_count = len(result_dict.get("id", []))
+    assert actor_count > 0, (
+        f"Expected actors after stopping user ActorMesh, got {actor_count}"
+    )
+
+    # The stopped actor should still appear in the actors table
+    full_names = result_dict.get("full_name", [])
+    assert any("actor_stop_worker" in name for name in full_names), (
+        f"Expected 'actor_stop_worker' in actors after stop, got: {full_names}"
+    )
+
+    # Unlike stopping a ProcMesh, received messages are NOT lost because
+    # the telemetry actors and their scanners are still alive.
+    post_stop_msgs = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'actor_stop_worker'"
+    )
+    post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
+    assert post_stop_msg_count == pre_stop_msg_count, (
+        f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
+        f"got {post_stop_msg_count} (data should be preserved)"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
