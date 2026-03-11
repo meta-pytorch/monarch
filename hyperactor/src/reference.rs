@@ -130,8 +130,8 @@ impl Reference {
     pub fn proc_id(&self) -> Option<&ProcId> {
         match self {
             Self::Proc(proc_id) => Some(proc_id),
-            Self::Actor(ActorId(proc_id, _, _)) => Some(proc_id),
-            Self::Port(PortId(ActorId(proc_id, _, _), _)) => Some(proc_id),
+            Self::Actor(actor_id) => Some(actor_id.proc_id()),
+            Self::Port(port_id) => Some(port_id.actor_id().proc_id()),
         }
     }
 
@@ -140,7 +140,7 @@ impl Reference {
         match self {
             Self::Proc(_) => None,
             Self::Actor(actor_id) => Some(actor_id),
-            Self::Port(PortId(actor_id, _)) => Some(actor_id),
+            Self::Port(port_id) => Some(port_id.actor_id()),
         }
     }
 
@@ -149,7 +149,7 @@ impl Reference {
         match self {
             Self::Proc(_) => None,
             Self::Actor(actor_id) => Some(actor_id.name()),
-            Self::Port(PortId(actor_id, _)) => Some(actor_id.name()),
+            Self::Port(port_id) => Some(port_id.actor_id().name()),
         }
     }
 
@@ -158,7 +158,7 @@ impl Reference {
         match self {
             Self::Proc(_) => None,
             Self::Actor(actor_id) => Some(actor_id.pid()),
-            Self::Port(PortId(actor_id, _)) => Some(actor_id.pid()),
+            Self::Port(port_id) => Some(port_id.actor_id().pid()),
         }
     }
 
@@ -255,22 +255,22 @@ impl FromStr for Reference {
 
                     // channeladdr,proc_name
                     Token::Elem(proc_name) =>
-                    Self::Proc(ProcId(channel_addr, proc_name.to_string())),
+                    Self::Proc(ProcId::with_name(channel_addr, proc_name)),
 
                     // channeladdr,proc_name,actor_name
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name) =>
-                    Self::Actor(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), 0)),
+                    Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, 0)),
 
                     // channeladdr,proc_name,actor_name[pid]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
                         Token::LeftBracket Token::Uint(pid) Token::RightBracket =>
-                        Self::Actor(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), pid)),
+                        Self::Actor(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid)),
 
                     // channeladdr,proc_name,actor_name[pid][port]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
                         Token::LeftBracket Token::Uint(pid) Token::RightBracket
                         Token::LeftBracket Token::Uint(index) Token::RightBracket  =>
-                        Self::Port(PortId(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), pid), index as u64)),
+                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid), index as u64)),
 
                     // channeladdr,proc_name,actor_name[pid][port<type>]
                     Token::Elem(proc_name) Token::Comma Token::Elem(actor_name)
@@ -278,7 +278,7 @@ impl FromStr for Reference {
                         Token::LeftBracket Token::Uint(index)
                             Token::LessThan Token::Elem(_type) Token::GreaterThan
                         Token::RightBracket =>
-                        Self::Port(PortId(ActorId(ProcId(channel_addr, proc_name.to_string()), actor_name.to_string(), pid), index as u64)),
+                        Self::Port(PortId::new(ActorId::new(ProcId::with_name(channel_addr, proc_name), actor_name, pid), index as u64)),
                 }?)
             }
 
@@ -327,9 +327,50 @@ pub type Index = usize;
     Ord,
     typeuri::Named
 )]
-pub struct ProcId(pub ChannelAddr, pub String);
+pub struct ProcId(ChannelAddr, String);
+
+/// Compute an 8-char hex hash suffix from a [`ChannelAddr`].
+fn addr_hash_suffix(addr: &ChannelAddr) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    addr.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
 
 impl ProcId {
+    /// Create a ProcId with a globally-unique name: `"{base_name}-{hash_of_addr}"`.
+    ///
+    /// Use this for well-known / fixed proc names (e.g. `"service"`, `"local"`)
+    /// that are not already unique across hosts.
+    pub fn unique(addr: ChannelAddr, base_name: impl Into<String>) -> Self {
+        let base = base_name.into();
+        let suffix = addr_hash_suffix(&addr);
+        Self(addr, format!("{}-{}", base, suffix))
+    }
+
+    /// Create a ProcId with an already-unique name (no suffix added).
+    ///
+    /// Use this for deserialization, test helpers, and names that already
+    /// contain a UUID or other uniquifying component.
+    pub fn with_name(addr: ChannelAddr, name: impl Into<String>) -> Self {
+        Self(addr, name.into())
+    }
+
+    /// The base name before the `-{hash}` suffix, if present.
+    ///
+    /// If the name ends with `-XXXXXXXX` (8 hex chars), returns the part
+    /// before that suffix. Otherwise returns the full name.
+    pub fn base_name(&self) -> &str {
+        match self.1.rsplit_once('-') {
+            Some((base, suffix))
+                if suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()) =>
+            {
+                base
+            }
+            _ => &self.1,
+        }
+    }
+
     /// Create an actor ID with the provided name, pid within this proc.
     pub fn actor_id(&self, name: impl Into<String>, pid: Index) -> ActorId {
         ActorId(self.clone(), name.into(), pid)
@@ -376,11 +417,16 @@ impl FromStr for ProcId {
     Ord,
     typeuri::Named
 )]
-pub struct ActorId(pub ProcId, pub String, pub Index);
+pub struct ActorId(ProcId, String, Index);
 
 hyperactor_config::impl_attrvalue!(ActorId);
 
 impl ActorId {
+    /// Create a new actor ID.
+    pub fn new(proc_id: ProcId, name: impl Into<String>, pid: Index) -> Self {
+        Self(proc_id, name.into(), pid)
+    }
+
     /// Create a new port ID with the provided port for this actor.
     pub fn port_id(&self, port: u64) -> PortId {
         PortId(self.clone(), port)
@@ -414,8 +460,7 @@ impl ActorId {
 
 impl fmt::Display for ActorId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ActorId(proc_id, name, pid) = self;
-        write!(f, "{},{}[{}]", proc_id, name, pid)
+        write!(f, "{},{}[{}]", self.0, self.1, self.2)
     }
 }
 impl<A: Referable> From<ActorRef<A>> for ActorId {
@@ -610,9 +655,14 @@ impl<A: Referable> Hash for ActorRef<A> {
     Ord,
     typeuri::Named
 )]
-pub struct PortId(pub ActorId, pub u64);
+pub struct PortId(ActorId, u64);
 
 impl PortId {
+    /// Create a new port ID.
+    pub fn new(actor_id: ActorId, port: u64) -> Self {
+        Self(actor_id, port)
+    }
+
     /// The ID of the port's owning actor.
     pub fn actor_id(&self) -> &ActorId {
         &self.0
@@ -1100,13 +1150,13 @@ mod tests {
         let cases: Vec<(&str, Reference)> = vec![
             (
                 "tcp:[::1]:1234,test",
-                ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()).into(),
+                ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test").into(),
             ),
             (
                 "tcp:[::1]:1234,test,testactor[123]",
-                ActorId(
-                    ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
-                    "testactor".to_string(),
+                ActorId::new(
+                    ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                    "testactor",
                     123,
                 )
                 .into(),
@@ -1114,10 +1164,10 @@ mod tests {
             (
                 // type annotations are ignored
                 "tcp:[::1]:1234,test,testactor[0][123<my::type>]",
-                PortId(
-                    ActorId(
-                        ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
-                        "testactor".to_string(),
+                PortId::new(
+                    ActorId::new(
+                        ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                        "testactor",
                         0,
                     ),
                     123,
@@ -1164,10 +1214,10 @@ mod tests {
         #[derive(typeuri::Named, Serialize, Deserialize)]
         struct MyType;
         wirevalue::register_type!(MyType);
-        let port_id = PortId(
-            ActorId(
-                ProcId("tcp:[::1]:1234".parse().unwrap(), "test".to_string()),
-                "testactor".into(),
+        let port_id = PortId::new(
+            ActorId::new(
+                ProcId::with_name("tcp:[::1]:1234".parse::<ChannelAddr>().unwrap(), "test"),
+                "testactor",
                 1,
             ),
             MyType::port(),
