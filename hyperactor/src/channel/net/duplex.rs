@@ -58,8 +58,6 @@ use crate::channel::TxStatus;
 use crate::channel::net::Stream;
 use crate::channel::net::meta;
 use crate::channel::net::tls;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::metrics;
 use crate::sync::mvar::MVar;
 
@@ -126,7 +124,8 @@ impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         let return_channel = return_channel.unwrap_or_else(|| oneshot::channel().0);
         if let Err(mpsc::error::SendError((message, return_channel, _))) =
-            self.tx.send((message, return_channel, RealClock.now()))
+            self.tx
+                .send((message, return_channel, tokio::time::Instant::now()))
         {
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,

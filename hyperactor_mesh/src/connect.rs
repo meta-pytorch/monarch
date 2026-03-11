@@ -47,8 +47,6 @@ use futures::future;
 use futures::stream::FusedStream;
 use futures::task::Context;
 use futures::task::Poll;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::mailbox::OncePortReceiver;
 use hyperactor::mailbox::PortReceiver;
@@ -306,9 +304,7 @@ impl<C: context::Actor> ConnectionCompleter<C> {
     /// Wait for the server to accept the connection and return the streams that can be used to communicate
     /// with the server.
     pub async fn complete(self) -> Result<ActorConnection<C>> {
-        let accept = RealClock
-            .timeout(CONNECT_TIMEOUT, self.port.recv())
-            .await??;
+        let accept = tokio::time::timeout(CONNECT_TIMEOUT, self.port.recv()).await??;
         Ok(ActorConnection {
             reader: OwnedReadHalf::new(accept.id.clone(), self.conn),
             writer: OwnedWriteHalf::new(accept.id, self.caps, accept.conn),
