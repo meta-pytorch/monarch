@@ -70,8 +70,6 @@ use crate::channel::ChannelRx;
 use crate::channel::ChannelTransport;
 use crate::channel::Rx;
 use crate::channel::Tx;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::context;
 use crate::mailbox::BoxableMailboxSender;
 use crate::mailbox::BoxedMailboxSender;
@@ -273,7 +271,7 @@ impl<M: ProcManager> Host<M> {
         let ready = if to == Duration::from_secs(0) {
             ReadyProc::ensure(&handle).await
         } else {
-            match RealClock.timeout(to, ReadyProc::ensure(&handle)).await {
+            match tokio::time::timeout(to, ReadyProc::ensure(&handle)).await {
                 Ok(result) => result,
                 Err(_elapsed) => Err(ReadyProcError::Timeout),
             }
@@ -1422,8 +1420,6 @@ mod tests {
     use super::testing::EchoActor;
     use super::*;
     use crate::channel::ChannelTransport;
-    use crate::clock::Clock;
-    use crate::clock::RealClock;
     use crate::context::Mailbox;
 
     #[tokio::test]
@@ -1493,7 +1489,7 @@ mod tests {
     // TODO: OSS: called `Result::unwrap()` on an `Err` value: ReadFailed { manifest_path: "/meta-pytorch/monarch/target/debug/deps/hyperactor-0e1fe83af739d976.resources.json", source: Os { code: 2, kind: NotFound, message: "No such file or directory" } }
     #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_process_proc_manager() {
-        hyperactor_telemetry::initialize_logging(crate::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         // EchoActor is "host_agent" used to test connectivity.
         let process_manager = ProcessProcManager::<EchoActor>::new(
@@ -1532,8 +1528,7 @@ mod tests {
         let (client_inst, _h) = client.instance("test").unwrap();
         let (port, rx) = client_inst.mailbox().open_once_port();
         echo1.send(&client_inst, port.bind()).unwrap();
-        let id = RealClock
-            .timeout(Duration::from_secs(5), rx.recv())
+        let id = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1548,8 +1543,7 @@ mod tests {
         // external client under the same host.
         let (port2, rx2) = client_inst.mailbox().open_once_port();
         echo2.send(&client_inst, port2.bind()).unwrap();
-        let id2 = RealClock
-            .timeout(Duration::from_secs(5), rx2.recv())
+        let id2 = tokio::time::timeout(Duration::from_secs(5), rx2.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1568,8 +1562,7 @@ mod tests {
         // Send from system -> child via a message that ultimately
         // replies to client's port
         echo1.send(&sys_inst, port3.bind()).unwrap();
-        let id3 = RealClock
-            .timeout(Duration::from_secs(5), rx3.recv())
+        let id3 = tokio::time::timeout(Duration::from_secs(5), rx3.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1649,7 +1642,7 @@ mod tests {
             match self.mode {
                 ReadyMode::OkAfter(d) => {
                     if !d.is_zero() {
-                        RealClock.sleep(d).await;
+                        tokio::time::sleep(d).await;
                     }
                     Ok(())
                 }

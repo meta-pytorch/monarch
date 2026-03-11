@@ -20,8 +20,6 @@
 //!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --unified
 //!   buck2 run //monarch/hyperactor_telemetry:telemetry_benchmark -- --compare
 
-#![allow(clippy::disallowed_methods)] // don't want to take a dependency on `hyperactor` just for `hyperactor::clock::Clock`
-
 use std::time::Instant;
 
 use hyperactor_telemetry::*;
