@@ -376,14 +376,14 @@ pub fn notify_mesh_created(event: MeshEvent) {
 /// This is passed to EntityEventDispatcher implementations when an actor changes status.
 #[derive(Debug, Clone)]
 pub struct ActorStatusEvent {
-    /// Actor ID as a string (e.g. "proc_id/actor_name")
-    pub actor_id: String,
+    /// Unique identifier for this event
+    pub id: u64,
     /// Timestamp when the status change occurred
     pub timestamp: SystemTime,
-    /// The new status arm name (e.g. "Created", "Idle", "Failed")
+    /// ID of the actor whose status changed
+    pub actor_id: u64,
+    /// New status value (e.g. "Created", "Idle", "Failed")
     pub new_status: String,
-    /// The previous status arm name
-    pub prev_status: String,
     /// Reason for the status change (e.g. error details for Failed)
     pub reason: Option<String>,
 }
@@ -410,6 +410,17 @@ pub struct SentMessageEvent {
 /// replayed when `set_entity_dispatcher` is called.
 pub fn notify_sent_message(event: SentMessageEvent) {
     dispatch_or_buffer(EntityEvent::SentMessage(event));
+}
+
+static ACTOR_STATUS_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a globally unique ActorStatusEvent ID.
+///
+/// Combines the actor's unique ID with a process-local sequence number,
+/// then hashes the pair to produce an ID that is unique across processes.
+pub fn generate_actor_status_event_id(actor_id: u64) -> u64 {
+    let seq = ACTOR_STATUS_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(actor_id, seq))
 }
 
 static SEND_SEQ: AtomicU64 = AtomicU64::new(1);

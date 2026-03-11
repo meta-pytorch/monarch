@@ -69,14 +69,14 @@ pub struct Mesh {
 /// Logged when actors change status.
 #[derive(RecordBatchRow)]
 pub struct ActorStatusEvent {
+    /// Unique identifier for this event
+    pub id: u64,
     /// Timestamp in microseconds since Unix epoch
     pub timestamp_us: i64,
-    /// Actor ID as a string
-    pub actor_id: String,
-    /// New status name (e.g. "Created", "Idle", "Failed")
+    /// ID of the actor whose status changed
+    pub actor_id: u64,
+    /// New status value (e.g. "Created", "Idle", "Failed")
     pub new_status: String,
-    /// Previous status name
-    pub prev_status: String,
     /// Reason for the status change (e.g. error message for Failed)
     pub reason: Option<String>,
 }
@@ -261,10 +261,10 @@ impl EntityEventDispatcher for EntityDispatcher {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.actor_status_events_buffer.insert(ActorStatusEvent {
+                    id: status_event.id,
                     timestamp_us: timestamp_to_micros(&status_event.timestamp),
                     actor_id: status_event.actor_id,
                     new_status: status_event.new_status,
-                    prev_status: status_event.prev_status,
                     reason: status_event.reason,
                 });
                 inner.flush_actor_status_events_if_full()?;
