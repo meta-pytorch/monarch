@@ -52,14 +52,13 @@ use derive_more::TryInto;
 use device_mesh::DeviceMesh;
 use futures::future::try_join_all;
 use hyperactor::Actor;
-use hyperactor::ActorRef;
 use hyperactor::Bind;
 use hyperactor::Handler;
 use hyperactor::RemoteSpawn;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorHandle;
 use hyperactor::context;
-use hyperactor::reference::ActorId;
+use hyperactor::reference;
 use hyperactor_config::Flattrs;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use itertools::Itertools;
@@ -167,7 +166,7 @@ pub struct WorkerActor {
     rank: usize,
     borrows: HashMap<u64, Borrow>,
     comm: Option<ActorHandle<NcclCommActor>>,
-    controller_actor: ActorRef<ControllerActor>,
+    controller_actor: reference::ActorRef<ControllerActor>,
     /// Remember the process groups "created" via `CreateRemoteProcessGroup` for
     /// subsequent `CallFunction` calls, as this is where the actual allocation
     /// will happen.
@@ -694,7 +693,7 @@ impl WorkerMessageHandler for WorkerActor {
     async fn exit(
         &mut self,
         cx: &hyperactor::Context<Self>,
-        error: Option<(Option<ActorId>, String)>,
+        error: Option<(Option<reference::ActorId>, String)>,
     ) -> Result<()> {
         for (_, stream) in self.streams.drain() {
             stream.drain_and_stop("tensor worker exit cleanup")?;
