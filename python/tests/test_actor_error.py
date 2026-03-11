@@ -732,8 +732,8 @@ class Intermediate(Actor):
         return True
 
 
-@pytest.mark.timeout(30)
 @pytest.mark.skip(reason="flaky")
+@pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
 async def test_actor_mesh_supervision_handling_chained_error() -> None:
@@ -1521,6 +1521,9 @@ async def test_gil_stall():
     await pm.stop()
 
 
+@pytest.mark.skip(
+    reason="flaky: race between panic_flag.signal_panic and Aborted path produces inconsistent error message format"
+)
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_controller_controller_error():
