@@ -29,8 +29,6 @@ use hyperactor::actor::Referable;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::context;
 use hyperactor::mailbox::DialMailboxRouter;
 use hyperactor::mailbox::MailboxServer;
@@ -232,7 +230,7 @@ impl ProcMesh {
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
-                timestamp: RealClock.system_time_now(),
+                timestamp: std::time::SystemTime::now(),
                 class: "Proc".to_string(),
                 given_name: name.name().to_string(),
                 full_name: name_str,
@@ -243,7 +241,7 @@ impl ProcMesh {
 
             // Notify telemetry of each ProcAgent actor in this mesh.
             // These are skipped in Proc::spawn_inner. mesh_id directly points to proc mesh.
-            let now = RealClock.system_time_now();
+            let now = std::time::SystemTime::now();
             for rank in current_ref.ranks.iter() {
                 let actor_id = rank.agent.actor_id();
 
@@ -838,7 +836,7 @@ impl ProcMeshRef {
             // the agent will be unresponsive.
             // We handle this by setting a timeout on the recv, and if we don't get a
             // message we assume the agent is dead and return a failed state.
-            let state = RealClock.timeout(timeout, rx.recv()).await;
+            let state = tokio::time::timeout(timeout, rx.recv()).await;
             if let Ok(state) = state {
                 // Handle non-timeout receiver error.
                 let state = state?;
@@ -1101,7 +1099,7 @@ impl ProcMeshRef {
             },
         )?;
 
-        let start_time = RealClock.now();
+        let start_time = tokio::time::Instant::now();
 
         // Wait for all ranks to report a terminal or running status.
         // If any proc reports a failure (via supervision) or the mesh
@@ -1188,7 +1186,7 @@ impl ProcMeshRef {
 
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
-                timestamp: RealClock.system_time_now(),
+                timestamp: std::time::SystemTime::now(),
                 class: actor_type,
                 given_name: mesh.name().name().to_string(),
                 full_name: name_str,
@@ -1200,7 +1198,7 @@ impl ProcMeshRef {
             // Notify telemetry of each actor in this mesh. The rank is
             // the actor's position within the actor mesh (not the proc's
             // create_rank, which reflects the original unsliced mesh).
-            let now = RealClock.system_time_now();
+            let now = std::time::SystemTime::now();
             for (rank, proc_ref) in self.ranks.iter().enumerate() {
                 let display_name = supervision_display_name.as_ref().map(|sdn| {
                     let point = self.region().extent().point_of_rank(rank).unwrap();
@@ -1290,7 +1288,7 @@ impl ProcMeshRef {
                 reply: port.bind(),
             },
         )?;
-        let start_time = RealClock.now();
+        let start_time = tokio::time::Instant::now();
 
         // Reuse actor spawn idle time.
         let max_idle_time = hyperactor_config::global::get(ACTOR_SPAWN_MAX_IDLE);
@@ -1413,7 +1411,7 @@ mod tests {
     }
 
     async fn execute_spawn_actor() {
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let instance = testing::instance();
 
@@ -1478,7 +1476,7 @@ mod tests {
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
 
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
         let instance = testing::instance();
         let session_id = instance.sequencer().session_id();
 
@@ -1521,7 +1519,7 @@ mod tests {
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
 
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
         let session_id = instance.sequencer().session_id();
@@ -1577,7 +1575,7 @@ mod tests {
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
         let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
 
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging_for_test();
 
         let instance = testing::instance();
         let (first_instance, _) = instance.proc().instance("first_client_ds").unwrap();
@@ -1608,7 +1606,7 @@ mod tests {
     #[tokio::test]
     #[cfg(fbcode_build)]
     async fn test_failing_spawn_actor() {
-        hyperactor_telemetry::initialize_logging(hyperactor::clock::ClockKind::default());
+        hyperactor_telemetry::initialize_logging(hyperactor_telemetry::DefaultTelemetryClock {});
 
         let instance = testing::instance();
 

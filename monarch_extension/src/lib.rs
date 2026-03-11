@@ -17,7 +17,6 @@ pub mod convert;
 mod debugger;
 #[cfg(feature = "tensor_engine")]
 mod mesh_controller;
-mod simulation_tools;
 #[cfg(feature = "tensor_engine")]
 mod tensor_worker;
 
@@ -122,10 +121,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         )?)?;
         monarch_rdma_extension::register_python_bindings(&get_or_add_new_module(module, "rdma")?)?;
     }
-    simulation_tools::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_extension.simulation_tools",
-    )?)?;
     monarch_hyperactor::bootstrap::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_hyperactor.bootstrap",

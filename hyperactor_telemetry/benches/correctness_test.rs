@@ -17,9 +17,8 @@
 //! Usage:
 //!   buck2 run //monarch/hyperactor_telemetry:correctness_test
 
-#![allow(clippy::disallowed_methods)] // don't want to take a dependency on `hyperactor`` just for `hyperactor::clock::Clock`
-
 use std::collections::HashSet;
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -273,7 +272,7 @@ impl CorrectnessTestHarness {
         Ok(())
     }
 
-    fn compare_sqlite_databases(&self, old_db: &PathBuf, unified_db: &PathBuf) -> Result<()> {
+    fn compare_sqlite_databases(&self, old_db: &Path, unified_db: &Path) -> Result<()> {
         println!("\n[Comparing SQLite Databases]");
         println!("  Old: {}", old_db.display());
         println!("  Unified: {}", unified_db.display());

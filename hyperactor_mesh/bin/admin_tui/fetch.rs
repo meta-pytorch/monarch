@@ -12,8 +12,6 @@ use std::future::Future;
 use std::pin::Pin;
 
 use algebra::JoinSemilattice;
-use hyperactor::clock::Clock;
-use hyperactor::clock::RealClock;
 use hyperactor::introspect::NodePayload;
 use hyperactor::introspect::NodeProperties;
 
@@ -27,7 +25,7 @@ use crate::model::TreeNode;
 
 /// Monotonic ordering key for fetch results.
 ///
-/// `ts_micros` comes from wall-clock time (RealClock) and `seq`
+/// `ts_micros` comes from wall-clock time and `seq`
 /// breaks ties to ensure a total order within this process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Stamp {
@@ -138,8 +136,7 @@ pub(crate) async fn fetch_with_join(
     if should_fetch {
         // Generate stamp.
         *seq_counter += 1;
-        let ts_micros = RealClock
-            .system_time_now()
+        let ts_micros = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
