@@ -109,6 +109,7 @@ pub use actor::Actor;
 pub use actor::ActorHandle;
 pub use actor::Handler;
 pub use actor::HandlerInfo;
+pub use actor::ReceiverPollExt;
 pub use actor::RemoteHandles;
 pub use actor::RemoteSpawn;
 pub use actor_local::ActorLocal;

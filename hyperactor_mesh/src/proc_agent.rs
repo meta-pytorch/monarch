@@ -14,6 +14,7 @@
 // the suppression must be at module scope.
 #![allow(unused_assignments)]
 
+
 use std::collections::HashMap;
 use std::mem::take;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use hyperactor::ActorHandle;
 use hyperactor::ActorId;
 use hyperactor::Bind;
 use hyperactor::Context;
+use hyperactor::ReceiverPollExt;
 use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -653,12 +655,10 @@ impl MeshAgentMessageHandler for ProcAgent {
         );
 
         let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
-            // IF YOU REMOVE THIS YIELD THEN repro_timeout.py WILL HANG
-            tokio::task::yield_now().await;
             match RealClock
                 .timeout(
                     tokio::time::Duration::from_millis(timeout_ms),
-                    status.wait_for(|state: &ActorStatus| state.is_terminal()),
+                    status.poll_for(|state: &ActorStatus| state.is_terminal()),
                 )
                 .await
             {

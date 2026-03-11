@@ -32,6 +32,55 @@ use tokio::task::JoinHandle;
 use typeuri::Named;
 
 use crate as hyperactor; // for macros
+
+/// Extension trait for [`watch::Receiver`] that adds [`ReceiverPollExt::poll_for`],
+/// a drop-in replacement for [`watch::Receiver::wait_for`].
+///
+/// `wait_for` relies on the watch channel's waker notification to resume the
+/// caller. In some contexts this notification is not reliably delivered, causing
+/// an indefinite hang. `poll_for` has the same signature and return type as
+/// `wait_for` but avoids the issue by periodically sleeping and re-checking
+/// the condition rather than relying on wake notifications.
+pub trait ReceiverPollExt<T: 'static> {
+    /// Drop-in replacement for [`watch::Receiver::wait_for`].
+    ///
+    /// Polls `condition` every 1ms until it returns `true` or the sender is
+    /// dropped, returning the same `Result<Ref<'_, T>, RecvError>` as
+    /// `wait_for`. Timeout, if desired, should be applied externally (e.g. via
+    /// `RealClock.timeout(…, recv.poll_for(…))`), same as with `wait_for`.
+    async fn poll_for<F>(
+        &mut self,
+        f: F,
+    ) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
+    where
+        F: FnMut(&T) -> bool;
+}
+
+impl<T: Send + Sync + 'static> ReceiverPollExt<T> for watch::Receiver<T> {
+    async fn poll_for<F>(
+        &mut self,
+        mut f: F,
+    ) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
+    where
+        F: FnMut(&T) -> bool,
+    {
+        loop {
+            {
+                let val = self.borrow();
+                if f(&*val) {
+                    drop(val);
+                    return Ok(self.borrow());
+                }
+            }
+            // Return Err if the sender has been dropped (mirrors wait_for behavior).
+            if let Err(e) = self.has_changed() {
+                return Err(e);
+            }
+            #[allow(clippy::disallowed_methods)]
+            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        }
+    }
+}
 use crate::ActorRef;
 use crate::Data;
 use crate::Message;
@@ -740,7 +789,7 @@ impl<A: Actor> IntoFuture for ActorHandle<A> {
     fn into_future(self) -> Self::IntoFuture {
         let future = async move {
             let mut status_receiver = self.cell.status().clone();
-            let result = status_receiver.wait_for(ActorStatus::is_terminal).await;
+            let result = status_receiver.poll_for(ActorStatus::is_terminal).await;
             match result {
                 Err(_) => ActorStatus::Unknown,
                 Ok(status) => status.clone(),
