@@ -86,7 +86,6 @@ pub struct ActorStatusEvent {
 /// Row data for the sent_messages table.
 ///
 /// Tracks messages from the perspective of the sending actor.
-/// Logged from send (cast or point-to-point).
 #[derive(RecordBatchRow)]
 pub struct SentMessage {
     /// Unique identifier for this sent message record
