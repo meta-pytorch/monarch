@@ -281,9 +281,9 @@ QUERIES = [
     # Actor status events joined with actors
     (
         "Actor status timeline",
-        """SELECT a.full_name, s.new_status, s.prev_status, s.reason
+        """SELECT a.full_name, s.new_status, s.reason
            FROM actor_status_events s
-           JOIN actors a ON s.actor_id = a.full_name
+           JOIN actors a ON s.actor_id = a.id
            ORDER BY s.timestamp_us""",
     ),
     (
