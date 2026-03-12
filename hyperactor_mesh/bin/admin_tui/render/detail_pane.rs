@@ -8,11 +8,11 @@
 
 use std::str::FromStr;
 
-use hyperactor::introspect::FailureInfo;
-use hyperactor::introspect::NodePayload;
-use hyperactor::introspect::NodeProperties;
 use hyperactor::introspect::RecordedEvent;
 use hyperactor::reference as hyperactor_reference;
+use hyperactor_mesh::introspect::FailureInfo;
+use hyperactor_mesh::introspect::NodePayload;
+use hyperactor_mesh::introspect::NodeProperties;
 use ratatui::layout::Constraint;
 use ratatui::layout::Direction;
 use ratatui::layout::Layout;

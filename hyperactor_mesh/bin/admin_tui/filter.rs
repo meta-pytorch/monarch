@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::introspect::NodeProperties;
+use hyperactor_mesh::introspect::NodeProperties;
 
 /// Returns true if the node's actor status indicates it has stopped or failed.
 pub(crate) fn is_stopped_node(properties: &NodeProperties) -> bool {
@@ -47,7 +47,7 @@ pub(crate) fn is_system_node(properties: &NodeProperties) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::introspect::FailureInfo;
+    use hyperactor_mesh::introspect::FailureInfo;
 
     use super::*;
 
