@@ -39,6 +39,14 @@
 //!                  └───▶  proc *,3  │
 //!                    #3└────────────┘
 //! ```
+//!
+//! ## Local proc invariant (LP-*)
+//!
+//! - **LP-1 (lazy activation):** The local proc always exists as a
+//!   `ProcId::Direct(addr, LOCAL_PROC_NAME)` and is forwarded
+//!   in-process by the host's mailbox muxer. However it starts with
+//!   zero actors. A `ProcAgent` and root client actor are added only
+//!   when `HostMeshAgent::handle(GetLocalProc)` is first called.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -89,16 +97,7 @@ pub const SERVICE_PROC_NAME: &str = "service";
 
 /// Name of the local client proc on a host.
 ///
-/// # Invariant LP-1 — Local proc lazy activation
-///
-/// The local proc always exists as a `ProcId::Direct(addr,
-/// LOCAL_PROC_NAME)` and is forwarded in-process by the host's mailbox
-/// muxer. However it starts with zero actors. A `ProcAgent` and root
-/// client actor are added only when
-/// `HostMeshAgent::handle(GetLocalProc)` is first called — which
-/// happens exactly once, lazily, via
-/// `monarch_hyperactor::bootstrap_host` (the Rust entry-point for
-/// Python's `this_proc()` / `this_host()`).
+/// See LP-1 (lazy activation) in module doc.
 ///
 /// In pure-Rust programs (e.g. sieve, dining_philosophers)
 /// `GetLocalProc` is never sent, so the local proc remains empty

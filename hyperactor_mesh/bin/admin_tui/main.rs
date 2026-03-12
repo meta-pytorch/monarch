@@ -18,86 +18,72 @@
 //! This TUI is intentionally structured around three algebraic
 //! invariants to make behavior correct by construction:
 //!
-//! 1. **Join-semilattice cache**: all fetch results merge via
+//! 1. **TUI-1 (join-semilattice):** All fetch results merge via
 //!    `FetchState::join`, guaranteeing commutativity, associativity,
 //!    and idempotence under retries and reordering.
-//! 2. **Cursor laws**: selection is managed by `Cursor`, which
+//! 2. **TUI-2 (cursor-bounds):** Selection is managed by `Cursor`, which
 //!    enforces the invariant `pos < len` (or `pos == 0` when empty).
-//! 3. **Tree as structural recursion**: the mesh topology is stored
+//! 3. **TUI-3 (tree-recursion):** The mesh topology is stored
 //!    as an explicit tree (`TreeNode { children }`) and rendered via
 //!    a pure projection (`flatten_tree`), avoiding ad-hoc list
 //!    surgery.
 //!
 //! Additional invariants enforced throughout the code:
-//! - **Single fetch+join path**: all cache writes go through
+//!
+//! - **TUI-4 (failed-always-visible):** Failed nodes are always
+//!   visible regardless of the `show_stopped` toggle.
+//! - **TUI-5 (single-fetch-path):** All cache writes go through
 //!   `fetch_with_join` (no direct inserts).
-//! - **Refresh staleness**: `FetchState::Ready` with `generation <
-//!   refresh_gen` is refetched; errors always retry.
-//! - **Synthetic root**: the root node is synthetic and always
-//!   expanded; only its children are rendered at depth 0.
-//! - **Cycle safety**: tree building rejects only true cycles (nodes
-//!   that appear in their own ancestor path).
-//! - **Depth cap**: recursion is bounded by `MAX_TREE_DEPTH`.
-//!   This limits traversal to Root→Host→Proc→Actor→ChildActor, keeps
-//!   stack depth small, and avoids runaway fetches on deep graphs.
-//! - **Tree-structure traversal via folds**: walks over the `TreeNode`
-//!   structure use fold abstractions (`fold_tree`, `fold_tree_mut`, or
-//!   `fold_tree_mut_with_depth`), not bespoke recursion. The flattened
-//!   row list (`VisibleRows`) is iterated directly for rendering and
-//!   event handling.
-//! - **Selection semantics**: cursor restoration prefers
-//!   `(reference, depth)` to disambiguate duplicate references, and
-//!   falls back to reference-only matching if depth changes (e.g.,
-//!   parent expanded/collapsed between refreshes).
-//! - **Concurrency model**: HTTP fetches are scheduled serially
-//!   through the event loop; in-flight requests are not explicitly
-//!   cancelled or serialized, so slow responses may overlap. Join
-//!   semantics handle retries and reordering.
-//! - **Stopped detection is actor-only and prefix-based**:
-//!   `is_stopped_node` matches `Actor` variants whose `actor_status`
-//!   starts with `"stopped:"` or `"failed:"`. All other variants
-//!   return false.
-//! - **Stopped filtering is dual-source (OR)**: `TreeNode.stopped`
-//!   is true if the cached payload is stopped OR the child ref
-//!   appears in the parent proc's `stopped_children` list. Either
-//!   source alone is sufficient.
-//! - **Filter order: system before stopped**: when both filters are
-//!   off, system membership is checked first. A node that is both
-//!   system and stopped is eliminated by the system check.
-//! - **Placeholder structural equivalence**: `placeholder_stopped`
-//!   is identical to `placeholder` except `stopped: true`. Stopped
-//!   is a rendering hint, not an expansion barrier.
-//! - **Failure propagation is upward and live**: a node's `failed`
-//!   flag is `is_failed_node(payload) || children.any(failed)`.
-//!   Host and root nodes have no intrinsic failure state — they
-//!   are failed only when a descendant is.
-//! - **Collapsed failure carry-forward**: when a node is collapsed,
-//!   its children are not fetched, so failure cannot be recomputed
-//!   from descendants. The prior `failed` state is carried forward
-//!   via `failed_keys` (mirroring `expanded_keys`). Expanded nodes
-//!   always recompute from live children. Consequence: a collapsed
-//!   node may remain red after recovery until expanded.
-//! - **System actor styling is dual-source (OR)**: `TreeNode.is_system`
-//!   is true if the cached payload reports `is_system: true` OR the
-//!   child ref appears in the parent's `system_children` list.
-//!   System actors render Blue; style precedence is
-//!   selected > stopped > system > node-type.
-//! - **Proc actor accounting**: displayed total is `num_actors +
-//!   stopped_children.len()`. `num_actors` counts only live actors.
-//!   `"(max retained)"` appears iff `stopped_retention_cap > 0` and
-//!   `stopped_children.len() >= stopped_retention_cap`.
+//! - **TUI-6 (refresh-staleness):** `FetchState::Ready` with
+//!   `generation < refresh_gen` is refetched; errors always retry.
+//! - **TUI-7 (synthetic-root):** The root node is synthetic and
+//!   always expanded; only its children are rendered at depth 0.
+//! - **TUI-8 (cycle-safety):** Tree building rejects only true
+//!   cycles (nodes that appear in their own ancestor path).
+//! - **TUI-9 (depth-cap):** Recursion is bounded by
+//!   `MAX_TREE_DEPTH` (Root→Host→Proc→Actor→ChildActor).
+//! - **TUI-10 (fold-traversal):** Walks over `TreeNode` use fold
+//!   abstractions, not bespoke recursion.
+//! - **TUI-11 (selection-semantics):** Cursor restoration prefers
+//!   `(reference, depth)` to disambiguate; falls back to
+//!   reference-only if depth changes.
+//! - **TUI-12 (serial-fetches):** HTTP fetches are scheduled
+//!   serially; join semantics handle retries and reordering.
+//! - **TUI-13 (stopped-detection):** `is_stopped_node` matches
+//!   `Actor` variants whose `actor_status` starts with `"stopped:"`
+//!   or `"failed:"`. All other variants return false.
+//! - **TUI-14 (stopped-dual-source):** `TreeNode.stopped` is true
+//!   if the cached payload is stopped OR the child ref appears in
+//!   the parent proc's `stopped_children` list.
+//! - **TUI-15 (filter-order):** When both filters are off, system
+//!   membership is checked first.
+//! - **TUI-16 (placeholder-equivalence):** `placeholder_stopped` is
+//!   identical to `placeholder` except `stopped: true`.
+//! - **TUI-17 (failure-propagation):** A node's `failed` flag is
+//!   `is_failed_node(payload) || children.any(failed)`. Host/root
+//!   nodes are failed only when a descendant is.
+//! - **TUI-18 (collapsed-failure-carry):** When collapsed, prior
+//!   `failed` state is carried forward via `failed_keys`. Expanded
+//!   nodes always recompute from live children.
+//! - **TUI-19 (system-dual-source):** `TreeNode.is_system` is true
+//!   if `is_system: true` in payload OR child ref in parent's
+//!   `system_children`. Style precedence: selected > stopped >
+//!   system > node-type.
+//! - **TUI-20 (proc-accounting):** Displayed total is `num_actors +
+//!   stopped_children.len()`. `"(max retained)"` appears iff cap
+//!   reached.
 //!
 //! TLS and transport invariants:
-//! - **TLS auto-detection (client)**: `client::build_client` probes
-//!   for TLS material in priority order: explicit CLI paths (`--tls-ca`,
-//!   `--tls-cert`, `--tls-key`) → `hyperactor::channel::try_tls_pem_bundle`
-//!   (OSS config attrs, then Meta well-known paths) → plain HTTP fallback.
-//! - **Pre-built client injection**: `App::new` receives a pre-built
+//!
+//! - **TUI-T1 (tls-auto-detect):** `client::build_client` probes
+//!   for TLS material in priority order: explicit CLI paths →
+//!   `try_tls_pem_bundle` → plain HTTP fallback.
+//! - **TUI-T2 (prebuilt-client):** `App::new` receives a pre-built
 //!   `reqwest::Client` and `base_url` (including scheme). TLS
 //!   configuration is external to the app state.
-//! - **Scheme-inclusive base URL**: `base_url` always starts with
-//!   `http://` or `https://`; bare `host:port` addresses are resolved
-//!   to a scheme during client construction, never stored schemeless.
+//! - **TUI-T3 (scheme-inclusive-url):** `base_url` always starts
+//!   with `http://` or `https://`; bare `host:port` is resolved to
+//!   a scheme during client construction, never stored schemeless.
 //!
 //! Laziness + recursion benefits:
 //! - **Lazy expansion**: proc/actor children are placeholders until
@@ -149,9 +135,9 @@ pub(crate) use filter::*;
 pub(crate) use format::*;
 // Re-exports so #[cfg(test)] mod tests can use `use super::*`.
 #[allow(unused_imports)]
-pub(crate) use hyperactor::introspect::NodePayload;
+pub(crate) use hyperactor_mesh::introspect::NodePayload;
 #[allow(unused_imports)]
-pub(crate) use hyperactor::introspect::NodeProperties;
+pub(crate) use hyperactor_mesh::introspect::NodeProperties;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 pub(crate) use model::*;
@@ -256,7 +242,7 @@ async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
     let mut args = Args::parse();
 
     // Resolve mast_conda:/// handles to https://fqdn:port before
-    // building the HTTP client (INV-DISPATCH).
+    // building the HTTP client (MR-1).
     if args.addr.starts_with("mast_conda:///") {
         let resolver = client::MastResolver::new(fb, args.mast_resolver.as_deref());
         args.addr = client::resolve_mast_addr(&resolver, &args.addr, args.admin_port).await;

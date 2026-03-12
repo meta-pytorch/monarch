@@ -6,6 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// Invariants:
+//
+// - **TR-1 (fold-result-safety):** In `fold_tree` and
+//   `fold_tree_with_depth`, `result` is only set when the
+//   callback returns `Break`. This guarantees the `unwrap()`
+//   on `result` after the loop is safe.
+
 use std::collections::HashSet;
 
 use crate::model::FlatRow;
@@ -137,7 +144,7 @@ pub(crate) fn find_node_mut<'a>(
             ControlFlow::Continue(())
         }
     });
-    // Safety invariant: result is only set when we Break
+    // TR-1 (fold-result-safety): result is only set when we Break
     debug_assert_eq!(result.is_some(), flow.is_break());
     // SAFETY: The pointer came from a live `&mut TreeNode` obtained during
     // fold_tree_mut, which visits each node exactly once and we
@@ -176,7 +183,7 @@ pub(crate) fn find_node_at_depth_mut<'a>(
         }
         ControlFlow::Continue(())
     });
-    // Safety invariant: result is only set when we Break
+    // TR-1 (fold-result-safety): result is only set when we Break
     debug_assert_eq!(result.is_some(), flow.is_break());
     // SAFETY: The pointer came from a live `&mut TreeNode` obtained during
     // fold_tree_mut_with_depth, which visits each node exactly once and we
