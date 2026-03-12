@@ -343,10 +343,23 @@ impl Actor for HostAgent {
 
             match proc {
                 Some((proc, label)) => {
-                    let all_ids = proc.all_actor_ids();
-                    let mut actors = Vec::with_capacity(all_ids.len());
+                    // Use all_instance_keys() instead of
+                    // all_actor_ids() to avoid holding DashMap shard
+                    // read locks while doing Weak::upgrade() +
+                    // watch::borrow() + is_terminal() per entry.
+                    // Under rapid actor churn the per-entry work in
+                    // all_actor_ids() causes convoy starvation with
+                    // concurrent insert/remove operations, stalling
+                    // the spawn/exit path. all_instance_keys() just
+                    // clones keys — microseconds per shard. The
+                    // is_system check uses individual point lookups
+                    // outside the iteration. Stale keys (terminal
+                    // actors) may appear but are harmless — the TUI
+                    // handles "not found" gracefully.
+                    let all_keys = proc.all_instance_keys();
+                    let mut actors = Vec::with_capacity(all_keys.len());
                     let mut system_actors = Vec::new();
-                    for id in all_ids {
+                    for id in all_keys {
                         let ref_str = id.to_string();
                         if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
                             system_actors.push(ref_str.clone());
