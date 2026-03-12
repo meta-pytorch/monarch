@@ -492,11 +492,11 @@ impl<A: Referable> ActorMeshRef<A> {
             for (point, actor) in self.iter() {
                 let create_rank = point.rank();
                 let mut headers = Flattrs::new();
-                headers.set(
-                    multicast::CAST_ORIGINATING_SENDER,
+                multicast::set_cast_info_on_headers(
+                    &mut headers,
+                    point,
                     cx.instance().self_id().clone(),
                 );
-                headers.set(multicast::CAST_POINT, point);
 
                 // Make sure that we re-bind ranks, as these may be used for
                 // bootstrapping comm actors.
