@@ -700,7 +700,7 @@ impl Proc {
                 async move {
                     tokio::time::timeout(
                         timeout,
-                        root.wait_for(|state: &ActorStatus| state.is_terminal()),
+                        ActorStatus::wait_for_terminal(root),
                     )
                     .await
                     .ok()
