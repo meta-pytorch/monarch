@@ -23,17 +23,6 @@
 //! - **CI-2 (snapshot on drop):** Dropping the returned `Instance<()>`
 //!   transitions its status to terminal, causing the introspect task
 //!   to store a terminated snapshot.
-//!
-//! ## Actor identity invariants (AI-*)
-//!
-//! - **AI-1 (named-child pid):** The pid of a named child must
-//!   remain in the parent's sibling pid domain. The name is
-//!   presentation only; the numeric pid is allocated from the
-//!   parent's counter, preserving supervision linkage.
-//! - **AI-3 (controller ActorId uniqueness):** Callers must ensure
-//!   the name is unique proc-wide. Two children with the same name
-//!   under different parents get distinct pids but the same name
-//!   prefix.
 
 use std::any::Any;
 use std::any::TypeId;
@@ -454,13 +443,6 @@ impl Proc {
     }
 
     /// Traverse all actor trees in this proc, starting from root actors (pid=0).
-    ///
-    /// **Caution:** This holds DashMap shard read locks while doing
-    /// `Weak::upgrade()` and recursively walking the actor tree per
-    /// entry. Under rapid actor churn, this causes convoy starvation
-    /// with concurrent `insert`/`remove` operations. Prefer
-    /// `all_instance_keys()` with point lookups if you only need
-    /// actor IDs. Currently unused in production code.
     pub fn traverse<F>(&self, f: &mut F)
     where
         F: FnMut(&InstanceCell, usize),
@@ -483,13 +465,6 @@ impl Proc {
     }
 
     /// Returns the ActorIds of all root actors (pid=0) in this proc.
-    ///
-    /// **Caution:** This iterates the full DashMap under shard read
-    /// locks. The per-entry work is lightweight (key filter + clone),
-    /// but under very rapid churn the iteration can still contend
-    /// with concurrent writes. Prefer `all_instance_keys()` with a
-    /// post-filter if this becomes a hot path. Currently unused in
-    /// production code.
     pub fn root_actor_ids(&self) -> Vec<reference::ActorId> {
         self.state()
             .instances
@@ -868,8 +843,26 @@ impl Proc {
 
     /// Allocate an actor ID with a custom name on this proc.
     ///
-    /// See AI-1 (named-child pid) and AI-3 (controller ActorId
-    /// uniqueness) in module doc.
+    /// **AI-1 (named-child pid):** The pid of a named child must
+    /// remain in the parent's sibling pid domain (allocated via the
+    /// parent's counter in `roots`). The name field is presentation
+    /// /identity flavor only — it does not affect pid allocation,
+    /// supervision linkage, or the parent's `children` DashMap keying.
+    /// Violating this (e.g. allocating pids from a separate per-name
+    /// counter) causes sibling pid collisions in the parent's
+    /// `children: DashMap<Index, InstanceCell>`.
+    ///
+    /// Named children use plain infrastructure-style strings (e.g.
+    /// `"actor_mesh_controller"`), not the mesh `Name` system with
+    /// `ShortUuid` suffixes.
+    ///
+    /// **AI-3 (controller ActorId uniqueness):** Callers must ensure
+    /// `name` is unique proc-wide, not just unique within the parent.
+    /// Pid allocation is parent-scoped, so a fixed `name` across
+    /// different parents produces duplicate `(proc_id, name, pid)`
+    /// tuples. Controller actors include mesh identity in the name
+    /// to satisfy this (see spawn sites in `proc_mesh.rs` /
+    /// `host_mesh.rs`).
     pub(crate) fn allocate_named_child_id(
         &self,
         parent_id: &reference::ActorId,
@@ -2142,8 +2135,11 @@ struct InstanceCellState {
         Option<Box<dyn (Fn(&crate::reference::Reference) -> IntrospectResult) + Send + Sync>>,
     >,
 
-    /// The supervision event for this actor's failure, if any.
-    /// See FI-1, FI-2 in `introspect` module doc.
+    /// The supervision event produced when this actor failed, if any.
+    /// Written in `serve()` BEFORE `change_status()` transitions to
+    /// terminal, so that `serve_introspect` sees it when
+    /// `wait_for(is_terminal)` fires. `None` for actors that stopped
+    /// cleanly. Write-once per actor lifetime (FI-2).
     supervision_event: std::sync::Mutex<Option<crate::supervision::ActorSupervisionEvent>>,
 
     /// Whether this actor is infrastructure/system (hidden by default
@@ -3845,7 +3841,7 @@ mod tests {
         );
     }
 
-    // Exercises FI-3 (see introspect module doc).
+    // FI-3: terminated snapshot for a failed actor has failure_info.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_terminated_snapshot_has_failure_info() {
         let proc = Proc::local();
@@ -3889,7 +3885,7 @@ mod tests {
         );
     }
 
-    // Exercises FI-4 (see introspect module doc).
+    // FI-4: propagated failure has root_cause pointing to child.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_propagated_failure_info() {
         let proc = Proc::local();
@@ -3925,7 +3921,8 @@ mod tests {
         );
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: name is presentation only, pid
+    /// comes from parent's counter.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_creates_descriptive_name() {
         let proc = Proc::local();
@@ -3937,7 +3934,8 @@ mod tests {
         assert_eq!(handle.actor_id().pid(), 1);
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: same-name children increment from
+    /// parent's counter.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_increments_index() {
         let proc = Proc::local();
@@ -3952,7 +3950,7 @@ mod tests {
         assert_eq!(second.actor_id().pid(), 2);
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: named children preserve supervision linkage to parent.
     /// spawn_named_child passes Some(parent) to spawn_inner.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_preserves_supervision() {
@@ -3966,7 +3964,8 @@ mod tests {
         assert_eq!(parent.actor_id(), root.actor_id());
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: existing spawn path is unaffected — unnamed children
+    /// still inherit the parent's name.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_unchanged() {
         let proc = Proc::local();
@@ -3975,7 +3974,8 @@ mod tests {
         assert_eq!(child.actor_id().name(), root.actor_id().name());
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: named children with different names
+    /// still get unique pids from the parent's counter.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_different_names_different_pids() {
         let proc = Proc::local();
@@ -3991,7 +3991,8 @@ mod tests {
         assert_eq!(b.actor_id().name(), "controller_b");
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: no DashMap overwrite — all children
+    /// visible via parent child_count().
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_no_child_overwrite() {
         let proc = Proc::local();
@@ -4006,7 +4007,8 @@ mod tests {
         assert_eq!(root.cell().child_count(), 3);
     }
 
-    /// Exercises AI-1 (see module doc).
+    /// AI-1: named children do not pollute the roots map — a root
+    /// actor with a different name can still be spawned.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_spawn_with_name_does_not_pollute_roots() {
         let proc = Proc::local();
@@ -4020,7 +4022,9 @@ mod tests {
         assert!(result.is_ok(), "named child should not pollute roots");
     }
 
-    /// Exercises AI-3 (see module doc).
+    /// AI-3: named children with the same fixed name under different
+    /// parents produce duplicate ActorIds. Controller names must
+    /// include mesh identity to stay unique proc-wide.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_controller_actor_ids_unique_across_parents_same_proc() {
         let proc = Proc::local();
@@ -4042,7 +4046,8 @@ mod tests {
         );
     }
 
-    /// Exercises AI-3 (see module doc).
+    /// AI-3: both controllers remain resolvable after spawn — no
+    /// silent overwrite in proc instance maps.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_ai3_no_controller_overwrite_in_parent_or_proc_maps() {
         let proc = Proc::local();
@@ -4070,7 +4075,7 @@ mod tests {
         assert_eq!(parent_b.cell().child_count(), 1);
     }
 
-    // Exercises FI-6 (see introspect module doc).
+    // FI-6: cleanly stopped actor has no failure_info.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_stopped_snapshot_has_no_failure_info() {
         let proc = Proc::local();

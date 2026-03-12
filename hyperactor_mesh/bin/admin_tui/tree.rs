@@ -6,12 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Invariants:
-//!
-//! - **TR-1 (fold-result-safety):** In `fold_tree` and
-//!   `fold_tree_with_depth`, `result` is only set when the
-//!   callback returns `Break`. This guarantees the `unwrap()`
-//!   on `result` after the loop is safe.
+// Invariants:
+//
+// - **TR-1 (fold-result-safety):** In `fold_tree` and
+//   `fold_tree_with_depth`, `result` is only set when the
+//   callback returns `Break`. This guarantees the `unwrap()`
+//   on `result` after the loop is safe.
 
 use std::collections::HashSet;
 
