@@ -26,6 +26,15 @@ declare_attrs! {
 
     /// The rust type of the message.
     pub attr RUST_MESSAGE_TYPE: String;
+
+    /// Hashed ActorId of the message sender, injected in post_unchecked().
+    pub attr SENDER_ACTOR_ID_HASH: u64;
+
+    /// Telemetry message ID for correlating lifecycle events, injected in post_unchecked().
+    pub attr TELEMETRY_MESSAGE_ID: u64;
+
+    /// Port index the message was delivered to, injected in post_unchecked().
+    pub attr TELEMETRY_PORT_ID: u64;
 }
 
 /// Set the send timestamp for latency tracking if timestamp not already set.

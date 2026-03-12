@@ -208,7 +208,7 @@ def create_local_host_mesh(
     if env is not None:
         bootstrap_env.update(env)
 
-    return HostMesh.allocate_nonblocking(
+    return HostMesh._allocate_nonblocking(
         "local_host",
         extent if extent is not None else Extent([], []),
         ProcessAllocator(cmd, args, bootstrap_env),
@@ -218,7 +218,7 @@ def create_local_host_mesh(
 
 - `_get_bootstrap_args()` = "what command/env do we use to start a hyperactor proc?"
 - we wrap that in a `ProcessAllocator(...)`
-- we tell the Rust side to `allocate_nonblocking(...)` a v1 HostMesh using that allocator.
+- we tell the Rust side to `_allocate_nonblocking(...)` a v1 HostMesh using that allocator.
 
 ## 2. Hand-off to Rust
 

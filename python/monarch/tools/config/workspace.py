@@ -23,7 +23,7 @@ class Workspace:
     At the time of job submission an ephemeral version of the "image" is built and the
     new job is configured to run on this image. The "image" is the one specified by
     `Role.image` attribute in the job's `AppDef`
-    (see `monarch.tools.components.hyperactor.host_mesh()`).
+    (see `monarch.tools.components.hyperactor._host_mesh()`).
 
     For example when launching onto Kubernetes, "image" is interpreted as a Docker image (e.g. "name:tag")
 
