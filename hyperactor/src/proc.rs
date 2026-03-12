@@ -40,7 +40,11 @@ use dashmap::mapref::multiple::RefMulti;
 use futures::FutureExt;
 use hyperactor_config::Flattrs;
 use hyperactor_telemetry::ActorStatusEvent;
+use hyperactor_telemetry::generate_actor_status_event_id;
+use hyperactor_telemetry::hash_to_u64;
 use hyperactor_telemetry::notify_actor_status_changed;
+use hyperactor_telemetry::notify_message;
+use hyperactor_telemetry::notify_message_status;
 use hyperactor_telemetry::recorder::Recording;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
@@ -1175,11 +1179,12 @@ impl<A: Actor> Instance<A> {
                 caller = %Location::caller(),
                 change_reason,
             );
+            let actor_id = hash_to_u64(self.self_id());
             notify_actor_status_changed(ActorStatusEvent {
-                actor_id: self.self_id().to_string(),
+                id: generate_actor_status_event_id(actor_id),
                 timestamp: std::time::SystemTime::now(),
+                actor_id,
                 new_status: new_status.to_string(),
-                prev_status: old.arm().unwrap_or("Unknown").to_string(),
                 reason: if change_reason.is_empty() {
                     None
                 } else {
@@ -1770,15 +1775,40 @@ impl<A: Actor> Instance<A> {
     where
         A: Handler<M>,
     {
+        let now = std::time::SystemTime::now();
         let handler_info = Some(handler_info);
-        self.change_status(ActorStatus::Processing(
-            std::time::SystemTime::now(),
-            handler_info.clone(),
-        ));
+        self.change_status(ActorStatus::Processing(now, handler_info.clone()));
         crate::mailbox::headers::log_message_latency_if_sampling(
             &headers,
             self.self_id().to_string(),
         );
+
+        let message_id = headers.get(crate::mailbox::headers::TELEMETRY_MESSAGE_ID);
+
+        if let Some(message_id) = message_id {
+            let from_actor_id = headers
+                .get(crate::mailbox::headers::SENDER_ACTOR_ID_HASH)
+                .unwrap_or(0);
+            let to_actor_id = hash_to_u64(self.self_id());
+            let port_id = headers.get(crate::mailbox::headers::TELEMETRY_PORT_ID);
+
+            notify_message(hyperactor_telemetry::MessageEvent {
+                timestamp: now,
+                id: message_id,
+                from_actor_id,
+                to_actor_id,
+                // TODO: populate endpoint
+                endpoint: None,
+                port_id,
+            });
+
+            notify_message_status(hyperactor_telemetry::MessageStatusEvent {
+                timestamp: now,
+                id: hyperactor_telemetry::generate_status_event_id(message_id),
+                message_id,
+                status: "active".to_string(),
+            });
+        }
 
         // Record the message handler being invoked.
         *self.inner.cell.inner.last_message_handler.write().unwrap() = handler_info;
@@ -1798,6 +1828,16 @@ impl<A: Actor> Instance<A> {
             .inner
             .total_processing_time_us
             .fetch_add(elapsed_us, Ordering::SeqCst);
+
+        if let Some(message_id) = message_id {
+            notify_message_status(hyperactor_telemetry::MessageStatusEvent {
+                timestamp: std::time::SystemTime::now(),
+                id: hyperactor_telemetry::generate_status_event_id(message_id),
+                message_id,
+                status: "complete".to_string(),
+            });
+        }
+
         result
     }
 
