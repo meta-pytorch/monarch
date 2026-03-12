@@ -1542,7 +1542,7 @@ def test_controller_controller_error():
     # Make sure the error message includes what originally happened.
     with pytest.raises(
         ActorError,
-        match="Actor call actor_1.fail_with_supervision_error failed with BaseException",
+        match="Simulated actor failure for supervision testing",
     ):
         get_or_spawn_controller("actor_1", ErrorActor).get()
 
