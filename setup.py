@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 
 from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext
+from setuptools.command.build_py import build_py
 from setuptools.extension import Extension
 from setuptools_rust import Binding, RustExtension
 
@@ -265,6 +266,56 @@ rust_extensions.append(
 )
 
 
+# BuildFrontend command
+class BuildFrontend(Command):
+    """Build the React frontend for monarch_dashboard"""
+
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        frontend_dir = os.path.join(
+            os.path.dirname(__file__),
+            "python",
+            "monarch",
+            "monarch_dashboard",
+            "frontend",
+        )
+        build_dir = os.path.join(frontend_dir, "build")
+        build_index = os.path.join(build_dir, "index.html")
+
+        # Skip npm if pre-built assets already exist (e.g. from CI).
+        if os.path.isfile(build_index):
+            print(">> Pre-built frontend found, skipping npm build")
+            return
+
+        if not os.path.exists(frontend_dir):
+            print(f"Frontend directory not found: {frontend_dir}")
+            return
+
+        # Use real npm, bypassing any system wrappers
+        npm_cmd = "/usr/bin/npm" if os.path.exists("/usr/bin/npm") else "npm"
+
+        print("Building dashboard frontend...")
+        try:
+            subprocess.check_call([npm_cmd, "install"], cwd=frontend_dir)
+            subprocess.check_call([npm_cmd, "run", "build"], cwd=frontend_dir)
+            print("Frontend build completed successfully")
+        except FileNotFoundError:
+            print("WARNING: npm not found. Skipping frontend build.")
+            print(
+                "Install Node.js to build the dashboard frontend, "
+                "or use pre-built assets."
+            )
+        except subprocess.CalledProcessError as e:
+            print("Frontend build failed with error:", e)
+
+
 # Clean command
 class Clean(Command):
     user_options = []
@@ -298,6 +349,14 @@ class Clean(Command):
         subprocess.run(["cargo", "clean"])
 
 
+class BuildPyWithFrontend(build_py):
+    """Build the frontend before collecting package data."""
+
+    def run(self):
+        self.run_command("build_frontend")
+        build_py.run(self)
+
+
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
 package_version = os.environ.get("MONARCH_VERSION", "0.4.0.dev0")
@@ -308,7 +367,9 @@ setup(
     ext_modules=ext_modules,
     rust_extensions=rust_extensions,
     cmdclass={
+        "build_py": BuildPyWithFrontend,
         "build_ext": build_ext,
         "clean": Clean,
+        "build_frontend": BuildFrontend,
     },
 )
