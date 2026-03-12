@@ -6,6 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! ## Actor mesh invariants (AM-*)
+//!
+//! - **AM-1 (rank-space):** `proc_mesh` and any view derived from
+//!   it share the same dense rank space.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
@@ -477,40 +482,55 @@ impl<A: Referable> ActorMeshRef<A> {
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
             if casting::v1_casting_enabled() {
-                self.cast_v1(cx, message, root_comm_actor);
-                Ok(())
+                if Selection::is_equivalent_to_true(&sel) {
+                    self.cast_v1(cx, message, root_comm_actor);
+                    return Ok(());
+                }
+                // V1 does not support non-* selections yet; fall back to
+                // the iteration path below.
             } else {
-                self.cast_v0(cx, message, sel, root_comm_actor)
+                return self.cast_v0(cx, message, sel, root_comm_actor);
             }
-        } else {
-            for (point, actor) in self.iter() {
-                let create_rank = point.rank();
-                let mut headers = Flattrs::new();
-                multicast::set_cast_info_on_headers(
-                    &mut headers,
-                    point,
-                    cx.instance().self_id().clone(),
-                );
-
-                // Make sure that we re-bind ranks, as these may be used for
-                // bootstrapping comm actors.
-                let mut unbound = Unbound::try_from_message(message.clone())
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                unbound
-                    .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                        *rank = Some(create_rank);
-                        Ok(())
-                    })
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                let rebound_message = unbound
-                    .bind()
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                actor
-                    .send_with_headers(cx, headers, rebound_message)
-                    .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
-            }
-            Ok(())
         }
+
+        let selected_ranks: std::collections::HashSet<usize> = sel
+            .eval(
+                &ndslice::selection::EvalOpts::lenient(),
+                view::Ranked::region(self).slice(),
+            )
+            .map_err(|e| Error::CastingError(self.name.clone(), e.into()))?
+            .collect();
+
+        for (point, actor) in self.iter() {
+            if !selected_ranks.contains(&point.rank()) {
+                continue;
+            }
+            let create_rank = point.rank();
+            let mut headers = Flattrs::new();
+            multicast::set_cast_info_on_headers(
+                &mut headers,
+                point,
+                cx.instance().self_id().clone(),
+            );
+
+            // Make sure that we re-bind ranks, as these may be used for
+            // bootstrapping comm actors.
+            let mut unbound = Unbound::try_from_message(message.clone())
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            unbound
+                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+                    *rank = Some(create_rank);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            let rebound_message = unbound
+                .bind()
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            actor
+                .send_with_headers(cx, headers, rebound_message)
+                .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
@@ -708,8 +728,7 @@ impl<A: Referable> ActorMeshRef<A> {
         });
 
         Some(page.slots[local_ix].get_or_init(|| {
-            // Invariant: `proc_mesh` and this view share the same
-            // dense rank space:
+            // AM-1: see module doc.
             //   - ranks are contiguous [0, self.len()) with no gaps
             //     or reordering
             //   - for every rank r, `proc_mesh.get(r)` is Some(..)
@@ -1389,6 +1408,67 @@ mod tests {
             );
             assert_eq!(&sender_actor_id, instance.self_id());
         }
+
+        let _ = host_mesh.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast_with_selection_v1_fallback() {
+        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+        use hyperactor_mesh_macros::sel;
+        use ndslice::Selection;
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _v1 = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _reorder = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let instance = testing::instance();
+        let mut host_mesh = testing::host_mesh(4).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", Extent::unity())
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test", &()).await.unwrap();
+
+        // Cast with sel!(0:2) — should only reach hosts 0 and 1.
+        let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
+        actor_mesh
+            .cast_for_tensor_engine_only_do_not_use(
+                instance,
+                sel!(0:2),
+                testactor::GetCastInfo {
+                    cast_info: cast_info.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut received_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..2 {
+            let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
+            received_ranks.insert(point.rank());
+        }
+        assert_eq!(received_ranks, HashSet::from([0, 1]));
+
+        // Also cast with sel!(*) — all 4 should be reached via V1.
+        let (cast_info2, mut cast_info_rx2) = instance.mailbox().open_port();
+        actor_mesh
+            .cast(
+                instance,
+                testactor::GetCastInfo {
+                    cast_info: cast_info2.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut all_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..4 {
+            let (point, _actor_ref, _sender) = cast_info_rx2.recv().await.unwrap();
+            all_ranks.insert(point.rank());
+        }
+        assert_eq!(all_ranks, HashSet::from([0, 1, 2, 3]));
 
         let _ = host_mesh.shutdown(instance).await;
     }
