@@ -16,6 +16,7 @@ import unittest
 
 from monarch.monarch_dashboard.fake_data.generate import generate
 from monarch.monarch_dashboard.server.app import create_app
+from monarch.monarch_dashboard.server.db import SQLiteAdapter
 
 
 class _RouteTestBase(unittest.TestCase):
@@ -26,7 +27,7 @@ class _RouteTestBase(unittest.TestCase):
         cls._tmpdir = tempfile.mkdtemp()
         cls._db_path = os.path.join(cls._tmpdir, "test.db")
         generate(cls._db_path)
-        cls.app = create_app(cls._db_path)
+        cls.app = create_app(SQLiteAdapter(cls._db_path))
         cls.app.config["TESTING"] = True
         cls.client = cls.app.test_client()
 
