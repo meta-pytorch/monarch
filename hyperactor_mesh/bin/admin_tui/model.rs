@@ -6,8 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::introspect::NodePayload;
-use hyperactor::introspect::NodeProperties;
+use hyperactor_mesh::introspect::NodePayload;
+use hyperactor_mesh::introspect::NodeProperties;
 
 use crate::filter::is_failed_node;
 use crate::filter::is_stopped_node;
@@ -21,7 +21,7 @@ pub(crate) const MAX_TREE_DEPTH: usize = 4;
 
 /// Navigation cursor over a bounded list.
 ///
-/// Invariant: `pos < len` (or `pos == 0` when `len == 0`).
+/// See TUI-2 (cursor-bounds) in main.rs module doc.
 /// Movement methods return `true` when the position changes.
 #[derive(Debug, Clone)]
 pub(crate) struct Cursor {
@@ -333,9 +333,9 @@ impl<'a> VisibleRows<'a> {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::introspect::FailureInfo;
-    use hyperactor::introspect::NodePayload;
-    use hyperactor::introspect::NodeProperties;
+    use hyperactor_mesh::introspect::FailureInfo;
+    use hyperactor_mesh::introspect::NodePayload;
+    use hyperactor_mesh::introspect::NodeProperties;
 
     use super::*;
 

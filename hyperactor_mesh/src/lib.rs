@@ -30,6 +30,7 @@ pub mod config;
 pub mod connect;
 pub mod global_context;
 pub mod host_mesh;
+pub mod introspect;
 pub mod logging;
 pub mod mesh;
 pub mod mesh_admin;
