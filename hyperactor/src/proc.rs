@@ -3204,6 +3204,8 @@ mod tests {
     }
 
     #[async_timed_test(timeout_secs = 30)]
+    // TODO: OSS: this test is flaky in OSS (relies on 1s sleep for event propagation).
+    #[cfg_attr(not(fbcode_build), ignore)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
 
