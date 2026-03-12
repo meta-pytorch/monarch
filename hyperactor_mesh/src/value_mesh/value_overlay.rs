@@ -71,8 +71,8 @@ impl std::error::Error for BuildError {}
 /// efficiently, while preserving the `ValueMesh` invariants after
 /// merge.
 ///
-/// Invariants:
-/// - Runs are sorted by `(start, end)`.
+/// Invariants (VO-1):
+/// - **VO-1 (sorted-runs):** Runs are sorted by `(start, end)`.
 /// - Runs are non-empty and non-overlapping.
 /// - Adjacent runs with equal values are coalesced.
 /// - Region bounds are validated when the overlay is merged, not on
@@ -218,7 +218,7 @@ impl<T: PartialEq> ValueOverlay<T> {
         // Replace the old vector.
         *v = out;
 
-        // Invariant: Runs is sorted, non-overlapping and coalesced.
+        // VO-1: runs are sorted, non-overlapping and coalesced.
         Ok(())
     }
 
@@ -246,7 +246,7 @@ impl<T: PartialEq> ValueOverlay<T> {
         // Normalize (validate + coalesce).
         Self::normalize(&mut v)?;
 
-        // Invariant: Runs is sorted, non-overlapping and coalesced.
+        // VO-1: runs are sorted, non-overlapping and coalesced.
         Ok(Self { runs: v })
     }
 }

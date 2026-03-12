@@ -9,9 +9,9 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use hyperactor::introspect::NodePayload;
-use hyperactor::introspect::NodeProperties;
 use hyperactor::reference as hyperactor_reference;
+use hyperactor_mesh::introspect::NodePayload;
+use hyperactor_mesh::introspect::NodeProperties;
 use serde_json::Value;
 
 /// Derive a human-friendly label for a resolved node payload.
@@ -210,8 +210,8 @@ pub(crate) fn format_uptime(started_at: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use hyperactor::introspect::NodePayload;
-    use hyperactor::introspect::NodeProperties;
+    use hyperactor_mesh::introspect::NodePayload;
+    use hyperactor_mesh::introspect::NodeProperties;
     use serde_json::Value;
 
     use super::*;
