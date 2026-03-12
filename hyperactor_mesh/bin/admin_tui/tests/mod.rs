@@ -1410,16 +1410,16 @@ fn refresh_churn_large_differential() {
     assert_eq!(rows_after.len(), 100);
 }
 
-// -- MastResolver::new() tests (INV-DISPATCH) --
+// -- MastResolver::new() tests (MR-1) --
 
-// INV-DISPATCH: no fb, no choice → Cli.
+// MR-1: no fb, no choice → Cli.
 #[test]
 fn test_mast_resolver_no_fb_defaults_to_cli() {
     let resolver = client::MastResolver::new(None, None);
     assert!(matches!(resolver, client::MastResolver::Cli));
 }
 
-// INV-DISPATCH: explicit "cli" choice → Cli regardless of fb.
+// MR-1: explicit "cli" choice → Cli regardless of fb.
 // fbcode_build only: requires fbinit, and the Thrift variant only
 // exists in Meta builds.
 #[cfg(fbcode_build)]
@@ -1432,7 +1432,7 @@ fn test_mast_resolver_cli_choice_overrides_fb() {
     assert!(matches!(resolver, client::MastResolver::Cli));
 }
 
-// INV-DISPATCH: fb present, no choice → Thrift.
+// MR-1: fb present, no choice → Thrift.
 // fbcode_build only: the Thrift variant and fbinit are unavailable
 // in OSS builds.
 #[cfg(fbcode_build)]
@@ -1445,7 +1445,7 @@ fn test_mast_resolver_fb_defaults_to_thrift() {
     assert!(matches!(resolver, client::MastResolver::Thrift(_)));
 }
 
-// INV-DISPATCH: explicit "thrift" choice (or any non-"cli" string)
+// MR-1: explicit "thrift" choice (or any non-"cli" string)
 // → Thrift when fb is available.
 // fbcode_build only: the Thrift variant and fbinit are unavailable
 // in OSS builds.
