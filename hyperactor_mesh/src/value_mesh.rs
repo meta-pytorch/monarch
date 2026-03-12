@@ -6,11 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! ## Value mesh invariants (VM-*)
-//!
-//! - **VM-1 (completeness):** Every rank in `region` has exactly one
-//!   value. Iteration and indexing follow the region's linearization.
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -46,7 +41,9 @@ pub use value_overlay::ValueOverlay;
 /// but externally the mesh always behaves as a complete mapping from
 /// rank index → value.
 ///
-/// See VM-1 in module doc.
+/// # Invariants (VM-1)
+/// - **VM-1 (completeness):** Every rank in `region` has exactly one value.
+/// - Order: iteration and indexing follow the region's linearization.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)] // only if T implements
 pub struct ValueMesh<T> {
     /// The logical multidimensional domain of the mesh.
