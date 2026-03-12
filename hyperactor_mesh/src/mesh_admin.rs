@@ -67,78 +67,87 @@
 //! (i.e., tooling can deliver `IntrospectMessage::Query` to one of its
 //! actors), then it is introspectable and appears in the admin graph.**
 //!
-//! ## Navigation identity invariant
+//! ## Navigation identity invariants (NI-*)
 //!
-//! Every `NodePayload` in the topology tree satisfies two properties:
+//! Every `NodePayload` in the topology tree satisfies:
 //!
-//! 1. **Identity = reference**: a node's `identity` field must equal the
-//!    reference string that was used to resolve it. If the TUI asks for
-//!    reference `R` and gets back a payload, `payload.identity == R`.
+//! - **NI-1 (identity = reference):** A node's `identity` field must
+//!   equal the reference string used to resolve it. If the TUI asks
+//!   for reference `R`, `payload.identity == R`.
 //!
-//! 2. **Parent coherence**: a node's `parent` field must equal the
-//!    `identity` of the node it appears under. If node `P` lists `R` in
-//!    its `children`, then the payload for `R` must have
-//!    `payload.parent == Some(P.identity)`.
+//! - **NI-2 (parent coherence):** A node's `parent` field must equal
+//!   the `identity` of the node it appears under. If node `P` lists
+//!   `R` in its `children`, then `R.parent == Some(P.identity)`.
 //!
 //! Together these ensure that the TUI can correlate responses to tree
 //! nodes, and that upward/downward navigation is consistent.
 //!
-//! ## Robustness invariant
+//! ## Proc-resolution invariants (SP-*)
 //!
-//! **`MeshAdminAgent` must never crash the OS process it resides in.**
-//! Every handler catches errors and converts them into structured
-//! error payloads (`ResolveReferenceResponse(Err(..))`,
-//! `NodeProperties::Error`, etc.) rather than propagating panics or
-//! unwinding. Failed reply sends (the caller went away) are silently
-//! swallowed.
+//! When a proc reference is resolved, the returned `NodePayload`
+//! satisfies:
 //!
-//! ## TLS transport invariant
+//! - **SP-1 (identity):** The identity matches the ProcId reference
+//!   from the parent's children list.
+//! - **SP-2 (properties):** The properties are `NodeProperties::Proc`.
+//! - **SP-3 (parent):** The parent is set to the HostId format
+//!   (`"host:<actor_id>"`).
+//! - **SP-4 (as_of):** The `as_of` field is present and non-empty.
 //!
-//! **At Meta (`fbcode_build`):** The admin HTTP server **requires**
-//! mutual TLS. At startup it probes for certificates via
-//! [`try_tls_acceptor`](hyperactor::channel::try_tls_acceptor) with
-//! client cert enforcement enabled. If no usable certificate bundle
-//! is found, `init()` returns an error — there is no plain HTTP
-//! fallback. Clients must present a valid certificate signed by
-//! Meta's root CA; connections without a client cert are rejected
-//! during the TLS handshake.
+//! Enforced by `test_system_proc_identity`.
 //!
-//! **In OSS:** TLS is best-effort. The server probes for certificates
-//! but falls back to plain HTTP if none are found. Client certificates
-//! are not required.
+//! ## Proc-agent invariants (PA-*)
 //!
-//! **`admin_host` includes the scheme**: the URL returned by
-//! `GetAdminAddr` is always `https://host:port` or
-//! `http://host:port`, never a bare `host:port`. All callers (Rust
-//! examples, Python examples, TUI, tests) receive and use this full
-//! URL directly.
+//! - **PA-1 (live children):** Proc-node children used by admin/TUI
+//!   must be derived from live proc state at query time. No
+//!   additional publish event is required for a newly spawned actor
+//!   to appear.
 //!
-//! ## Client host invariant (A/C)
+//! Enforced by `test_proc_children_reflect_directly_spawned_actors`.
+//!
+//! ## Robustness invariant (MA-R1)
+//!
+//! - **MA-R1 (no-crash):** `MeshAdminAgent` must never crash the OS
+//!   process it resides in. Every handler catches errors and converts
+//!   them into structured error payloads
+//!   (`ResolveReferenceResponse(Err(..))`, `NodeProperties::Error`,
+//!   etc.) rather than propagating panics or unwinding. Failed reply
+//!   sends (the caller went away) are silently swallowed.
+//!
+//! ## TLS transport invariant (MA-T1)
+//!
+//! - **MA-T1 (tls):** At Meta (`fbcode_build`), the admin HTTP
+//!   server **requires** mutual TLS. At startup it probes for
+//!   certificates via `try_tls_acceptor` with client cert
+//!   enforcement enabled. If no usable certificate bundle is found,
+//!   `init()` returns an error — no plain HTTP fallback. In OSS,
+//!   TLS is best-effort with plain HTTP fallback.
+//!
+//! - **MA-T2 (scheme-in-url):** The URL returned by `GetAdminAddr`
+//!   is always `https://host:port` or `http://host:port`, never a
+//!   bare `host:port`. All callers receive and use this full URL
+//!   directly.
+//!
+//! ## Client host invariants (CH-*)
 //!
 //! Let **A** denote the observed host mesh (the host mesh for which
 //! this `MeshAdminAgent` was spawned), and let **C** denote the
 //! process-global singleton client host mesh in the caller process
 //! (whose local proc hosts the root client actor).
 //!
-//! C may or may not be a member of A:
+//! - **CH-1 (deduplication):** When C ∈ A, the client host appears
+//!   exactly once in the admin host list (deduplicated by `HostAgent`
+//!   `ActorId` identity). When C ∉ A, `spawn_admin` includes C
+//!   alongside A's hosts so the admin introspects C as a normal host
+//!   subtree, not as a standalone proc.
 //!
-//! - **C ∈ A:** The client host is already one of A's hosts. It
-//!   appears exactly once in the admin host list (deduplicated by
-//!   `HostAgent` `ActorId` identity).
-//! - **C ∉ A:** The client host is separate from A.
-//!   [`HostMeshRef::spawn_admin`] includes C alongside A's hosts so
-//!   the admin introspects C as a normal host subtree (`host -> proc
-//!   -> actors`), not as a standalone proc.
+//! - **CH-2 (reachability):** In both cases, the root client actor
+//!   is reachable through the standard host → proc → actor walk.
 //!
-//! In both cases, the root client actor is reachable through the
-//! standard host -> proc -> actor walk.
-//!
-//! **Ordering invariant:** `spawn_admin` requires `cx: &impl
-//! context::Actor` (the caller's root client instance). Constructing
-//! that instance initializes C (Rust: `context().await`; Python:
-//! bootstrap path). Therefore C is available when `spawn_admin`
-//! executes. Any refactor must preserve this ordering: creating `cx`
-//! initializes C, and `spawn_admin` consumes `cx`.
+//! - **CH-3 (ordering):** `spawn_admin` requires `cx: &impl
+//!   context::Actor` (the caller's root client instance). Constructing
+//!   that instance initializes C. Therefore C is available when
+//!   `spawn_admin` executes. Any refactor must preserve this ordering.
 //!
 //! **Mechanism:** [`HostMeshRef::spawn_admin`] reads C from the
 //! caller process (via `try_this_host()`), merges it with A's host
@@ -146,6 +155,30 @@
 //! list in `SpawnMeshAdmin`. This works for same-process and
 //! cross-process setups because merge+dedeup happens in the caller
 //! process before sending the spawn request.
+//!
+//! ## MAST resolution invariants (MC-*)
+//!
+//! CLI-based `mast_conda:///` resolution (OSS-compatible fallback):
+//!
+//! - **MC-1 (cli-contract):** `mast get-status --json <job>` must
+//!   exit 0 and produce valid JSON. Missing binary → distinct error.
+//!   Non-zero exit → includes exit code and stderr. Malformed JSON →
+//!   parse error.
+//! - **MC-2 (head-hostname):** `head_hostname` extracts the first
+//!   hostname by ascending task index from the last attempt of each
+//!   task group.
+//! - **MC-3 (fqdn-idempotent):** `qualify_fqdn` passes through
+//!   hostnames containing a dot. Short hostnames are qualified via
+//!   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
+//!   hostname.
+//! - **MC-4 (fqdn-nonblocking):** `qualify_fqdn` runs the blocking
+//!   `getaddrinfo` syscall via `spawn_blocking`.
+//! - **MC-5 (admin-port):** `resolve_admin_port` uses the explicit
+//!   override when provided, otherwise reads the port from
+//!   `MESH_ADMIN_ADDR` config.
+//!
+//! Enforced by `test_head_hostname_*`, `test_qualify_fqdn_*`,
+//! `test_resolve_mast_*`, `test_resolve_admin_port_*`.
 
 use std::collections::HashMap;
 use std::io;
@@ -169,8 +202,7 @@ use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::channel::try_tls_acceptor;
 use hyperactor::introspect::IntrospectMessage;
-use hyperactor::introspect::NodePayload;
-use hyperactor::introspect::NodeProperties;
+use hyperactor::introspect::IntrospectResult;
 use hyperactor::mailbox::open_once_port;
 use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
@@ -182,6 +214,58 @@ use typeuri::Named;
 
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostId;
+use crate::introspect::NodePayload;
+use crate::introspect::NodeProperties;
+use crate::introspect::to_node_payload;
+
+/// Send an `IntrospectMessage` to an actor and receive the reply.
+/// Encapsulates open_once_port + send + timeout + error handling.
+async fn query_introspect(
+    cx: &hyperactor::Context<'_, MeshAdminAgent>,
+    actor_id: &hyperactor_reference::ActorId,
+    view: hyperactor::introspect::IntrospectView,
+    timeout: Duration,
+    err_ctx: &str,
+) -> Result<IntrospectResult, anyhow::Error> {
+    let introspect_port =
+        hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+    let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
+    introspect_port.send(
+        cx,
+        IntrospectMessage::Query {
+            view,
+            reply: reply_handle.bind(),
+        },
+    )?;
+    tokio::time::timeout(timeout, reply_rx.recv())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
+        .map_err(|e| anyhow::anyhow!("failed to receive {}: {}", err_ctx, e))
+}
+
+/// Send an `IntrospectMessage::QueryChild` to an actor.
+async fn query_child_introspect(
+    cx: &hyperactor::Context<'_, MeshAdminAgent>,
+    actor_id: &hyperactor_reference::ActorId,
+    child_ref: hyperactor_reference::Reference,
+    timeout: Duration,
+    err_ctx: &str,
+) -> Result<IntrospectResult, anyhow::Error> {
+    let introspect_port =
+        hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
+    let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
+    introspect_port.send(
+        cx,
+        IntrospectMessage::QueryChild {
+            child_ref,
+            reply: reply_handle.bind(),
+        },
+    )?;
+    tokio::time::timeout(timeout, reply_rx.recv())
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out {}", err_ctx))?
+        .map_err(|e| anyhow::anyhow!("failed to receive {}: {}", err_ctx, e))
+}
 
 /// Actor name used when spawning the mesh admin agent.
 pub const MESH_ADMIN_ACTOR_NAME: &str = "mesh_admin";
@@ -865,17 +949,21 @@ impl MeshAdminAgent {
             .map(|agent| HostId(agent.actor_id().clone()).to_string())
             .collect();
         let system_children: Vec<String> = Vec::new();
+        let mut attrs = hyperactor_config::Attrs::new();
+        attrs.set(crate::introspect::NODE_TYPE, "root".to_string());
+        attrs.set(crate::introspect::NUM_HOSTS, self.hosts.len());
+        if let Ok(t) = humantime::parse_rfc3339(&self.started_at) {
+            attrs.set(crate::introspect::STARTED_AT, t);
+        }
+        attrs.set(crate::introspect::STARTED_BY, self.started_by.clone());
+        attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children.clone());
+        let attrs_json = serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
         NodePayload {
             identity: "root".to_string(),
-            properties: NodeProperties::Root {
-                num_hosts: self.hosts.len(),
-                started_at: self.started_at.clone(),
-                started_by: self.started_by.clone(),
-                system_children,
-            },
+            properties: crate::introspect::derive_properties(&attrs_json),
             children,
             parent: None,
-            as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
+            as_of: hyperactor::introspect::format_timestamp(std::time::SystemTime::now()),
         }
     }
 
@@ -892,39 +980,31 @@ impl MeshAdminAgent {
         cx: &Context<'_, Self>,
         actor_id: &hyperactor_reference::ActorId,
     ) -> Result<NodePayload, anyhow::Error> {
-        let introspect_port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
-        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-        introspect_port.send(
+        let result = query_introspect(
             cx,
-            IntrospectMessage::Query {
-                view: hyperactor::introspect::IntrospectView::Entity,
-                reply: reply_handle.bind(),
-            },
-        )?;
-
-        let mut payload = tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying host agent"))?
-            .map_err(|e| anyhow::anyhow!("failed to receive host introspection: {}", e))?;
-
-        payload.identity = HostId(actor_id.clone()).to_string();
-        payload.parent = Some("root".to_string());
-        Ok(payload)
+            actor_id,
+            hyperactor::introspect::IntrospectView::Entity,
+            SINGLE_HOST_TIMEOUT,
+            "querying host agent",
+        )
+        .await?;
+        Ok(crate::introspect::to_node_payload_with(
+            result,
+            HostId(actor_id.clone()).to_string(),
+            Some("root".to_string()),
+        ))
     }
 
     /// Resolve a `ProcId` reference into a proc-level `NodePayload`.
     ///
     /// First tries `IntrospectMessage::QueryChild` against the owning
-    /// `HostAgent` (which recognizes service and local procs). If that returns an error
-    /// payload, falls back to `ProcAgent` for user procs by querying
-    /// `QueryChild(hyperactor_reference::Reference::Proc(proc_id))` on
-    /// `<proc_id>/proc_agent[0]`.
+    /// `HostAgent` (which recognizes service and local procs). If
+    /// that returns an error payload, falls back to `ProcAgent` for
+    /// user procs by querying
+    /// `QueryChild(hyperactor_reference::Reference::Proc(proc_id))`
+    /// on `<proc_id>/proc_agent[0]`.
     ///
-    /// Invariant PA-1: proc-node children used by admin/TUI must be
-    /// derived from live proc state at query time (no additional
-    /// publish event required). An `Entity`-view fallback is kept for
-    /// backward compatibility with older agents.
+    /// See PA-1 in module doc.
     async fn resolve_proc_node(
         &self,
         cx: &Context<'_, Self>,
@@ -938,60 +1018,38 @@ impl MeshAdminAgent {
             .ok_or_else(|| anyhow::anyhow!("host not found: {}", host_addr))?;
 
         // Try the host agent's QueryChild first.
-        let child_ref = hyperactor_reference::Reference::Proc(proc_id.clone());
-        let introspect_port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(
-                agent.actor_id(),
-            );
-        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-        introspect_port.send(
+        let result = query_child_introspect(
             cx,
-            IntrospectMessage::QueryChild {
-                child_ref,
-                reply: reply_handle.bind(),
-            },
-        )?;
-
-        let payload = tokio::time::timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying proc details"))?
-            .map_err(|e| anyhow::anyhow!("failed to receive proc introspection: {}", e))?;
+            agent.actor_id(),
+            hyperactor_reference::Reference::Proc(proc_id.clone()),
+            QUERY_CHILD_TIMEOUT,
+            "querying proc details",
+        )
+        .await?;
 
         // If the host recognized the proc, use its response directly.
+        // No identity/parent normalization — QueryChild sets them correctly.
+        let payload = to_node_payload(result);
         if !matches!(payload.properties, NodeProperties::Error { .. }) {
             return Ok(payload);
         }
 
-        // Fall back to querying the ProcAgent directly (user
-        // procs). The conventional ProcAgent ActorId is
-        // <proc_id>/proc_agent[0].
+        // Fall back to querying the ProcAgent directly (user procs).
         let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
-        let agent_port =
-            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&mesh_agent_id);
-        let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-        agent_port.send(
+        let result = query_child_introspect(
             cx,
-            IntrospectMessage::QueryChild {
-                child_ref: hyperactor_reference::Reference::Proc(proc_id.clone()),
-                reply: reply_handle.bind(),
-            },
-        )?;
+            &mesh_agent_id,
+            hyperactor_reference::Reference::Proc(proc_id.clone()),
+            SINGLE_HOST_TIMEOUT,
+            "querying proc mesh agent",
+        )
+        .await?;
 
-        let mut payload = tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timed out querying proc mesh agent"))?
-            .map_err(|e| {
-                anyhow::anyhow!("failed to receive proc mesh agent introspection: {}", e)
-            })?;
-
-        // The ProcAgent sets identity to its own ActorId, but the
-        // caller asked for the proc by ProcId. Override so the
-        // payload matches the reference the TUI navigated to.
-        payload.identity = proc_id.to_string();
-        // Set parent to the host reference (host:<actor_id>).
-        let host_ref = HostId(agent.actor_id().clone()).to_string();
-        payload.parent = Some(host_ref);
-        Ok(payload)
+        Ok(crate::introspect::to_node_payload_with(
+            result,
+            proc_id.to_string(),
+            Some(HostId(agent.actor_id().clone()).to_string()),
+        ))
     }
 
     /// Resolve a standalone proc into a proc-level `NodePayload`.
@@ -1023,24 +1081,16 @@ impl MeshAdminAgent {
             (vec![self_ref.clone()], vec![self_ref])
         } else {
             // Query the anchor actor for its supervision children.
-            let introspect_port =
-                hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
-            let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-            introspect_port.send(
+            let actor_result = query_introspect(
                 cx,
-                IntrospectMessage::Query {
-                    view: hyperactor::introspect::IntrospectView::Actor,
-                    reply: reply_handle.bind(),
-                },
-            )?;
-
-            let actor_payload = tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-                .await
-                .map_err(|_| anyhow::anyhow!("timed out querying anchor actor on {}", proc_id))?
-                .map_err(|e| {
-                    anyhow::anyhow!("failed to receive anchor actor introspection: {}", e)
-                })?;
-
+                actor_id,
+                hyperactor::introspect::IntrospectView::Actor,
+                SINGLE_HOST_TIMEOUT,
+                &format!("querying anchor actor on {}", proc_id),
+            )
+            .await?;
+            // No identity/parent normalization — only reading properties for is_system check.
+            let actor_payload = to_node_payload(actor_result);
             // Check if anchor actor is system.
             let anchor_ref = actor_id.to_string();
             let anchor_is_system = matches!(
@@ -1060,28 +1110,22 @@ impl MeshAdminAgent {
             // Query each supervision child to check is_system.
             for child_ref in actor_payload.children {
                 if let Ok(child_actor_id) = child_ref.parse::<hyperactor_reference::ActorId>() {
-                    let child_port =
-                        hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(
-                            &child_actor_id,
-                        );
-                    let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-                    let child_is_system = if child_port
-                        .send(
-                            cx,
-                            IntrospectMessage::Query {
-                                view: hyperactor::introspect::IntrospectView::Actor,
-                                reply: reply_handle.bind(),
-                            },
-                        )
-                        .is_ok()
+                    let child_is_system = if let Ok(r) = query_introspect(
+                        cx,
+                        &child_actor_id,
+                        hyperactor::introspect::IntrospectView::Actor,
+                        SINGLE_HOST_TIMEOUT,
+                        "querying child actor is_system",
+                    )
+                    .await
                     {
+                        let p = to_node_payload(r);
                         matches!(
-                            tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv()).await,
-                            Ok(Ok(p))
-                                if matches!(
-                                    &p.properties,
-                                    NodeProperties::Actor { is_system: true, .. }
-                                )
+                            &p.properties,
+                            NodeProperties::Actor {
+                                is_system: true,
+                                ..
+                            }
                         )
                     } else {
                         false
@@ -1097,19 +1141,19 @@ impl MeshAdminAgent {
 
         let proc_name = proc_id.name().to_string();
 
+        // Build attrs for standalone proc.
+        let mut attrs = hyperactor_config::Attrs::new();
+        attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
+        attrs.set(crate::introspect::PROC_NAME, proc_name.clone());
+        attrs.set(crate::introspect::NUM_ACTORS, children.len());
+        attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children.clone());
+        let attrs_json = serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
+
         Ok(NodePayload {
             identity: proc_id.to_string(),
-            properties: NodeProperties::Proc {
-                proc_name,
-                num_actors: children.len(),
-                system_children,
-                stopped_children: vec![],
-                stopped_retention_cap: 0,
-                is_poisoned: false,
-                failed_actor_count: 0,
-            },
+            properties: crate::introspect::derive_properties(&attrs_json),
             children,
-            as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
+            as_of: hyperactor::introspect::format_timestamp(std::time::SystemTime::now()),
             parent: Some("root".to_string()),
         })
     }
@@ -1136,78 +1180,52 @@ impl MeshAdminAgent {
         // own actor loop while handling a resolve request (deadlock).
         // Use introspect_payload() to snapshot our own state
         // directly.
-        let mut payload = if self.self_actor_id.as_ref() == Some(actor_id) {
+        let result = if self.self_actor_id.as_ref() == Some(actor_id) {
             cx.introspect_payload()
         } else if self.is_standalone_proc_actor(actor_id) {
-            // Standalone procs (e.g. the admin proc itself) have no
-            // ProcAgent at agent[0], so skip the QueryChild
-            // terminated-snapshot check and query the actor directly.
-            let introspect_port =
-                hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
-            let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-            introspect_port.send(
+            // Standalone procs have no ProcAgent — query directly.
+            query_introspect(
                 cx,
-                IntrospectMessage::Query {
-                    view: hyperactor::introspect::IntrospectView::Actor,
-                    reply: reply_handle.bind(),
-                },
-            )?;
-            tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-                .await
-                .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
-                .map_err(|e| anyhow::anyhow!("failed to receive actor introspection: {}", e))?
+                actor_id,
+                hyperactor::introspect::IntrospectView::Actor,
+                SINGLE_HOST_TIMEOUT,
+                &format!("querying actor {}", actor_id),
+            )
+            .await?
         } else {
             // Check terminated snapshots first — fast, no ambiguity.
-            // If found, the actor is definitively dead.
-            let terminated = {
-                let proc_id = actor_id.proc_id();
-                let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
-                let agent_port =
-                    hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(
-                        &mesh_agent_id,
-                    );
-                let child_ref = hyperactor_reference::Reference::Actor(actor_id.clone());
-                let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-                agent_port.send(
-                    cx,
-                    IntrospectMessage::QueryChild {
-                        child_ref,
-                        reply: reply_handle.bind(),
-                    },
-                )?;
-                tokio::time::timeout(QUERY_CHILD_TIMEOUT, reply_rx.recv())
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok())
-                    .filter(|p| !matches!(p.properties, NodeProperties::Error { .. }))
-            };
+            let proc_id = actor_id.proc_id();
+            let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+            let terminated = query_child_introspect(
+                cx,
+                &mesh_agent_id,
+                hyperactor_reference::Reference::Actor(actor_id.clone()),
+                QUERY_CHILD_TIMEOUT,
+                "querying terminated snapshot",
+            )
+            .await
+            .ok()
+            .filter(|r| {
+                let p = crate::introspect::derive_properties(&r.attrs);
+                !matches!(p, NodeProperties::Error { .. })
+            });
 
             match terminated {
                 Some(snapshot) => snapshot,
                 None => {
-                    // Not terminated — query the live actor with
-                    // the full timeout.
-                    let introspect_port =
-                        hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(
-                            actor_id,
-                        );
-                    let (reply_handle, reply_rx) = open_once_port::<NodePayload>(cx);
-                    introspect_port.send(
+                    // Not terminated — query the live actor.
+                    query_introspect(
                         cx,
-                        IntrospectMessage::Query {
-                            view: hyperactor::introspect::IntrospectView::Actor,
-                            reply: reply_handle.bind(),
-                        },
-                    )?;
-                    tokio::time::timeout(SINGLE_HOST_TIMEOUT, reply_rx.recv())
-                        .await
-                        .map_err(|_| anyhow::anyhow!("timed out querying actor {}", actor_id))?
-                        .map_err(|e| {
-                            anyhow::anyhow!("failed to receive actor introspection: {}", e)
-                        })?
+                        actor_id,
+                        hyperactor::introspect::IntrospectView::Actor,
+                        SINGLE_HOST_TIMEOUT,
+                        &format!("querying actor {}", actor_id),
+                    )
+                    .await?
                 }
             }
         };
+        let mut payload = to_node_payload(result);
 
         // Actors on standalone procs: parent is the proc.
         if self.is_standalone_proc_actor(actor_id) {
@@ -1233,8 +1251,6 @@ impl MeshAdminAgent {
                 // system proc ref format if the proc is a known
                 // system/local proc, otherwise the ProcAgent
                 // ActorId.
-                let _host_addr = proc_id.addr().to_string();
-
                 // Parent is the proc node, whose identity is the
                 // ProcId string (same for system and user procs).
                 payload.parent = Some(proc_id.to_string());
@@ -1564,35 +1580,9 @@ fn derive_actor_label(reference: &str) -> String {
     }
 }
 
-// -- CLI-based mast_conda:/// resolution (INV-CLI-CONTRACT) --
+// -- CLI-based mast_conda:/// resolution --
 //
-// This is the OSS-compatible fallback for resolving `mast_conda:///`
-// handles. It shells out to `mast get-status --json <job>` and parses
-// the response. The thrift-based equivalent lives in
-// `hyperactor_meta::mesh_admin::resolve_mast_handle`.
-//
-// Invariants:
-//
-// - **INV-CLI-CONTRACT**: `mast get-status --json <job>` must exit 0
-//   and produce valid JSON. Missing binary → distinct error. Non-zero
-//   exit → includes exit code and stderr. Malformed JSON → parse
-//   error.
-//
-// - **INV-HEAD-HOSTNAME**: `head_hostname` extracts the first
-//   hostname by ascending task index from the last attempt of each
-//   task group.
-//
-// - **INV-FQDN-IDEMPOTENT**: `qualify_fqdn` passes through hostnames
-//   containing a dot. Short hostnames are qualified via
-//   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
-//   hostname.
-//
-// - **INV-FQDN-NONBLOCKING**: `qualify_fqdn` runs the blocking
-//   `getaddrinfo` syscall via `spawn_blocking`.
-//
-// - **INV-ADMIN-PORT**: `resolve_admin_port` uses the explicit
-//   override when provided, otherwise reads the port from
-//   `MESH_ADMIN_ADDR` config.
+// See module doc for MC-1..MC-5 invariants.
 
 /// Top-level response from `mast get-status --json`.
 #[derive(serde::Deserialize)]
@@ -1622,7 +1612,7 @@ struct MastTaskAttempt {
 }
 
 /// Extract the head node hostname from a parsed MAST status response
-/// (INV-HEAD-HOSTNAME).
+/// (MC-2).
 ///
 /// For each task group, the last attempt is selected. Within that
 /// attempt, each task's last execution attempt provides the hostname.
@@ -1655,8 +1645,8 @@ fn head_hostname(response: &MastStatusResponse) -> Result<String, String> {
 }
 
 /// Qualify a short hostname to an FQDN via
-/// `getaddrinfo(AI_CANONNAME)` (INV-FQDN-IDEMPOTENT,
-/// INV-FQDN-NONBLOCKING).
+/// `getaddrinfo(AI_CANONNAME)` (MC-3,
+/// MC-4).
 ///
 /// Called via `spawn_blocking` to avoid blocking tokio workers. Falls
 /// back to the raw hostname on any failure.
@@ -1718,7 +1708,7 @@ fn qualify_fqdn_blocking(hostname: &str) -> String {
 }
 
 /// Resolve admin port from an explicit override or `MESH_ADMIN_ADDR`
-/// config (INV-ADMIN-PORT).
+/// config (MC-5).
 ///
 /// When `port_override` is `Some`, that port is used directly. When
 /// `None`, the port is read from the `MESH_ADMIN_ADDR` configuration
@@ -1738,7 +1728,7 @@ fn resolve_admin_port(port_override: Option<u16>) -> Result<u16, anyhow::Error> 
 
 /// Resolve a `mast_conda:///<job-name>` handle into an
 /// `https://<fqdn>:<port>` base URL by shelling out to the `mast` CLI
-/// (INV-CLI-CONTRACT).
+/// (MC-1).
 ///
 /// This is the OSS-compatible counterpart to
 /// `hyperactor_meta::mesh_admin::resolve_mast_handle`. The `cmd`
@@ -1871,6 +1861,19 @@ mod tests {
                 .children
                 .contains(&HostId(actor_id2.clone()).to_string())
         );
+
+        // Verify root properties derived from attrs.
+        match &payload.properties {
+            NodeProperties::Root {
+                num_hosts,
+                started_by,
+                ..
+            } => {
+                assert_eq!(*num_hosts, 2);
+                assert!(!started_by.is_empty());
+            }
+            other => panic!("expected Root, got {:?}", other),
+        }
     }
 
     // End-to-end smoke test for MeshAdminAgent::resolve that walks
@@ -2133,6 +2136,7 @@ mod tests {
                 } else {
                     found_system = true;
                 }
+                // Properties derived from attrs — verified by derive_properties tests.
             } else {
                 // Host agent cross-reference — skip.
             }
@@ -2409,14 +2413,14 @@ mod tests {
             let resp = admin_ref.resolve(&client, ref_str.clone()).await.unwrap();
             let node = resp.0.unwrap();
 
-            // Invariant 1: identity matches the reference used.
+            // NI-1: identity matches the reference used.
             assert_eq!(
                 node.identity, ref_str,
                 "identity mismatch: resolved '{}' but payload.identity = '{}'",
                 ref_str, node.identity
             );
 
-            // Invariant 2: parent matches the parent node's identity.
+            // NI-2: parent matches the parent node's identity.
             assert_eq!(
                 node.parent, expected_parent,
                 "parent mismatch for '{}': expected {:?}, got {:?}",
@@ -2441,15 +2445,7 @@ mod tests {
         );
     }
 
-    // Verifies that procs are never system (system_children is empty
-    // for procs) and that resolving them produces
-    // correct payloads:
-    //
-    // 1. The identity of the resolved system proc matches the plain
-    //    ProcId reference from the host's system_children list.
-    // 2. The properties are NodeProperties::Proc.
-    // 3. The parent is set to the HostId format ("host:<actor_id>").
-    // 4. The as_of field is present and non-empty.
+    // Exercises SP-1..SP-4 for host/proc payloads.
     #[tokio::test]
     async fn test_system_proc_identity() {
         use hyperactor::Proc;
@@ -2526,6 +2522,12 @@ mod tests {
             "host system_children should be empty (procs are never system), got {:?}",
             system_children
         );
+        // Verify host properties derived from attrs.
+        assert!(
+            matches!(&host_node.properties, NodeProperties::Host { .. }),
+            "expected Host properties"
+        );
+
         // -- 6. Verify host children contain the system proc --
         let expected_system_ref = system_proc_id.to_string();
         assert!(
@@ -2535,7 +2537,7 @@ mod tests {
             expected_system_ref
         );
 
-        // -- 7. Resolve a proc child and verify it has Proc properties --
+        // -- 7. Resolve a proc child --
         let proc_child_ref = &host_node.children[0];
         let proc_resp = admin_ref
             .resolve(&client, proc_child_ref.clone())
@@ -2563,6 +2565,12 @@ mod tests {
         assert!(
             !proc_node.as_of.is_empty(),
             "as_of should be present and non-empty"
+        );
+
+        // Verify proc properties derived from attrs.
+        assert!(
+            matches!(&proc_node.properties, NodeProperties::Proc { .. }),
+            "expected Proc properties"
         );
     }
 
@@ -2594,7 +2602,7 @@ mod tests {
         }
     }
 
-    // INV-HEAD-HOSTNAME: single group, tasks sorted by ascending index.
+    // MC-2: single group, tasks sorted by ascending index.
     #[test]
     fn test_head_hostname_single_group() {
         let response = mast_response_from_hosts(&[(2, "host2"), (0, "host0"), (1, "host1")]);
@@ -2602,7 +2610,7 @@ mod tests {
         assert_eq!(head, "host0");
     }
 
-    // INV-HEAD-HOSTNAME: last attempt selected per task.
+    // MC-2: last attempt selected per task.
     #[test]
     fn test_head_hostname_last_attempt_wins() {
         let mut tasks = std::collections::HashMap::new();
@@ -2629,7 +2637,7 @@ mod tests {
         assert_eq!(head, "new_host");
     }
 
-    // INV-HEAD-HOSTNAME: multiple groups merged and sorted.
+    // MC-2: multiple groups merged and sorted.
     #[test]
     fn test_head_hostname_multiple_groups() {
         let mut tasks_a = std::collections::HashMap::new();
@@ -2664,7 +2672,7 @@ mod tests {
         assert_eq!(head, "host_b0");
     }
 
-    // INV-HEAD-HOSTNAME: no hostnames → error.
+    // MC-2: no hostnames → error.
     #[test]
     fn test_head_hostname_empty() {
         let response = super::MastStatusResponse {
@@ -2675,7 +2683,7 @@ mod tests {
         assert!(super::head_hostname(&response).is_err());
     }
 
-    // INV-HEAD-HOSTNAME: hostname field is None (task not yet
+    // MC-2: hostname field is None (task not yet
     // allocated) → skipped.
     #[test]
     fn test_head_hostname_skips_unallocated() {
@@ -2702,7 +2710,7 @@ mod tests {
         assert_eq!(head, "allocated_host");
     }
 
-    // INV-FQDN-IDEMPOTENT: hostname with dot passes through
+    // MC-3: hostname with dot passes through
     // unchanged (no DNS lookup).
     #[tokio::test]
     async fn test_qualify_fqdn_already_qualified() {
@@ -2710,7 +2718,7 @@ mod tests {
         assert_eq!(fqdn, "fake.nonexistent.tld");
     }
 
-    // INV-FQDN-IDEMPOTENT, INV-FQDN-NONBLOCKING: short hostname
+    // MC-3, MC-4: short hostname
     // goes through getaddrinfo via spawn_blocking. The result is
     // environment-dependent, but must be non-empty and the call
     // must complete without hanging.
@@ -2720,7 +2728,7 @@ mod tests {
         assert!(!fqdn.is_empty(), "qualify_fqdn returned empty string");
     }
 
-    // INV-FQDN-IDEMPOTENT: nonexistent short hostname falls back
+    // MC-3: nonexistent short hostname falls back
     // to the raw input.
     #[tokio::test]
     async fn test_qualify_fqdn_nonexistent_fallback() {
@@ -2729,13 +2737,13 @@ mod tests {
         assert_eq!(fqdn, input);
     }
 
-    // INV-ADMIN-PORT: explicit override is used directly.
+    // MC-5: explicit override is used directly.
     #[test]
     fn test_resolve_admin_port_override() {
         assert_eq!(super::resolve_admin_port(Some(8080)).unwrap(), 8080);
     }
 
-    // INV-ADMIN-PORT: falls back to MESH_ADMIN_ADDR config
+    // MC-5: falls back to MESH_ADMIN_ADDR config
     // (default [::]:1729).
     #[test]
     fn test_resolve_admin_port_from_config() {
@@ -2743,7 +2751,7 @@ mod tests {
         assert_eq!(port, 1729);
     }
 
-    // INV-CLI-CONTRACT: missing binary produces a "not found" error.
+    // MC-1: missing binary produces a "not found" error.
     #[tokio::test]
     async fn test_cli_missing_binary() {
         let result = super::try_resolve_mast_handle(
@@ -2772,7 +2780,7 @@ mod tests {
         (dir, path_str)
     }
 
-    // INV-CLI-CONTRACT: valid JSON, happy path end-to-end.
+    // MC-1: valid JSON, happy path end-to-end.
     #[tokio::test]
     async fn test_cli_happy_path() {
         let json = r#"{"latestAttempt":{"taskGroupExecutionAttempts":{"trainers":[{"taskExecutionAttempts":{"0":[{"hostname":"devgpu042"}]}}]}}}"#;
@@ -2785,7 +2793,7 @@ mod tests {
         assert!(url.ends_with(":1729"), "url: {}", url);
     }
 
-    // INV-CLI-CONTRACT: malformed JSON produces a parse error.
+    // MC-1: malformed JSON produces a parse error.
     #[tokio::test]
     async fn test_cli_malformed_json() {
         let (_dir, script_path) = write_test_script("#!/bin/sh\necho 'not json'\n");
@@ -2800,7 +2808,7 @@ mod tests {
         );
     }
 
-    // INV-CLI-CONTRACT: non-zero exit includes code + stderr.
+    // MC-1: non-zero exit includes code + stderr.
     #[tokio::test]
     async fn test_cli_nonzero_exit() {
         let (_dir, script_path) =
@@ -2816,7 +2824,7 @@ mod tests {
         );
     }
 
-    // INV-CLI-CONTRACT: handle without mast_conda:/// prefix is
+    // MC-1: handle without mast_conda:/// prefix is
     // rejected with a clear error.
     #[tokio::test]
     async fn test_cli_missing_prefix() {
@@ -2829,7 +2837,7 @@ mod tests {
         );
     }
 
-    // INV-HEAD-HOSTNAME: a task group with zero attempts is skipped.
+    // MC-2: a task group with zero attempts is skipped.
     #[test]
     fn test_head_hostname_empty_attempts_vec() {
         let response = super::MastStatusResponse {
@@ -2843,7 +2851,7 @@ mod tests {
         assert!(super::head_hostname(&response).is_err());
     }
 
-    // INV-HEAD-HOSTNAME: non-numeric task index keys sort last
+    // MC-2: non-numeric task index keys sort last
     // (i64::MAX fallback).
     #[test]
     fn test_head_hostname_non_numeric_index() {
@@ -2882,11 +2890,7 @@ mod tests {
     // supervision-spawned actors (e.g. every sieve actor after
     // sieve[0]) invisible to the TUI.
     //
-    // Invariant PA-1 (admin path): proc-node children consumed by the
-    // TUI are sourced from live proc state via ProcAgent
-    // QueryChild(Reference::Proc), not solely from cached published
-    // snapshots. Direct proc.spawn() of actor X must make X visible on
-    // the next resolve of that proc. See also
+    // Exercises PA-1 (see module doc). See also
     // proc_agent::tests::test_query_child_proc_returns_live_children.
     #[tokio::test]
     async fn test_proc_children_reflect_directly_spawned_actors() {

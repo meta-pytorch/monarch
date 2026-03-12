@@ -358,8 +358,6 @@ impl ProcAgent {
     /// Publish the current proc properties and children list for
     /// introspection.
     fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
-        use hyperactor::introspect::PublishedPropertiesKind;
-
         // Live actors.
         let live_ids = self.proc.all_actor_ids();
         let num_live = live_ids.len();
@@ -387,13 +385,13 @@ impl ProcAgent {
             // Terminated system actors must also appear in
             // system_children for correct filtering.
             if let Some(snapshot) = self.proc.terminated_snapshot(&id) {
-                if matches!(
-                    snapshot.properties,
-                    hyperactor::introspect::NodeProperties::Actor {
-                        is_system: true,
-                        ..
-                    }
-                ) {
+                let snapshot_attrs: hyperactor_config::Attrs =
+                    serde_json::from_str(&snapshot.attrs).unwrap_or_default();
+                if snapshot_attrs
+                    .get(hyperactor::introspect::IS_SYSTEM)
+                    .copied()
+                    .unwrap_or(false)
+                {
                     system_children.push(ref_str.clone());
                 }
             }
@@ -407,17 +405,25 @@ impl ProcAgent {
 
         // FI-5: is_poisoned iff failed_actor_count > 0.
         let failed_actor_count = self.supervision_events.len();
-        cx.instance()
-            .publish_properties(PublishedPropertiesKind::Proc {
-                proc_name: self.proc.proc_id().to_string(),
-                num_actors: num_live,
-                children,
-                system_children,
-                stopped_children,
-                stopped_retention_cap,
-                is_poisoned: failed_actor_count > 0,
-                failed_actor_count,
-            });
+
+        // Attrs-based introspection.
+        let mut attrs = hyperactor_config::Attrs::new();
+        attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
+        attrs.set(
+            crate::introspect::PROC_NAME,
+            self.proc.proc_id().to_string(),
+        );
+        attrs.set(crate::introspect::NUM_ACTORS, num_live);
+        attrs.set(hyperactor::introspect::CHILDREN, children);
+        attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
+        attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
+        attrs.set(
+            crate::introspect::STOPPED_RETENTION_CAP,
+            stopped_retention_cap,
+        );
+        attrs.set(crate::introspect::IS_POISONED, failed_actor_count > 0);
+        attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+        cx.instance().publish_attrs(attrs);
     }
 }
 
@@ -433,9 +439,7 @@ impl Actor for ProcAgent {
         let proc = self.proc.clone();
         let self_id = this.self_id().clone();
         this.set_query_child_handler(move |child_ref| {
-            use hyperactor::introspect::NodePayload;
-            use hyperactor::introspect::NodeProperties;
-            use hyperactor::introspect::PublishedPropertiesKind;
+            use hyperactor::introspect::IntrospectResult;
 
             if let hyperactor::reference::Reference::Actor(id) = child_ref {
                 if let Some(snapshot) = proc.terminated_snapshot(id) {
@@ -469,13 +473,13 @@ impl Actor for ProcAgent {
                         let ref_str = id.to_string();
                         stopped_children.push(ref_str.clone());
                         if let Some(snapshot) = proc.terminated_snapshot(&id) {
-                            if matches!(
-                                snapshot.properties,
-                                hyperactor::introspect::NodeProperties::Actor {
-                                    is_system: true,
-                                    ..
-                                }
-                            ) {
+                            let snapshot_attrs: hyperactor_config::Attrs =
+                                serde_json::from_str(&snapshot.attrs).unwrap_or_default();
+                            if snapshot_attrs
+                                .get(hyperactor::introspect::IS_SYSTEM)
+                                .copied()
+                                .unwrap_or(false)
+                            {
                                 system_children.push(ref_str.clone());
                             }
                         }
@@ -490,28 +494,39 @@ impl Actor for ProcAgent {
 
                     let (is_poisoned, failed_actor_count) = proc
                         .get_instance(&self_id)
-                        .and_then(|cell| cell.published_properties())
-                        .and_then(|p| match p.kind {
-                            PublishedPropertiesKind::Proc {
-                                is_poisoned,
-                                failed_actor_count,
-                                ..
-                            } => Some((is_poisoned, failed_actor_count)),
-                            _ => None,
+                        .and_then(|cell| cell.published_attrs())
+                        .map(|attrs| {
+                            let is_poisoned = attrs
+                                .get(crate::introspect::IS_POISONED)
+                                .copied()
+                                .unwrap_or(false);
+                            let failed_actor_count = attrs
+                                .get(crate::introspect::FAILED_ACTOR_COUNT)
+                                .copied()
+                                .unwrap_or(0);
+                            (is_poisoned, failed_actor_count)
                         })
                         .unwrap_or((false, 0));
 
-                    return NodePayload {
+                    // Build attrs for this proc node.
+                    let mut attrs = hyperactor_config::Attrs::new();
+                    attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
+                    attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
+                    attrs.set(crate::introspect::NUM_ACTORS, num_live);
+                    attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
+                    attrs.set(crate::introspect::STOPPED_CHILDREN, stopped_children);
+                    attrs.set(
+                        crate::introspect::STOPPED_RETENTION_CAP,
+                        stopped_retention_cap,
+                    );
+                    attrs.set(crate::introspect::IS_POISONED, is_poisoned);
+                    attrs.set(crate::introspect::FAILED_ACTOR_COUNT, failed_actor_count);
+                    let attrs_json =
+                        serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
+
+                    return IntrospectResult {
                         identity: proc_id.to_string(),
-                        properties: NodeProperties::Proc {
-                            proc_name: proc_id.to_string(),
-                            num_actors: num_live,
-                            system_children,
-                            stopped_children,
-                            stopped_retention_cap,
-                            is_poisoned,
-                            failed_actor_count,
-                        },
+                        attrs: attrs_json,
                         children,
                         parent: None,
                         as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
@@ -520,15 +535,21 @@ impl Actor for ProcAgent {
                 }
             }
 
-            NodePayload {
-                identity: String::new(),
-                properties: NodeProperties::Error {
-                    code: "not_found".into(),
-                    message: format!("child {} not found", child_ref),
-                },
-                children: Vec::new(),
-                parent: None,
-                as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now()).to_string(),
+            {
+                let mut error_attrs = hyperactor_config::Attrs::new();
+                error_attrs.set(hyperactor::introspect::ERROR_CODE, "not_found".to_string());
+                error_attrs.set(
+                    hyperactor::introspect::ERROR_MESSAGE,
+                    format!("child {} not found", child_ref),
+                );
+                IntrospectResult {
+                    identity: String::new(),
+                    attrs: serde_json::to_string(&error_attrs).unwrap_or_else(|_| "{}".to_string()),
+                    children: Vec::new(),
+                    parent: None,
+                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
+                        .to_string(),
+                }
             }
         });
 
@@ -1456,18 +1477,12 @@ mod tests {
     impl hyperactor::Actor for ExtraActor {}
 
     // Verifies that QueryChild(Reference::Proc) on a ProcAgent returns
-    // a live NodeProperties::Proc whose children reflect actors spawned
+    // a live IntrospectResult whose children reflect actors spawned
     // directly on the proc — i.e. via proc.spawn(), which bypasses the
     // gspawn message handler and therefore never triggers
     // publish_introspect_properties.
     //
-    // Invariant PA-1 (canonical):
-    // For proc-node resolution used by admin/TUI, children lists
-    // (children/system_children/stopped_children) must be derived from
-    // live proc state at query time rather than only from the last
-    // published snapshot.
-    // Required behavior: direct proc.spawn() of actor X is visible on
-    // the next proc resolve (no extra publish event required).
+    // Exercises PA-1 (see mesh_admin module doc).
     //
     // Regression guard for the bug introduced in 9a08d559: removing
     // handle_introspect left publish_introspect_properties as the only
@@ -1480,8 +1495,7 @@ mod tests {
         use hyperactor::actor::ActorStatus;
         use hyperactor::channel::ChannelTransport;
         use hyperactor::introspect::IntrospectMessage;
-        use hyperactor::introspect::NodePayload;
-        use hyperactor::introspect::NodeProperties;
+        use hyperactor::introspect::IntrospectResult;
         use hyperactor::reference as hyperactor_reference;
 
         let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
@@ -1505,7 +1519,7 @@ mod tests {
         // Helper: send QueryChild(Proc) and return the payload with a
         // timeout so a misrouted reply fails fast rather than hanging.
         let query = |client: &hyperactor::Instance<()>| {
-            let (reply_port, reply_rx) = client.open_once_port::<NodePayload>();
+            let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
             port.send(
                 client,
                 IntrospectMessage::QueryChild {
@@ -1516,7 +1530,7 @@ mod tests {
             .unwrap();
             reply_rx
         };
-        let recv = |rx: hyperactor::mailbox::OncePortReceiver<NodePayload>| async move {
+        let recv = |rx: hyperactor::mailbox::OncePortReceiver<IntrospectResult>| async move {
             tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
                 .await
                 .expect("QueryChild(Proc) timed out — reply never delivered")
@@ -1525,10 +1539,14 @@ mod tests {
 
         // Initial query: ProcAgent itself should appear in children.
         let payload = recv(query(&client)).await;
-        assert!(
-            matches!(payload.properties, NodeProperties::Proc { .. }),
-            "expected Proc, got {:?}",
-            payload.properties
+        // Verify this is a proc node by checking attrs contain node_type=proc.
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&payload.attrs).expect("valid attrs JSON");
+        assert_eq!(
+            attrs.get(crate::introspect::NODE_TYPE).map(String::as_str),
+            Some("proc"),
+            "expected node_type=proc in attrs, got {:?}",
+            payload.attrs
         );
         assert!(
             payload
@@ -1547,10 +1565,13 @@ mod tests {
 
         // Second query: extra_actor must appear without any republish.
         let payload2 = recv(query(&client)).await;
-        assert!(
-            matches!(payload2.properties, NodeProperties::Proc { .. }),
-            "expected Proc, got {:?}",
-            payload2.properties
+        let attrs2: hyperactor_config::Attrs =
+            serde_json::from_str(&payload2.attrs).expect("valid attrs JSON");
+        assert_eq!(
+            attrs2.get(crate::introspect::NODE_TYPE).map(String::as_str),
+            Some("proc"),
+            "expected node_type=proc in attrs, got {:?}",
+            payload2.attrs
         );
         assert!(
             payload2.children.iter().any(|c| c.contains("extra_actor")),
