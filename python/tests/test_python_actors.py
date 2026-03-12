@@ -1976,3 +1976,73 @@ def test_graceful_shutdown_no_unacked_messages() -> None:
         f"Worker exited with code {result.returncode}.\nstderr: {result.stderr[-2000:]}"
     )
     assert "OK: 0 faults" in result.stdout
+
+
+class ObjectWithFinalizer:
+    """Object whose __del__ writes a marker file"""
+
+    def __init__(self, path: str) -> None:
+        # This is bad etiquette, but "open" doesn't exist at interpreter finalization
+        # time. So we have to open it prematurely.
+        self._file = open(path, "w")
+
+    def __del__(self) -> None:
+        self._file.write("finalized")
+        self._file.close()
+
+
+# Only used in a proc for test_del_runs_on_proc_mesh_stop.
+_finalizer_sentinel: ObjectWithFinalizer | None = None
+
+
+class CleanupMarkerActor(Actor):
+    """Actor that stashes a ObjectWithFinalizer in a module global to ensure
+    the Python process is finalized on monarch procs."""
+
+    def __init__(self, path: str) -> None:
+        # Store the sentinel in a module-level global so it outlives
+        # the actor and is only collected during interpreter finalization.
+        global _finalizer_sentinel
+        _finalizer_sentinel = ObjectWithFinalizer(path)
+        print(f"Assigned {_finalizer_sentinel} to module global")
+
+    @endpoint
+    def getpid(self) -> int:
+        return os.getpid()
+
+
+def is_process_running(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
+        return True
+    except OSError:
+        return False
+
+
+@pytest.mark.timeout(120)
+@parametrize_config(actor_queue_dispatch={True, False})
+async def test_del_runs_on_proc_mesh_stop() -> None:
+    """__del__ on a module global should fire via Py_FinalizeEx when the proc exits."""
+    marker = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    marker_path = marker.name
+    marker.write(b"not finalized")
+    marker.close()
+
+    pm = this_host().spawn_procs(per_host={"gpus": 1})
+    am = pm.spawn("cleanup", CleanupMarkerActor, marker_path)
+    pids = await am.getpid.call()
+    pids = [pid for _, pid in pids]
+    assert os.getpid() not in pids, "ensure the processes are separate"
+    # Stop the proc mesh, which should stop the proc the actor is running on.
+    await pm.stop()
+    # Make sure the PID is gone before checking the file, in case there was
+    # a delay.
+    while any(is_process_running(pid) for pid in pids):
+        await asyncio.sleep(5)
+
+    with open(marker_path) as f:
+        assert f.read() == "finalized", (
+            f"file {marker_path} should have contents 'finalized' if the finalizers were run"
+        )
+    os.unlink(marker_path)
