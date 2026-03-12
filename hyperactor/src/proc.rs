@@ -698,13 +698,10 @@ impl Proc {
             .map(|(actor_id, root)| {
                 let actor_id = actor_id.clone();
                 async move {
-                    tokio::time::timeout(
-                        timeout,
-                        ActorStatus::wait_for_terminal(root),
-                    )
-                    .await
-                    .ok()
-                    .map(|_| actor_id)
+                    tokio::time::timeout(timeout, ActorStatus::wait_for_terminal(root))
+                        .await
+                        .ok()
+                        .map(|_| actor_id)
                 }
             })
             .collect();
