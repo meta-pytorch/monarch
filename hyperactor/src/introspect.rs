@@ -507,7 +507,7 @@ pub async fn serve_introspect(
                     }
                 }
             }
-            _ = status.wait_for(ActorStatus::is_terminal) => {
+            _ = ActorStatus::wait_for_terminal(&mut status) => {
                 // Snapshot for post-mortem introspection before
                 // dropping our InstanceCell reference.
                 let snapshot = live_actor_payload(&cell);

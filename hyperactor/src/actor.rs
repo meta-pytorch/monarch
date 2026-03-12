@@ -595,6 +595,30 @@ impl ActorStatus {
     fn span_string(&self) -> &'static str {
         self.arm().unwrap_or_default()
     }
+
+    /// Wait for a watch receiver to reach a terminal state.
+    ///
+    /// Uses an explicit `borrow_and_update()` + `changed()` loop instead of
+    /// `watch::Receiver::wait_for()`. Under sustained load (hundreds of watch
+    /// channels, rapid state transitions), `wait_for` can permanently lose its
+    /// task waker — neither the watch notification nor the enclosing
+    /// `tokio::time::timeout` ever re-polls the task, even though
+    /// `notify_waiters()` was called and the value is terminal. The manual loop
+    /// avoids this because each `changed().await` creates an independent
+    /// cooperative future that re-registers wakers from scratch.
+    pub async fn wait_for_terminal(
+        status: &mut watch::Receiver<ActorStatus>,
+    ) -> Result<ActorStatus, watch::error::RecvError> {
+        loop {
+            {
+                let current = status.borrow_and_update();
+                if current.is_terminal() {
+                    return Ok(current.clone());
+                }
+            }
+            status.changed().await?;
+        }
+    }
 }
 
 impl fmt::Display for ActorStatus {
@@ -732,10 +756,9 @@ impl<A: Actor> IntoFuture for ActorHandle<A> {
     fn into_future(self) -> Self::IntoFuture {
         let future = async move {
             let mut status_receiver = self.cell.status().clone();
-            let result = status_receiver.wait_for(ActorStatus::is_terminal).await;
-            match result {
+            match ActorStatus::wait_for_terminal(&mut status_receiver).await {
                 Err(_) => ActorStatus::Unknown,
-                Ok(status) => status.clone(),
+                Ok(status) => status,
             }
         };
 

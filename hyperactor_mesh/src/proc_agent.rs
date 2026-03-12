@@ -639,7 +639,7 @@ impl MeshAgentMessageHandler for ProcAgent {
         let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
             match tokio::time::timeout(
                 tokio::time::Duration::from_millis(timeout_ms),
-                status.wait_for(|state: &ActorStatus| state.is_terminal()),
+                ActorStatus::wait_for_terminal(&mut status),
             )
             .await
             {
