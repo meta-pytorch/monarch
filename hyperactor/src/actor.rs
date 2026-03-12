@@ -52,6 +52,7 @@ pub trait ReceiverPollExt<T: 'static> {
     /// `Result<Ref<'_, T>, RecvError>` as `wait_for`. Timeout, if desired,
     /// should be applied externally (e.g. via
     /// `RealClock.timeout(…, recv.poll_for(…))`), same as with `wait_for`.
+    #[allow(async_fn_in_trait)]
     async fn poll_for<F>(&mut self, f: F) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
     where
         F: FnMut(&T) -> bool;
@@ -72,16 +73,13 @@ impl<T: Send + Sync + 'static> ReceiverPollExt<T> for watch::Receiver<T> {
                 }
             }
             // Return Err if the sender has been dropped (mirrors wait_for behavior).
-            if let Err(e) = self.has_changed() {
-                return Err(e);
-            }
+            self.has_changed()?;
             #[allow(clippy::disallowed_methods)]
             tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
             sleep_ms = (sleep_ms * 2).min(1000);
         }
     }
 }
-use crate::ActorRef;
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
