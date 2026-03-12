@@ -18,35 +18,14 @@
 //!
 //! # MAST resolution invariants
 //!
-//! - **INV-DISPATCH**: In fbcode builds, the `--mast-resolver` CLI
-//!   arg selects the strategy via [`MastResolver`]. Default is
+//! - **MR-1 (dispatch):** In fbcode builds, the `--mast-resolver`
+//!   CLI arg selects the strategy via [`MastResolver`]. Default is
 //!   thrift; `"cli"` selects CLI. In OSS builds, CLI always.
 //!
-//! - **INV-CLI-CONTRACT**: The CLI resolver requires `mast
-//!   get-status --json <job>` to exit 0 and produce valid JSON. A
-//!   missing binary produces a distinct "not found" error. Non-zero
-//!   exit includes the exit code and stderr. Malformed JSON produces
-//!   a parse error with context.
+//! See `mesh_admin.rs` for MC-1..MC-5 (CLI contract, hostname
+//! extraction, FQDN qualification, admin port resolution).
 //!
-//! - **INV-HEAD-HOSTNAME**: [`head_hostname`] extracts the first
-//!   hostname by ascending task index. For each task group, the last
-//!   attempt is selected. For each task, the last execution attempt
-//!   is selected. Task indices are parsed from map keys as integers
-//!   and sorted ascending. Empty result is a fatal error.
-//!
-//! - **INV-FQDN-IDEMPOTENT**: [`qualify_fqdn`] is idempotent. A
-//!   hostname containing a dot passes through (or resolves to
-//!   itself). A short hostname is qualified via
-//!   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
-//!   hostname.
-//!
-//! - **INV-FQDN-NONBLOCKING**: [`qualify_fqdn`] runs the blocking
-//!   `getaddrinfo` syscall via `spawn_blocking`, never on a tokio
-//!   worker thread.
-//!
-//! - **INV-ADMIN-PORT**: [`resolve_admin_port`] uses the explicit
-//!   override when provided, otherwise reads the port from
-//!   `MESH_ADMIN_ADDR` config.
+//! See mesh_admin.rs module doc for MC-5.
 //!
 //! # Address handling
 //!
@@ -73,7 +52,7 @@ use std::time::Duration;
 
 use crate::theme::Args;
 
-// -- MAST resolution dispatch (INV-DISPATCH) --
+// -- MAST resolution dispatch (MR-1) --
 //
 // `MastResolver` is defined locally in each binary (here and in
 // `hyper`) rather than in `hyperactor_mesh`, to avoid pulling
@@ -114,14 +93,14 @@ impl MastResolver {
 }
 
 /// Resolve a `mast_conda:///<job-name>` handle to an
-/// `https://fqdn:port` URL (INV-DISPATCH).
+/// `https://fqdn:port` URL (MR-1).
 ///
 /// Two resolution strategies exist, selected by `MastResolver`:
 ///
 /// - `Cli`: shells out to `mast get-status --json`
 ///   (`hyperactor_mesh::mesh_admin::resolve_mast_handle`). Implements
-///   INV-CLI-CONTRACT, INV-HEAD-HOSTNAME, INV-FQDN-IDEMPOTENT,
-///   INV-FQDN-NONBLOCKING.
+///   MC-1, MC-2, MC-3,
+///   MC-4.
 ///
 /// - `Thrift` (fbcode only): queries the MAST HPC scheduler via
 ///   Thrift (`hyperactor_meta::mesh_admin::resolve_mast_handle`).
