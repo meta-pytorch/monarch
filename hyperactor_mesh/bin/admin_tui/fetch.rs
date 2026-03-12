@@ -12,8 +12,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use algebra::JoinSemilattice;
-use hyperactor::introspect::NodePayload;
-use hyperactor::introspect::NodeProperties;
+use hyperactor_mesh::introspect::NodePayload;
+use hyperactor_mesh::introspect::NodeProperties;
 
 use crate::filter::is_failed_node;
 use crate::filter::is_stopped_node;
@@ -264,7 +264,7 @@ pub(crate) fn build_tree_node<'a>(
             return None;
         }
 
-        // Filter stopped actors (failed nodes always visible).
+        // TUI-4: failed nodes always visible.
         if !show_stopped
             && is_stopped_node(&payload.properties)
             && !is_failed_node(&payload.properties)
@@ -327,7 +327,7 @@ pub(crate) fn build_tree_node<'a>(
                 let child_is_stopped = stopped_children.contains(child_ref.as_str());
                 let child_is_system = system_children.contains(child_ref.as_str());
 
-                // Failed nodes are always visible (never filtered by show_stopped).
+                // TUI-4: failed nodes always visible.
                 // If the parent proc is poisoned, its stopped children may be
                 // failed — don't filter them out (cache may be empty on first load).
                 // A child is known-failed from its cached payload, or
@@ -513,8 +513,8 @@ pub(crate) fn extract_trailing_index(s: &str) -> Option<(&str, u64)> {
 #[cfg(test)]
 mod tests {
     use algebra::JoinSemilattice;
-    use hyperactor::introspect::NodePayload;
-    use hyperactor::introspect::NodeProperties;
+    use hyperactor_mesh::introspect::NodePayload;
+    use hyperactor_mesh::introspect::NodeProperties;
 
     use super::*;
 

@@ -255,8 +255,6 @@ impl HostAgent {
     /// introspection. Called from init and after each state change
     /// (proc created/stopped).
     fn publish_introspect_properties(&self, cx: &Instance<Self>) {
-        use hyperactor::introspect::PublishedPropertiesKind;
-
         let host = match self.host.as_ref() {
             Some(h) => h,
             None => return, // host shut down
@@ -282,12 +280,14 @@ impl HostAgent {
         }
 
         let num_procs = children.len();
-        cx.publish_properties(PublishedPropertiesKind::Host {
-            addr,
-            num_procs,
-            children,
-            system_children,
-        });
+
+        let mut attrs = hyperactor_config::Attrs::new();
+        attrs.set(crate::introspect::NODE_TYPE, "host".to_string());
+        attrs.set(crate::introspect::ADDR, addr);
+        attrs.set(crate::introspect::NUM_PROCS, num_procs);
+        attrs.set(hyperactor::introspect::CHILDREN, children);
+        attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
+        cx.publish_attrs(attrs);
     }
 }
 
@@ -326,8 +326,7 @@ impl Actor for HostAgent {
         let local_proc = host.local_proc().clone();
         let self_id = this.self_id().clone();
         this.set_query_child_handler(move |child_ref| {
-            use hyperactor::introspect::NodePayload;
-            use hyperactor::introspect::NodeProperties;
+            use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
                 hyperactor::reference::Reference::Proc(proc_id) => {
@@ -354,34 +353,41 @@ impl Actor for HostAgent {
                         }
                         actors.push(ref_str);
                     }
-                    NodePayload {
+                    // Build attrs for this proc node.
+                    let mut attrs = hyperactor_config::Attrs::new();
+                    attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
+                    attrs.set(crate::introspect::PROC_NAME, label.to_string());
+                    attrs.set(crate::introspect::NUM_ACTORS, actors.len());
+                    attrs.set(crate::introspect::SYSTEM_CHILDREN, system_actors.clone());
+                    let attrs_json =
+                        serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
+
+                    IntrospectResult {
                         identity: proc.proc_id().to_string(),
-                        properties: NodeProperties::Proc {
-                            proc_name: label.to_string(),
-                            num_actors: actors.len(),
-                            system_children: system_actors,
-                            stopped_children: Vec::new(),
-                            stopped_retention_cap: 0,
-                            is_poisoned: false,
-                            failed_actor_count: 0,
-                        },
+                        attrs: attrs_json,
                         children: actors,
                         parent: Some(HostId(self_id.clone()).to_string()),
                         as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
                             .to_string(),
                     }
                 }
-                None => NodePayload {
-                    identity: String::new(),
-                    properties: NodeProperties::Error {
-                        code: "not_found".into(),
-                        message: format!("child {} not found", child_ref),
-                    },
-                    children: Vec::new(),
-                    parent: None,
-                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                        .to_string(),
-                },
+                None => {
+                    let mut error_attrs = hyperactor_config::Attrs::new();
+                    error_attrs.set(hyperactor::introspect::ERROR_CODE, "not_found".to_string());
+                    error_attrs.set(
+                        hyperactor::introspect::ERROR_MESSAGE,
+                        format!("child {} not found", child_ref),
+                    );
+                    IntrospectResult {
+                        identity: String::new(),
+                        attrs: serde_json::to_string(&error_attrs)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        children: Vec::new(),
+                        parent: None,
+                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
+                            .to_string(),
+                    }
+                }
             }
         });
 
