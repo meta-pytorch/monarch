@@ -20,9 +20,10 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     The default implementation is to exit the process with error code 1
     after logging the event.
     If this function raises any exception (including BaseException classes such
-    as SystemExit), the client process will exit. Any normal return value will
-    cause the fault to be dropped. Logs will be written containing the failure
-    message in either case.
+    as SystemExit from sys.exit), this fault is considered unhandled.
+    Any normal return value will cause the fault to be dropped. Logs will be
+    written containing the failure message in either case.
+
     To customize this behavior, overwrite this function in your client code like so:
     ```
     import monarch.actor
@@ -35,6 +36,12 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
 
     monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook
     ```
+
+    If the fault is unhandled, it exits the main thread by delivering a KeyboardInterrupt.
+    This is done because the Python Interpreter can only be finalized to run
+    destructors and atexit hooks from the main thread. So if you see a
+    "KeyboardInterrupt" happening that you didn't send, it's because there was
+    an unhandled fault.
     """
     from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
 
@@ -43,6 +50,7 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     message = (
         f"Unhandled monarch error on the root actor, hostname={hostname}, "
         f"PID={pid} at time {datetime.now()}: {failure.report()}\n"
+        "Delivering KeyboardInterrupt to main thread to exit the program\n"
     )
     # use stderr, not a logger because loggers are sometimes set
     # not print anything (e.g. in pytest)
