@@ -13,6 +13,7 @@ import sys
 
 from monarch.monarch_dashboard import _PKG
 from monarch.monarch_dashboard.server.app import create_app
+from monarch.monarch_dashboard.server.db import SQLiteAdapter
 
 _DEFAULT_DB = os.environ.get(
     "MONARCH_DB_PATH",
@@ -30,7 +31,7 @@ def start_dashboard(db_path, host="0.0.0.0", port=5000):
             ">> To build the frontend, run: python setup.py build_frontend or run uv build --wheel --no-build-isolation"
         )
 
-    app = create_app(db_path)
+    app = create_app(SQLiteAdapter(db_path))
     app.run(host=host, port=port)
 
 
