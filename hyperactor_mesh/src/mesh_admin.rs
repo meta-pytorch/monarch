@@ -306,6 +306,16 @@ const SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(3);
 /// outer bridge timeout fires before the inner work completes.
 const QUERY_CHILD_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Read `MESH_ADMIN_RESOLVE_ACTOR_TIMEOUT` from config at call time.
+fn resolve_actor_timeout() -> Duration {
+    hyperactor_config::global::get(crate::config::MESH_ADMIN_RESOLVE_ACTOR_TIMEOUT)
+}
+
+/// Read `MESH_ADMIN_MAX_CONCURRENT_RESOLVES` from config at call time.
+fn max_concurrent_resolves() -> usize {
+    hyperactor_config::global::get(crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES)
+}
+
 /// Structured error response following the gateway RFC envelope
 /// pattern.
 #[derive(Debug, Serialize, Deserialize)]
@@ -351,6 +361,7 @@ impl IntoResponse for ApiError {
             "not_found" => StatusCode::NOT_FOUND,
             "bad_request" => StatusCode::BAD_REQUEST,
             "gateway_timeout" => StatusCode::GATEWAY_TIMEOUT,
+            "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let envelope = ApiErrorEnvelope { error: self };
@@ -602,6 +613,10 @@ struct BridgeState {
     // admin actor's Instance:
     //   bridge_cx: Instance<MeshAdminAgent>,
     bridge_cx: Instance<()>,
+    /// Limits the number of in-flight resolve requests to prevent
+    /// introspection queries from overwhelming the shared tokio
+    /// runtime and starving user actor workloads.
+    resolve_semaphore: tokio::sync::Semaphore,
     /// Keep the handle alive so the bridge mailbox is not dropped.
     _bridge_handle: ActorHandle<()>,
 }
@@ -695,7 +710,7 @@ impl Actor for MeshAdminAgent {
 
         // At Meta: mTLS is mandatory — fail if no certs are found.
         // In OSS: TLS is best-effort with plain HTTP fallback.
-        // See "TLS transport invariant" in module docs.
+        // See MA-T1 in module doc.
         let enforce_mtls = cfg!(fbcode_build);
         let tls_acceptor = try_tls_acceptor(enforce_mtls);
 
@@ -724,6 +739,7 @@ impl Actor for MeshAdminAgent {
         let bridge_state = Arc::new(BridgeState {
             admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone()),
             bridge_cx,
+            resolve_semaphore: tokio::sync::Semaphore::new(max_concurrent_resolves()),
             _bridge_handle: bridge_handle,
         });
         let router = create_mesh_admin_router(bridge_state);
@@ -1040,7 +1056,7 @@ impl MeshAdminAgent {
             cx,
             &mesh_agent_id,
             hyperactor_reference::Reference::Proc(proc_id.clone()),
-            SINGLE_HOST_TIMEOUT,
+            resolve_actor_timeout(),
             "querying proc mesh agent",
         )
         .await?;
@@ -1114,7 +1130,7 @@ impl MeshAdminAgent {
                         cx,
                         &child_actor_id,
                         hyperactor::introspect::IntrospectView::Actor,
-                        SINGLE_HOST_TIMEOUT,
+                        resolve_actor_timeout(),
                         "querying child actor is_system",
                     )
                     .await
@@ -1218,7 +1234,7 @@ impl MeshAdminAgent {
                         cx,
                         actor_id,
                         hyperactor::introspect::IntrospectView::Actor,
-                        SINGLE_HOST_TIMEOUT,
+                        resolve_actor_timeout(),
                         &format!("querying actor {}", actor_id),
                     )
                     .await?
@@ -1337,20 +1353,41 @@ async fn resolve_reference_bridge(
             )
         })?;
 
+    // Limit concurrent resolves to avoid starving user workloads
+    // that share this tokio runtime.
+    let _permit = state.resolve_semaphore.try_acquire().map_err(|_| {
+        tracing::warn!("mesh admin: rejecting resolve request (503): too many concurrent requests");
+        ApiError {
+            code: "service_unavailable".to_string(),
+            message: "too many concurrent introspection requests".to_string(),
+            details: None,
+        }
+    })?;
+
     let cx = &state.bridge_cx;
-    let response =
-        tokio::time::timeout(SINGLE_HOST_TIMEOUT, state.admin_ref.resolve(cx, reference))
-            .await
-            .map_err(|_| ApiError {
-                code: "gateway_timeout".to_string(),
-                message: "timed out resolving reference".to_string(),
-                details: None,
-            })?
-            .map_err(|e| ApiError {
-                code: "internal_error".to_string(),
-                message: format!("failed to resolve reference: {}", e),
-                details: None,
-            })?;
+    let resolve_start = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        SINGLE_HOST_TIMEOUT,
+        state.admin_ref.resolve(cx, reference.clone()),
+    )
+    .await
+    .map_err(|_| {
+        tracing::warn!(
+            reference = %reference,
+            elapsed_ms = resolve_start.elapsed().as_millis() as u64,
+            "mesh admin: resolve timed out (gateway_timeout)",
+        );
+        ApiError {
+            code: "gateway_timeout".to_string(),
+            message: "timed out resolving reference".to_string(),
+            details: None,
+        }
+    })?
+    .map_err(|e| ApiError {
+        code: "internal_error".to_string(),
+        message: format!("failed to resolve reference: {}", e),
+        details: None,
+    })?;
 
     match response.0 {
         Ok(payload) => Ok(Json(payload)),
@@ -1386,6 +1423,18 @@ async fn tree_dump(
     State(state): State<Arc<BridgeState>>,
     headers: axum::http::header::HeaderMap,
 ) -> Result<String, ApiError> {
+    // Limit concurrent resolves to avoid starving user workloads.
+    let _permit = state.resolve_semaphore.try_acquire().map_err(|_| {
+        tracing::warn!(
+            "mesh admin: rejecting tree_dump request (503): too many concurrent requests"
+        );
+        ApiError {
+            code: "service_unavailable".to_string(),
+            message: "too many concurrent introspection requests".to_string(),
+            details: None,
+        }
+    })?;
+
     let cx = &state.bridge_cx;
 
     // Build base URL from the Host header for clickable links.
