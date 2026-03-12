@@ -337,8 +337,12 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
         time.sleep(15)
         return await pm
 
-    with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
-        host = state.hosts
+    # Can't use scoped_state here: graceful shutdown blocks on proc_mesh
+    # initialization, but this test intentionally replaces _proc_mesh with a
+    # sleeping coroutine to verify that spawn() doesn't block.
+    job = ProcessJob({"hosts": 1})
+    try:
+        host = job.state(cached_path=None).hosts
         proc_mesh = host.spawn_procs(name="test_proc")
         proc_mesh._proc_mesh = PythonTask.from_coroutine(
             sleep_then_mesh(proc_mesh._proc_mesh)
@@ -346,6 +350,8 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
         assert proc_mesh._proc_mesh.poll() is None
         proc_mesh.spawn("pid", PidActor)
         assert proc_mesh._proc_mesh.poll() is None
+    finally:
+        job.kill()
 
 
 @pytest.mark.timeout(60)
