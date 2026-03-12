@@ -106,6 +106,27 @@ wirevalue::register_type!(StopActorResult);
 struct RepublishIntrospect;
 wirevalue::register_type!(RepublishIntrospect);
 
+/// Collect live actor children and system actor children from the
+/// proc's instance DashMap using `all_instance_keys()` with point
+/// lookups. This avoids the convoy starvation from `all_actor_ids()`
+/// which holds shard read locks while doing heavy per-entry work.
+/// See S12 in `introspect` module doc.
+fn collect_live_children(proc: &hyperactor::Proc) -> (Vec<String>, Vec<String>) {
+    let all_keys = proc.all_instance_keys();
+    let mut children = Vec::with_capacity(all_keys.len());
+    let mut system_children = Vec::new();
+    for id in all_keys {
+        if let Some(cell) = proc.get_instance(&id) {
+            let ref_str = id.to_string();
+            if cell.is_system() {
+                system_children.push(ref_str.clone());
+            }
+            children.push(ref_str);
+        }
+    }
+    (children, system_children)
+}
+
 #[derive(
     Debug,
     Clone,
@@ -248,8 +269,7 @@ struct SelfCheck {}
 /// degrade to log-only behavior (events become undeliverable again or
 /// are dropped).
 ///
-/// See `global_context.rs` for the invariant and the forwarding path
-/// ("last sink wins").
+/// See GC-1 in `global_context` module doc.
 #[hyperactor::export(
     handlers=[
         MeshAgentMessage,
@@ -356,24 +376,9 @@ impl ProcAgent {
     }
 
     /// Publish the current proc properties and children list for
-    /// introspection.
+    /// introspection. See S12 in `introspect` module doc.
     fn publish_introspect_properties(&self, cx: &impl hyperactor::context::Actor) {
-        // Live actors.
-        let live_ids = self.proc.all_actor_ids();
-        let num_live = live_ids.len();
-        let mut children = Vec::with_capacity(num_live);
-        let mut system_children = Vec::new();
-        for id in live_ids {
-            let ref_str = id.to_string();
-            if self
-                .proc
-                .get_instance(&id)
-                .is_some_and(|cell| cell.is_system())
-            {
-                system_children.push(ref_str.clone());
-            }
-            children.push(ref_str);
-        }
+        let (mut children, mut system_children) = collect_live_children(&self.proc);
 
         // Terminated actors appear as children but don't inflate
         // the actor count. Track them in stopped_children so the
@@ -407,6 +412,7 @@ impl ProcAgent {
         let failed_actor_count = self.supervision_events.len();
 
         // Attrs-based introspection.
+        let num_live = children.len();
         let mut attrs = hyperactor_config::Attrs::new();
         attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
         attrs.set(
@@ -456,17 +462,7 @@ impl Actor for ProcAgent {
             // test_query_child_proc_returns_live_children.
             if let hyperactor::reference::Reference::Proc(proc_id) = child_ref {
                 if proc_id == proc.proc_id() {
-                    let live_ids = proc.all_actor_ids();
-                    let num_live = live_ids.len();
-                    let mut children = Vec::with_capacity(num_live);
-                    let mut system_children = Vec::new();
-                    for id in live_ids {
-                        let ref_str = id.to_string();
-                        if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
-                            system_children.push(ref_str.clone());
-                        }
-                        children.push(ref_str);
-                    }
+                    let (mut children, mut system_children) = collect_live_children(&proc);
 
                     let mut stopped_children: Vec<String> = Vec::new();
                     for id in proc.all_terminated_actor_ids() {
@@ -509,6 +505,7 @@ impl Actor for ProcAgent {
                         .unwrap_or((false, 0));
 
                     // Build attrs for this proc node.
+                    let num_live = children.len();
                     let mut attrs = hyperactor_config::Attrs::new();
                     attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
                     attrs.set(crate::introspect::PROC_NAME, proc_id.to_string());
@@ -1583,6 +1580,135 @@ mod tests {
             "expected at least {} children after direct spawn, got {:?}",
             initial_count + 1,
             payload2.children
+        );
+    }
+
+    // Exercises S12 (see introspect module doc): introspection must
+    // not impair actor liveness. Rapidly spawns and stops
+    // actors while concurrently querying QueryChild(Reference::Proc).
+    // The spawn/stop loop must complete within the timeout and the
+    // iteration count must match -- if DashMap convoy starvation
+    // blocks the proc, the timeout fires and the test fails.
+    #[tokio::test]
+    async fn test_rapid_spawn_stop_does_not_stall_proc_agent() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        use hyperactor::Proc;
+        use hyperactor::actor::ActorStatus;
+        use hyperactor::channel::ChannelTransport;
+        use hyperactor::introspect::IntrospectMessage;
+        use hyperactor::introspect::IntrospectResult;
+        use hyperactor::reference as hyperactor_reference;
+
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_proc".to_string()).unwrap();
+        let agent_handle = ProcAgent::boot_v1(proc.clone(), None).unwrap();
+
+        agent_handle
+            .status()
+            .wait_for(|s| matches!(s, ActorStatus::Idle))
+            .await
+            .unwrap();
+
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let (client, _client_handle) = client_proc.instance("client").unwrap();
+
+        let agent_id = proc.proc_id().actor_id(PROC_AGENT_ACTOR_NAME, 0);
+        let port =
+            hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(&agent_id);
+
+        // Concurrent query task: send QueryChild(Proc) every 10ms.
+        let query_client_proc =
+            Proc::direct(ChannelTransport::Unix.any(), "query_client".to_string()).unwrap();
+        let (query_client, _qc_handle) = query_client_proc.instance("qc").unwrap();
+        let query_port = port.clone();
+        let query_proc_id = proc.proc_id().clone();
+        let query_count = Arc::new(AtomicUsize::new(0));
+        let query_count_clone = query_count.clone();
+        let query_task = tokio::spawn(async move {
+            loop {
+                let (reply_port, reply_rx) = query_client.open_once_port::<IntrospectResult>();
+                if query_port
+                    .send(
+                        &query_client,
+                        IntrospectMessage::QueryChild {
+                            child_ref: hyperactor_reference::Reference::Proc(query_proc_id.clone()),
+                            reply: reply_port.bind(),
+                        },
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+                match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx.recv()).await
+                {
+                    Ok(Ok(_)) => {
+                        query_count_clone.fetch_add(1, Ordering::Relaxed);
+                    }
+                    _ => {} // Transient failures expected during churn
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+
+        // Rapid spawn/stop loop with liveness timeout.
+        const ITERATIONS: usize = 200;
+        let mut completed = 0usize;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            for i in 0..ITERATIONS {
+                let name = format!("churn_{}", i);
+                let handle = proc.spawn(&name, ExtraActor).unwrap();
+                let actor_id = handle.actor_id().clone();
+                if let Some(mut status) = proc.stop_actor(&actor_id, "churn".to_string()) {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        status.wait_for(ActorStatus::is_terminal),
+                    )
+                    .await;
+                }
+                completed += 1;
+            }
+        })
+        .await;
+
+        query_task.abort();
+        let _ = query_task.await; // Join to suppress noisy panic on drop.
+
+        assert!(
+            result.is_ok(),
+            "spawn/stop loop stalled after {completed}/{ITERATIONS} iterations — \
+             DashMap convoy starvation likely"
+        );
+        assert_eq!(
+            completed, ITERATIONS,
+            "expected {ITERATIONS} completed iterations, got {completed}"
+        );
+        assert!(
+            query_count.load(Ordering::Relaxed) > 0,
+            "concurrent QueryChild queries never succeeded — query task may not have run"
+        );
+
+        // Final consistency check: QueryChild should still work.
+        let (reply_port, reply_rx) = client.open_once_port::<IntrospectResult>();
+        port.send(
+            &client,
+            IntrospectMessage::QueryChild {
+                child_ref: hyperactor_reference::Reference::Proc(proc.proc_id().clone()),
+                reply: reply_port.bind(),
+            },
+        )
+        .unwrap();
+        let final_payload =
+            tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
+                .await
+                .expect("final QueryChild timed out")
+                .expect("final QueryChild channel closed");
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&final_payload.attrs).expect("valid attrs JSON");
+        assert_eq!(
+            attrs.get(crate::introspect::NODE_TYPE).map(String::as_str),
+            Some("proc"),
         );
     }
 }
