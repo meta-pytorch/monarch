@@ -221,7 +221,7 @@ pub(crate) fn merge_value_runs<T: Eq + Clone>(
     // Main merge loop: runs as long as both sides have a current
     // item.
     //
-    // Invariant: all runs emitted so far are sorted, non-overlapping,
+    // VO-1 postcondition: all runs emitted so far are sorted, non-overlapping,
     // and coalesced; `left` and `right` point to the next unprocessed
     // run on each side.
     while left.is_some() && right.is_some() {
