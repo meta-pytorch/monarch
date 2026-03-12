@@ -66,6 +66,7 @@ use crate::actor::ActorHandle;
 use crate::actor::ActorStatus;
 use crate::actor::Binds;
 use crate::actor::HandlerInfo;
+use crate::actor::ReceiverPollExt;
 use crate::actor::Referable;
 use crate::actor::RemoteHandles;
 use crate::actor::Signal;
@@ -700,7 +701,7 @@ impl Proc {
                 async move {
                     tokio::time::timeout(
                         timeout,
-                        root.wait_for(|state: &ActorStatus| state.is_terminal()),
+                        root.poll_for(|state: &ActorStatus| state.is_terminal()),
                     )
                     .await
                     .ok()
