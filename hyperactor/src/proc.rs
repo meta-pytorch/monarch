@@ -496,6 +496,25 @@ impl Proc {
             .collect()
     }
 
+    /// Snapshot all instance keys from the DashMap without inspecting
+    /// values. Each shard read lock is held only long enough to clone
+    /// the key — no `Weak::upgrade()`, no `watch::borrow()`, no
+    /// `is_terminal()` check. This minimises shard lock hold time to
+    /// avoid convoy starvation with concurrent `insert`/`remove`
+    /// operations during rapid actor churn.
+    ///
+    /// The returned list may include actors that are terminal or
+    /// whose `WeakInstanceCell` no longer upgrades. Callers should
+    /// tolerate stale entries (e.g. by handling "not found" on
+    /// subsequent per-actor lookups).
+    pub fn all_instance_keys(&self) -> Vec<reference::ActorId> {
+        self.state()
+            .instances
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Look up a terminated actor's snapshot by ID.
     pub fn terminated_snapshot(
         &self,
