@@ -146,7 +146,10 @@ where
 
     link.next.put(next).await;
 
-    result.map_err(|e| anyhow::anyhow!("{e}"))
+    match result {
+        Ok(()) | Err(session::RecvLoopError::Cancelled) => Ok(()),
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    }
 }
 
 /// Main listen loop. Each accepted connection spawns a task that looks up (or
