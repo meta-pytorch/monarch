@@ -52,19 +52,13 @@ pub trait ReceiverPollExt<T: 'static> {
     /// `Result<Ref<'_, T>, RecvError>` as `wait_for`. Timeout, if desired,
     /// should be applied externally (e.g. via
     /// `RealClock.timeout(…, recv.poll_for(…))`), same as with `wait_for`.
-    async fn poll_for<F>(
-        &mut self,
-        f: F,
-    ) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
+    async fn poll_for<F>(&mut self, f: F) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
     where
         F: FnMut(&T) -> bool;
 }
 
 impl<T: Send + Sync + 'static> ReceiverPollExt<T> for watch::Receiver<T> {
-    async fn poll_for<F>(
-        &mut self,
-        mut f: F,
-    ) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
+    async fn poll_for<F>(&mut self, mut f: F) -> Result<watch::Ref<'_, T>, watch::error::RecvError>
     where
         F: FnMut(&T) -> bool,
     {

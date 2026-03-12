@@ -14,7 +14,6 @@
 // the suppression must be at module scope.
 #![allow(unused_assignments)]
 
-
 use std::collections::HashMap;
 use std::mem::take;
 use std::sync::Arc;
@@ -29,12 +28,12 @@ use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Bind;
 use hyperactor::Context;
-use hyperactor::ReceiverPollExt;
 use hyperactor::Data;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
+use hyperactor::ReceiverPollExt;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorStatus;
