@@ -281,9 +281,9 @@ QUERIES = [
     # Actor status events joined with actors
     (
         "Actor status timeline",
-        """SELECT a.full_name, s.new_status, s.prev_status, s.reason
+        """SELECT a.full_name, s.new_status, s.reason
            FROM actor_status_events s
-           JOIN actors a ON s.actor_id = a.full_name
+           JOIN actors a ON s.actor_id = a.id
            ORDER BY s.timestamp_us""",
     ),
     (
@@ -315,7 +315,8 @@ QUERIES = [
            FROM sent_messages sm
            LEFT JOIN meshes m ON sm.actor_mesh_id = m.id
            LEFT JOIN actors a ON sm.sender_actor_id = a.id
-           WHERE m.given_name = 'compute'""",
+           WHERE m.given_name = 'compute'
+           ORDER BY sm.timestamp_us DESC""",
     ),
     (
         "Sample sent messages",
@@ -325,6 +326,49 @@ QUERIES = [
            JOIN actors a ON sm.sender_actor_id = a.id
            ORDER BY sm.timestamp_us DESC
            LIMIT 10""",
+    ),
+    (
+        "Received Messages",
+        """SELECT m.id, m.timestamp_us, m.port_id,
+                  sender.full_name AS from_actor, receiver.full_name AS to_actor,
+           FROM messages m
+           LEFT JOIN actors sender ON m.from_actor_id = sender.id
+           LEFT JOIN actors receiver ON m.to_actor_id = receiver.id
+           ORDER BY m.timestamp_us
+           LIMIT 10""",
+    ),
+    (
+        "Messages received by 'compuate' actor mesh sent from 'sender' actor mesh",
+        """SELECT m.id, m.timestamp_us,
+                  sender.display_name AS from_actor, receiver.display_name AS to_actor,
+                  m.port_id
+           FROM messages m
+           JOIN actors sender ON m.from_actor_id = sender.id
+           JOIN actors receiver ON m.to_actor_id = receiver.id
+           JOIN meshes sm ON sender.mesh_id = sm.id
+           JOIN meshes rm ON receiver.mesh_id = rm.id
+           WHERE sm.given_name = 'sender' AND rm.given_name = 'compute'
+           ORDER BY m.timestamp_us DESC""",
+    ),
+    (
+        "Message Status Events",
+        "SELECT * FROM message_status_events ORDER BY timestamp_us LIMIT 10",
+    ),
+    (
+        "Lifecycle: sender -> compute messages",
+        """SELECT sender.display_name AS from_actor,
+                  receiver.display_name AS to_actor,
+                  m.endpoint,
+                  mse.status,
+                  mse.timestamp_us
+           FROM messages m
+           INNER JOIN message_status_events mse ON m.id = mse.message_id
+           LEFT JOIN actors sender ON m.from_actor_id = sender.id
+           LEFT JOIN actors receiver ON m.to_actor_id = receiver.id
+           LEFT JOIN meshes sm ON sender.mesh_id = sm.id
+           LEFT JOIN meshes rm ON receiver.mesh_id = rm.id
+           WHERE sm.given_name = 'sender' AND rm.given_name = 'compute'
+           ORDER BY m.id, mse.timestamp_us""",
     ),
 ]
 
