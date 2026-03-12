@@ -11,7 +11,7 @@ use hyperactor::channel::ChannelAddr;
 use hyperactor_mesh::Bootstrap;
 use hyperactor_mesh::Name;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
-use hyperactor_mesh::bootstrap_or_die;
+use hyperactor_mesh::bootstrap::bootstrap;
 use hyperactor_mesh::host_mesh::HostMesh;
 use monarch_types::MapPyErr;
 use pyo3::Bound;
@@ -19,6 +19,7 @@ use pyo3::PyAny;
 use pyo3::PyResult;
 use pyo3::Python;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::pyfunction;
 use pyo3::types::PyAnyMethods;
 use pyo3::types::PyModule;
@@ -38,13 +39,15 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
     };
 
     hyperactor::internal_macro_support::tracing::debug!("entering async bootstrap");
-    crate::runtime::future_into_py::<_, ()>(py, async move {
+    crate::runtime::future_into_py::<_, i32>(py, async move {
         // SAFETY:
         // - Only one of these is ever created.
         // - This is the entry point of this program, so this will be dropped when
         // no more FB C++ code is running.
         let _destroy_guard = unsafe { fbinit::DestroyGuard::new() };
-        bootstrap_or_die().await;
+        bootstrap()
+            .await
+            .map_err(|e| PyRuntimeError::new_err(format!("{:?}", e)))
     })
 }
 
@@ -102,7 +105,8 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
     };
 
     PyPythonTask::new(async {
-        let err = boot.bootstrap().await;
+        // This should never return Ok because exit_on_shutdown is true.
+        let err = boot.bootstrap().await.unwrap_err();
         Err(err).map_pyerr()?;
         Ok(())
     })
