@@ -16,7 +16,11 @@ from monarch._rust_bindings.monarch_hyperactor.context import Instance
 from monarch._rust_bindings.monarch_hyperactor.host_mesh import HostMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 
-def bootstrap_main() -> None: ...
+def bootstrap_main() -> int:
+    """Bootstrap a proc. Returns an exit code that should be used to exit the process
+    with sys.exit()."""
+    ...
+
 def run_worker_loop_forever(address: str) -> PythonTask[None]: ...
 def attach_to_workers(
     instance: Instance,
