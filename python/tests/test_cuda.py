@@ -141,24 +141,21 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             for name, value in cuda_env_vars.items():
                 os.environ[name] = value
 
-        proc_mesh_instance = (
-            ProcessJob({"hosts": 1})
-            .state(cached_path=None)
-            .hosts.spawn_procs(bootstrap=setup_cuda_env)
-        )
+        with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+            proc_mesh_instance = state.hosts.spawn_procs(bootstrap=setup_cuda_env)
 
-        async with proc_mesh_instance:
-            actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
+            async with proc_mesh_instance:
+                actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
 
-            env_vars = await actor.init_cuda_and_check_env.call_one(
-                list(cuda_env_vars.keys())
-            )
-            for name, expected_value in cuda_env_vars.items():
-                self.assertEqual(
-                    env_vars.get(name),
-                    expected_value,
-                    f"Environment variable {name} was not set correctly before CUDA initialization",
+                env_vars = await actor.init_cuda_and_check_env.call_one(
+                    list(cuda_env_vars.keys())
                 )
+                for name, expected_value in cuda_env_vars.items():
+                    self.assertEqual(
+                        env_vars.get(name),
+                        expected_value,
+                        f"Environment variable {name} was not set correctly before CUDA initialization",
+                    )
 
     async def test_proc_mesh_with_dictionary_env(self) -> None:
         """Test that proc_mesh function works with dictionary for env parameter"""
@@ -168,30 +165,29 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         }
 
-        proc_mesh_instance = (
-            ProcessJob({"hosts": 1}, env=cuda_env_vars)
-            .state(cached_path=None)
-            .hosts.spawn_procs()
-        )
+        with ProcessJob({"hosts": 1}, env=cuda_env_vars).scoped_state(
+            cached_path=None
+        ) as state:
+            proc_mesh_instance = state.hosts.spawn_procs()
 
-        async with proc_mesh_instance:
-            actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
-            env_vars = await actor.init_cuda_and_check_env.call_one(
-                list(cuda_env_vars.keys())
-            )
+            async with proc_mesh_instance:
+                actor = proc_mesh_instance.spawn("cuda_init", CudaInitTestActor)
+                env_vars = await actor.init_cuda_and_check_env.call_one(
+                    list(cuda_env_vars.keys())
+                )
 
-            self.assertEqual(
-                env_vars.get("CUDA_DEVICE_ORDER"),
-                "PCI_BUS_ID",
-            )
-            self.assertEqual(
-                env_vars.get("CUDA_MODULE_LOADING"),
-                "LAZY",
-            )
-            self.assertEqual(
-                env_vars.get("CUDA_DEVICE_MAX_CONNECTIONS"),
-                "1",
-            )
+                self.assertEqual(
+                    env_vars.get("CUDA_DEVICE_ORDER"),
+                    "PCI_BUS_ID",
+                )
+                self.assertEqual(
+                    env_vars.get("CUDA_MODULE_LOADING"),
+                    "LAZY",
+                )
+                self.assertEqual(
+                    env_vars.get("CUDA_DEVICE_MAX_CONNECTIONS"),
+                    "1",
+                )
 
     async def test_cleanup_torch_distributed(self) -> None:
         """Test that calling stop on the actor destroys the process group"""

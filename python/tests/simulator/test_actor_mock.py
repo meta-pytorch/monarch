@@ -12,6 +12,7 @@ import pytest
 from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.mock import _actor_registry, get_actor_class, patch_actor
+from monarch._src.job.process import ProcessJob
 
 
 class OriginalActor(Actor):
@@ -349,26 +350,25 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
         3. OuterActor spawns InnerActor via this_proc().spawn()
         4. InnerActor should be MockInnerActor (returns "mock" not "real")
         """
-        from monarch._src.job.process import ProcessJob
-
         with patch_actor(InnerActor, MockInnerActor):
             # Create a host mesh and spawn processes
-            host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-            proc_mesh = host.spawn_procs(name="test_proc")
+            with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+                host = state.hosts
+                proc_mesh = host.spawn_procs(name="test_proc")
 
-            # Spawn OuterActor in the subprocess
-            outer = proc_mesh.spawn("outer", OuterActor)
+                # Spawn OuterActor in the subprocess
+                outer = proc_mesh.spawn("outer", OuterActor)
 
-            # OuterActor spawns InnerActor and returns its type
-            # If mock propagation works, this should return "mock"
-            # If mock propagation fails, this would return "real"
-            actor_type = outer.spawn_inner_and_get_type.call_one().get()
+                # OuterActor spawns InnerActor and returns its type
+                # If mock propagation works, this should return "mock"
+                # If mock propagation fails, this would return "real"
+                actor_type = outer.spawn_inner_and_get_type.call_one().get()
 
-            self.assertEqual(
-                actor_type,
-                "mock",
-                "InnerActor should be mocked when spawned from OuterActor in subprocess",
-            )
+                self.assertEqual(
+                    actor_type,
+                    "mock",
+                    "InnerActor should be mocked when spawned from OuterActor in subprocess",
+                )
 
 
 if __name__ == "__main__":
