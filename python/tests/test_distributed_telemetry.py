@@ -652,51 +652,105 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_sent_messages_table(cleanup_callbacks) -> None:
-    """Test that the sent_messages table is populated when messages are sent."""
+@pytest.mark.parametrize(
+    "send_path, expected_view_labels",
+    [
+        # call() targets the full mesh — view Region has ["hosts", "workers"]
+        ("call", ["hosts", "workers"]),
+        # call_one() on a sliced single worker — workers dim collapsed, only ["hosts"]
+        ("call_one", ["hosts"]),
+        # broadcast() targets the full mesh — view Region has ["hosts", "workers"]
+        ("broadcast", ["hosts", "workers"]),
+        # choose() selects a single actor — scalar (0-dim) Region
+        ("choose", []),
+    ],
+)
+def test_sent_messages_table(
+    cleanup_callbacks, send_path: str, expected_view_labels: list
+) -> None:
+    """Test that sent_messages are logged with correct view/shape for each send path.
+
+    All send paths (call, call_one, broadcast, choose) go through
+    cast_with_selection in actor_mesh.rs, which calls notify_sent_message
+    with a SentMessageEvent containing:
+      - sender_actor_id: hash of the sending actor's ActorId
+      - actor_mesh_id: hash of the target actor mesh name
+      - view_json: serialized ndslice::Region of the current view
+      - shape_json: serialized ndslice::Shape (converted from the Region)
+    """
     engine = start_telemetry(batch_size=10)
 
-    # Spawn worker actors and send messages to generate sent_messages events
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    workers = worker_procs.spawn("sent_msg_worker", WorkerActor)
+    mesh_name = f"sent_msg_{send_path}_worker"
+    workers = worker_procs.spawn(mesh_name, WorkerActor)
     workers.initialized.get()
 
-    # Cast a message to generate a sent_messages record via the cast path
     for _ in range(42):
-        workers.ping.call().get()
+        if send_path == "call":
+            workers.ping.call().get()
+        elif send_path == "call_one":
+            workers.slice(workers=0).ping.call_one().get()
+        elif send_path == "broadcast":
+            workers.ping.broadcast()
+        elif send_path == "choose":
+            workers.ping.choose().get()
 
-    # Verify the schema
-    result = engine.query(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
-    )
-    column_names = result.to_pydict().get("column_name", [])
-    assert column_names == [
-        "id",
-        "timestamp_us",
-        "sender_actor_id",
-        "actor_mesh_id",
-        "view_json",
-        "shape_json",
-    ], f"Unexpected columns: {column_names}"
+    # Verify the schema matches SentMessage struct in entity_dispatcher.rs
+    # (only check once, for the "call" path)
+    if send_path == "call":
+        result = engine.query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
+        )
+        column_names = result.to_pydict().get("column_name", [])
+        assert column_names == [
+            "id",
+            "timestamp_us",
+            "sender_actor_id",
+            "actor_mesh_id",
+            "view_json",
+            "shape_json",
+        ], f"Unexpected columns: {column_names}"
 
-    # Verify rows exist
-    result = engine.query("SELECT * FROM sent_messages")
-    result_dict = result.to_pydict()
-    row_count = len(result_dict.get("id", []))
-    assert row_count > 0, f"Expected at least one sent message, got {row_count}"
-
-    # Verify join with mesh table
+    # Verify 42 sent_messages join with the correct mesh
     joined = engine.query(
         "SELECT sm.id FROM sent_messages sm LEFT JOIN meshes m "
-        "ON sm.actor_mesh_id = m.id WHERE m.given_name = 'sent_msg_worker'"
+        f"ON sm.actor_mesh_id = m.id WHERE m.given_name = '{mesh_name}'"
     )
     joined_count = len(joined.to_pydict().get("id", []))
     assert joined_count == 42, (
-        "Expected sent_messages to join with actors on sender_actor_id"
+        f"Expected 42 sent_messages via {send_path}, got {joined_count}"
     )
+
+    # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
+    # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}.
+    # Shape is Region converted via Region::into::<Shape>, same serialization format.
+    mesh = engine.query(f"SELECT id FROM meshes WHERE given_name = '{mesh_name}'")
+    mesh_id = mesh.to_pydict()["id"][0]
+    msgs = engine.query(
+        f"SELECT view_json, shape_json FROM sent_messages "
+        f"WHERE actor_mesh_id = {mesh_id} LIMIT 1"
+    )
+    msgs_dict = msgs.to_pydict()
+    view = json.loads(msgs_dict["view_json"][0])
+    shape = json.loads(msgs_dict["shape_json"][0])
+
+    assert view["labels"] == expected_view_labels, (
+        f"Expected {send_path}() view labels={expected_view_labels}, got {view['labels']}"
+    )
+    assert shape["labels"] == expected_view_labels, (
+        f"Expected {send_path}() shape labels={expected_view_labels}, got {shape['labels']}"
+    )
+
+    # For paths that target the full mesh, verify workers size=2
+    if "workers" in expected_view_labels:
+        workers_idx = view["labels"].index("workers")
+        assert view["slice"]["sizes"][workers_idx] == 2, (
+            f"Expected {send_path}() view workers size=2, "
+            f"got {view['slice']['sizes'][workers_idx]}"
+        )
 
     # Clean up
     hosts.shutdown().get()

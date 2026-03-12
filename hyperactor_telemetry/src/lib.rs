@@ -395,13 +395,24 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
     dispatch_or_buffer(EntityEvent::ActorStatus(event));
 }
 
-/// Event fired when a message is sent (cast or point-to-point).
+/// Event fired when a message is sent to an actor mesh.
+///
+/// Emitted from `cast_with_selection` in `actor_mesh.rs`, which is the common
+/// path for all Python send methods: `call`, `call_one`, `broadcast`, and `choose`.
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {
     pub timestamp: SystemTime,
+    /// Hash of the sending actor's [`ActorId`].
     pub sender_actor_id: u64,
+    /// Hash of the target actor mesh's name.
     pub actor_mesh_id: u64,
+    /// The view (slice) of the actor mesh that was targeted, serialized from
+    /// [`ndslice::Region`]. For full-mesh sends (call, broadcast) this covers
+    /// all dimensions; for sliced sends (call_one) collapsed dimensions are
+    /// absent; for choose this is a scalar (0-dim) Region.
     pub view_json: String,
+    /// The shape of the view, serialized from [`ndslice::Shape`] (converted
+    /// from the view Region via `Region::into::<Shape>`).
     pub shape_json: String,
 }
 
