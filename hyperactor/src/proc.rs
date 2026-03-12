@@ -71,9 +71,6 @@ use crate::channel;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::ChannelTransport;
-use crate::clock::Clock;
-use crate::clock::ClockKind;
-use crate::clock::RealClock;
 use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
@@ -161,8 +158,6 @@ struct ProcState {
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
-
-    clock: ClockKind,
 }
 
 impl Drop for ProcState {
@@ -198,24 +193,6 @@ pub struct ActorInstance<A: Actor> {
 impl Proc {
     /// Create a pre-configured proc with the given proc id and forwarder.
     pub fn configured(proc_id: reference::ProcId, forwarder: BoxedMailboxSender) -> Self {
-        Self::configured_with_clock(proc_id, forwarder, ClockKind::default())
-    }
-
-    /// Create a new direct-addressed proc.
-    pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
-        let (addr, rx) = channel::serve(addr)?;
-        let proc_id = reference::ProcId::with_name(addr, name);
-        let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
-        proc.clone().serve(rx);
-        Ok(proc)
-    }
-
-    /// Create a pre-configured proc with the given proc id, forwarder and clock kind.
-    pub fn configured_with_clock(
-        proc_id: reference::ProcId,
-        forwarder: BoxedMailboxSender,
-        clock: ClockKind,
-    ) -> Self {
         tracing::info!(
             proc_id = %proc_id,
             name = "ProcStatus",
@@ -231,9 +208,17 @@ impl Proc {
                 instances: DashMap::new(),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
-                clock,
             }),
         }
+    }
+
+    /// Create a new direct-addressed proc.
+    pub fn direct(addr: ChannelAddr, name: String) -> Result<Self, ChannelError> {
+        let (addr, rx) = channel::serve(addr)?;
+        let proc_id = reference::ProcId::with_name(addr, name);
+        let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
+        proc.clone().serve(rx);
+        Ok(proc)
     }
 
     /// Set the supervision coordinator's port for this proc. Return Err if it is
@@ -297,11 +282,6 @@ impl Proc {
     /// Convenience accessor for state.
     fn state(&self) -> &ProcState {
         self.inner.as_ref()
-    }
-
-    /// The proc's clock.
-    pub fn clock(&self) -> &ClockKind {
-        &self.state().clock
     }
 
     /// A global runtime proc used by this crate.
@@ -715,14 +695,13 @@ impl Proc {
             .map(|(actor_id, root)| {
                 let actor_id = actor_id.clone();
                 async move {
-                    RealClock
-                        .timeout(
-                            timeout,
-                            root.poll_for(|state: &ActorStatus| state.is_terminal()),
-                        )
-                        .await
-                        .ok()
-                        .map(|_| actor_id)
+                    tokio::time::timeout(
+                        timeout,
+                        root.poll_for(|state: &ActorStatus| state.is_terminal()),
+                    )
+                    .await
+                    .ok()
+                    .map(|_| actor_id)
                 }
             })
             .collect();
@@ -1199,7 +1178,7 @@ impl<A: Actor> Instance<A> {
             );
             notify_actor_status_changed(ActorStatusEvent {
                 actor_id: self.self_id().to_string(),
-                timestamp: RealClock.system_time_now(),
+                timestamp: std::time::SystemTime::now(),
                 new_status: new_status.to_string(),
                 prev_status: old.arm().unwrap_or("Unknown").to_string(),
                 reason: if change_reason.is_empty() {
@@ -1380,9 +1359,8 @@ impl<A: Actor> Instance<A> {
             .0;
         let port = self.port();
         let self_id = self.self_id().clone();
-        let clock = self.inner.proc.state().clock.clone();
         tokio::spawn(async move {
-            clock.non_advancing_sleep(delay).await;
+            tokio::time::sleep(delay).await;
             if let Err(e) = port.send(&client, message) {
                 // TODO: this is a fire-n-forget thread. We need to
                 // handle errors in a better way.
@@ -1576,10 +1554,7 @@ impl<A: Actor> Instance<A> {
 
         let (mut signal_receiver, _) = actor_loop_receivers;
         while self.inner.cell.child_count() > 0 {
-            match RealClock
-                .timeout(Duration::from_millis(500), signal_receiver.recv())
-                .await
-            {
+            match tokio::time::timeout(Duration::from_millis(500), signal_receiver.recv()).await {
                 Ok(signal) => {
                     if let Signal::ChildStopped(pid) = signal? {
                         assert!(self.inner.cell.get_child(pid).is_none());
@@ -1604,8 +1579,7 @@ impl<A: Actor> Instance<A> {
         // the GIL.
         let cleanup_result = if !did_panic {
             let cleanup_timeout = hyperactor_config::global::get(config::CLEANUP_TIMEOUT);
-            match RealClock
-                .timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
+            match tokio::time::timeout(cleanup_timeout, actor.cleanup(self, result.as_ref().err()))
                 .await
             {
                 Ok(Ok(x)) => Ok(x),
@@ -1799,7 +1773,7 @@ impl<A: Actor> Instance<A> {
     {
         let handler_info = Some(handler_info);
         self.change_status(ActorStatus::Processing(
-            self.clock().system_time_now(),
+            std::time::SystemTime::now(),
             handler_info.clone(),
         ));
         crate::mailbox::headers::log_message_latency_if_sampling(
@@ -1874,11 +1848,6 @@ impl<A: Actor> Instance<A> {
     #[doc(hidden)]
     pub fn mailbox_for_py(&self) -> &Mailbox {
         &self.inner.mailbox
-    }
-
-    /// A reference to the proc's clock
-    pub fn clock(&self) -> &(impl Clock + use<A>) {
-        &self.inner.proc.state().clock
     }
 
     /// The owning proc.
@@ -2194,7 +2163,7 @@ impl InstanceCell {
                 actor_task_handle: OnceLock::new(),
                 exported_named_ports: DashMap::new(),
                 num_processed_messages: AtomicU64::new(0),
-                created_at: RealClock.system_time_now(),
+                created_at: std::time::SystemTime::now(),
                 last_message_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
@@ -2396,14 +2365,14 @@ impl InstanceCell {
 
     /// Set the domain-specific properties published by this actor for
     /// introspection. The `published_at` timestamp is set
-    /// automatically to `RealClock.system_time_now()`.
+    /// automatically to `std::time::SystemTime::now()`.
     ///
     /// Infrastructure actors (HostAgent, ProcAgent) call this
     /// to make their managed-entity metadata available without going
     /// through the actor's message handler.
     pub fn set_published_properties(&self, kind: PublishedPropertiesKind) {
         *self.inner.published_properties.write().unwrap() = Some(PublishedProperties {
-            published_at: RealClock.system_time_now(),
+            published_at: std::time::SystemTime::now(),
             kind,
         });
     }
@@ -2734,7 +2703,6 @@ mod tests {
     use crate as hyperactor;
     use crate::HandleClient;
     use crate::Handler;
-    use crate::clock::RealClock;
     use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
 
@@ -2869,7 +2837,7 @@ mod tests {
             .send(&client, TestActorMessage::Wait(enter_tx, exit_rx))
             .unwrap();
         enter_rx.await.unwrap();
-        assert_matches!(*state.borrow(), ActorStatus::Processing(instant, _) if instant <= RealClock.system_time_now());
+        assert_matches!(*state.borrow(), ActorStatus::Processing(instant, _) if instant <= std::time::SystemTime::now());
         exit_tx.send(()).unwrap();
 
         state
@@ -3296,7 +3264,7 @@ mod tests {
             .send::<String>(&client, "some random failure".into())
             .unwrap();
 
-        RealClock.sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -3372,7 +3340,7 @@ mod tests {
             // It is okay to sleep a long time here, because we expect this
             // process to be terminated way before the sleep ends due to the
             // missing proc supervison coordinator.
-            RealClock.sleep(Duration::from_secs(30)).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
         };
 
         assert_termination(|| process, 1).await.unwrap();
@@ -3585,7 +3553,7 @@ mod tests {
             if i < 50 {
                 tokio::task::yield_now().await;
             } else {
-                RealClock.sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
         panic!("timed out waiting for terminated snapshot for {}", actor_id);

@@ -54,8 +54,6 @@ use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::SendError;
 use crate::channel::TxStatus;
-use crate::clock::Clock;
-use crate::clock::RealClock;
 use crate::config;
 use crate::metrics;
 
@@ -671,12 +669,11 @@ impl<M: RemoteMessage> Unacked<M> {
     pub(super) async fn wait_for_timeout(&self) {
         match self.deque.front() {
             Some(msg) => {
-                RealClock
-                    .sleep_until(
-                        msg.received_at
-                            + hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
-                    )
-                    .await
+                tokio::time::sleep_until(
+                    msg.received_at
+                        + hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
+                )
+                .await
             }
             None => std::future::pending::<()>().await,
         }
@@ -746,7 +743,7 @@ pub(super) async fn recv_loop<
     let ack_msg_interval: u64 =
         hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
 
-    let mut last_ack_time = RealClock.now();
+    let mut last_ack_time = tokio::time::Instant::now();
     let mut pending_ack: Option<(Completion<W, Bytes>, u64)> = None;
 
     loop {
@@ -768,7 +765,7 @@ pub(super) async fn recv_loop<
                 match result {
                     Ok(()) => {
                         let acked_seq = pending_ack.take().unwrap().1;
-                        last_ack_time = RealClock.now();
+                        last_ack_time = tokio::time::Instant::now();
                         next.ack = acked_seq;
                     }
                     Err(e) => return Err(e.into()),
@@ -776,7 +773,7 @@ pub(super) async fn recv_loop<
             }
 
             // Ack timer tick: loop back so the ack_behind check fires.
-            _ = RealClock.sleep_until(last_ack_time + ack_time_interval),
+            _ = tokio::time::sleep_until(last_ack_time + ack_time_interval),
                 if next.ack < next.seq => {}
 
             _ = cancel.cancelled() => {
@@ -906,7 +903,7 @@ where
                             NetRxResponse::Ack(ack) => {
                                 deliveries.unacked.prune(
                                     ack,
-                                    RealClock.now(),
+                                    tokio::time::Instant::now(),
                                     &deliveries.outbox.dest_addr,
                                     deliveries.outbox.session_id,
                                 );
@@ -937,7 +934,7 @@ where
                         pending = None;
                         let mut message = deliveries.outbox.pop_front()
                             .expect("outbox should not be empty");
-                        message.sent_at = Some(RealClock.now());
+                        message.sent_at = Some(tokio::time::Instant::now());
                         deliveries.unacked.push_back(message);
                     }
                     Err(e) => return SendLoopResult::Error(e.into()),
@@ -1066,7 +1063,7 @@ impl<C: Send> Conn<C> {
                     .with_max_elapsed_time(None)
                     .build(),
             ),
-            first_failure_at: RealClock.now(),
+            first_failure_at: tokio::time::Instant::now(),
         }
     }
 
@@ -1106,7 +1103,7 @@ pub(super) async fn client_run<M: RemoteMessage, D: SessionConnector<M>>(
             ref mut backoff, ..
         } = conn
         {
-            RealClock.sleep(backoff.next_backoff().unwrap()).await;
+            tokio::time::sleep(backoff.next_backoff().unwrap()).await;
         }
     };
 
