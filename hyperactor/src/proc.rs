@@ -6,10 +6,23 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! This module provides [`Proc`], which is the runtime used within a single
-//! proc.
-
-// TODO: define a set of proc errors and plumb these throughout
+//! [`Proc`] is an addressable actor-runtime boundary.
+//!
+//! It owns actor lifecycle (spawn, run, terminate), routes messages
+//! to local actors, forwards messages for remote destinations, and
+//! hosts supervision state.
+//!
+//! It also stores bounded snapshots of terminated actors for
+//! post-mortem introspection.
+//!
+//! ## Client instance invariants (CI-*)
+//!
+//! - **CI-1 (client status):** `IntrospectMessage::Query` on an
+//!   introspectable instance returns `status: "client"` and
+//!   `actor_type: "()"` in attrs.
+//! - **CI-2 (snapshot on drop):** Dropping the returned `Instance<()>`
+//!   transitions its status to terminal, causing the introspect task
+//!   to store a terminated snapshot.
 
 use std::any::Any;
 use std::any::TypeId;
@@ -78,9 +91,7 @@ use crate::config;
 use crate::context;
 use crate::context::Mailbox as _;
 use crate::introspect::IntrospectMessage;
-use crate::introspect::NodePayload;
-use crate::introspect::PublishedProperties;
-use crate::introspect::PublishedPropertiesKind;
+use crate::introspect::IntrospectResult;
 use crate::mailbox::BoxedMailboxSender;
 use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
@@ -156,7 +167,7 @@ struct ProcState {
     /// Populated by the introspect task just before it exits on
     /// terminal status. Bounded by
     /// [`config::TERMINATED_SNAPSHOT_RETENTION`].
-    terminated_snapshots: DashMap<reference::ActorId, crate::introspect::NodePayload>,
+    terminated_snapshots: DashMap<reference::ActorId, crate::introspect::IntrospectResult>,
 
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
@@ -376,15 +387,7 @@ impl Proc {
     /// to `IntrospectMessage::Query` and is visible and navigable in
     /// admin tooling such as the mesh TUI.
     ///
-    /// # Invariants
-    ///
-    /// - **CI-1 (client status):** `IntrospectMessage::Query` returns
-    ///   `NodeProperties::Actor { actor_status: "client",
-    ///   actor_type: "()", .. }`.
-    /// - **CI-2 (snapshot on drop):** Dropping the returned
-    ///   `Instance<()>` transitions its status to terminal, which
-    ///   causes the introspect task to store a terminated snapshot
-    ///   (same post-mortem semantics as regular actors).
+    /// See CI-1, CI-2 in module doc.
     ///
     /// Requires an active Tokio runtime (calls `tokio::spawn`).
     pub fn introspectable_instance(
@@ -497,7 +500,7 @@ impl Proc {
     pub fn terminated_snapshot(
         &self,
         actor_id: &reference::ActorId,
-    ) -> Option<crate::introspect::NodePayload> {
+    ) -> Option<crate::introspect::IntrospectResult> {
         self.state()
             .terminated_snapshots
             .get(actor_id)
@@ -1040,12 +1043,9 @@ impl<A: Actor> Drop for InstanceState<A> {
 /// Receivers created by [`Instance::new`] that must be threaded to
 /// their respective consumers (actor loop, introspect task, etc.).
 ///
-/// # Invariant S10
+/// # Invariant
 ///
-/// The introspect receiver is created for every instance in
-/// `Instance::new()`. Callers that run a message loop (`start()`)
-/// spawn the introspect task. `child_instance()` intentionally
-/// drops the receiver.
+/// See S10 in `introspect` module doc.
 pub struct InstanceReceivers<A: Actor> {
     /// Signal and supervision receivers for the actor loop. `None`
     /// for detached/client instances that don't run an actor loop.
@@ -1097,12 +1097,7 @@ impl<A: Actor> Instance<A> {
         // creation. bind_actor_port() registers in the mailbox
         // dispatch table at IntrospectMessage::port().
         //
-        // Invariant S3: senders target IntrospectMessage::port() — the
-        // same PortId used here — so routing is unchanged across processes.
-        // Invariant S4: pre-registration ensures no WorkCell creation
-        // for IntrospectMessage -- the port gets its own channel.
-        // Invariant S9: port bound exactly once here via
-        // bind_actor_port(); no other site calls bind for this port.
+        // Exercises S3, S4, S9 (see introspect module doc).
         let (introspect_port, introspect_receiver) =
             ports.open_message_port::<IntrospectMessage>().unwrap();
         introspect_port.bind_actor_port();
@@ -1209,7 +1204,7 @@ impl<A: Actor> Instance<A> {
 
     /// Snapshot of this actor's introspection payload.
     ///
-    /// Returns a [`NodePayload`] built from live [`InstanceCell`]
+    /// Returns an [`IntrospectResult`] built from live [`InstanceCell`]
     /// state, without going through the actor message loop. This is
     /// safe to call from within a handler on the same actor (no
     /// self-send deadlock).
@@ -1222,31 +1217,59 @@ impl<A: Actor> Instance<A> {
     /// Note: this acquires a write lock on the flight recorder spool
     /// and clones its contents. Suitable for occasional introspection
     /// requests, not for hot paths.
-    pub fn introspect_payload(&self) -> crate::introspect::NodePayload {
+    pub fn introspect_payload(&self) -> crate::introspect::IntrospectResult {
         crate::introspect::live_actor_payload(&self.inner.cell)
     }
 
     /// Publish domain-specific properties for introspection.
     ///
-    /// Infrastructure actors call this to make their managed-entity
-    /// metadata (host address, proc count, custom children) visible
-    /// to admin tooling without going through the actor's message
-    /// handler. The timestamp is set automatically.
+    /// Publish a complete Attrs bag for introspection. Replaces any
+    /// previously published attrs.
     ///
-    /// Values may be arbitrarily stale for stuck actors — they
-    /// reflect the last time this method was called.
+    /// Debug builds assert that every key in the bag is tagged with
+    /// the `INTROSPECT` meta-attribute.
+    pub fn publish_attrs(&self, attrs: hyperactor_config::Attrs) {
+        #[cfg(debug_assertions)]
+        {
+            use std::collections::HashSet;
+            use std::sync::OnceLock;
+
+            use hyperactor_config::attrs::AttrKeyInfo;
+
+            static INTROSPECT_KEYS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+            let allowed = INTROSPECT_KEYS.get_or_init(|| {
+                inventory::iter::<AttrKeyInfo>()
+                    .filter(|info| info.meta.get(hyperactor_config::INTROSPECT).is_some())
+                    .map(|info| info.name)
+                    .collect()
+            });
+            for (name, _) in attrs.iter() {
+                debug_assert!(
+                    allowed.contains(name),
+                    "publish_attrs: key {:?} is not tagged with INTROSPECT",
+                    name
+                );
+            }
+        }
+        self.inner.cell.set_published_attrs(attrs);
+    }
+
+    /// Publish a single attr key-value pair for introspection. Merges
+    /// into existing published attrs (insert or overwrite).
     ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// cx.publish_properties(PublishedPropertiesKind::Host {
-    ///     addr: "127.0.0.1:8080".into(),
-    ///     num_procs: 2,
-    ///     children: vec!["proc_a".into(), "proc_b".into()],
-    /// });
-    /// ```
-    pub fn publish_properties(&self, kind: PublishedPropertiesKind) {
-        self.inner.cell.set_published_properties(kind);
+    /// Debug builds assert that the key is tagged with the
+    /// `INTROSPECT` meta-attribute.
+    pub fn publish_attr<T: hyperactor_config::AttrValue>(
+        &self,
+        key: hyperactor_config::Key<T>,
+        value: T,
+    ) {
+        debug_assert!(
+            key.attrs().get(hyperactor_config::INTROSPECT).is_some(),
+            "publish_attr called with non-introspection key: {}",
+            key.name()
+        );
+        self.inner.cell.merge_published_attr(key, value);
     }
 
     /// Mark this actor as system/infrastructure. System actors are
@@ -1269,7 +1292,7 @@ impl<A: Actor> Instance<A> {
     /// procs that have no independent `ProcAgent`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
+        handler: impl (Fn(&crate::reference::Reference) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         self.inner.cell.set_query_child_handler(handler);
     }
@@ -2072,18 +2095,15 @@ struct InstanceCellState {
     /// store a 'flight record' of events while the actor is running.
     recording: Recording,
 
-    /// Domain-specific properties published by the actor for
-    /// introspection. Written by the actor via
-    /// `Instance::publish_properties()`; read by the introspection
-    /// runtime handler. `None` means the actor has not published
-    /// custom properties — the runtime handler falls back to
-    /// `NodeProperties::Actor`.
+    /// Attrs-based introspection data published by the actor. Written
+    /// by the actor via `Instance::publish_attrs()` /
+    /// `Instance::publish_attr()`, and read by the introspection
+    /// runtime handler when building node payloads.
     ///
-    /// Invariant S8: only `Host` and `Proc` variants are accepted
-    /// (no `Root` or `Error`).
-    /// Invariant S6: Entity view reads from this field; Actor view
-    /// reads live state from `InstanceCell`.
-    published_properties: RwLock<Option<crate::introspect::PublishedProperties>>,
+    /// This bag may contain both mesh-level keys (`node_type`,
+    /// `addr`, `num_procs`, ...) and actor-runtime keys (`status`,
+    /// `messages_processed`, ...).
+    published_attrs: RwLock<Option<hyperactor_config::Attrs>>,
 
     /// Optional callback for resolving non-addressable children
     /// (e.g., system procs). Registered by infrastructure actors
@@ -2091,10 +2111,10 @@ struct InstanceCellState {
     /// introspection runtime handler for `QueryChild` messages.
     /// `None` means `QueryChild` returns a "not_found" error.
     ///
-    /// Invariant S7: system procs are resolvable without entering
-    /// the actor loop — the callback runs on the introspect task.
-    query_child_handler:
-        RwLock<Option<Box<dyn (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync>>>,
+    /// See S7 in `introspect` module doc.
+    query_child_handler: RwLock<
+        Option<Box<dyn (Fn(&crate::reference::Reference) -> IntrospectResult) + Send + Sync>>,
+    >,
 
     /// The supervision event produced when this actor failed, if any.
     /// Written in `serve()` BEFORE `change_status()` transitions to
@@ -2206,7 +2226,7 @@ impl InstanceCell {
                 last_message_handler: RwLock::new(None),
                 total_processing_time_us: AtomicU64::new(0),
                 recording: hyperactor_telemetry::recorder().record(64),
-                published_properties: RwLock::new(None),
+                published_attrs: RwLock::new(None),
                 query_child_handler: RwLock::new(None),
                 supervision_event: std::sync::Mutex::new(None),
                 is_system: AtomicBool::new(false),
@@ -2402,23 +2422,29 @@ impl InstanceCell {
         self.inner.actor_type.type_name()
     }
 
-    /// Set the domain-specific properties published by this actor for
-    /// introspection. The `published_at` timestamp is set
-    /// automatically to `std::time::SystemTime::now()`.
-    ///
-    /// Infrastructure actors (HostAgent, ProcAgent) call this
-    /// to make their managed-entity metadata available without going
-    /// through the actor's message handler.
-    pub fn set_published_properties(&self, kind: PublishedPropertiesKind) {
-        *self.inner.published_properties.write().unwrap() = Some(PublishedProperties {
-            published_at: std::time::SystemTime::now(),
-            kind,
-        });
+    /// Replace the published introspection attrs with a new bag.
+    pub fn set_published_attrs(&self, attrs: hyperactor_config::Attrs) {
+        *self.inner.published_attrs.write().unwrap() = Some(attrs);
     }
 
-    /// Read the last-published domain-specific properties, if any.
-    pub fn published_properties(&self) -> Option<PublishedProperties> {
-        self.inner.published_properties.read().unwrap().clone()
+    /// Set a single introspection attr, merging into the existing bag
+    /// (or creating one if none exists).
+    pub fn merge_published_attr<T: hyperactor_config::AttrValue>(
+        &self,
+        key: hyperactor_config::Key<T>,
+        value: T,
+    ) {
+        self.inner
+            .published_attrs
+            .write()
+            .unwrap()
+            .get_or_insert_with(hyperactor_config::Attrs::new)
+            .set(key, value);
+    }
+
+    /// Read the published introspection attrs, if any.
+    pub fn published_attrs(&self) -> Option<hyperactor_config::Attrs> {
+        self.inner.published_attrs.read().unwrap().clone()
     }
 
     /// Register a callback for resolving non-addressable children
@@ -2430,13 +2456,13 @@ impl InstanceCell {
     /// Capture cloned `Proc` references, not `&mut self`.
     pub fn set_query_child_handler(
         &self,
-        handler: impl (Fn(&crate::reference::Reference) -> NodePayload) + Send + Sync + 'static,
+        handler: impl (Fn(&crate::reference::Reference) -> IntrospectResult) + Send + Sync + 'static,
     ) {
         *self.inner.query_child_handler.write().unwrap() = Some(Box::new(handler));
     }
 
     /// Invoke the registered QueryChild handler, if any.
-    pub fn query_child(&self, child_ref: &crate::reference::Reference) -> Option<NodePayload> {
+    pub fn query_child(&self, child_ref: &crate::reference::Reference) -> Option<IntrospectResult> {
         let guard = self.inner.query_child_handler.read().unwrap();
         guard.as_ref().map(|handler| handler(child_ref))
     }
@@ -2455,7 +2481,7 @@ impl InstanceCell {
     /// 2. When only failed actors remain, evict the most recent
     ///    (by `occurred_at`), preserving the earliest failures
     ///    which are closest to the root cause.
-    pub fn store_terminated_snapshot(&self, payload: crate::introspect::NodePayload) {
+    pub fn store_terminated_snapshot(&self, payload: crate::introspect::IntrospectResult) {
         let snapshots = &self.inner.proc.inner.terminated_snapshots;
         snapshots.insert(self.actor_id().clone(), payload);
         let max = hyperactor_config::global::get(crate::config::TERMINATED_SNAPSHOT_RETENTION);
@@ -2465,13 +2491,19 @@ impl InstanceCell {
             let entries: Vec<_> = snapshots
                 .iter()
                 .map(|entry| {
-                    let occurred_at = match &entry.value().properties {
-                        crate::introspect::NodeProperties::Actor {
-                            failure_info: Some(fi),
-                            ..
-                        } => Some(fi.occurred_at.clone()),
-                        _ => None,
-                    };
+                    let occurred_at =
+                        serde_json::from_str::<hyperactor_config::Attrs>(&entry.value().attrs)
+                            .ok()
+                            .and_then(|attrs| {
+                                // Presence of FAILURE_ERROR_MESSAGE means the actor failed.
+                                attrs
+                                    .get(crate::introspect::FAILURE_ERROR_MESSAGE)
+                                    .cloned()?;
+                                // Extract occurred_at timestamp for sorting.
+                                attrs
+                                    .get(crate::introspect::FAILURE_OCCURRED_AT)
+                                    .map(|t| humantime::format_rfc3339(*t).to_string())
+                            });
                     (entry.key().clone(), occurred_at)
                 })
                 .collect();
@@ -3581,7 +3613,7 @@ mod tests {
     async fn wait_for_terminated_snapshot(
         proc: &Proc,
         actor_id: &reference::ActorId,
-    ) -> crate::introspect::NodePayload {
+    ) -> crate::introspect::IntrospectResult {
         // Yield to let the introspect task run, then poll. Use a
         // combination of yields (for fast paths) and sleeps (to
         // avoid busy-spinning if the scheduler is loaded).
@@ -3625,10 +3657,15 @@ mod tests {
         // The introspect task runs in a separate tokio task; wait for
         // it to observe the terminal status and store the snapshot.
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
-        assert_matches!(
-            &snapshot.properties,
-            crate::introspect::NodeProperties::Actor { actor_status, .. }
-                if actor_status.starts_with("stopped:")
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+        let status = attrs
+            .get(crate::introspect::STATUS)
+            .expect("must have status");
+        assert!(
+            status.starts_with("stopped"),
+            "expected stopped status, got: {}",
+            status
         );
 
         // Actor should appear in terminated IDs but not in live IDs.
@@ -3662,16 +3699,19 @@ mod tests {
         handle.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
-        assert_matches!(
-            &snapshot.properties,
-            crate::introspect::NodeProperties::Actor { actor_status, .. }
-                if actor_status.starts_with("failed:")
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+        let status = attrs
+            .get(crate::introspect::STATUS)
+            .expect("must have status");
+        assert!(
+            status.starts_with("failed"),
+            "expected failed status, got: {}",
+            status
         );
     }
 
-    // Invariant FI-1/FI-2: supervision_event is stored on the
-    // InstanceCell when an actor fails and is readable after
-    // termination.
+    // Exercises FI-1/FI-2 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_stored_on_failure() {
         let proc = Proc::local();
@@ -3696,7 +3736,7 @@ mod tests {
         assert_eq!(event.actually_failing_actor().actor_id, actor_id);
     }
 
-    // Invariant FI-2/INV-6: clean stop produces no supervision_event.
+    // Exercises FI-2 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_none_on_clean_stop() {
         let proc = Proc::local();
@@ -3714,8 +3754,7 @@ mod tests {
         );
     }
 
-    // Invariant: propagated failures carry the originating actor's
-    // identity through actually_failing_actor().
+    // Exercises FI-4 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_propagated_failure() {
         let proc = Proc::local();
@@ -3750,7 +3789,7 @@ mod tests {
         assert_eq!(event.actually_failing_actor().actor_id, child_id);
     }
 
-    // Invariant: resolve_actor_ref returns None for terminal actors.
+    // Exercises S11 (see introspect.rs module doc).
     //
     // A live actor is resolvable. After drain_and_stop + await, the
     // actor's status is terminal and resolve_actor_ref must return
@@ -3783,7 +3822,7 @@ mod tests {
         );
     }
 
-    // INV-3: terminated snapshot for a failed actor has failure_info.
+    // FI-3: terminated snapshot for a failed actor has failure_info.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_terminated_snapshot_has_failure_info() {
         let proc = Proc::local();
@@ -3799,26 +3838,35 @@ mod tests {
         handle.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
-        match &snapshot.properties {
-            crate::introspect::NodeProperties::Actor {
-                actor_status,
-                failure_info,
-                ..
-            } => {
-                assert!(actor_status.starts_with("failed:"));
-                let info = failure_info
-                    .as_ref()
-                    .expect("failed actor snapshot must have failure_info");
-                assert!(!info.error_message.is_empty());
-                assert_eq!(info.root_cause_actor, actor_id.to_string());
-                assert!(!info.is_propagated);
-                assert!(!info.occurred_at.is_empty());
-            }
-            other => panic!("expected NodeProperties::Actor, got {:?}", other),
-        }
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+        let status = attrs
+            .get(crate::introspect::STATUS)
+            .expect("must have status");
+        assert!(
+            status.starts_with("failed"),
+            "expected failed status, got: {}",
+            status
+        );
+        let err_msg = attrs
+            .get(crate::introspect::FAILURE_ERROR_MESSAGE)
+            .expect("failed actor must have failure_error_message");
+        assert!(!err_msg.is_empty());
+        let root_cause = attrs
+            .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
+            .expect("must have root_cause_actor");
+        assert_eq!(root_cause, &actor_id.to_string());
+        assert_eq!(
+            attrs.get(crate::introspect::FAILURE_IS_PROPAGATED),
+            Some(&false)
+        );
+        assert!(
+            attrs.get(crate::introspect::FAILURE_OCCURRED_AT).is_some(),
+            "failed actor must have occurred_at"
+        );
     }
 
-    // INV-4: propagated failure has root_cause pointing to child.
+    // FI-4: propagated failure has root_cause pointing to child.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_propagated_failure_info() {
         let proc = Proc::local();
@@ -3842,16 +3890,16 @@ mod tests {
         parent.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &parent_id).await;
-        match &snapshot.properties {
-            crate::introspect::NodeProperties::Actor { failure_info, .. } => {
-                let info = failure_info
-                    .as_ref()
-                    .expect("propagated failure must have failure_info");
-                assert_eq!(info.root_cause_actor, child_id.to_string());
-                assert!(info.is_propagated);
-            }
-            other => panic!("expected NodeProperties::Actor, got {:?}", other),
-        }
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+        let root_cause = attrs
+            .get(crate::introspect::FAILURE_ROOT_CAUSE_ACTOR)
+            .expect("propagated failure must have root_cause_actor");
+        assert_eq!(root_cause, &child_id.to_string());
+        assert_eq!(
+            attrs.get(crate::introspect::FAILURE_IS_PROPAGATED),
+            Some(&true)
+        );
     }
 
     /// AI-1: name is presentation only, pid
@@ -4008,7 +4056,7 @@ mod tests {
         assert_eq!(parent_b.cell().child_count(), 1);
     }
 
-    // INV-6: cleanly stopped actor has no failure_info.
+    // FI-6: cleanly stopped actor has no failure_info.
     #[async_timed_test(timeout_secs = 30)]
     async fn test_stopped_snapshot_has_no_failure_info() {
         let proc = Proc::local();
@@ -4021,19 +4069,21 @@ mod tests {
         handle.await;
 
         let snapshot = wait_for_terminated_snapshot(&proc, &actor_id).await;
-        match &snapshot.properties {
-            crate::introspect::NodeProperties::Actor {
-                actor_status,
-                failure_info,
-                ..
-            } => {
-                assert!(actor_status.starts_with("stopped:"));
-                assert!(
-                    failure_info.is_none(),
-                    "stopped actor must not have failure_info"
-                );
-            }
-            other => panic!("expected NodeProperties::Actor, got {:?}", other),
-        }
+        let attrs: hyperactor_config::Attrs =
+            serde_json::from_str(&snapshot.attrs).expect("attrs must be valid JSON");
+        let status = attrs
+            .get(crate::introspect::STATUS)
+            .expect("must have status");
+        assert!(
+            status.starts_with("stopped"),
+            "expected stopped, got: {}",
+            status
+        );
+        assert!(
+            attrs
+                .get(crate::introspect::FAILURE_ERROR_MESSAGE)
+                .is_none(),
+            "stopped actor must not have failure attrs"
+        );
     }
 }
