@@ -25,7 +25,7 @@ import random
 import signal
 import sqlite3
 import time
-from pathlib import Path
+from importlib.resources import files
 
 from generate import _ACTOR_MESH_CLASSES, _insert_rows, ENDPOINTS, SCHEMA_SQL
 
@@ -498,7 +498,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--db",
-        default=str(Path(__file__).parent / "fake_data.db"),
+        default=str(files("monarch.monarch_dashboard.fake_data") / "fake_data.db"),
         help="SQLite database path (default: fake_data/fake_data.db)",
     )
     parser.add_argument(
