@@ -133,6 +133,30 @@ declare_attrs! {
     ))
     pub attr MESH_ADMIN_ADDR: SocketAddrStr = SocketAddrStr::Static("[::]:1729");
 
+    /// Timeout for fallback queries to actors/procs that may have been
+    /// recently destroyed. The second-chance paths in `resolve_proc_node`
+    /// and `resolve_actor_node` fire after the fast QueryChild lookup
+    /// fails. A short budget here prevents dead actors from blocking the
+    /// single-threaded MeshAdminAgent message loop.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_RESOLVE_ACTOR_TIMEOUT".to_string()),
+        Some("mesh_admin_resolve_actor_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_RESOLVE_ACTOR_TIMEOUT: Duration = Duration::from_millis(200);
+
+    /// Maximum number of concurrent resolve requests the HTTP bridge
+    /// forwards to the MeshAdminAgent. Excess requests receive 503
+    /// immediately. Protects the shared tokio runtime from query floods
+    /// (e.g. multiple TUI clients, rapid polling). Increase if the admin
+    /// server serves many concurrent clients that need low-latency
+    /// responses; decrease if introspection queries interfere with the
+    /// actor workload under churn.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_MAX_CONCURRENT_RESOLVES".to_string()),
+        Some("mesh_admin_max_concurrent_resolves".to_string()),
+    ))
+    pub attr MESH_ADMIN_MAX_CONCURRENT_RESOLVES: usize = 2;
+
     /// Timeout for the config-push barrier during `HostMesh::attach()`.
     ///
     /// When attaching to pre-existing workers (simple bootstrap), the

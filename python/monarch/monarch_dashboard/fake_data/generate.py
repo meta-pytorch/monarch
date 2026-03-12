@@ -48,7 +48,7 @@ import json
 import os
 import random
 import sqlite3
-from pathlib import Path
+from importlib.resources import files
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -713,7 +713,7 @@ def generate_fake_data(db_path: str | None = None) -> str:
         Absolute path to the generated database file.
     """
     if db_path is None:
-        db_path = str(Path(__file__).parent / "fake_data.db")
+        db_path = str(files("monarch.monarch_dashboard.fake_data") / "fake_data.db")
 
     rng = random.Random(SEED)
 
