@@ -41,8 +41,8 @@ pub use value_overlay::ValueOverlay;
 /// but externally the mesh always behaves as a complete mapping from
 /// rank index → value.
 ///
-/// # Invariants
-/// - Complete: every rank in `region` has exactly one value.
+/// # Invariants (VM-1)
+/// - **VM-1 (completeness):** Every rank in `region` has exactly one value.
 /// - Order: iteration and indexing follow the region's linearization.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)] // only if T implements
 pub struct ValueMesh<T> {
@@ -151,8 +151,8 @@ enum Rep<T> {
     /// `Range` (half-open `[start, end)`) share the same value at
     /// `table[id]`. The `table` stores each distinct value once.
     ///
-    /// # Invariants
-    /// - Runs are non-empty and contiguous (`r.start < r.end`).
+    /// # Invariants (VM-2)
+    /// - **VM-2 (runs-contiguous):** Runs are non-empty and contiguous (`r.start < r.end`).
     /// - Runs collectively cover `0..region.num_ranks()` with no gaps
     ///   or overlaps.
     /// - `id` indexes into `table` (`id < table.len()`).
@@ -606,7 +606,7 @@ impl<T> view::BuildFromRegionIndexed<T> for ValueMesh<T> {
             unsafe fn new(buf: &mut [MaybeUninit<T>], bits: &mut [u64]) -> Self {
                 let n_elems = buf.len();
                 let n_words = bits.len();
-                // Invariant typically: n_words == (n_elems + 63) / 64
+                // Expected: n_words == (n_elems + 63) / 64
                 // but we don't *require* it; tail is masked in Drop.
                 Self {
                     buf: NonNull::new(buf.as_mut_ptr()).unwrap_or_else(NonNull::dangling),
