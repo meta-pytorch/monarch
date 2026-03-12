@@ -14,6 +14,7 @@ and serves the React frontend build as static files.
 import os
 
 from flask import Flask, send_from_directory
+from monarch.monarch_dashboard import _PKG
 
 from . import db
 from .routes import api
@@ -27,8 +28,7 @@ def create_app(db_path: str | None = None) -> Flask:
             ``MONARCH_DB_PATH`` environment variable, or
             ``fake_data/fake_data.db`` relative to the package root.
     """
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    build_dir = os.path.join(base, "frontend", "build")
+    build_dir = str(_PKG / "frontend" / "build")
 
     app = Flask(
         __name__,
@@ -40,12 +40,7 @@ def create_app(db_path: str | None = None) -> Flask:
     if db_path is None:
         db_path = os.environ.get(
             "MONARCH_DB_PATH",
-            os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..",
-                "fake_data",
-                "fake_data.db",
-            ),
+            str(_PKG / "fake_data" / "fake_data.db"),
         )
 
     db.init(db_path)
@@ -55,6 +50,8 @@ def create_app(db_path: str | None = None) -> Flask:
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")
     def serve_frontend(path):
+        if not os.path.isdir(build_dir):
+            return {"error": "Frontend not built. API available at /api/"}, 404
         if path and os.path.isfile(os.path.join(build_dir, path)):
             return send_from_directory(build_dir, path)
         return send_from_directory(build_dir, "index.html")
