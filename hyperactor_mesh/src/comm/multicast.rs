@@ -370,6 +370,14 @@ pub fn set_cast_info_on_headers(
     cast_point: Point,
     sender: hyperactor_reference::ActorId,
 ) {
+    // Pre-set the telemetry sender hash to the originating actor,
+    // so post_unchecked() does not overwrite it with the comm actor.
+    // TODO: consider merging SENDER_ACTOR_ID_HASH and
+    // CAST_ORIGINATING_SENDER -- they carry overlapping sender identity.
+    headers.set(
+        hyperactor::mailbox::headers::SENDER_ACTOR_ID_HASH,
+        hyperactor_telemetry::hash_to_u64(&sender),
+    );
     headers.set(CAST_POINT, cast_point);
     headers.set(CAST_ORIGINATING_SENDER, sender);
 }
