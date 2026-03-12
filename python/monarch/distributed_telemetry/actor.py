@@ -62,10 +62,21 @@ def _scanner_startup() -> Optional[Callable[[], None]]:
 SetupActor.register_startup_function(_scanner_startup)
 
 
-def _register_scanner(batch_size: int) -> None:
+def _register_scanner(
+    batch_size: int,
+    retention_secs: int = 600,
+) -> None:
     global _scanner, _scanner_startup_impl, _spawn_callback_registered, _spawned_procs
-    _scanner = DatabaseScanner(current_rank().rank, batch_size=batch_size)
-    _scanner_startup_impl = functools.partial(_register_scanner, batch_size=batch_size)
+    _scanner = DatabaseScanner(
+        current_rank().rank,
+        batch_size=batch_size,
+        retention_secs=retention_secs,
+    )
+    _scanner_startup_impl = functools.partial(
+        _register_scanner,
+        batch_size=batch_size,
+        retention_secs=retention_secs,
+    )
     # Clear the spawned procs list when starting fresh
     _spawned_procs = []
     # Register the spawn callback once to record new ProcMeshes
@@ -146,6 +157,17 @@ class DistributedTelemetryActor(Actor):
         self._children[mesh_name] = children
 
     @endpoint
+    def apply_retention(self, table_name: str, where_clause: str) -> None:
+        """Apply a retention filter to a table, then fan out to children."""
+        self._scanner.apply_retention(table_name, where_clause)
+        for child_mesh in self._children.values():
+            try:
+                # pyre-ignore[29]: child_mesh is an ActorMesh
+                child_mesh.apply_retention.call(table_name, where_clause).get()
+            except Exception:
+                logger.info("child apply_retention failed, skipping")
+
+    @endpoint
     def scan(
         self,
         dest: PortId,
@@ -191,17 +213,25 @@ class DistributedTelemetryActor(Actor):
         return total_count
 
 
-def start_telemetry(batch_size: int = 1000) -> QueryEngine:
+def start_telemetry(
+    batch_size: int = 1000,
+    retention_secs: int = 600,
+) -> QueryEngine:
     """
     Start the distributed telemetry system and return a QueryEngine.
 
+    Message tables (sent_messages, messages, message_status_events) retain
+    only the last ``retention_secs`` seconds of data (default 10 minutes).
+    All other tables have unlimited retention. Set to 0 to disable retention.
+
     Args:
         batch_size: Number of rows to buffer before flushing to a RecordBatch.
+        retention_secs: Retention window in seconds for message tables.
+            Defaults to 600 (10 minutes). 0 disables retention.
 
     Returns:
         The QueryEngine for executing SQL queries.
     """
-    # Reset if called again (e.g., in tests)
-    _register_scanner(batch_size)
+    _register_scanner(batch_size, retention_secs=retention_secs)
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
     return QueryEngine(coordinator)
