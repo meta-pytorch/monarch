@@ -60,6 +60,17 @@ jobs:
 
         cargo install --path monarch_hyperactor
 
+        # Build dashboard frontend (if Node.js is available)
+        FRONTEND_DIR="python/monarch/monarch_dashboard/frontend"
+        if [ -d "$FRONTEND_DIR" ]; then
+          if command -v npm &> /dev/null; then
+            echo "Building dashboard frontend..."
+            (cd "$FRONTEND_DIR" && npm ci && npm run build)
+          else
+            echo "npm not found, skipping frontend build"
+          fi
+        fi
+
         # Build wheel
         if [ -n "${{ inputs.version }}" ]; then
           export MONARCH_VERSION="${{ inputs.version }}"
