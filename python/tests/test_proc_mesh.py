@@ -208,13 +208,13 @@ async def test_deprecated_proc_mesh_from_alloc_mock() -> None:
         gpus=num_gpus,
     )
 
-    with patch.object(HostMesh, "allocate_nonblocking") as mock_host_alloc:
+    with patch.object(HostMesh, "_allocate_nonblocking") as mock_host_alloc:
         mock_host_mesh = MagicMock()
         mock_host_mesh.spawn_procs = MagicMock()
         mock_host_alloc.return_value = mock_host_mesh
 
         alloc_handle = allocator.allocate(spec)
-        ProcMesh.from_alloc(alloc_handle, test_setup)
+        ProcMesh._from_alloc(alloc_handle, test_setup)
 
         mock_host_alloc.assert_called_once()
         (name, extent, allocator, constraints) = mock_host_alloc.call_args.args
@@ -233,7 +233,7 @@ def test_deprecated_proc_mesh_from_alloc_multi_actor() -> None:
     allocator = ProcessAllocator(*_get_bootstrap_args())
     spec = AllocSpec(AllocConstraints(), replicas=2, hosts=2, gpus=3)
     alloc_handle = allocator.allocate(spec)
-    proc_mesh = ProcMesh.from_alloc(alloc_handle)
+    proc_mesh = ProcMesh._from_alloc(alloc_handle)
 
     actor = proc_mesh.spawn("test_actor", TestActor, 42)
 
