@@ -286,12 +286,13 @@ impl EntityDispatcher {
 
 impl EntityEventDispatcher for EntityDispatcher {
     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+
         match event {
             EntityEvent::Actor(actor_event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.actors_buffer.insert(Actor {
                     id: actor_event.id,
                     timestamp_us: timestamp_to_micros(&actor_event.timestamp),
@@ -303,10 +304,6 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_actors_if_full()?;
             }
             EntityEvent::Mesh(mesh_event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.meshes_buffer.insert(Mesh {
                     id: mesh_event.id,
                     timestamp_us: timestamp_to_micros(&mesh_event.timestamp),
@@ -320,10 +317,6 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_meshes_if_full()?;
             }
             EntityEvent::ActorStatus(status_event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.actor_status_events_buffer.insert(ActorStatusEvent {
                     id: status_event.id,
                     timestamp_us: timestamp_to_micros(&status_event.timestamp),
@@ -334,10 +327,6 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_actor_status_events_if_full()?;
             }
             EntityEvent::SentMessage(event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.sent_messages_buffer.insert(SentMessage {
                     id: hyperactor_telemetry::generate_sent_message_id(event.sender_actor_id),
                     timestamp_us: timestamp_to_micros(&event.timestamp),
@@ -349,10 +338,6 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_sent_messages_if_full()?;
             }
             EntityEvent::Message(event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.messages_buffer.insert(Message {
                     id: event.id,
                     timestamp_us: timestamp_to_micros(&event.timestamp),
@@ -364,10 +349,6 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_messages_if_full()?;
             }
             EntityEvent::MessageStatus(event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner
                     .message_status_events_buffer
                     .insert(MessageStatusEvent {
