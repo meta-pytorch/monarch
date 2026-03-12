@@ -23,7 +23,7 @@ are launch across hosts. HostMesh represents a mesh of hosts. ProcMesh is a mesh
    :undoc-members:
    :inherited-members:
    :show-inheritance:
-   :exclude-members: __init__, monitor, from_alloc, sync_workspace, logging_option, get
+   :exclude-members: __init__, monitor, _from_alloc, sync_workspace, logging_option, get
 
 .. autofunction:: get_or_spawn_controller
 

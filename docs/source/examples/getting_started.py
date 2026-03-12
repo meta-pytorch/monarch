@@ -316,11 +316,13 @@ class SupervisorActor(Actor):
 # %%
 # If a MeshFailure is not handled by any __supervise__ in the supervision tree,
 # it will reach the client, where monarch.actor.unhandled_fault_hook will be
-# called with the MeshFailure object. By default, this function crashes the
-# client process with exit code 1.
+# called with the MeshFailure object. By default, this function exits the process
+# with a KeyboardInterrupt.
 
 # You can overwrite the global unhandled_fault_hook function to customize this
-# behavior.
+# behavior. The function can either:
+# - raise any exception (including BaseException) to indicate that the failure was not handled
+# - return any value (including None) to indicate that the failure was handled
 
 import monarch.actor
 
