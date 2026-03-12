@@ -77,7 +77,7 @@ class HostMesh(MeshTrait):
         self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = _code_sync_proc_mesh
 
     @classmethod
-    def allocate_nonblocking(
+    def _allocate_nonblocking(
         cls,
         name: str,
         extent: Extent,
