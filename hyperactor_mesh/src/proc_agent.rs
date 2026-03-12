@@ -33,6 +33,7 @@ use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::PortHandle;
+use hyperactor::ReceiverPollExt;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
 use hyperactor::actor::ActorStatus;
@@ -639,7 +640,7 @@ impl MeshAgentMessageHandler for ProcAgent {
         let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
             match tokio::time::timeout(
                 tokio::time::Duration::from_millis(timeout_ms),
-                status.wait_for(|state: &ActorStatus| state.is_terminal()),
+                status.poll_for(|state: &ActorStatus| state.is_terminal()),
             )
             .await
             {
