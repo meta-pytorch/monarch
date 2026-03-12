@@ -84,7 +84,9 @@ def test_spawn_proc_mesh() -> None:
         )
         hy_sliced_proc = sliced_proc._proc_mesh.block_on()
         assert sliced_proc._host_mesh is sliced_host
-        assert sliced_proc._ndslice == Slice(offset=0, sizes=[2, 3, 4], strides=[12, 4, 1])
+        assert sliced_proc._ndslice == Slice(
+            offset=0, sizes=[2, 3, 4], strides=[12, 4, 1]
+        )
         assert sliced_proc._labels == ["hosts", "gpus", "just_for_fun"]
         assert hy_sliced_proc.region.labels == sliced_proc._labels
         assert hy_sliced_proc.region.slice() == sliced_proc._ndslice

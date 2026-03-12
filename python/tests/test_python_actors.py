@@ -1524,8 +1524,12 @@ def test_this_host() -> None:
 
         expected_hosts_by_rank = [h for h in hosts_by_rank for _ in range(2)]
         assert list(am_all.this_host.call().get().values()) == expected_hosts_by_rank
-        assert list(am_012.this_host.call().get().values()) == expected_hosts_by_rank[:6]
-        assert list(am_345.this_host.call().get().values()) == expected_hosts_by_rank[6:]
+        assert (
+            list(am_012.this_host.call().get().values()) == expected_hosts_by_rank[:6]
+        )
+        assert (
+            list(am_345.this_host.call().get().values()) == expected_hosts_by_rank[6:]
+        )
 
         # Procs 3 and 5 on hosts 1 and 2
         proc_mesh_012 = proc_mesh_012.slice(hosts=slice(1, 3), gpus=1)

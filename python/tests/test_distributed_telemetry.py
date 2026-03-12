@@ -396,7 +396,9 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
         proc_mesh_id = proc_ids[0]
 
         # ProcAgent actors have mesh_id pointing directly to the proc mesh
-        proc_agents = engine.query(f"SELECT id FROM actors WHERE mesh_id = {proc_mesh_id}")
+        proc_agents = engine.query(
+            f"SELECT id FROM actors WHERE mesh_id = {proc_mesh_id}"
+        )
         proc_agents_count = len(proc_agents.to_pydict().get("id", []))
         assert proc_agents_count == 2, (
             f"Expected 2 ProcAgent actors, got {proc_agents_count}"
@@ -420,8 +422,12 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
         }
 
         # For every child actor mesh, verify that actors exist in the actors table
-        for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
-            actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
+        for mesh_id, mesh_class, mesh_name in zip(
+            child_ids, child_classes, child_names
+        ):
+            actor_result = engine.query(
+                f"SELECT id FROM actors WHERE mesh_id = {mesh_id}"
+            )
             actor_dict = actor_result.to_pydict()
             actor_count = len(actor_dict.get("id", []))
 
@@ -458,7 +464,9 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
         host_mesh_id = host_mesh_ids[0]
 
         # HostAgent actors have mesh_id pointing directly to the host mesh
-        host_agents = engine.query(f"SELECT id FROM actors WHERE mesh_id = {host_mesh_id}")
+        host_agents = engine.query(
+            f"SELECT id FROM actors WHERE mesh_id = {host_mesh_id}"
+        )
         host_agents_count = len(host_agents.to_pydict().get("id", []))
         assert host_agents_count == 2, (
             f"Expected 2 HostAgent actors, got {host_agents_count}"
@@ -497,8 +505,12 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
         }
 
         # For every child actor mesh, verify that actors exist in the actors table
-        for mesh_id, mesh_class, mesh_name in zip(child_ids, child_classes, child_names):
-            actor_result = engine.query(f"SELECT id FROM actors WHERE mesh_id = {mesh_id}")
+        for mesh_id, mesh_class, mesh_name in zip(
+            child_ids, child_classes, child_names
+        ):
+            actor_result = engine.query(
+                f"SELECT id FROM actors WHERE mesh_id = {mesh_id}"
+            )
             actor_dict = actor_result.to_pydict()
             actor_count = len(actor_dict.get("id", []))
             assert actor_count == 4, (
@@ -578,7 +590,9 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     # Spawn 3 workers so we can slice a subset
     with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
         hosts = state.hosts
-        worker_procs = hosts.spawn_procs(per_host={"workers": 3}, name="rank_test_procs")
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 3}, name="rank_test_procs"
+        )
 
         # Full view: spawn on the unsliced proc mesh (all 3 workers)
         full_actors = worker_procs.spawn("full_view_actor", WorkerActor)
@@ -763,7 +777,9 @@ def test_messages_table(cleanup_callbacks) -> None:
 
     with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
         hosts = state.hosts
-        worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="msg_workers_procs")
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="msg_workers_procs"
+        )
         workers = worker_procs.spawn("msg_test_worker", WorkerActor)
         workers.initialized.get()
 
@@ -924,7 +940,9 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
 
     with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
         hosts = state.hosts
-        worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="sender_test_procs")
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="sender_test_procs"
+        )
 
         # Spawn target actors on the full proc mesh
         targets = worker_procs.spawn("target_workers", WorkerActor)
@@ -990,7 +1008,9 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
 
     with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
         hosts = state.hosts
-        worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="stop_test_procs")
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="stop_test_procs"
+        )
 
         # Spawn and initialize a user actor
         workers = worker_procs.spawn("stop_test_worker", WorkerActor)
