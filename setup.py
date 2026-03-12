@@ -142,8 +142,20 @@ if use_tensor_engine and not torch_config:
     sys.exit(1)
 
 build_tensor_engine = use_tensor_engine and torch_config is not None
-build_cuda = build_tensor_engine and cuda_home is not None
-build_rocm = build_tensor_engine and rocm_home is not None
+
+# GPU platform selection: use MONARCH_RDMA_GPU_PLATFORM env var or auto-detect
+gpu_platform = os.environ.get("MONARCH_RDMA_GPU_PLATFORM", "").lower()
+if gpu_platform and gpu_platform not in ("cuda", "rocm"):
+    sys.exit(f"Invalid MONARCH_RDMA_GPU_PLATFORM={gpu_platform}. Use 'cuda' or 'rocm'")
+if gpu_platform == "rocm" and not rocm_home:
+    sys.exit("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm not found")
+if gpu_platform == "cuda" and not cuda_home:
+    sys.exit("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA not found")
+if not gpu_platform and build_tensor_engine and cuda_home and rocm_home:
+    sys.exit("Both CUDA and ROCm detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or =rocm")
+
+build_cuda = build_tensor_engine and (gpu_platform == "cuda" or (not gpu_platform and cuda_home))
+build_rocm = build_tensor_engine and (gpu_platform == "rocm" or (not gpu_platform and rocm_home))
 
 print("=" * 80)
 if build_tensor_engine:
@@ -262,7 +274,8 @@ def create_cpp_extension(name: str, sources: List[str]) -> Extension:
 ext_modules = []
 if build_tensor_engine:
     cpp_sources = ["python/monarch/common/init.cpp"]
-    if build_cuda or build_rocm:
+    if build_cuda:
+        # mock_cuda.cpp is not compatible with ROCm (relies on CUDA-specific assembly)
         cpp_sources.append("python/monarch/common/mock_cuda.cpp")
 
     ext_modules = [
