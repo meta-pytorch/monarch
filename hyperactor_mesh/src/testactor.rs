@@ -26,8 +26,6 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::clock::Clock as _;
-use hyperactor::clock::RealClock;
 #[cfg(test)]
 use hyperactor::context;
 use hyperactor::ordering::SEQ_INFO;
@@ -199,7 +197,7 @@ impl Handler<std::time::Duration> for SleepActor {
         _cx: &Context<Self>,
         duration: std::time::Duration,
     ) -> Result<(), anyhow::Error> {
-        RealClock.sleep(duration).await;
+        tokio::time::sleep(duration).await;
         Ok(())
     }
 }
@@ -412,12 +410,11 @@ impl Handler<NextSupervisionFailure> for WrapperActor {
             msg.0.send(cx, None)?;
             return Ok(());
         };
-        let failure = match RealClock
-            .timeout(
-                tokio::time::Duration::from_secs(20),
-                mesh.next_supervision_event(cx),
-            )
-            .await
+        let failure = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(20),
+            mesh.next_supervision_event(cx),
+        )
+        .await
         {
             Ok(Ok(failure)) => Some(failure),
             // Any error in next_supervision_event is treated the same.
@@ -505,7 +502,7 @@ pub async fn assert_casting_correctness(
     }
 
     // No more messages
-    RealClock.sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let result = rx.try_recv();
     assert!(result.as_ref().unwrap().is_none(), "got {result:?}");
 }

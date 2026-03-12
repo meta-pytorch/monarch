@@ -682,8 +682,6 @@ mod tests {
     use hyperactor::accum;
     use hyperactor::accum::Accumulator;
     use hyperactor::accum::ReducerSpec;
-    use hyperactor::clock::Clock;
-    use hyperactor::clock::RealClock;
     use hyperactor::context;
     use hyperactor::context::Mailbox;
     use hyperactor::mailbox::PortReceiver;
@@ -1031,16 +1029,15 @@ mod tests {
         dur: Duration,
     ) -> anyhow::Result<()> {
         // timeout wraps the entire async block
-        RealClock
-            .timeout(dur, async {
-                loop {
-                    let msg = receiver.recv().await.unwrap();
-                    if msg == expected {
-                        break;
-                    }
+        tokio::time::timeout(dur, async {
+            loop {
+                let msg = receiver.recv().await.unwrap();
+                if msg == expected {
+                    break;
                 }
-            })
-            .await?;
+            }
+        })
+        .await?;
         Ok(())
     }
 
@@ -1071,7 +1068,7 @@ mod tests {
             .await
             .unwrap();
         // no more messages
-        RealClock.sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let msg = reply1_rx.try_recv().unwrap();
         assert_eq!(msg, None);
     }

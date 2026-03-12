@@ -8,11 +8,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use hyperactor::clock::ClockKind;
-use hyperactor::clock::RealClock;
-use hyperactor::clock::SimClock;
 use hyperactor_telemetry::sqlite::SqliteTracing;
-use hyperactor_telemetry::swap_telemetry_clock;
 use opentelemetry::global;
 use opentelemetry::metrics;
 use pyo3::prelude::*;
@@ -87,18 +83,6 @@ pub fn forward_to_tracing(py: Python, record: Py<PyAny>) -> PyResult<()> {
             tracing::info!(target:"log_events", file = file, lineno = lineno, actor_id = actor_id.as_deref(), message)
         }
     }
-    Ok(())
-}
-
-#[pyfunction]
-pub fn use_real_clock() -> PyResult<()> {
-    swap_telemetry_clock(ClockKind::Real(RealClock));
-    Ok(())
-}
-
-#[pyfunction]
-pub fn use_sim_clock() -> PyResult<()> {
-    swap_telemetry_clock(ClockKind::Sim(SimClock));
     Ok(())
 }
 
@@ -326,20 +310,6 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_hyperactor.telemetry",
     )?;
     module.add_function(get_current_span_id_fn)?;
-
-    let use_real_clock_fn = wrap_pyfunction!(use_real_clock, module)?;
-    use_real_clock_fn.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.telemetry",
-    )?;
-    module.add_function(use_real_clock_fn)?;
-
-    let use_sim_clock_fn = wrap_pyfunction!(use_sim_clock, module)?;
-    use_sim_clock_fn.setattr(
-        "__module__",
-        "monarch._rust_bindings.monarch_hyperactor.telemetry",
-    )?;
-    module.add_function(use_sim_clock_fn)?;
 
     let get_execution_id_fn = wrap_pyfunction!(get_execution_id, module)?;
     get_execution_id_fn.setattr(
