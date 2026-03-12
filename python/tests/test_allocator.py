@@ -68,7 +68,7 @@ def proc_mesh_from_alloc(
     setup: Optional[Callable[[], None]] = None,
     constraints: Optional[AllocConstraints] = None,
 ) -> ProcMesh:
-    return HostMesh.allocate_nonblocking(
+    return HostMesh._allocate_nonblocking(
         "hosts",
         Extent(*zip(*list(spec.extent.items()))),
         allocator,
@@ -284,7 +284,7 @@ class TestRemoteAllocator(unittest.IsolatedAsyncioTestCase):
                 )
                 alloc = allocator.allocate(spec)
                 await alloc.initialized
-                pm = HostMesh.allocate_nonblocking(
+                pm = HostMesh._allocate_nonblocking(
                     "hosts",
                     Extent(*zip(*list(spec.extent.items()))),
                     allocator,
