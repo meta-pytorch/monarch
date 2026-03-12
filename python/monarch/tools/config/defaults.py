@@ -26,7 +26,7 @@ from torchx.schedulers import (
 
 def component_fn(scheduler: str) -> Callable[..., specs.AppDef]:
     """The default TorchX component function for the scheduler"""
-    return hyperactor.host_mesh
+    return hyperactor._host_mesh
 
 
 def scheduler_factories() -> dict[str, SchedulerFactory]:
