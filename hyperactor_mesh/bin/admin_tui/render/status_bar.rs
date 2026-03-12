@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use hyperactor::introspect::NodeProperties;
+use hyperactor_mesh::introspect::NodeProperties;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;

@@ -70,7 +70,7 @@ pub(crate) struct Args {
     pub(crate) admin_port: Option<u16>,
 
     /// MAST resolution strategy: "thrift" (default at Meta) or
-    /// "cli" (INV-DISPATCH).
+    /// "cli" (MR-1).
     #[arg(long)]
     pub(crate) mast_resolver: Option<String>,
 
