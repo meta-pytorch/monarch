@@ -313,8 +313,10 @@ impl HostMesh {
     /// `boot.bootstrap().await` in those children.
     pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
-            let err = boot.bootstrap().await;
-            tracing::error!("failed to bootstrap local host mesh process: {}", err);
+            let result = boot.bootstrap().await;
+            if let Err(err) = result {
+                tracing::error!("failed to bootstrap local host mesh process: {}", err);
+            }
             std::process::exit(1);
         }
 
@@ -410,8 +412,10 @@ impl HostMesh {
     /// TODO: thread through ownership
     pub async fn process(extent: Extent, command: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
-            let err = boot.bootstrap().await;
-            tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            let result = boot.bootstrap().await;
+            if let Err(err) = result {
+                tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            }
             std::process::exit(1);
         }
 
