@@ -15,38 +15,39 @@
 //!
 //! See `hyperactor::introspect` for naming convention, invariant
 //! labels, and the `IntrospectAttr` meta-attribute pattern.
-//!
-//! ## Mesh key invariants (MK-*)
-//!
-//! - **MK-1 (metadata completeness):** Every mesh-topology
-//!   introspection key must carry `@meta(INTROSPECT = ...)` with
-//!   non-empty `name` and `desc`.
-//! - **MK-2 (short-name uniqueness):** Covered by
-//!   `test_introspect_short_names_are_globally_unique` in
-//!   `hyperactor::introspect` (cross-crate).
-//!
-//! ## Attrs invariants (IA-*)
-//!
-//! These govern how `IntrospectResult.attrs` is built in
-//! `hyperactor::introspect` and how `properties` is derived via
-//! `derive_properties`.
-//!
-//! - **IA-1 (attrs-json):** `IntrospectResult.attrs` is always a
-//!   valid JSON object string.
-//! - **IA-2 (runtime-precedence):** Runtime-owned introspection keys
-//!   override any same-named keys in published attrs.
-//! - **IA-3 (status-shape):** `status_reason` is present in attrs
-//!   iff the status string carries a reason.
-//! - **IA-4 (failure-shape):** `failure_*` attrs are present iff
-//!   effective status is `failed`.
-//! - **IA-5 (payload-totality):** Every `IntrospectResult` sets
-//!   `attrs` -- never omitted, never null.
 
 use hyperactor_config::INTROSPECT;
 use hyperactor_config::IntrospectAttr;
 use hyperactor_config::declare_attrs;
 
-// See MK-1, MK-2, IA-1..IA-5 in module doc.
+// Invariants:
+//
+// - **MK-1 (metadata completeness):** Every mesh-topology
+//   introspection key must carry `@meta(INTROSPECT = ...)` with
+//   non-empty `name` and `desc`. Enforced by
+//   `test_mesh_introspect_keys_are_tagged`.
+// - **MK-2 (short-name uniqueness):** Covered by
+//   `test_introspect_short_names_are_globally_unique` in
+//   `hyperactor::introspect` (which iterates all linked crates). Full
+//   cross-crate coverage requires a test binary that links both
+//   `hyperactor` and `hyperactor_mesh`.
+//
+// ## Attrs invariants (IA-*)
+//
+// These govern how `IntrospectResult.attrs` is built in
+// `hyperactor::introspect` and how `properties` is derived via
+// `derive_properties`.
+//
+// - **IA-1 (attrs-json):** `IntrospectResult.attrs` is always a
+//   valid JSON object string.
+// - **IA-2 (runtime-precedence):** Runtime-owned introspection keys
+//   override any same-named keys in published attrs.
+// - **IA-3 (status-shape):** `status_reason` is present in attrs
+//   iff the status string carries a reason.
+// - **IA-4 (failure-shape):** `failure_*` attrs are present iff
+//   effective status is `failed`.
+// - **IA-5 (payload-totality):** Every `IntrospectResult` sets
+//   `attrs` — never omitted, never null.
 declare_attrs! {
     /// Topology role of this node: "root", "host", "proc", "error".
     @meta(INTROSPECT = IntrospectAttr {
