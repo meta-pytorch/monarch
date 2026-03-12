@@ -6,6 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! ## Bootstrap invariants (BS-*)
+//!
+//! - **BS-1 (locking):** Do not acquire other locks from inside
+//!   `transition(...)`. The state lock is held for the duration of
+//!   the transition; acquiring another lock risks deadlock.
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env::VarError;
@@ -877,9 +883,7 @@ impl fmt::Debug for BootstrapProcHandle {
     }
 }
 
-// Locking invariant:
-// - Do not acquire other locks from inside `transition(...)` (it
-//   holds the status mutex).
+// See BS-1 in module doc.
 impl BootstrapProcHandle {
     /// Construct a new [`BootstrapProcHandle`] for a freshly spawned
     /// OS process hosting a proc.
