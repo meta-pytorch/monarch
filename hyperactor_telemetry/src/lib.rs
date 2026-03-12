@@ -957,6 +957,46 @@ fn initialize_logging_with_log_prefix_impl(
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
+    if std::env::var("TOKIO_CONSOLE").is_ok() {
+        // Grab a random port by binding to :0, then release it for
+        // console-subscriber to rebind. Slightly racy but fine for a
+        // debugging tool.
+        let tmp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = tmp.local_addr().unwrap();
+        drop(tmp);
+
+        let (layer, server) = console_subscriber::ConsoleLayer::builder()
+            .with_default_env()
+            .server_addr(addr)
+            .build();
+        std::thread::Builder::new()
+            .name("tokio-console-server".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let _ = rt.block_on(server.serve());
+            })
+            .expect("failed to spawn tokio-console server thread");
+        let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
+            .unwrap_or_else(|_| "client".to_string());
+        let filter = tracing_subscriber::EnvFilter::from_default_env()
+            .add_directive("tokio=trace".parse().unwrap())
+            .add_directive("runtime=trace".parse().unwrap());
+        if let Err(err) = Registry::default()
+            .with(layer)
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer())
+            .try_init()
+        {
+            eprintln!("tokio-console: tracing subscriber already set: {err}");
+        } else {
+            eprintln!("{process_name} tokio-console http://{addr}");
+        }
+        return Box::new(EmptyTestHandle);
+    }
+
     #[cfg(fbcode_build)]
     {
         let mut mock_scuba_client: Option<crate::meta::scuba_utils::MockScubaClient> = None;
