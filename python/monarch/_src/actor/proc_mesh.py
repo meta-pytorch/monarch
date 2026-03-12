@@ -792,7 +792,7 @@ class ProcMesh(MeshTrait):
         )
 
     @classmethod
-    def from_alloc(
+    def _from_alloc(
         self,
         alloc: AllocHandle,
         setup: Callable[[], None] | None = None,
@@ -810,7 +810,7 @@ class ProcMesh(MeshTrait):
 
         from monarch._src.actor.host_mesh import HostMesh
 
-        return HostMesh.allocate_nonblocking(
+        return HostMesh._allocate_nonblocking(
             "host_mesh_from_alloc",
             Extent(*zip(*alloc._extent.items())),
             alloc._allocator,
