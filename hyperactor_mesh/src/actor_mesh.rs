@@ -6,6 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! ## Actor mesh invariants (AM-*)
+//!
+//! - **AM-1 (rank-space):** `proc_mesh` and any view derived from
+//!   it share the same dense rank space.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
@@ -644,8 +649,7 @@ impl<A: Referable> ActorMeshRef<A> {
         });
 
         Some(page.slots[local_ix].get_or_init(|| {
-            // Invariant: `proc_mesh` and this view share the same
-            // dense rank space:
+            // AM-1: see module doc.
             //   - ranks are contiguous [0, self.len()) with no gaps
             //     or reordering
             //   - for every rank r, `proc_mesh.get(r)` is Some(..)
