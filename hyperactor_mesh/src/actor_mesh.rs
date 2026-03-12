@@ -486,9 +486,7 @@ impl<A: Referable> ActorMeshRef<A> {
             if hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING) {
                 if Selection::is_equivalent_to_true(&sel) {
                     assert!(
-                        hyperactor_config::global::get(
-                            config::ENABLE_DEST_ACTOR_REORDERING_BUFFER
-                        ),
+                        hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
                         "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
                     );
                     self.cast_v1(cx, message, root_comm_actor);
