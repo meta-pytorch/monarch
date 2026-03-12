@@ -1187,7 +1187,10 @@ impl ProcMeshRef {
             hyperactor_telemetry::notify_mesh_created(hyperactor_telemetry::MeshEvent {
                 id: mesh_id_hash,
                 timestamp: std::time::SystemTime::now(),
-                class: actor_type,
+                class: supervision_display_name
+                    .as_deref()
+                    .and_then(python_class_from_supervision_name)
+                    .unwrap_or(actor_type),
                 given_name: mesh.name().name().to_string(),
                 full_name: name_str,
                 shape_json: serde_json::to_string(&self.region().extent()).unwrap_or_default(),
@@ -1369,6 +1372,17 @@ impl view::RankedSliceable for ProcMeshRef {
         )
         .unwrap()
     }
+}
+
+/// Extract a Python class display name from a supervision display name.
+///
+/// The supervision display name format is `{instance}.<{module}.{ClassName} {mesh_name}>`.
+/// Returns `"Python<ClassName>"` if the format matches, `None` otherwise.
+fn python_class_from_supervision_name(sdn: &str) -> Option<String> {
+    let inner = sdn.rsplit_once('<')?.1.strip_suffix('>')?;
+    let qualified = inner.split_whitespace().next()?;
+    let class_name = qualified.rsplit_once('.')?.1;
+    Some(format!("Python<{class_name}>"))
 }
 
 #[cfg(test)]
@@ -1651,5 +1665,28 @@ mod tests {
         );
 
         let _ = hm.shutdown(instance).await;
+    }
+
+    #[test]
+    fn test_python_class_from_supervision_name() {
+        use super::python_class_from_supervision_name;
+
+        assert_eq!(
+            python_class_from_supervision_name("instance0.<my_module.MyWorker test_mesh>"),
+            Some("Python<MyWorker>".to_string()),
+        );
+        assert_eq!(
+            python_class_from_supervision_name(
+                "instance0.<package.submodule.TrainingActor mesh_0>"
+            ),
+            Some("Python<TrainingActor>".to_string()),
+        );
+        // No angle brackets — not a Python supervision name.
+        assert_eq!(python_class_from_supervision_name("plain_name"), None,);
+        // Malformed: missing dot-qualified class name.
+        assert_eq!(
+            python_class_from_supervision_name("instance0.<NoModule mesh>"),
+            None,
+        );
     }
 }
