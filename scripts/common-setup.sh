@@ -28,6 +28,13 @@ install_system_dependencies() {
     dnf install clang-devel libunwind libunwind-devel protobuf-compiler -y
 }
 
+# Install Node.js and npm (needed to build the dashboard frontend).
+install_node() {
+    echo "Installing Node.js..."
+    conda install -y -c conda-forge 'nodejs>=18'
+    echo "Node $(node --version), npm $(npm --version)"
+}
+
 # Install and configure Rust nightly toolchain
 setup_rust_toolchain() {
     echo "Setting up Rust toolchain..."
@@ -131,6 +138,7 @@ setup_build_environment() {
     local python_version=${1:-3.10}
     setup_conda_environment "${python_version}"
     install_system_dependencies
+    install_node
     setup_rust_toolchain
 }
 
