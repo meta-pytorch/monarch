@@ -481,6 +481,7 @@ pub async fn serve_introspect(
     mut receiver: crate::mailbox::PortReceiver<IntrospectMessage>,
 ) {
     use crate::actor::ActorStatus;
+    use crate::actor::ReceiverPollExt;
     use crate::mailbox::PortSender as _;
 
     // Watch for terminal status so we can break the reference cycle:
@@ -507,7 +508,7 @@ pub async fn serve_introspect(
                     }
                 }
             }
-            _ = status.wait_for(ActorStatus::is_terminal) => {
+            _ = status.poll_for(ActorStatus::is_terminal) => {
                 // Snapshot for post-mortem introspection before
                 // dropping our InstanceCell reference.
                 let snapshot = live_actor_payload(&cell);
