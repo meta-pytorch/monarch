@@ -93,8 +93,11 @@ def start_dashboard(
     url = f"http://{host}:{port}"
 
     app = create_app(adapter)
+    # Suppress per-request werkzeug logs (they are noisy in production).
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
     thread = threading.Thread(
-        target=lambda: app.run(host=host, port=port, use_reloader=False),
+        target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False),
         daemon=True,
         name="monarch-dashboard",
     )
