@@ -28,7 +28,7 @@ from monarch._src.actor.proc_mesh import (
     SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
-from monarch.distributed_telemetry import start_telemetry
+from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob
 
 
@@ -119,7 +119,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
 def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn some worker actors - this should trigger notify_actor_created
     job = ProcessJob({"hosts": 1})
@@ -173,7 +173,7 @@ def test_actors_table() -> None:
 def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn some worker actors - this should trigger notify_mesh_created
     job = ProcessJob({"hosts": 1})
@@ -268,7 +268,7 @@ def test_meshes_table() -> None:
 @isolate_in_subprocess
 def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
     job = ProcessJob({"hosts": 1})
@@ -330,7 +330,7 @@ def test_proc_mesh_in_meshes_table() -> None:
 @pytest.mark.timeout(120)
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn actors — this populates both the actors and meshes tables
     job = ProcessJob({"hosts": 1})
@@ -378,7 +378,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 1})
@@ -438,7 +438,7 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 2})
@@ -514,7 +514,7 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn worker actors — actors go through status transitions during spawn
     job = ProcessJob({"hosts": 1})
@@ -573,7 +573,7 @@ def test_actor_status_events_table() -> None:
 @pytest.mark.timeout(120)
 def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn 3 workers so we can slice a subset
     job = ProcessJob({"hosts": 1})
@@ -678,7 +678,7 @@ def test_sent_messages_table(
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -759,7 +759,7 @@ def test_sent_messages_table(
 @pytest.mark.timeout(120)
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -812,7 +812,7 @@ def test_messages_table(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_message_status_events_table(cleanup_callbacks) -> None:
     """Test that message_status_events captures queued/active/complete transitions."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -864,7 +864,7 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -920,7 +920,7 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
 def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -986,7 +986,7 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -1069,7 +1069,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     ProcMesh remain alive, so all data (including process-local tables like
     messages) is still queryable.
     """
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -1153,7 +1153,7 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
     import time
 
     # Use a 1-second retention window so rows expire quickly.
-    engine = start_telemetry(batch_size=2, retention_secs=1)
+    engine = start_telemetry(batch_size=2, retention_secs=1, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
