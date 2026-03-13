@@ -1592,11 +1592,9 @@ mod tests {
         hyperactor_telemetry::initialize_logging_for_test();
 
         use hyperactor::Proc;
-        use hyperactor::mailbox::BoxableMailboxSender;
-        use hyperactor::mailbox::DialMailboxRouter;
-        use hyperactor::testing::ids::test_proc_id;
+        use hyperactor::channel::ChannelTransport;
 
-        let proc = Proc::configured(test_proc_id("0"), DialMailboxRouter::new().boxed());
+        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_0".to_string()).unwrap();
         let instance = proc
             .actor_instance::<testing::TestRootClient>("test_client")
             .unwrap()
