@@ -710,7 +710,7 @@ impl Actor for MeshAdminAgent {
 
         // At Meta: mTLS is mandatory — fail if no certs are found.
         // In OSS: TLS is best-effort with plain HTTP fallback.
-        // See "TLS transport invariant" in module docs.
+        // See MA-T1 in module doc.
         let enforce_mtls = cfg!(fbcode_build);
         let tls_acceptor = try_tls_acceptor(enforce_mtls);
 
