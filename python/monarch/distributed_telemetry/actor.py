@@ -21,6 +21,7 @@ variable and used by the DistributedTelemetryActor when it initializes.
 
 import functools
 import logging
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
@@ -38,6 +39,8 @@ from monarch._src.actor.proc_mesh import (
 )
 from monarch.actor import Actor, current_rank, endpoint, this_proc
 from monarch.distributed_telemetry.engine import QueryEngine
+from monarch.monarch_dashboard.server.app import start_dashboard
+from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -216,6 +219,8 @@ class DistributedTelemetryActor(Actor):
 def start_telemetry(
     batch_size: int = 1000,
     retention_secs: int = 600,
+    include_dashboard: bool = True,
+    dashboard_port: int = 8265,
 ) -> QueryEngine:
     """
     Start the distributed telemetry system and return a QueryEngine.
@@ -228,10 +233,24 @@ def start_telemetry(
         batch_size: Number of rows to buffer before flushing to a RecordBatch.
         retention_secs: Retention window in seconds for message tables.
             Defaults to 600 (10 minutes). 0 disables retention.
+        include_dashboard: Whether to start the monarch dashboard web server.
+        dashboard_port: Preferred port for the dashboard (default 8265).
 
     Returns:
         The QueryEngine for executing SQL queries.
     """
     _register_scanner(batch_size, retention_secs=retention_secs)
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
-    return QueryEngine(coordinator)
+    query_engine = QueryEngine(coordinator)
+
+    if include_dashboard:
+        adapter = QueryEngineAdapter(query_engine)
+        info = start_dashboard(
+            adapter=adapter,
+            port=dashboard_port,
+        )
+        dashboard_url = info["url"]
+        os.environ["MONARCH_DASHBOARD_URL"] = dashboard_url
+        logger.info("Monarch Dashboard: %s", dashboard_url)
+
+    return query_engine

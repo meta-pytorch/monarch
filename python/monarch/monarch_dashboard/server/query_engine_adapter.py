@@ -25,7 +25,7 @@ class QueryEngineAdapter(DBAdapter):
 
     Usage::
 
-        from monarch.distributed_telemetry import start_telemetry
+        from monarch.distributed_telemetry.actor import start_telemetry
         engine = start_telemetry()
         adapter = QueryEngineAdapter(engine)
         rows = adapter.query("SELECT * FROM actors LIMIT 10")
