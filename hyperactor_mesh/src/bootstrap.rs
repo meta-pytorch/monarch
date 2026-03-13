@@ -6,6 +6,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! ## Bootstrap invariants (BS-*)
+//!
+//! - **BS-1 (locking):** Do not acquire other locks from inside
+//!   `transition(...)`. The state lock is held for the duration of
+//!   the transition; acquiring another lock risks deadlock.
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env::VarError;
@@ -472,8 +478,9 @@ impl Bootstrap {
     }
 
     /// Bootstrap this binary according to this configuration.
-    /// This either runs forever, or returns an error.
-    pub async fn bootstrap(self) -> anyhow::Error {
+    /// This runs until all processes are ready to exit, or returns an error.
+    /// The Ok value is the exit code that should be used.
+    pub async fn bootstrap(self) -> anyhow::Result<i32> {
         tracing::info!(
             "bootstrapping mesh process: {}",
             serde_json::to_string(&self).unwrap()
@@ -564,33 +571,36 @@ impl Bootstrap {
                 let proc_sender = mailbox::LocalProcDialer::new(
                     local_addr.clone(),
                     socket_dir_path,
-                    ok!(MailboxClient::dial(backend_addr)),
+                    MailboxClient::dial(backend_addr)?,
                 );
 
                 let proc = Proc::configured(proc_id.clone(), proc_sender.into_boxed());
 
                 let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<i32>();
-                let agent_handle = ok!(ProcAgent::boot_v1(proc.clone(), Some(shutdown_tx))
-                    .map_err(|e| HostError::AgentSpawnFailure(proc_id, e)));
+                let agent_handle = ProcAgent::boot_v1(proc.clone(), Some(shutdown_tx))
+                    .map_err(|e| HostError::AgentSpawnFailure(proc_id, e))?;
 
                 let span = entered.exit();
 
                 // Finally serve the proc on the same transport as the backend address,
                 // and call back.
-                let (proc_addr, proc_rx) = ok!(channel::serve(serve_addr));
+                let (proc_addr, proc_rx) = channel::serve(serve_addr)?;
                 let mailbox_handle = proc.clone().serve(proc_rx);
-                ok!(ok!(channel::dial(callback_addr))
+                channel::dial(callback_addr)?
                     .send((proc_addr, agent_handle.bind::<ProcAgent>()))
                     .instrument(span)
                     .await
-                    .map_err(ChannelError::from));
+                    .map_err(ChannelError::from)?;
 
                 // Wait for the StopAll handler to signal the exit code, then
                 // gracefully stop the mailbox server before exiting.
                 let exit_code = shutdown_rx.await.unwrap_or(1);
                 mailbox_handle.stop("process shutting down");
                 let _ = mailbox_handle.await;
-                std::process::exit(exit_code)
+                tracing::info!("bootstrap shutting down with exit code {}", exit_code);
+                // Don't exit the proc, return Ok so the parent function can decide
+                // how to stop.
+                Ok(exit_code)
             }
             Bootstrap::Host {
                 addr,
@@ -599,20 +609,25 @@ impl Bootstrap {
                 exit_on_shutdown,
             } => {
                 let (_agent_handle, shutdown) =
-                    ok!(host(addr, command, config, exit_on_shutdown).await);
+                    host(addr, command, config, exit_on_shutdown).await?;
                 shutdown.join().await;
                 halt().await
             }
-            Bootstrap::V0ProcMesh { config } => bootstrap_v0_proc_mesh(config).await,
+            Bootstrap::V0ProcMesh { config } => Err(bootstrap_v0_proc_mesh(config).await),
         }
     }
 
     /// A variant of [`bootstrap`] that logs the error and exits the process
     /// if bootstrapping fails.
     pub async fn bootstrap_or_die(self) -> ! {
-        let err = self.bootstrap().await;
-        tracing::error!("failed to bootstrap mesh process: {}", err);
-        std::process::exit(1)
+        let exit_code = match self.bootstrap().await {
+            Ok(exit_code) => exit_code,
+            Err(err) => {
+                tracing::error!("failed to bootstrap mesh process: {}", err);
+                1
+            }
+        };
+        std::process::exit(exit_code);
     }
 }
 
@@ -868,9 +883,7 @@ impl fmt::Debug for BootstrapProcHandle {
     }
 }
 
-// Locking invariant:
-// - Do not acquire other locks from inside `transition(...)` (it
-//   holds the status mutex).
+// See BS-1 in module doc.
 impl BootstrapProcHandle {
     /// Construct a new [`BootstrapProcHandle`] for a freshly spawned
     /// OS process hosting a proc.
@@ -2210,8 +2223,10 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
 /// ```
 ///
 /// Use [`bootstrap_or_die`] to implement this behavior directly.
-pub async fn bootstrap() -> anyhow::Error {
-    let boot = ok!(Bootstrap::get_from_env()).unwrap_or_else(Bootstrap::default);
+/// Else if the bootstrap returns Ok, the process has cleaned up successfully and
+/// should exit the "main" of the program.
+pub async fn bootstrap() -> anyhow::Result<i32> {
+    let boot = Bootstrap::get_from_env()?.unwrap_or_else(Bootstrap::default);
     boot.bootstrap().await
 }
 
@@ -2367,10 +2382,14 @@ async fn bootstrap_v0_proc_mesh(config: Option<Attrs>) -> anyhow::Error {
 /// A variant of [`bootstrap`] that logs the error and exits the process
 /// if bootstrapping fails.
 pub async fn bootstrap_or_die() -> ! {
-    let err = bootstrap().await;
-    let _ = writeln!(Debug, "failed to bootstrap mesh process: {}", err);
-    tracing::error!("failed to bootstrap mesh process: {}", err);
-    std::process::exit(1)
+    match bootstrap().await {
+        Ok(exit_code) => std::process::exit(exit_code),
+        Err(err) => {
+            let _ = writeln!(Debug, "failed to bootstrap mesh process: {}", err);
+            tracing::error!("failed to bootstrap mesh process: {}", err);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(enum_as_inner::EnumAsInner)]

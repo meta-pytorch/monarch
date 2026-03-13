@@ -313,8 +313,10 @@ impl HostMesh {
     /// `boot.bootstrap().await` in those children.
     pub async fn local_with_bootstrap(bootstrap_cmd: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
-            let err = boot.bootstrap().await;
-            tracing::error!("failed to bootstrap local host mesh process: {}", err);
+            let result = boot.bootstrap().await;
+            if let Err(err) = result {
+                tracing::error!("failed to bootstrap local host mesh process: {}", err);
+            }
             std::process::exit(1);
         }
 
@@ -410,8 +412,10 @@ impl HostMesh {
     /// TODO: thread through ownership
     pub async fn process(extent: Extent, command: BootstrapCommand) -> crate::Result<HostMesh> {
         if let Ok(Some(boot)) = Bootstrap::get_from_env() {
-            let err = boot.bootstrap().await;
-            tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            let result = boot.bootstrap().await;
+            if let Err(err) = result {
+                tracing::error!("failed to bootstrap process host mesh process: {}", err);
+            }
             std::process::exit(1);
         }
 
@@ -917,7 +921,7 @@ impl HostMeshRef {
 
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
     /// Used by `MeshAdminAgent::effective_hosts()` to merge C into the
-    /// admin's host list (A/C invariant).
+    /// admin's host list (see CH-1 in mesh_admin module doc).
     pub(crate) fn host_entries(&self) -> Vec<(String, hyperactor_reference::ActorRef<HostAgent>)> {
         self.ranks
             .iter()
@@ -1274,11 +1278,8 @@ impl HostMeshRef {
             .map(|h| (h.0.to_string(), h.mesh_agent()))
             .collect();
 
-        // A/C invariant: include C (the client host) so the admin
-        // can introspect it as a normal host subtree. Dedup by
-        // HostAgent ActorId for C ∈ A. Works for both same-process
-        // and cross-process (MAST) because we read C here on the
-        // caller's process and send it in the message.
+        // CH-1: see mesh_admin module doc. Include C (the client
+        // host) so the admin can introspect it. Dedup for C in A.
         if let Some(client_host) = crate::global_context::try_this_host() {
             for (addr, agent_ref) in client_host.host_entries() {
                 let agent_id = agent_ref.actor_id();
