@@ -13,7 +13,7 @@
 //!
 //! ## Wire protocol
 //!
-//! Each connection starts with a unified `LinkInit` header (12 bytes,
+//! Each connection starts with a unified `LinkInit` header (13 bytes,
 //! unframed) containing only the `session_id`:
 //!
 //! ```text
@@ -38,14 +38,15 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::ClientError;
 use super::Link;
 use super::ServerError;
 use super::SessionId;
 use super::log_send_error;
 use super::read_link_init;
+use super::server::AcceptorLink;
 use super::server::ServerHandle;
 use super::session;
-use super::session::Mux;
 use super::session::Next;
 use super::session::Session;
 use crate::RemoteMessage;
@@ -55,20 +56,8 @@ use crate::channel::Rx;
 use crate::channel::SendError;
 use crate::channel::Tx;
 use crate::channel::TxStatus;
-use crate::config;
 use crate::metrics;
 use crate::sync::mvar::MVar;
-
-/// Per-link server state persisting across reconnections.
-struct DuplexServerLink<In: RemoteMessage, Out: RemoteMessage> {
-    id: SessionId,
-    /// (inbound_next, outbound_next) — taken/put atomically with MVar.
-    next: MVar<(Next, Next)>,
-    /// Delivers inbound In messages to the link's Rx.
-    inbound_tx: mpsc::Sender<In>,
-    /// Taken by the connection handler, put back on disconnect.
-    outbound_rx: MVar<mpsc::UnboundedReceiver<(Out, oneshot::Sender<SendError<Out>>, Instant)>>,
-}
 
 /// Public duplex server that yields `(DuplexRx<In>, DuplexTx<Out>)` pairs.
 pub struct DuplexServer<In: RemoteMessage, Out: RemoteMessage> {
@@ -246,7 +235,116 @@ fn serve_with_listener<In: RemoteMessage, Out: RemoteMessage, L: super::Listener
     })
 }
 
-/// Main listen loop for duplex connections.
+/// Helper to distinguish send errors from recv errors in duplex select.
+enum Either {
+    Send(session::SendLoopError),
+    Recv(session::RecvLoopError),
+}
+
+/// Dispatch a stream to the appropriate duplex session, creating one
+/// if this is the first connection for the given session ID.
+async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage, S: super::Stream>(
+    session_id: SessionId,
+    stream: S,
+    sessions: &DashMap<SessionId, MVar<S>>,
+    addr: ChannelAddr,
+    accept_tx: &mpsc::Sender<(DuplexRx<In>, DuplexTx<Out>)>,
+    cancel: CancellationToken,
+) {
+    let mvar = {
+        let entry = sessions.entry(session_id);
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                let mvar: MVar<S> = MVar::empty();
+                let link = AcceptorLink {
+                    dest: addr.clone(),
+                    session_id,
+                    stream: mvar.clone(),
+                    cancel: cancel.clone(),
+                };
+
+                let (inbound_tx, inbound_rx) = mpsc::channel::<In>(1024);
+                let (outbound_tx, outbound_rx) =
+                    mpsc::unbounded_channel::<(Out, oneshot::Sender<SendError<Out>>, Instant)>();
+                let (notify, status) = watch::channel(TxStatus::Active);
+                let net_rx = DuplexRx(inbound_rx, addr.clone());
+                let net_tx = DuplexTx {
+                    tx: outbound_tx,
+                    addr: addr.clone(),
+                    status,
+                };
+                let _ = accept_tx.send((net_rx, net_tx)).await;
+
+                let session_ct = cancel.clone();
+                let dest = addr.clone();
+                tokio::spawn(async move {
+                    let mut session = Session::new(link);
+                    let mut recv_next = Next { seq: 0, ack: 0 };
+                    let log_id = format!("duplex server {:016x}", session_id.0);
+                    let mut deliveries = session::Deliveries {
+                        outbox: session::Outbox::new(log_id.clone(), dest, session_id.0),
+                        unacked: session::Unacked::new(None, log_id),
+                    };
+                    let mut outbound_rx = outbound_rx;
+
+                    loop {
+                        let connected = match session.connect().await {
+                            Ok(s) => s,
+                            Err(_) => break,
+                        };
+                        deliveries.requeue_unacked();
+                        let result = {
+                            let recv_stream = connected.stream(super::INITIATOR_TO_ACCEPTOR);
+                            let send_stream = connected.stream(super::ACCEPTOR_TO_INITIATOR);
+                            tokio::select! {
+                                r = session::recv_connected::<In, _, _>(
+                                    &recv_stream,
+                                    &inbound_tx,
+                                    &mut recv_next,
+                                ) => r.map_err(Either::Recv),
+                                r = session::send_connected(
+                                    &send_stream,
+                                    &mut deliveries,
+                                    &mut outbound_rx,
+                                ) => r.map_err(Either::Send),
+                                _ = session_ct.cancelled() => Err(Either::Recv(session::RecvLoopError::Cancelled)),
+                            }
+                        };
+
+                        let terminal = match &result {
+                            Ok(()) => false,
+                            Err(Either::Send(session::SendLoopError::Io(err))) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %err,
+                                    "duplex send/recv error",
+                                );
+                                false
+                            }
+                            Err(Either::Recv(session::RecvLoopError::Io(_))) => false,
+                            _ => true,
+                        };
+                        session = connected.release();
+                        if terminal {
+                            break;
+                        }
+                    }
+
+                    let _ = notify.send(TxStatus::Closed);
+                });
+
+                e.insert(mvar.clone());
+                mvar
+            }
+        }
+    };
+
+    mvar.put(stream).await;
+}
+
+/// Main listen loop for duplex connections. Uses AcceptorLink +
+/// Session with acquire/release per session.
 async fn duplex_listen<In: RemoteMessage, Out: RemoteMessage, L: super::Listener>(
     mut listener: L,
     listener_addr: ChannelAddr,
@@ -254,7 +352,7 @@ async fn duplex_listen<In: RemoteMessage, Out: RemoteMessage, L: super::Listener
     cancel_token: CancellationToken,
 ) -> Result<(), ServerError> {
     let child_cancel_token = CancellationToken::new();
-    let links: Arc<DashMap<SessionId, Arc<DuplexServerLink<In, Out>>>> = Arc::new(DashMap::new());
+    let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
     let mut connections: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
 
     let result: Result<(), ServerError> = loop {
@@ -262,67 +360,20 @@ async fn duplex_listen<In: RemoteMessage, Out: RemoteMessage, L: super::Listener
             result = listener.accept() => {
                 match result {
                     Ok((mut stream, _peer_addr)) => {
-                        // Read LinkInit from the connection.
-                        let session_id = match read_link_init(&mut stream).await {
-                            Ok(id) => id,
-                            Err(e) => {
-                                tracing::info!(error = %e, "failed to read LinkInit");
-                                continue;
-                            }
-                        };
-
-                        let links = Arc::clone(&links);
+                        let sessions = Arc::clone(&sessions);
                         let accept_tx = accept_tx.clone();
                         let ct = child_cancel_token.child_token();
                         let addr = listener_addr.clone();
 
                         connections.spawn(async move {
-                            // Look up or create the link.
-                            let is_new;
-                            let link = {
-                                let entry = links.entry(session_id);
-                                match entry {
-                                    dashmap::mapref::entry::Entry::Occupied(e) => {
-                                        is_new = false;
-                                        e.get().clone()
-                                    }
-                                    dashmap::mapref::entry::Entry::Vacant(e) => {
-                                        is_new = true;
-                                        let (inbound_tx, inbound_rx) = mpsc::channel::<In>(1024);
-                                        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<(Out, oneshot::Sender<SendError<Out>>, Instant)>();
-                                        let link = Arc::new(DuplexServerLink {
-                                            id: session_id,
-                                            next: MVar::full((
-                                                Next { seq: 0, ack: 0 },
-                                                Next { seq: 0, ack: 0 },
-                                            )),
-                                            inbound_tx,
-                                            outbound_rx: MVar::full(outbound_rx),
-                                        });
-                                        e.insert(link.clone());
+                            let session_id = read_link_init(&mut stream).await
+                                .map_err(|e| anyhow::anyhow!("LinkInit read failed: {e}"))?;
 
-                                        // Send the new channel pair to accept().
-                                        let (_, status) = watch::channel(TxStatus::Active);
-                                        let net_rx = DuplexRx(inbound_rx, addr.clone());
-                                        let net_tx = DuplexTx {
-                                            tx: outbound_tx,
-                                            addr: addr.clone(),
-                                            status,
-                                        };
-                                        let _ = accept_tx.send((net_rx, net_tx)).await;
-
-                                        link
-                                    }
-                                }
-                            };
-
-                            tracing::debug!(
-                                session_id = %session_id,
-                                is_new = is_new,
-                                "duplex connection accepted"
-                            );
-
-                            handle_duplex_connection(stream, link, ct, addr).await
+                            dispatch_duplex_stream::<In, Out, _>(
+                                session_id, stream, &sessions, addr, &accept_tx, ct,
+                            )
+                            .await;
+                            Ok(())
                         });
                     }
                     Err(err) => {
@@ -335,7 +386,7 @@ async fn duplex_listen<In: RemoteMessage, Out: RemoteMessage, L: super::Listener
                 break Ok(());
             }
 
-            result = join_nonempty(&mut connections) => {
+            result = session::join_nonempty(&mut connections) => {
                 if let Err(err) = result {
                     tracing::info!(error = %err, "duplex connection task join error");
                 }
@@ -348,75 +399,8 @@ async fn duplex_listen<In: RemoteMessage, Out: RemoteMessage, L: super::Listener
     result
 }
 
-async fn join_nonempty<T: 'static>(set: &mut JoinSet<T>) -> Result<T, tokio::task::JoinError> {
-    match set.join_next().await {
-        None => std::future::pending().await,
-        Some(result) => result,
-    }
-}
-
-/// Handle a single duplex connection. Takes `(inbound_next, outbound_next)`
-/// from the link's MVar, runs recv_connected and send_connected concurrently,
-/// and puts state back on close.
-async fn handle_duplex_connection<In: RemoteMessage, Out: RemoteMessage, S>(
-    stream: S,
-    link: Arc<DuplexServerLink<In, Out>>,
-    cancel_token: CancellationToken,
-    addr: ChannelAddr,
-) -> Result<(), anyhow::Error>
-where
-    S: super::Stream,
-{
-    let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
-    let (reader, writer) = tokio::io::split(stream);
-    let mux = Mux::new(reader, writer, max);
-    let stream_a = mux.stream(super::INITIATOR_TO_ACCEPTOR);
-    let stream_b = mux.stream(super::ACCEPTOR_TO_INITIATOR);
-
-    let (mut inbound_next, outbound_next) = link.next.take().await;
-    let mut outbound_rx = link.outbound_rx.take().await;
-
-    let ct = cancel_token.child_token();
-
-    let session_id = link.id.0;
-    let log_id = format!("duplex server {:016x}", session_id);
-    let mut deliveries = session::Deliveries {
-        outbox: session::Outbox::new(log_id.clone(), addr.clone(), session_id),
-        unacked: session::Unacked::new(None, log_id),
-    };
-    deliveries.outbox.next_seq = outbound_next.seq;
-
-    // Run both directions concurrently. When either finishes, the other
-    // is dropped (the physical stream is broken once one direction fails).
-    let result: Result<(), anyhow::Error> = tokio::select! {
-        r = session::recv_connected::<In, _, _>(
-            &stream_a, &link.inbound_tx, &mut inbound_next,
-        ) => r.map_err(|e| anyhow::anyhow!("{e}")),
-        _ = ct.cancelled() => Err(anyhow::anyhow!("cancelled")),
-        r = session::send_connected(
-            &stream_b, &mut deliveries, &mut outbound_rx,
-        ) => r.map_err(|e| anyhow::anyhow!("{e}")),
-    };
-
-    let new_outbound_next = Next {
-        seq: deliveries.outbox.next_seq,
-        ack: deliveries
-            .unacked
-            .largest_acked
-            .as_ref()
-            .map_or(outbound_next.ack, |a| a.0 + 1),
-    };
-    link.next.put((inbound_next, new_outbound_next)).await;
-    link.outbound_rx.put(outbound_rx).await;
-    result
-}
-
-enum Either {
-    Send(session::SendLoopError),
-    Recv(session::RecvLoopError),
-}
-
-/// Establish a duplex (send + receive) session over the given link.
+/// Establish a duplex (bidirectional) session over the given link.
+/// Returns send and receive handles.
 pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
     link: impl Link,
 ) -> (DuplexTx<Out>, DuplexRx<In>) {
@@ -517,12 +501,19 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
 /// Connect to a duplex server, returning tx and rx handles.
 pub fn dial<Out: RemoteMessage, In: RemoteMessage>(
     addr: ChannelAddr,
-) -> Result<(DuplexTx<Out>, DuplexRx<In>), super::ClientError> {
+) -> Result<(DuplexTx<Out>, DuplexRx<In>), ClientError> {
     Ok(match addr {
         ChannelAddr::Tcp(socket_addr) => spawn(super::tcp::link(socket_addr)),
         ChannelAddr::Unix(ref unix_addr) => spawn(super::unix::link(unix_addr.clone())),
+        ChannelAddr::Tls(tls_addr) => spawn(super::tls::link(tls_addr)?),
         ChannelAddr::MetaTls(meta_addr) => spawn(super::meta::link(meta_addr)?),
-        other => panic!("duplex not supported for transport: {other}"),
+        other => {
+            return Err(ClientError::Connect(
+                other,
+                io::Error::other("duplex not supported for this transport"),
+                "unsupported transport".into(),
+            ));
+        }
     })
 }
 
