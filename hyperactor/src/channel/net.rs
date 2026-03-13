@@ -348,6 +348,59 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
     tx
 }
 
+/// Transport-agnostic link that dispatches to the appropriate
+/// transport based on the channel address.
+#[derive(Debug)]
+pub(crate) enum NetLink {
+    Tcp(tcp::TcpLink),
+    Unix(unix::UnixLink),
+    Tls(tls::TlsLink),
+}
+
+/// Create a link for the given channel address.
+pub(crate) fn link(addr: ChannelAddr) -> Result<NetLink, ClientError> {
+    match addr {
+        ChannelAddr::Tcp(socket_addr) => Ok(NetLink::Tcp(tcp::link(socket_addr))),
+        ChannelAddr::Unix(unix_addr) => Ok(NetLink::Unix(unix::link(unix_addr))),
+        ChannelAddr::Tls(tls_addr) => Ok(NetLink::Tls(tls::link(tls_addr)?)),
+        ChannelAddr::MetaTls(meta_addr) => Ok(NetLink::Tls(meta::link(meta_addr)?)),
+        other => Err(ClientError::Connect(
+            other,
+            std::io::Error::other("unsupported transport"),
+            "unsupported transport".into(),
+        )),
+    }
+}
+
+#[async_trait]
+impl Link for NetLink {
+    type Stream = Box<dyn Stream>;
+
+    fn dest(&self) -> ChannelAddr {
+        match self {
+            Self::Tcp(l) => l.dest(),
+            Self::Unix(l) => l.dest(),
+            Self::Tls(l) => l.dest(),
+        }
+    }
+
+    fn link_id(&self) -> SessionId {
+        match self {
+            Self::Tcp(l) => l.link_id(),
+            Self::Unix(l) => l.link_id(),
+            Self::Tls(l) => l.link_id(),
+        }
+    }
+
+    async fn next(&self) -> Result<Box<dyn Stream>, ClientError> {
+        match self {
+            Self::Tcp(l) => Ok(Box::new(l.next().await?)),
+            Self::Unix(l) => Ok(Box::new(l.next().await?)),
+            Self::Tls(l) => Ok(Box::new(l.next().await?)),
+        }
+    }
+}
+
 /// Listener represents the server side of a network link: it accepts inbound connections.
 ///
 /// This is the counterpart to [`Link`]. Each transport module (tcp, unix, tls)

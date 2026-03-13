@@ -965,10 +965,7 @@ impl<M: RemoteMessage> fmt::Debug for ChannelTx<M> {
 /// Universal channel transmitter.
 enum ChannelTxKind<M: RemoteMessage> {
     Local(local::LocalTx<M>),
-    Tcp(net::NetTx<M>),
-    MetaTls(net::NetTx<M>),
-    Tls(net::NetTx<M>),
-    Unix(net::NetTx<M>),
+    Net(net::NetTx<M>),
 }
 
 #[async_trait]
@@ -976,30 +973,21 @@ impl<M: RemoteMessage> Tx<M> for ChannelTx<M> {
     fn do_post(&self, message: M, return_channel: Option<oneshot::Sender<SendError<M>>>) {
         match &self.inner {
             ChannelTxKind::Local(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::Tcp(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::MetaTls(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::Tls(tx) => tx.do_post(message, return_channel),
-            ChannelTxKind::Unix(tx) => tx.do_post(message, return_channel),
+            ChannelTxKind::Net(tx) => tx.do_post(message, return_channel),
         }
     }
 
     fn addr(&self) -> ChannelAddr {
         match &self.inner {
             ChannelTxKind::Local(tx) => tx.addr(),
-            ChannelTxKind::Tcp(tx) => Tx::<M>::addr(tx),
-            ChannelTxKind::MetaTls(tx) => Tx::<M>::addr(tx),
-            ChannelTxKind::Tls(tx) => Tx::<M>::addr(tx),
-            ChannelTxKind::Unix(tx) => Tx::<M>::addr(tx),
+            ChannelTxKind::Net(tx) => Tx::<M>::addr(tx),
         }
     }
 
     fn status(&self) -> &watch::Receiver<TxStatus> {
         match &self.inner {
             ChannelTxKind::Local(tx) => tx.status(),
-            ChannelTxKind::Tcp(tx) => tx.status(),
-            ChannelTxKind::MetaTls(tx) => tx.status(),
-            ChannelTxKind::Tls(tx) => tx.status(),
-            ChannelTxKind::Unix(tx) => tx.status(),
+            ChannelTxKind::Net(tx) => tx.status(),
         }
     }
 }
@@ -1069,12 +1057,10 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
     tracing::debug!(name = "dial", caller = %Location::caller(), %addr, "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
-        ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::spawn(net::tcp::link(addr))),
-        ChannelAddr::MetaTls(meta_addr) => {
-            ChannelTxKind::MetaTls(net::spawn(net::meta::link(meta_addr)?))
-        }
-        ChannelAddr::Tls(tls_addr) => ChannelTxKind::Tls(net::spawn(net::tls::link(tls_addr)?)),
-        ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::spawn(net::unix::link(path))),
+        ChannelAddr::Tcp(_)
+        | ChannelAddr::Unix(_)
+        | ChannelAddr::Tls(_)
+        | ChannelAddr::MetaTls(_) => ChannelTxKind::Net(net::spawn(net::link(addr)?)),
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
     Ok(ChannelTx { inner })
