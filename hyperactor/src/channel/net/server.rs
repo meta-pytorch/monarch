@@ -91,13 +91,13 @@ where
     let mux = Mux::new(reader, writer, max);
     let stream = mux.stream(0);
 
-    let result = session::recv_loop::<M, _, _>(&stream, &tx, &mut next, cancel_token).await;
+    let result = session::recv_connected::<M, _, _>(&stream, &tx, &mut next, cancel_token).await;
 
     tracing::info!(
         source = %source,
         dest = %dest,
         session_id,
-        "recv_loop exited: initial {initial_next}, final {next}, outcome: {}",
+        "recv_connected exited: initial {initial_next}, final {next}, outcome: {}",
         match &result {
             Ok(session::RecvResult::Eof) => "eof".to_string(),
             Ok(session::RecvResult::Cancelled) => "cancelled".to_string(),

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use super::session;
 use super::session::Deliveries;
 use super::session::Mux;
-use super::session::SendLoopResult;
+use super::session::SendLoopStatus;
 use super::session::SessionConnector;
 use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
@@ -65,9 +65,9 @@ impl<L: Link + 'static, M: RemoteMessage> SessionConnector<M> for SimplexConnect
         deliveries: &mut Deliveries<M>,
         receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
         cancel: CancellationToken,
-    ) -> SendLoopResult {
+    ) -> Result<SendLoopStatus, anyhow::Error> {
         let stream = connected.mux.stream(0);
-        session::send_loop(&stream, deliveries, receiver, cancel).await
+        session::send_connected(&stream, deliveries, receiver, cancel).await
     }
 
     async fn shutdown(connected: Self::Connected) {
