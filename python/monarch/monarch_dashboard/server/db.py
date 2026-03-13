@@ -6,54 +6,163 @@
 
 """SQL query layer for the Monarch Dashboard.
 
-Provides read-only access to the fake (or real) SQLite telemetry database.
-Each public function executes a single query and returns a list of row dicts.
-All SQL is parameterised to prevent injection.
+Defines a DBAdapter interface with two implementations:
+  - SQLiteAdapter: local dev/testing with a SQLite file (fake or real data).
+  - QueryEngineAdapter (separate module): production, wraps Monarch's
+    DataFusion QueryEngine for live telemetry.
 
-The data model uses two core tables:
-  - meshes: all mesh types (Host, Proc, actor meshes) differentiated by class
-  - actors: all actors including system agents (HostAgent, ProcAgent)
+Module-level functions (init, _query, etc.) provide backward compatibility
+by delegating to a module-level SQLiteAdapter instance.
 """
 
 import sqlite3
+from abc import ABC, abstractmethod
 from typing import Any
 
+
 # ---------------------------------------------------------------------------
-# Connection management
+# Abstract adapter interface
 # ---------------------------------------------------------------------------
 
-_db_path: str | None = None
+
+class DBAdapter(ABC):
+    """Interface for dashboard data access.
+
+    Implementations must support SQL queries returning rows as dicts.
+    The SQL passed to ``query`` is always fully formatted — no placeholders.
+    """
+
+    @abstractmethod
+    def query(self, sql: str) -> list[dict[str, Any]]:
+        """Execute *sql* and return rows as dicts."""
+        ...
+
+    @abstractmethod
+    def table_names(self) -> list[str]:
+        """Return the names of available tables."""
+        ...
+
+    def query_one(self, sql: str) -> dict[str, Any] | None:
+        """Execute *sql* and return the first row, or None."""
+        rows = self.query(sql)
+        return rows[0] if rows else None
+
+
+# ---------------------------------------------------------------------------
+# SQLite adapter — local dev/testing
+# ---------------------------------------------------------------------------
+
+
+class SQLiteAdapter(DBAdapter):
+    """LOCAL DEV/TESTING: reads from a SQLite database file.
+
+    For production use with the live Monarch telemetry stack,
+    use QueryEngineAdapter instead.
+    """
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        # WAL mode allows concurrent readers without blocking on writes.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def query(self, sql: str) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def table_names(self) -> list[str]:
+        return [
+            r["name"]
+            for r in self.query("SELECT name FROM sqlite_master WHERE type='table'")
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Module-level backward compatibility
+# ---------------------------------------------------------------------------
+
+_adapter: DBAdapter | None = None
 
 
 def init(db_path: str) -> None:
-    """Set the database path used by all subsequent queries."""
-    global _db_path
-    _db_path = db_path
+    """Initialise with a SQLite database path (backward-compatible entry point)."""
+    global _adapter
+    _adapter = SQLiteAdapter(db_path)
+
+
+def set_adapter(adapter: DBAdapter) -> None:
+    """Replace the module-level adapter (e.g. with a QueryEngineAdapter)."""
+    global _adapter
+    _adapter = adapter
+
+
+def _get_adapter() -> DBAdapter:
+    if _adapter is None:
+        raise RuntimeError("db.init() or db.set_adapter() must be called first")
+    return _adapter
 
 
 def _connect() -> sqlite3.Connection:
-    """Open a read-only connection to the configured database."""
-    if _db_path is None:
-        raise RuntimeError("db.init() must be called before querying")
-    conn = sqlite3.connect(_db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Open a SQLite connection (backward-compatible helper).
+
+    Only works when the adapter is SQLiteAdapter. Raises RuntimeError
+    when using QueryEngineAdapter. This function is kept for backward
+    compatibility with code that needs direct SQLite access.
+    """
+    adapter = _get_adapter()
+    if not isinstance(adapter, SQLiteAdapter):
+        raise RuntimeError("_connect() requires a SQLiteAdapter")
+    return adapter._connect()
+
+
+def _sql_literal(value: Any) -> str:
+    """Convert a Python value to a SQL literal string for placeholder substitution."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    # String: escape single quotes by doubling them.
+    s = str(value).replace("'", "''")
+    return f"'{s}'"
+
+
+def _format_sql(sql: str, params: tuple) -> str:
+    """Replace ``?`` placeholders in *sql* with literal values from *params*."""
+    if not params:
+        return sql
+    parts = sql.split("?")
+    if len(parts) - 1 != len(params):
+        raise ValueError(f"Expected {len(parts) - 1} params, got {len(params)}")
+    result = parts[0]
+    for i, param in enumerate(params):
+        result += _sql_literal(param) + parts[i + 1]
+    return result
 
 
 def _query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    """Execute *sql* with *params* and return all rows as dicts."""
-    conn = _connect()
-    try:
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
+    """Execute *sql* with *params* and return all rows as dicts.
+
+    Placeholders (``?``) are substituted with literal values before the query
+    is forwarded to the adapter, so the adapter only ever sees fully-formed SQL.
+    """
+    return _get_adapter().query(_format_sql(sql, params))
 
 
 def _query_one(sql: str, params: tuple = ()) -> dict[str, Any] | None:
     """Execute *sql* and return the first row as a dict, or None."""
-    rows = _query(sql, params)
-    return rows[0] if rows else None
+    return _get_adapter().query_one(_format_sql(sql, params))
 
 
 # ---------------------------------------------------------------------------
@@ -244,36 +353,24 @@ def get_dag_data() -> dict[str, Any]:
 
     Returns ``{"nodes": [...], "edges": [...]}``.
     """
-    conn = _connect()
-    try:
-        meshes = [
-            dict(r) for r in conn.execute("SELECT * FROM meshes ORDER BY id").fetchall()
-        ]
+    meshes = _query("SELECT * FROM meshes ORDER BY id")
 
-        # Actors with latest status via JOIN.
-        actor_rows = conn.execute(
-            "SELECT a.*, latest.new_status AS latest_status "
-            "FROM actors a LEFT JOIN ("
-            "  SELECT ase.actor_id, ase.new_status, sub.max_ts "
-            "  FROM actor_status_events ase "
-            "  INNER JOIN ("
-            "    SELECT actor_id, MAX(timestamp_us) AS max_ts "
-            "    FROM actor_status_events GROUP BY actor_id"
-            "  ) sub ON ase.actor_id = sub.actor_id "
-            "    AND ase.timestamp_us = sub.max_ts"
-            ") latest ON a.id = latest.actor_id "
-            "ORDER BY a.id"
-        ).fetchall()
-        actors = [dict(r) for r in actor_rows]
+    # Actors with latest status via JOIN.
+    actors = _query(
+        "SELECT a.*, latest.new_status AS latest_status "
+        "FROM actors a LEFT JOIN ("
+        "  SELECT ase.actor_id, ase.new_status, sub.max_ts "
+        "  FROM actor_status_events ase "
+        "  INNER JOIN ("
+        "    SELECT actor_id, MAX(timestamp_us) AS max_ts "
+        "    FROM actor_status_events GROUP BY actor_id"
+        "  ) sub ON ase.actor_id = sub.actor_id "
+        "    AND ase.timestamp_us = sub.max_ts"
+        ") latest ON a.id = latest.actor_id "
+        "ORDER BY a.id"
+    )
 
-        messages = [
-            dict(r)
-            for r in conn.execute(
-                "SELECT from_actor_id, to_actor_id FROM messages ORDER BY id"
-            ).fetchall()
-        ]
-    finally:
-        conn.close()
+    messages = _query("SELECT from_actor_id, to_actor_id FROM messages ORDER BY id")
 
     # -- Classify meshes --
     host_meshes = [m for m in meshes if m["class"] == "Host"]
@@ -511,178 +608,160 @@ def get_dag_data() -> dict[str, Any]:
 
 
 def get_summary() -> dict[str, Any]:
-    """Return aggregate metrics for the summary dashboard.
+    """Return aggregate metrics for the summary dashboard."""
 
-    Performs multiple aggregate queries in a single connection for efficiency.
-    """
-    conn = _connect()
-    try:
-        # -- Mesh counts by class --
-        total_meshes = conn.execute("SELECT COUNT(*) FROM meshes").fetchone()[0]
-        host_meshes = conn.execute(
-            "SELECT COUNT(*) FROM meshes WHERE class = 'Host'"
-        ).fetchone()[0]
-        proc_meshes = conn.execute(
-            "SELECT COUNT(*) FROM meshes WHERE class = 'Proc'"
-        ).fetchone()[0]
-        actor_meshes = conn.execute(
-            "SELECT COUNT(*) FROM meshes WHERE class != 'Host' AND class != 'Proc'"
-        ).fetchone()[0]
+    def _count(sql: str) -> int:
+        row = _query_one(sql)
+        return list(row.values())[0] if row else 0
 
-        # -- Actor counts --
-        total_actors = conn.execute("SELECT COUNT(*) FROM actors").fetchone()[0]
+    # -- Mesh counts by class --
+    total_meshes = _count("SELECT COUNT(*) AS n FROM meshes")
+    host_meshes = _count("SELECT COUNT(*) AS n FROM meshes WHERE class = 'Host'")
+    proc_meshes = _count("SELECT COUNT(*) AS n FROM meshes WHERE class = 'Proc'")
+    actor_meshes = _count(
+        "SELECT COUNT(*) AS n FROM meshes WHERE class != 'Host' AND class != 'Proc'"
+    )
 
-        # Latest status per actor (subquery picks the most recent event).
-        actor_status_rows = conn.execute(
-            "SELECT sub.new_status, COUNT(*) AS cnt FROM ("
-            "  SELECT ase.actor_id, ase.new_status"
-            "  FROM actor_status_events ase"
-            "  INNER JOIN ("
-            "    SELECT actor_id, MAX(timestamp_us) AS max_ts"
-            "    FROM actor_status_events GROUP BY actor_id"
-            "  ) latest ON ase.actor_id = latest.actor_id"
-            "    AND ase.timestamp_us = latest.max_ts"
-            ") sub GROUP BY sub.new_status ORDER BY sub.new_status"
-        ).fetchall()
-        actor_by_status = {row["new_status"]: row["cnt"] for row in actor_status_rows}
+    # -- Actor counts --
+    total_actors = _count("SELECT COUNT(*) AS n FROM actors")
 
-        # -- Message counts --
-        total_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    # Latest status per actor (subquery picks the most recent event).
+    actor_status_rows = _query(
+        "SELECT sub.new_status, COUNT(*) AS cnt FROM ("
+        "  SELECT ase.actor_id, ase.new_status"
+        "  FROM actor_status_events ase"
+        "  INNER JOIN ("
+        "    SELECT actor_id, MAX(timestamp_us) AS max_ts"
+        "    FROM actor_status_events GROUP BY actor_id"
+        "  ) latest ON ase.actor_id = latest.actor_id"
+        "    AND ase.timestamp_us = latest.max_ts"
+        ") sub GROUP BY sub.new_status ORDER BY sub.new_status"
+    )
+    actor_by_status = {row["new_status"]: row["cnt"] for row in actor_status_rows}
 
-        msg_status_rows = conn.execute(
-            "SELECT status, COUNT(*) AS cnt FROM messages GROUP BY status ORDER BY status"
-        ).fetchall()
-        msg_by_status = {row["status"]: row["cnt"] for row in msg_status_rows}
+    # -- Message counts --
+    total_messages = _count("SELECT COUNT(*) AS n FROM messages")
 
-        msg_endpoint_rows = conn.execute(
-            "SELECT endpoint, COUNT(*) AS cnt FROM messages "
-            "GROUP BY endpoint ORDER BY endpoint"
-        ).fetchall()
-        msg_by_endpoint = {row["endpoint"]: row["cnt"] for row in msg_endpoint_rows}
+    msg_status_rows = _query(
+        "SELECT status, COUNT(*) AS cnt FROM messages GROUP BY status ORDER BY status"
+    )
+    msg_by_status = {row["status"]: row["cnt"] for row in msg_status_rows}
 
-        delivered = msg_by_status.get("delivered", 0)
-        delivery_rate = (
-            round(delivered / total_messages, 3) if total_messages > 0 else 0.0
-        )
+    msg_endpoint_rows = _query(
+        "SELECT endpoint, COUNT(*) AS cnt FROM messages "
+        "GROUP BY endpoint ORDER BY endpoint"
+    )
+    msg_by_endpoint = {row["endpoint"]: row["cnt"] for row in msg_endpoint_rows}
 
-        # -- Error details --
-        failed_actors = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
-                "FROM actor_status_events ase "
-                "JOIN actors a ON ase.actor_id = a.id "
-                "INNER JOIN ("
-                "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
-                "  FROM actor_status_events GROUP BY actor_id"
-                ") latest ON ase.actor_id = latest.actor_id "
-                "  AND ase.timestamp_us = latest.max_ts "
-                "WHERE ase.new_status = 'failed' "
-                "ORDER BY ase.timestamp_us"
-            ).fetchall()
-        ]
+    delivered = msg_by_status.get("delivered", 0)
+    delivery_rate = round(delivered / total_messages, 3) if total_messages > 0 else 0.0
 
-        stopped_actors = [
-            dict(row)
-            for row in conn.execute(
-                "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
-                "FROM actor_status_events ase "
-                "JOIN actors a ON ase.actor_id = a.id "
-                "INNER JOIN ("
-                "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
-                "  FROM actor_status_events GROUP BY actor_id"
-                ") latest ON ase.actor_id = latest.actor_id "
-                "  AND ase.timestamp_us = latest.max_ts "
-                "WHERE ase.new_status = 'stopped' "
-                "ORDER BY ase.timestamp_us"
-            ).fetchall()
-        ]
+    # -- Error details --
+    failed_actors = _query(
+        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
+        "FROM actor_status_events ase "
+        "JOIN actors a ON ase.actor_id = a.id "
+        "INNER JOIN ("
+        "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
+        "  FROM actor_status_events GROUP BY actor_id"
+        ") latest ON ase.actor_id = latest.actor_id "
+        "  AND ase.timestamp_us = latest.max_ts "
+        "WHERE ase.new_status = 'failed' "
+        "ORDER BY ase.timestamp_us"
+    )
 
-        failed_messages = msg_by_status.get("failed", 0)
+    stopped_actors = _query(
+        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id "
+        "FROM actor_status_events ase "
+        "JOIN actors a ON ase.actor_id = a.id "
+        "INNER JOIN ("
+        "  SELECT actor_id, MAX(timestamp_us) AS max_ts "
+        "  FROM actor_status_events GROUP BY actor_id"
+        ") latest ON ase.actor_id = latest.actor_id "
+        "  AND ase.timestamp_us = latest.max_ts "
+        "WHERE ase.new_status = 'stopped' "
+        "ORDER BY ase.timestamp_us"
+    )
 
-        # -- Timeline --
-        time_range = conn.execute(
-            "SELECT MIN(timestamp_us) AS start_us, MAX(timestamp_us) AS end_us "
-            "FROM actor_status_events"
-        ).fetchone()
-        start_us = time_range["start_us"] if time_range else 0
-        end_us = time_range["end_us"] if time_range else 0
+    failed_messages = msg_by_status.get("failed", 0)
 
-        failure_onset_row = conn.execute(
-            "SELECT MIN(timestamp_us) AS ts FROM actor_status_events "
-            "WHERE new_status = 'failed'"
-        ).fetchone()
-        failure_onset_us = (
-            failure_onset_row["ts"]
-            if failure_onset_row and failure_onset_row["ts"]
-            else None
-        )
+    # -- Timeline --
+    time_range = _query_one(
+        "SELECT MIN(timestamp_us) AS start_us, MAX(timestamp_us) AS end_us "
+        "FROM actor_status_events"
+    )
+    start_us = time_range["start_us"] if time_range else 0
+    end_us = time_range["end_us"] if time_range else 0
 
-        total_status_events = conn.execute(
-            "SELECT COUNT(*) FROM actor_status_events"
-        ).fetchone()[0]
-        total_message_events = conn.execute(
-            "SELECT COUNT(*) FROM message_status_events"
-        ).fetchone()[0]
+    failure_onset_row = _query_one(
+        "SELECT MIN(timestamp_us) AS ts FROM actor_status_events "
+        "WHERE new_status = 'failed'"
+    )
+    failure_onset_us = (
+        failure_onset_row["ts"]
+        if failure_onset_row and failure_onset_row["ts"]
+        else None
+    )
 
-        # -- Health score (0-100) --
-        weights = {
-            "idle": 100,
-            "processing": 80,
-            "client": 50,
-            "unknown": 50,
-            "created": 30,
-            "initializing": 30,
-            "saving": 30,
-            "loading": 30,
-            "stopping": 30,
-            "stopped": 20,
-            "failed": 0,
-        }
-        total_weight = 0
-        actor_count_with_status = 0
-        for status, count in actor_by_status.items():
-            w = weights.get(status, 50)
-            total_weight += w * count
-            actor_count_with_status += count
-        health_score = (
-            round(total_weight / actor_count_with_status)
-            if actor_count_with_status > 0
-            else 100
-        )
+    total_status_events = _count("SELECT COUNT(*) AS n FROM actor_status_events")
+    total_message_events = _count("SELECT COUNT(*) AS n FROM message_status_events")
 
-        return {
-            "mesh_counts": {
-                "total": total_meshes,
-            },
-            "hierarchy_counts": {
-                "host_meshes": host_meshes,
-                "proc_meshes": proc_meshes,
-                "actor_meshes": actor_meshes,
-            },
-            "actor_counts": {
-                "total": total_actors,
-                "by_status": actor_by_status,
-            },
-            "message_counts": {
-                "total": total_messages,
-                "by_status": msg_by_status,
-                "by_endpoint": msg_by_endpoint,
-                "delivery_rate": delivery_rate,
-            },
-            "errors": {
-                "failed_actors": failed_actors,
-                "stopped_actors": stopped_actors,
-                "failed_messages": failed_messages,
-            },
-            "timeline": {
-                "start_us": start_us,
-                "end_us": end_us,
-                "failure_onset_us": failure_onset_us,
-                "total_status_events": total_status_events,
-                "total_message_events": total_message_events,
-            },
-            "health_score": health_score,
-        }
-    finally:
-        conn.close()
+    # -- Health score (0-100) --
+    weights = {
+        "idle": 100,
+        "processing": 80,
+        "client": 50,
+        "unknown": 50,
+        "created": 30,
+        "initializing": 30,
+        "saving": 30,
+        "loading": 30,
+        "stopping": 30,
+        "stopped": 20,
+        "failed": 0,
+    }
+    total_weight = 0
+    actor_count_with_status = 0
+    for status, count in actor_by_status.items():
+        w = weights.get(status, 50)
+        total_weight += w * count
+        actor_count_with_status += count
+    health_score = (
+        round(total_weight / actor_count_with_status)
+        if actor_count_with_status > 0
+        else 100
+    )
+
+    return {
+        "mesh_counts": {
+            "total": total_meshes,
+        },
+        "hierarchy_counts": {
+            "host_meshes": host_meshes,
+            "proc_meshes": proc_meshes,
+            "actor_meshes": actor_meshes,
+        },
+        "actor_counts": {
+            "total": total_actors,
+            "by_status": actor_by_status,
+        },
+        "message_counts": {
+            "total": total_messages,
+            "by_status": msg_by_status,
+            "by_endpoint": msg_by_endpoint,
+            "delivery_rate": delivery_rate,
+        },
+        "errors": {
+            "failed_actors": failed_actors,
+            "stopped_actors": stopped_actors,
+            "failed_messages": failed_messages,
+        },
+        "timeline": {
+            "start_us": start_us,
+            "end_us": end_us,
+            "failure_onset_us": failure_onset_us,
+            "total_status_events": total_status_events,
+            "total_message_events": total_message_events,
+        },
+        "health_score": health_score,
+    }

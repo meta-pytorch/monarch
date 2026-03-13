@@ -15,17 +15,9 @@ Three-component architecture:
 3. QueryEngine (Rust): DataFusion query execution
 
 Usage:
-    from monarch.distributed_telemetry import start_telemetry
+    from monarch.distributed_telemetry.actor import start_telemetry
 
     engine = start_telemetry().get()
     # ... spawn procs, they're automatically tracked ...
     result = engine.query("SELECT * FROM metrics")
 """
-
-from monarch.distributed_telemetry.actor import (
-    DistributedTelemetryActor,
-    start_telemetry,
-)
-from monarch.distributed_telemetry.engine import QueryEngine
-
-__all__ = ["DistributedTelemetryActor", "QueryEngine", "start_telemetry"]
