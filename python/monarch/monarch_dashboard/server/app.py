@@ -26,13 +26,6 @@ from .routes import api
 logger = logging.getLogger(__name__)
 
 
-def find_free_port() -> int:
-    """Find an available TCP port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("localhost", 0))
-        return s.getsockname()[1]
-
-
 def create_app(adapter: DBAdapter) -> Flask:
     """Build a configured Flask application.
 
@@ -67,24 +60,38 @@ def create_app(adapter: DBAdapter) -> Flask:
 
 def start_dashboard(
     adapter: DBAdapter,
-    port: int = 5000,
+    port: int = 8265,
     host: str = "0.0.0.0",
 ) -> dict:
     """Start the dashboard server in a daemon thread.
 
+    The dashboard runs in-process because telemetry data lives entirely
+    in-memory as DataFusion MemTables. There is no on-disk database, so
+    the dashboard must share the process to access the QueryEngine.
+
     Args:
         adapter: A DBAdapter instance for data access.
-        port: HTTP port to listen on.  Use 0 to auto-select a free port.
+        port: HTTP port to listen on.
         host: Bind address.
 
     Returns:
         A dict with keys: ``url``, ``port``, ``pid`` (always None),
         ``handle`` (Thread).
-    """
-    if port == 0:
-        port = find_free_port()
 
-    url = f"http://{host}:{port}"
+    Raises:
+        OSError: If the port is already in use.
+    """
+    # Check port availability before starting the thread so failures
+    # are raised to the caller instead of silently killing the thread.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError:
+            logger.error("Dashboard failed to start: port %d is unavailable", port)
+            raise
+
+    display_host = "localhost" if host == "0.0.0.0" else host
+    url = f"http://{display_host}:{port}"
 
     app = create_app(adapter)
     thread = threading.Thread(
