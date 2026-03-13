@@ -291,6 +291,10 @@ pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
 unsafe extern "C" {
     pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
 
+    /// Returns the error message from CUDA driver initialization failure,
+    /// or null if initialization succeeded.
+    pub fn rdmaxcel_driver_init_error() -> *const std::os::raw::c_char;
+
     /// Get PCI address from a CUDA/HIP device pointer
     ///
     /// In CUDA builds, cuda_ptr is CUdeviceptr (u64).
