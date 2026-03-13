@@ -86,7 +86,7 @@ impl<S: Stream> Link for AcceptorLink<S> {
 
 /// Dispatch a stream to the appropriate session, creating one if this
 /// is the first connection for the given session ID.
-async fn dispatch_stream<M: RemoteMessage, S: Stream>(
+pub(super) async fn dispatch_stream<M: RemoteMessage, S: Stream>(
     session_id: SessionId,
     conn: S,
     sessions: &DashMap<SessionId, MVar<S>>,
@@ -187,25 +187,24 @@ async fn dispatch_stream<M: RemoteMessage, S: Stream>(
 }
 
 /// Generic accept loop. Accepts connections from `listener`, transforms
-/// each via `prepare` (which may do TLS negotiation), then dispatches to
-/// the appropriate session.
-async fn accept_loop<M, S, L, F, Fut>(
+/// each via `prepare` (which may do TLS negotiation), then hands them
+/// to `dispatch`.
+pub(super) async fn accept_loop<S, L, F, Fut, D, DFut>(
     listener: &mut L,
-    tx: &mpsc::Sender<M>,
     listener_addr: &ChannelAddr,
     parent_cancel: &CancellationToken,
     prepare: F,
+    dispatch: D,
 ) -> Result<(), ServerError>
 where
-    M: RemoteMessage,
     S: Stream,
     L: super::Listener,
     F: Fn(L::Stream, ChannelAddr) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(SessionId, S), anyhow::Error>> + Send + 'static,
+    D: Fn(SessionId, S) -> DFut + Clone + Send + 'static,
+    DFut: Future<Output = ()> + Send + 'static,
 {
-    let sessions: Arc<DashMap<SessionId, MVar<S>>> = Arc::new(DashMap::new());
     let mut connections: JoinSet<Result<(), anyhow::Error>> = JoinSet::new();
-    let child_cancel = CancellationToken::new();
 
     let heartbeat_interval = hyperactor_config::global::get(config::SERVER_HEARTBEAT_INTERVAL);
     let mut heartbeat_timer: Interval = tokio::time::interval(heartbeat_interval);
@@ -228,14 +227,11 @@ where
                             ),
                         );
 
-                        let tx = tx.clone();
-                        let child_cancel = child_cancel.child_token();
-                        let dest = listener_addr.clone();
-                        let sessions = Arc::clone(&sessions);
                         let prepare = prepare.clone();
+                        let dispatch = dispatch.clone();
                         connections.spawn(async move {
                             let (session_id, stream) = prepare(stream, source).await?;
-                            dispatch_stream(session_id, stream, &sessions, dest, tx, child_cancel).await;
+                            dispatch(session_id, stream).await;
                             Ok(())
                         });
                     }
@@ -287,68 +283,8 @@ where
         }
     };
 
-    child_cancel.cancel();
     while connections.join_next().await.is_some() {}
     result
-}
-
-/// Main listen loop for plaintext connections.
-async fn listen<M: RemoteMessage, L: super::Listener>(
-    mut listener: L,
-    listener_channel_addr: ChannelAddr,
-    tx: mpsc::Sender<M>,
-    parent_cancel_token: CancellationToken,
-) -> Result<(), ServerError>
-where
-    L::Stream: Unpin + fmt::Debug + 'static,
-{
-    accept_loop(
-        &mut listener,
-        &tx,
-        &listener_channel_addr,
-        &parent_cancel_token,
-        |mut stream, source| async move {
-            let session_id = read_link_init(&mut stream)
-                .await
-                .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-            Ok((session_id, stream))
-        },
-    )
-    .await
-}
-
-/// Main listen loop for TLS connections.
-async fn listen_tls<M: RemoteMessage, L: super::Listener>(
-    mut listener: L,
-    listener_channel_addr: ChannelAddr,
-    tx: mpsc::Sender<M>,
-    parent_cancel_token: CancellationToken,
-) -> Result<(), ServerError>
-where
-    L::Stream: Unpin + fmt::Debug + 'static,
-{
-    let dest = listener_channel_addr.clone();
-    accept_loop(
-        &mut listener,
-        &tx,
-        &listener_channel_addr,
-        &parent_cancel_token,
-        move |stream, source| {
-            let dest = dest.clone();
-            async move {
-                let tls_acceptor = match dest.transport() {
-                    ChannelTransport::Tls => tls::tls_acceptor()?,
-                    _ => meta::tls_acceptor(true)?,
-                };
-                let mut tls_stream = tls_acceptor.accept(stream).await?;
-                let session_id = read_link_init(&mut tls_stream)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
-                Ok((session_id, tls_stream))
-            }
-        },
-    )
-    .await
 }
 
 /// Handle to an underlying server that is actively listening.
@@ -412,15 +348,12 @@ impl Future for ServerHandle {
     }
 }
 
-/// serve new connections that are accepted from the given listener.
-pub(super) fn serve<M: RemoteMessage, L: super::Listener>(
-    listener: L,
-    channel_addr: ChannelAddr,
-    is_tls: bool,
-) -> Result<(ChannelAddr, NetRx<M>), ServerError>
-where
-    L::Stream: Unpin + fmt::Debug + 'static,
-{
+/// Serve new connections on the given address.
+pub(in crate::channel) fn serve<M: RemoteMessage>(
+    addr: ChannelAddr,
+) -> Result<(ChannelAddr, NetRx<M>), ServerError> {
+    let (mut listener, channel_addr) = super::listen(addr)?;
+
     metrics::CHANNEL_CONNECTIONS.add(
         1,
         hyperactor_telemetry::kv_pairs!(
@@ -432,12 +365,121 @@ where
     let (tx, rx) = mpsc::channel::<M>(1024);
     let cancel_token = CancellationToken::new();
     let child_token = cancel_token.child_token();
-    let ca: ChannelAddr = channel_addr.clone();
-    let join_handle = if is_tls {
-        tokio::spawn(listen_tls(listener, ca, tx, child_token))
-    } else {
-        tokio::spawn(listen(listener, ca, tx, child_token))
+
+    let is_tls = matches!(
+        channel_addr.transport(),
+        ChannelTransport::Tls | ChannelTransport::MetaTls(_)
+    );
+    let dest = channel_addr.clone();
+    let prepare = move |stream: Box<dyn Stream>, source: ChannelAddr| {
+        let dest = dest.clone();
+        async move {
+            if is_tls {
+                let tls_acceptor = match dest.transport() {
+                    ChannelTransport::Tls => tls::tls_acceptor()?,
+                    _ => meta::tls_acceptor(true)?,
+                };
+                let mut tls_stream = tls_acceptor.accept(stream).await?;
+                let session_id = read_link_init(&mut tls_stream)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                Ok((session_id, Box::new(tls_stream) as Box<dyn Stream>))
+            } else {
+                let mut stream = stream;
+                let session_id = read_link_init(&mut stream)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+                Ok((session_id, stream))
+            }
+        }
     };
+
+    let sessions: Arc<DashMap<SessionId, MVar<Box<dyn Stream>>>> = Arc::new(DashMap::new());
+    let child_cancel = CancellationToken::new();
+    let dispatch_dest = channel_addr.clone();
+    let dispatch = {
+        let sessions = Arc::clone(&sessions);
+        let tx = tx.clone();
+        let child_cancel = child_cancel.clone();
+        let dest = dispatch_dest;
+        move |session_id: SessionId, stream: Box<dyn Stream>| {
+            let sessions = Arc::clone(&sessions);
+            let tx = tx.clone();
+            let cancel = child_cancel.child_token();
+            let dest = dest.clone();
+            async move {
+                dispatch_stream(session_id, stream, &sessions, dest, tx, cancel).await;
+            }
+        }
+    };
+
+    let ca: ChannelAddr = channel_addr.clone();
+    let join_handle = tokio::spawn(async move {
+        let result = accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
+        child_cancel.cancel();
+        result
+    });
+
+    let server_handle = ServerHandle {
+        join_handle,
+        cancel_token,
+        channel_addr: channel_addr.clone(),
+    };
+
+    Ok((
+        server_handle.channel_addr.clone(),
+        NetRx(rx, channel_addr, server_handle),
+    ))
+}
+
+/// Test-only variant that accepts an arbitrary `Listener`. Used by
+/// mock-link tests that cannot go through `net::listen()`.
+#[cfg(test)]
+pub(super) fn serve_with_listener<M, L>(
+    mut listener: L,
+    channel_addr: ChannelAddr,
+) -> Result<(ChannelAddr, NetRx<M>), ServerError>
+where
+    M: RemoteMessage,
+    L: super::Listener + 'static,
+    L::Stream: Unpin + std::fmt::Debug + 'static,
+{
+    let (tx, rx) = mpsc::channel::<M>(1024);
+    let cancel_token = CancellationToken::new();
+    let child_token = cancel_token.child_token();
+
+    let prepare = |mut stream: L::Stream, source: ChannelAddr| async move {
+        let session_id = read_link_init(&mut stream)
+            .await
+            .map_err(|e| anyhow::anyhow!("LinkInit read failed from {}: {}", source, e))?;
+        Ok((session_id, stream))
+    };
+
+    let sessions: Arc<DashMap<SessionId, MVar<L::Stream>>> = Arc::new(DashMap::new());
+    let child_cancel = CancellationToken::new();
+    let dispatch = {
+        let sessions = Arc::clone(&sessions);
+        let tx = tx.clone();
+        let child_cancel = child_cancel.clone();
+        let dest = channel_addr.clone();
+        move |session_id: SessionId, stream: L::Stream| {
+            let sessions = Arc::clone(&sessions);
+            let tx = tx.clone();
+            let cancel = child_cancel.child_token();
+            let dest = dest.clone();
+            async move {
+                dispatch_stream(session_id, stream, &sessions, dest, tx, cancel).await;
+            }
+        }
+    };
+
+    let ca = channel_addr.clone();
+    let join_handle = tokio::spawn(async move {
+        let result = accept_loop(&mut listener, &ca, &child_token, prepare, dispatch).await;
+        child_cancel.cancel();
+        result
+    });
+
     let server_handle = ServerHandle {
         join_handle,
         cancel_token,
