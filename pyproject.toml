@@ -33,6 +33,7 @@ dependencies = [
     "tabulate",
     "opentelemetry-api",
     "clusterscope",
+    "flask>=2.0",
 ]
 
 # PyTorch nightly build indices for different platforms
@@ -117,12 +118,16 @@ dev = [
 [project.scripts]
 monarch = "monarch.tools.cli:main"
 monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
+monarch-dashboard = "monarch.monarch_dashboard.__main__:main"
 
 [tool.setuptools]
 packages = {find = {where = ["python"]}}
 
 [tool.setuptools.package-dir]
 "" = "python"
+
+[tool.setuptools.package-data]
+"monarch.monarch_dashboard" = ["frontend/build/**/*"]
 
 [tool.pytest.ini_options]
 markers = [
