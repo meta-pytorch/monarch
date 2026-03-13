@@ -50,7 +50,10 @@
 use std::fmt;
 use std::fmt::Debug;
 use std::net::ToSocketAddrs;
+use std::time::Duration;
 
+use backoff::ExponentialBackoffBuilder;
+use backoff::backoff::Backoff;
 use bytes::Bytes;
 use enum_as_inner::EnumAsInner;
 use serde::Deserialize;
@@ -349,14 +352,10 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
 ///
 /// This is the counterpart to [`Link`]. Each transport module (tcp, unix, tls)
 /// provides both a `Link` impl (for dialing) and a `Listener` impl (for accepting).
-#[allow(dead_code)] // local_addr is used by duplex (later in the stack)
 #[async_trait]
 pub(crate) trait Listener: Send + Unpin + 'static {
     /// The underlying stream type produced by accepting a connection.
     type Stream: Stream;
-
-    /// The local address this listener is bound to.
-    fn local_addr(&self) -> Result<ChannelAddr, ServerError>;
 
     /// Accept the next inbound connection, returning the stream and the peer's address.
     async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError>;
@@ -488,7 +487,7 @@ pub enum ClientError {
 
 /// Tells whether the address is a 'net' address. These currently have different semantics
 /// from local transports.
-#[allow(dead_code)] // Not used outside tests.
+#[cfg(test)]
 pub(super) fn is_net_addr(addr: &ChannelAddr) -> bool {
     match addr.transport() {
         ChannelTransport::Tcp(_) => true,
@@ -535,30 +534,38 @@ pub(crate) mod unix {
 
         async fn next(&self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
-            let mut stream = match &self.addr {
-                SocketAddr::Bound(sock_addr) => {
-                    let std_stream: StdUnixStream = StdUnixStream::connect_addr(sock_addr)
-                        .map_err(|err| {
-                            ClientError::Connect(
-                                self.dest(),
-                                err,
-                                "cannot connect unix socket".to_string(),
-                            )
-                        })?;
-                    std_stream
-                        .set_nonblocking(true)
-                        .map_err(|err| ClientError::Io(self.dest(), err))?;
-                    UnixStream::from_std(std_stream)
-                        .map_err(|err| ClientError::Io(self.dest(), err))?
-                }
+            let sock_addr = match &self.addr {
+                SocketAddr::Bound(a) => a,
                 SocketAddr::Unbound => return Err(ClientError::Resolve(self.dest())),
             };
-
-            write_link_init(&mut stream, session_id)
-                .await
-                .map_err(|err| ClientError::Io(self.dest(), err))?;
-
-            Ok(stream)
+            let mut backoff = ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.1)
+                .with_max_interval(Duration::from_millis(1000))
+                .with_max_elapsed_time(None)
+                .build();
+            loop {
+                match StdUnixStream::connect_addr(sock_addr) {
+                    Ok(std_stream) => {
+                        std_stream
+                            .set_nonblocking(true)
+                            .map_err(|err| ClientError::Io(self.dest(), err))?;
+                        let mut stream = UnixStream::from_std(std_stream)
+                            .map_err(|err| ClientError::Io(self.dest(), err))?;
+                        write_link_init(&mut stream, session_id)
+                            .await
+                            .map_err(|err| ClientError::Io(self.dest(), err))?;
+                        return Ok(stream);
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "unix connect failed, backing off");
+                        if let Some(delay) = backoff.next_backoff() {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -572,10 +579,6 @@ pub(crate) mod unix {
     #[async_trait]
     impl super::Listener for UnixSocketListener {
         type Stream = UnixStream;
-
-        fn local_addr(&self) -> Result<ChannelAddr, ServerError> {
-            Ok(ChannelAddr::Unix(self.addr.clone()))
-        }
 
         async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError> {
             let (stream, peer_addr) = self
@@ -854,22 +857,36 @@ pub(crate) mod tcp {
 
         async fn next(&self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
-            let mut stream = TcpStream::connect(&self.addr).await.map_err(|err| {
-                ClientError::Connect(self.dest(), err, "cannot connect TCP socket".to_string())
-            })?;
-            stream.set_nodelay(true).map_err(|err| {
-                ClientError::Connect(
-                    self.dest(),
-                    err,
-                    "cannot disable Nagle algorithm".to_string(),
-                )
-            })?;
-
-            write_link_init(&mut stream, session_id)
-                .await
-                .map_err(|err| ClientError::Io(self.dest(), err))?;
-
-            Ok(stream)
+            let mut backoff = ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.1)
+                .with_max_interval(Duration::from_millis(1000))
+                .with_max_elapsed_time(None)
+                .build();
+            loop {
+                match TcpStream::connect(&self.addr).await {
+                    Ok(mut stream) => {
+                        stream.set_nodelay(true).map_err(|err| {
+                            ClientError::Connect(
+                                self.dest(),
+                                err,
+                                "cannot disable Nagle algorithm".to_string(),
+                            )
+                        })?;
+                        write_link_init(&mut stream, session_id)
+                            .await
+                            .map_err(|err| ClientError::Io(self.dest(), err))?;
+                        return Ok(stream);
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "tcp connect failed, backing off");
+                        if let Some(delay) = backoff.next_backoff() {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -883,10 +900,6 @@ pub(crate) mod tcp {
     #[async_trait]
     impl super::Listener for TcpSocketListener {
         type Stream = TcpStream;
-
-        fn local_addr(&self) -> Result<ChannelAddr, ServerError> {
-            Ok(ChannelAddr::Tcp(self.addr))
-        }
 
         async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError> {
             let (stream, peer_addr) = self
@@ -1255,20 +1268,6 @@ pub(crate) mod tls {
 
         async fn next(&self) -> Result<Self::Stream, ClientError> {
             let session_id = self.session_id;
-            let mut addrs = (self.hostname.as_ref(), self.port)
-                .to_socket_addrs()
-                .map_err(|_| ClientError::Resolve(self.dest()))?;
-            let addr = addrs.next().ok_or(ClientError::Resolve(self.dest()))?;
-            let stream = TcpStream::connect(&addr).await.map_err(|err| {
-                ClientError::Connect(self.dest(), err, format!("cannot connect to {}", addr))
-            })?;
-            stream.set_nodelay(true).map_err(|err| {
-                ClientError::Connect(
-                    self.dest(),
-                    err,
-                    "cannot disable Nagle algorithm".to_string(),
-                )
-            })?;
             let server_name = ServerName::try_from(self.hostname.clone()).map_err(|e| {
                 ClientError::Connect(
                     self.dest(),
@@ -1276,23 +1275,51 @@ pub(crate) mod tls {
                     "invalid server name".to_string(),
                 )
             })?;
-            let mut tls_stream = self
-                .connector
-                .connect(server_name.clone(), stream)
-                .await
-                .map_err(|err| {
-                    ClientError::Connect(
-                        self.dest(),
-                        err,
-                        format!("cannot establish TLS connection to {:?}", server_name),
-                    )
-                })?;
-
-            write_link_init(&mut tls_stream, session_id)
-                .await
-                .map_err(|err| ClientError::Io(self.dest(), err))?;
-
-            Ok(tls_stream)
+            let mut backoff = ExponentialBackoffBuilder::new()
+                .with_initial_interval(Duration::from_millis(1))
+                .with_multiplier(2.0)
+                .with_randomization_factor(0.1)
+                .with_max_interval(Duration::from_millis(1000))
+                .with_max_elapsed_time(None)
+                .build();
+            loop {
+                let mut addrs = (self.hostname.as_ref(), self.port)
+                    .to_socket_addrs()
+                    .map_err(|_| ClientError::Resolve(self.dest()))?;
+                let addr = addrs.next().ok_or(ClientError::Resolve(self.dest()))?;
+                match TcpStream::connect(&addr).await {
+                    Ok(stream) => {
+                        stream.set_nodelay(true).map_err(|err| {
+                            ClientError::Connect(
+                                self.dest(),
+                                err,
+                                "cannot disable Nagle algorithm".to_string(),
+                            )
+                        })?;
+                        let mut tls_stream = self
+                            .connector
+                            .connect(server_name.clone(), stream)
+                            .await
+                            .map_err(|err| {
+                                ClientError::Connect(
+                                    self.dest(),
+                                    err,
+                                    format!("cannot establish TLS connection to {:?}", server_name),
+                                )
+                            })?;
+                        write_link_init(&mut tls_stream, session_id)
+                            .await
+                            .map_err(|err| ClientError::Io(self.dest(), err))?;
+                        return Ok(tls_stream);
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "tls connect failed, backing off");
+                        if let Some(delay) = backoff.next_backoff() {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1735,8 +1762,7 @@ mod tests {
     use crate::channel;
     use crate::channel::net::framed::FrameReader;
     use crate::channel::net::framed::FrameWrite;
-    use crate::channel::net::server::ServerLink;
-    use crate::channel::net::server::handle_connection;
+    use crate::channel::net::server::AcceptorLink;
     use crate::config;
     use crate::metrics;
     use crate::sync::mvar::MVar;
@@ -2002,13 +2028,13 @@ mod tests {
             &self,
             rng: &mut impl rand::Rng,
             disconnected_count: u64,
-            prev_diconnected_at: &RwLock<Instant>,
+            prev_disconnected_at: &RwLock<Instant>,
         ) -> bool {
             let Some((prob, max_disconnects, duration)) = &self.disconnect_params else {
                 return false;
             };
 
-            let disconnected_at = prev_diconnected_at.read().unwrap();
+            let disconnected_at = prev_disconnected_at.read().unwrap();
             if disconnected_at.elapsed() > *duration && disconnected_count < *max_disconnects {
                 rng.gen_bool(*prob)
             } else {
@@ -2028,7 +2054,7 @@ mod tests {
         disconnect_signal: watch::Sender<()>,
         network_flakiness: NetworkFlakiness,
         disconnected_count: Arc<AtomicU64>,
-        prev_diconnected_at: Arc<RwLock<Instant>>,
+        prev_disconnected_at: Arc<RwLock<Instant>>,
         // If set, print logs every `debug_log_sampling_rate` messages. This
         // is normally set only when debugging a test failure.
         debug_log_sampling_rate: Option<u64>,
@@ -2044,7 +2070,7 @@ mod tests {
                 .field("disconnect_signal", &"<watch::Sender>")
                 .field("network_flakiness", &self.network_flakiness)
                 .field("disconnected_count", &self.disconnected_count)
-                .field("prev_diconnected_at", &"<RwLock<Instant>>")
+                .field("prev_disconnected_at", &"<RwLock<Instant>>")
                 .field("debug_log_sampling_rate", &self.debug_log_sampling_rate)
                 .finish()
         }
@@ -2061,7 +2087,7 @@ mod tests {
                 disconnect_signal: sender,
                 network_flakiness: NetworkFlakiness::default(),
                 disconnected_count: Arc::new(AtomicU64::new(0)),
-                prev_diconnected_at: Arc::new(RwLock::new(tokio::time::Instant::now())),
+                prev_disconnected_at: Arc::new(RwLock::new(tokio::time::Instant::now())),
                 debug_log_sampling_rate: None,
                 _message_type: PhantomData,
             }
@@ -2089,12 +2115,6 @@ mod tests {
 
         fn receiver_storage(&self) -> Arc<MVar<DuplexStream>> {
             self.receiver_storage.clone()
-        }
-
-        #[allow(dead_code)] // Not used outside tests.
-        fn source(&self) -> ChannelAddr {
-            // Use a dummy address as a placeholder.
-            ChannelAddr::Local(u64::MAX)
         }
 
         fn disconnected_count(&self) -> Arc<AtomicU64> {
@@ -2150,7 +2170,7 @@ mod tests {
                 mut disconnect_signal: watch::Receiver<()>,
                 network_flakiness: NetworkFlakiness,
                 disconnected_count: Arc<AtomicU64>,
-                prev_diconnected_at: Arc<RwLock<Instant>>,
+                prev_disconnected_at: Arc<RwLock<Instant>>,
                 mut reader: FrameReader<ReadHalf<DuplexStream>>,
                 mut writer: WriteHalf<DuplexStream>,
                 // Used by client and server tokio tasks to coordinate
@@ -2196,7 +2216,7 @@ mod tests {
                         }
                         _ = wait_for_latency_elapse(&queue, &network_flakiness, &mut rng), if !queue.is_empty() => {
                             let count = disconnected_count.load(Ordering::Relaxed);
-                            if network_flakiness.should_disconnect(&mut rng, count, &prev_diconnected_at).await {
+                            if network_flakiness.should_disconnect(&mut rng, count, &prev_disconnected_at).await {
                                 tracing::debug!("MockLink disconnects");
                                 disconnected_count.fetch_add(1, Ordering::Relaxed);
 
@@ -2208,7 +2228,7 @@ mod tests {
                                     ),
                                 );
 
-                                let mut w = prev_diconnected_at.write().unwrap();
+                                let mut w = prev_disconnected_at.write().unwrap();
                                 *w = tokio::time::Instant::now();
                                 break;
                             }
@@ -2267,7 +2287,7 @@ mod tests {
                 self.disconnect_signal.subscribe(),
                 self.network_flakiness.clone(),
                 self.disconnected_count.clone(),
-                self.prev_diconnected_at.clone(),
+                self.prev_disconnected_at.clone(),
                 server_reader,
                 client_writer,
                 task_coordination_token.clone(),
@@ -2278,7 +2298,7 @@ mod tests {
                 self.disconnect_signal.subscribe(),
                 self.network_flakiness.clone(),
                 self.disconnected_count.clone(),
-                self.prev_diconnected_at.clone(),
+                self.prev_disconnected_at.clone(),
                 client_reader,
                 server_writer,
                 task_coordination_token,
@@ -2317,45 +2337,95 @@ mod tests {
     impl super::Listener for MockLinkListener {
         type Stream = DuplexStream;
 
-        fn local_addr(&self) -> Result<ChannelAddr, ServerError> {
-            Ok(self.channel_addr.clone())
-        }
-
         async fn accept(&mut self) -> Result<(Self::Stream, ChannelAddr), ServerError> {
             let stream = self.receiver_storage.take().await;
             Ok((stream, self.channel_addr.clone()))
         }
     }
 
-    async fn serve_test<M>(
-        link: &ServerLink,
+    /// Create an AcceptorLink-based server test rig. Returns the
+    /// session task handle, an MVar for dispatching streams,
+    /// the message receiver, and a cancellation token.
+    fn serve_acceptor_test<M: RemoteMessage>(
+        session_id: SessionId,
     ) -> (
-        JoinHandle<std::result::Result<(), anyhow::Error>>,
-        FrameReader<ReadHalf<DuplexStream>>,
-        WriteHalf<DuplexStream>,
+        JoinHandle<()>,
+        crate::sync::mvar::MVar<DuplexStream>,
         mpsc::Receiver<M>,
         CancellationToken,
-    )
-    where
-        M: RemoteMessage,
-    {
+    ) {
         let cancel_token = CancellationToken::new();
-        let (sender, receiver) = tokio::io::duplex(5000);
-        let source = ChannelAddr::Local(u64::MAX);
-        let dest = ChannelAddr::Local(u64::MAX);
+        let stream_mvar = crate::sync::mvar::MVar::<DuplexStream>::empty();
+        let link = AcceptorLink {
+            dest: ChannelAddr::Local(u64::MAX),
+            session_id,
+            stream: stream_mvar.clone(),
+            cancel: cancel_token.clone(),
+        };
+        let (tx, rx) = mpsc::channel::<M>(1024);
+        let ct = cancel_token.clone();
+        let handle = tokio::spawn(async move {
+            let mut session = Session::new(link);
+            let mut next = session::Next { seq: 0, ack: 0 };
 
-        let (tx, rx) = mpsc::channel(1);
-        let link_clone = link.clone();
-        let ct = cancel_token.child_token();
-        let join_handle = tokio::spawn(async move {
-            handle_connection(receiver, source, dest, link_clone, tx, ct).await
+            loop {
+                let connected = match session.connect().await {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+
+                let result = {
+                    let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
+                    tokio::select! {
+                        r = session::recv_connected::<M, _, _>(&stream, &tx, &mut next) => r,
+                        _ = ct.cancelled() => Err(session::RecvLoopError::Cancelled),
+                    }
+                };
+
+                // Flush remaining ack if behind.
+                if next.ack < next.seq {
+                    if let Ok(ack) = serialize_response(NetRxResponse::Ack(next.seq - 1)) {
+                        let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
+                        let mut completion = stream.write(ack);
+                        match completion.drive().await {
+                            Ok(()) => {
+                                next.ack = next.seq;
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    error = %e,
+                                    "failed to flush acks during cleanup"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Send reject or closed response if appropriate.
+                let terminal_response = match &result {
+                    Err(session::RecvLoopError::SequenceError(reason)) => {
+                        Some(NetRxResponse::Reject(reason.clone()))
+                    }
+                    Err(session::RecvLoopError::Cancelled) => Some(NetRxResponse::Closed),
+                    _ => None,
+                };
+                if let Some(rsp) = terminal_response {
+                    if let Ok(data) = serialize_response(rsp) {
+                        let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
+                        let mut completion = stream.write(data);
+                        let _ = completion.drive().await;
+                    }
+                }
+
+                let recoverable = matches!(&result, Ok(()) | Err(session::RecvLoopError::Io(_)));
+                session = connected.release();
+                if recoverable {
+                    continue;
+                }
+                break;
+            }
         });
-        let (r, writer) = tokio::io::split(sender);
-        let reader = FrameReader::new(
-            r,
-            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
-        );
-        (join_handle, reader, writer, rx, cancel_token)
+        (handle, stream_mvar, rx, cancel_token)
     }
 
     async fn write_stream<M, W>(
@@ -2409,21 +2479,13 @@ mod tests {
             }
         }
 
-        let session_id = 123u64;
-        let link = ServerLink::new(SessionId(session_id));
-        let (tx, mut rx) = mpsc::channel(1);
+        let session_id = SessionId(123);
+        let (_handle, stream_mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
 
         // First connection: send messages, verify delivery and ack.
         {
             let (sender, receiver) = tokio::io::duplex(5000);
-            let source = ChannelAddr::Local(u64::MAX);
-            let dest = ChannelAddr::Local(u64::MAX);
-            let link_clone = link.clone();
-            let tx_clone = tx.clone();
-            let cancel_token = CancellationToken::new();
-            let handle = tokio::spawn(async move {
-                handle_connection(receiver, source, dest, link_clone, tx_clone, cancel_token).await
-            });
+            stream_mvar.put(receiver).await;
 
             let (r, writer) = tokio::io::split(sender);
             let mut reader = FrameReader::new(
@@ -2433,7 +2495,7 @@ mod tests {
 
             let _writer = write_stream(
                 writer,
-                session_id,
+                123,
                 &[
                     (0u64, 100u64),
                     (1u64, 101u64),
@@ -2447,33 +2509,16 @@ mod tests {
             assert_eq!(rx.recv().await, Some(100));
             assert_eq!(rx.recv().await, Some(101));
             assert_eq!(rx.recv().await, Some(102));
-
-            // server side might or might not ack seq<3 depending on the order
-            // of execution introduced by tokio::select. But it definitely would
-            // ack 3.
-            verify_ack(&mut reader, 3).await;
-
-            // Drop reader and writer to close the connection.
-            drop(reader);
-            drop(_writer);
-
-            // handle_connection returns, putting Next back into the MVar.
             assert_eq!(rx.recv().await, Some(103));
-            handle.await.unwrap().unwrap();
+
+            verify_ack(&mut reader, 3).await;
+            // Drop reader and writer to close the connection.
         }
 
         // Second connection (reconnection): retransmitted messages are deduped.
         {
             let (sender2, receiver2) = tokio::io::duplex(5000);
-            let source2 = ChannelAddr::Local(u64::MAX);
-            let dest2 = ChannelAddr::Local(u64::MAX);
-            let link_clone = link.clone();
-            let tx_clone = tx.clone();
-            let cancel_token2 = CancellationToken::new();
-            let ct = cancel_token2.clone();
-            let handle2 = tokio::spawn(async move {
-                handle_connection(receiver2, source2, dest2, link_clone, tx_clone, ct).await
-            });
+            stream_mvar.put(receiver2).await;
 
             let (r2, writer2) = tokio::io::split(sender2);
             let mut reader2 = FrameReader::new(
@@ -2483,7 +2528,7 @@ mod tests {
 
             let _ = write_stream(
                 writer2,
-                session_id,
+                123,
                 &[
                     (2u64, 102u64),
                     (3u64, 103u64),
@@ -2500,17 +2545,7 @@ mod tests {
 
             verify_ack(&mut reader2, 5).await;
 
-            tokio::time::sleep(Duration::from_secs(5)).await;
-
-            cancel_token2.cancel();
-            handle2.await.unwrap().unwrap();
-            // Drop the sender side of mpsc to close it.
-            drop(tx);
-            assert!(rx.recv().await.is_none());
-            // Should send NetRxResponse::Closed before stopping.
-            let (_, bytes) = reader2.next().await.unwrap().unwrap();
-            assert!(deserialize_response(bytes).unwrap().is_closed());
-            assert!(reader2.next().await.unwrap().is_none());
+            cancel_token.cancel();
         }
     }
 
@@ -2518,18 +2553,19 @@ mod tests {
     async fn test_ack_from_server_session() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
-        let session_id = 123u64;
-        let link = ServerLink::new(SessionId(session_id));
+        let session_id = SessionId(123);
+        let (_handle, stream_mvar, mut rx, cancel_token) = serve_acceptor_test::<u64>(session_id);
 
-        let (handle, mut reader, mut writer, mut rx, cancel_token) = serve_test::<u64>(&link).await;
+        let (sender, receiver) = tokio::io::duplex(5000);
+        stream_mvar.put(receiver).await;
+        let (r, mut writer) = tokio::io::split(sender);
+        let mut reader = FrameReader::new(
+            r,
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+        );
+
         for i in 0u64..100u64 {
-            writer = write_stream(
-                writer,
-                session_id,
-                &[(i, 100u64 + i)],
-                /*init*/ i == 0u64,
-            )
-            .await;
+            writer = write_stream(writer, 123, &[(i, 100u64 + i)], /*init*/ i == 0u64).await;
             assert_eq!(rx.recv().await, Some(100u64 + i));
             let (_, bytes) = reader.next().await.unwrap().unwrap();
             let acked = deserialize_response(bytes).unwrap().into_ack().unwrap();
@@ -2540,14 +2576,10 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         cancel_token.cancel();
-        handle.await.unwrap().unwrap();
-        // mpsc is closed too and there should be no unread message left.
-        assert!(rx.recv().await.is_none());
-        // should send NetRxResponse::Closed before stopping server.
+
+        // Should send NetRxResponse::Closed before stopping.
         let (_, bytes) = reader.next().await.unwrap().unwrap();
         assert!(deserialize_response(bytes).unwrap().is_closed());
-        // No more acks from server.
-        assert!(reader.next().await.unwrap().is_none());
     }
 
     #[tracing_test::traced_test]
@@ -3019,7 +3051,7 @@ mod tests {
         let disconnected_count = link.disconnected_count();
         let receiver_storage = link.receiver_storage();
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
-        let local_addr = listener.local_addr().unwrap();
+        let local_addr = listener.channel_addr.clone();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
             super::serve(listener, local_addr, false).unwrap();
         let tx = spawn::<u64>(link);
@@ -3096,7 +3128,7 @@ mod tests {
         let disconnected_count = link.disconnected_count();
         let receiver_storage = link.receiver_storage();
         let listener = MockLinkListener::new(receiver_storage.clone(), link.dest());
-        let local_addr = listener.local_addr().unwrap();
+        let local_addr = listener.channel_addr.clone();
         let (_, mut nx): (ChannelAddr, NetRx<u64>) =
             super::serve(listener, local_addr, false).unwrap();
         let tx = spawn::<u64>(link);
@@ -3235,17 +3267,18 @@ mod tests {
     async fn test_server_rejects_conn_on_out_of_sequence_message() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(config::MESSAGE_ACK_EVERY_N_MESSAGES, 1);
-        let session_id = 123u64;
-        let link = ServerLink::new(SessionId(session_id));
+        let session_id = SessionId(123);
+        let (_handle, stream_mvar, mut rx, _cancel_token) = serve_acceptor_test::<u64>(session_id);
 
-        let (_handle, mut reader, writer, mut rx, _cancel_token) = serve_test::<u64>(&link).await;
-        let _ = write_stream(
-            writer,
-            session_id,
-            &[(0, 100u64), (1, 101u64), (3, 103u64)],
-            true,
-        )
-        .await;
+        let (sender, receiver) = tokio::io::duplex(5000);
+        stream_mvar.put(receiver).await;
+        let (r, writer) = tokio::io::split(sender);
+        let mut reader = FrameReader::new(
+            r,
+            hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH),
+        );
+
+        let _ = write_stream(writer, 123, &[(0, 100u64), (1, 101u64), (3, 103u64)], true).await;
         assert_eq!(rx.recv().await, Some(100u64));
         assert_eq!(rx.recv().await, Some(101u64));
         let (_, bytes) = reader.next().await.unwrap().unwrap();
