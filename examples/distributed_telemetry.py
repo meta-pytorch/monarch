@@ -32,7 +32,7 @@ os.environ["USE_UNIFIED_LAYER"] = "true"
 
 import pyarrow as pa
 from monarch.actor import Actor, endpoint
-from monarch.distributed_telemetry import start_telemetry
+from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob
 
 
