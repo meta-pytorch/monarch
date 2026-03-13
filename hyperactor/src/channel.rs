@@ -1069,10 +1069,12 @@ pub fn dial<M: RemoteMessage>(addr: ChannelAddr) -> Result<ChannelTx<M>, Channel
     tracing::debug!(name = "dial", caller = %Location::caller(), %addr, "dialing channel {}", addr);
     let inner = match addr {
         ChannelAddr::Local(port) => ChannelTxKind::Local(local::dial(port)?),
-        ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::tcp::dial(addr)),
-        ChannelAddr::MetaTls(meta_addr) => ChannelTxKind::MetaTls(net::meta::dial(meta_addr)?),
-        ChannelAddr::Tls(tls_addr) => ChannelTxKind::Tls(net::tls::dial(tls_addr)?),
-        ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::unix::dial(path)),
+        ChannelAddr::Tcp(addr) => ChannelTxKind::Tcp(net::spawn(net::tcp::link(addr))),
+        ChannelAddr::MetaTls(meta_addr) => {
+            ChannelTxKind::MetaTls(net::spawn(net::meta::link(meta_addr)?))
+        }
+        ChannelAddr::Tls(tls_addr) => ChannelTxKind::Tls(net::spawn(net::tls::link(tls_addr)?)),
+        ChannelAddr::Unix(path) => ChannelTxKind::Unix(net::spawn(net::unix::link(path))),
         ChannelAddr::Alias { dial_to, .. } => dial(*dial_to)?.inner,
     };
     Ok(ChannelTx { inner })
