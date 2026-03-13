@@ -376,14 +376,14 @@ pub fn notify_mesh_created(event: MeshEvent) {
 /// This is passed to EntityEventDispatcher implementations when an actor changes status.
 #[derive(Debug, Clone)]
 pub struct ActorStatusEvent {
-    /// Actor ID as a string (e.g. "proc_id/actor_name")
-    pub actor_id: String,
+    /// Unique identifier for this event
+    pub id: u64,
     /// Timestamp when the status change occurred
     pub timestamp: SystemTime,
-    /// The new status arm name (e.g. "Created", "Idle", "Failed")
+    /// ID of the actor whose status changed
+    pub actor_id: u64,
+    /// New status value (e.g. "Created", "Idle", "Failed")
     pub new_status: String,
-    /// The previous status arm name
-    pub prev_status: String,
     /// Reason for the status change (e.g. error details for Failed)
     pub reason: Option<String>,
 }
@@ -395,13 +395,24 @@ pub fn notify_actor_status_changed(event: ActorStatusEvent) {
     dispatch_or_buffer(EntityEvent::ActorStatus(event));
 }
 
-/// Event fired when a message is sent (cast or point-to-point).
+/// Event fired when a message is sent to an actor mesh.
+///
+/// Emitted from `cast_with_selection` in `actor_mesh.rs`, which is the common
+/// path for all Python send methods: `call`, `call_one`, `broadcast`, and `choose`.
 #[derive(Debug, Clone)]
 pub struct SentMessageEvent {
     pub timestamp: SystemTime,
+    /// Hash of the sending actor's [`ActorId`].
     pub sender_actor_id: u64,
+    /// Hash of the target actor mesh's name.
     pub actor_mesh_id: u64,
+    /// The view (slice) of the actor mesh that was targeted, serialized from
+    /// [`ndslice::Region`]. For full-mesh sends (call, broadcast) this covers
+    /// all dimensions; for sliced sends (call_one) collapsed dimensions are
+    /// absent; for choose this is a scalar (0-dim) Region.
     pub view_json: String,
+    /// The shape of the view, serialized from [`ndslice::Shape`] (converted
+    /// from the view Region via `Region::into::<Shape>`).
     pub shape_json: String,
 }
 
@@ -412,12 +423,83 @@ pub fn notify_sent_message(event: SentMessageEvent) {
     dispatch_or_buffer(EntityEvent::SentMessage(event));
 }
 
+/// Event fired when a message is received (from receiver's perspective).
+#[derive(Debug, Clone)]
+pub struct MessageEvent {
+    pub timestamp: SystemTime,
+    /// Unique identifier for this received message.
+    pub id: u64,
+    /// Hash of sender's ActorId.
+    pub from_actor_id: u64,
+    /// Hash of receiver's ActorId.
+    pub to_actor_id: u64,
+    /// Endpoint name if this message targets a specific actor endpoint
+    pub endpoint: Option<String>,
+    /// Destination port ID
+    pub port_id: Option<u64>,
+}
+
+/// Notify the registered dispatcher that a message was received.
+pub fn notify_message(event: MessageEvent) {
+    dispatch_or_buffer(EntityEvent::Message(event));
+}
+
+/// Event fired when a received message changes status.
+#[derive(Debug, Clone)]
+pub struct MessageStatusEvent {
+    pub timestamp: SystemTime,
+    /// Unique identifier for this status event.
+    pub id: u64,
+    /// The message whose status changed (FK to MessageEvent.id).
+    pub message_id: u64,
+    /// New status: "queued", "active", or "complete".
+    pub status: String,
+}
+
+/// Notify the registered dispatcher that a message changed status.
+pub fn notify_message_status(event: MessageStatusEvent) {
+    dispatch_or_buffer(EntityEvent::MessageStatus(event));
+}
+
+static ACTOR_STATUS_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a globally unique ActorStatusEvent ID.
+///
+/// Combines the actor's unique ID with a process-local sequence number,
+/// then hashes the pair to produce an ID that is unique across processes.
+pub fn generate_actor_status_event_id(actor_id: u64) -> u64 {
+    let seq = ACTOR_STATUS_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(actor_id, seq))
+}
+
 static SEND_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Generate a globally unique SentMessage ID.
 pub fn generate_sent_message_id(sender_actor_id: u64) -> u64 {
     let seq = SEND_SEQ.fetch_add(1, Ordering::Relaxed);
     hash_to_u64(&(sender_actor_id, seq))
+}
+
+static RECV_MSG_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique received-message ID (cross-process unique).
+///
+/// Hashes (to_actor_id, seq) following the same pattern as
+/// `generate_sent_message_id`.
+pub fn generate_message_id(to_actor_id: u64) -> u64 {
+    let seq = RECV_MSG_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(to_actor_id, seq))
+}
+
+static STATUS_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Generate a unique message-status-event ID (cross-process unique).
+///
+/// Hashes (message_id, seq) following the same pattern as
+/// `generate_sent_message_id`.
+pub fn generate_status_event_id(message_id: u64) -> u64 {
+    let seq = STATUS_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    hash_to_u64(&(message_id, seq))
 }
 
 /// Unified event enum for all entity lifecycle events.
@@ -435,6 +517,10 @@ pub enum EntityEvent {
     ActorStatus(ActorStatusEvent),
     /// A message was sent.
     SentMessage(SentMessageEvent),
+    /// A message was received.
+    Message(MessageEvent),
+    /// A received message changed status.
+    MessageStatus(MessageStatusEvent),
 }
 
 /// Trait for dispatchers that receive unified entity events.
@@ -459,6 +545,8 @@ pub enum EntityEvent {
 ///             EntityEvent::Mesh(mesh) => println!("Mesh: {}", mesh.full_name),
 ///             EntityEvent::ActorStatus(status) => println!("Status: {}", status.new_status),
 ///             EntityEvent::SentMessage(msg) => println!("Sent: {}", msg.id),
+///             EntityEvent::Message(msg) => println!("Recv: {}", msg.id),
+///             EntityEvent::MessageStatus(s) => println!("Status: {}", s.status),
 ///         }
 ///         Ok(())
 ///     }
@@ -956,46 +1044,6 @@ fn initialize_logging_with_log_prefix_impl(
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-
-    if std::env::var("TOKIO_CONSOLE").is_ok() {
-        // Grab a random port by binding to :0, then release it for
-        // console-subscriber to rebind. Slightly racy but fine for a
-        // debugging tool.
-        let tmp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = tmp.local_addr().unwrap();
-        drop(tmp);
-
-        let (layer, server) = console_subscriber::ConsoleLayer::builder()
-            .with_default_env()
-            .server_addr(addr)
-            .build();
-        std::thread::Builder::new()
-            .name("tokio-console-server".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                let _ = rt.block_on(server.serve());
-            })
-            .expect("failed to spawn tokio-console server thread");
-        let process_name = std::env::var("HYPERACTOR_PROCESS_NAME")
-            .unwrap_or_else(|_| "client".to_string());
-        let filter = tracing_subscriber::EnvFilter::from_default_env()
-            .add_directive("tokio=trace".parse().unwrap())
-            .add_directive("runtime=trace".parse().unwrap());
-        if let Err(err) = Registry::default()
-            .with(layer)
-            .with(filter)
-            .with(tracing_subscriber::fmt::layer())
-            .try_init()
-        {
-            eprintln!("tokio-console: tracing subscriber already set: {err}");
-        } else {
-            eprintln!("{process_name} tokio-console http://{addr}");
-        }
-        return Box::new(EmptyTestHandle);
-    }
 
     #[cfg(fbcode_build)]
     {

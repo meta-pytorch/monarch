@@ -13,6 +13,8 @@
 //! - `meshes`: Mesh creation events
 //! - `actor_status_events`: Actor status change events
 //! - `sent_messages`: Sent message events
+//! - `messages`: Received message events
+//! - `message_status_events`: Received message status transitions
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -69,14 +71,14 @@ pub struct Mesh {
 /// Logged when actors change status.
 #[derive(RecordBatchRow)]
 pub struct ActorStatusEvent {
+    /// Unique identifier for this event
+    pub id: u64,
     /// Timestamp in microseconds since Unix epoch
     pub timestamp_us: i64,
-    /// Actor ID as a string
-    pub actor_id: String,
-    /// New status name (e.g. "Created", "Idle", "Failed")
+    /// ID of the actor whose status changed
+    pub actor_id: u64,
+    /// New status value (e.g. "Created", "Idle", "Failed")
     pub new_status: String,
-    /// Previous status name
-    pub prev_status: String,
     /// Reason for the status change (e.g. error message for Failed)
     pub reason: Option<String>,
 }
@@ -84,7 +86,6 @@ pub struct ActorStatusEvent {
 /// Row data for the sent_messages table.
 ///
 /// Tracks messages from the perspective of the sending actor.
-/// Logged from send (cast or point-to-point).
 #[derive(RecordBatchRow)]
 pub struct SentMessage {
     /// Unique identifier for this sent message record
@@ -101,12 +102,48 @@ pub struct SentMessage {
     pub shape_json: String,
 }
 
+/// Row data for the messages table.
+///
+/// Tracks messages from the receiver's perspective.
+#[derive(RecordBatchRow)]
+pub struct Message {
+    /// Unique identifier for this received message
+    pub id: u64,
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// Hash of sender's ActorId
+    pub from_actor_id: u64,
+    /// Hash of receiver's ActorId
+    pub to_actor_id: u64,
+    /// Message handler type name
+    pub endpoint: Option<String>,
+    /// Port identifier (reserved)
+    pub port_id: Option<u64>,
+}
+
+/// Row data for the message_status_events table.
+///
+/// Logs status transitions for received messages.
+#[derive(RecordBatchRow)]
+pub struct MessageStatusEvent {
+    /// Unique identifier for this status event
+    pub id: u64,
+    /// Timestamp in microseconds since Unix epoch
+    pub timestamp_us: i64,
+    /// FK to messages.id
+    pub message_id: u64,
+    /// Status value: "queued", "active", or "complete"
+    pub status: String,
+}
+
 /// Inner state of EntityDispatcher.
 struct EntityDispatcherInner {
     actors_buffer: ActorBuffer,
     meshes_buffer: MeshBuffer,
     actor_status_events_buffer: ActorStatusEventBuffer,
     sent_messages_buffer: SentMessageBuffer,
+    messages_buffer: MessageBuffer,
+    message_status_events_buffer: MessageStatusEventBuffer,
     batch_size: usize,
     flush_callback: FlushCallback,
 }
@@ -133,6 +170,12 @@ impl EntityDispatcherInner {
         Self::flush_buffer(
             &mut self.sent_messages_buffer,
             "sent_messages",
+            &self.flush_callback,
+        )?;
+        Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+        Self::flush_buffer(
+            &mut self.message_status_events_buffer,
+            "message_status_events",
             &self.flush_callback,
         )?;
         Ok(())
@@ -173,6 +216,24 @@ impl EntityDispatcherInner {
         }
         Ok(())
     }
+
+    fn flush_messages_if_full(&mut self) -> anyhow::Result<()> {
+        if self.messages_buffer.len() >= self.batch_size {
+            Self::flush_buffer(&mut self.messages_buffer, "messages", &self.flush_callback)?;
+        }
+        Ok(())
+    }
+
+    fn flush_message_status_events_if_full(&mut self) -> anyhow::Result<()> {
+        if self.message_status_events_buffer.len() >= self.batch_size {
+            Self::flush_buffer(
+                &mut self.message_status_events_buffer,
+                "message_status_events",
+                &self.flush_callback,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Dispatches entity lifecycle events to Arrow RecordBatches.
@@ -200,6 +261,8 @@ impl EntityDispatcher {
             meshes_buffer: MeshBuffer::default(),
             actor_status_events_buffer: ActorStatusEventBuffer::default(),
             sent_messages_buffer: SentMessageBuffer::default(),
+            messages_buffer: MessageBuffer::default(),
+            message_status_events_buffer: MessageStatusEventBuffer::default(),
             batch_size,
             flush_callback,
         }));
@@ -222,12 +285,13 @@ impl EntityDispatcher {
 
 impl EntityEventDispatcher for EntityDispatcher {
     fn dispatch(&self, event: EntityEvent) -> Result<(), anyhow::Error> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+
         match event {
             EntityEvent::Actor(actor_event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.actors_buffer.insert(Actor {
                     id: actor_event.id,
                     timestamp_us: timestamp_to_micros(&actor_event.timestamp),
@@ -239,10 +303,6 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_actors_if_full()?;
             }
             EntityEvent::Mesh(mesh_event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.meshes_buffer.insert(Mesh {
                     id: mesh_event.id,
                     timestamp_us: timestamp_to_micros(&mesh_event.timestamp),
@@ -256,24 +316,16 @@ impl EntityEventDispatcher for EntityDispatcher {
                 inner.flush_meshes_if_full()?;
             }
             EntityEvent::ActorStatus(status_event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.actor_status_events_buffer.insert(ActorStatusEvent {
+                    id: status_event.id,
                     timestamp_us: timestamp_to_micros(&status_event.timestamp),
                     actor_id: status_event.actor_id,
                     new_status: status_event.new_status,
-                    prev_status: status_event.prev_status,
                     reason: status_event.reason,
                 });
                 inner.flush_actor_status_events_if_full()?;
             }
             EntityEvent::SentMessage(event) => {
-                let mut inner = self
-                    .inner
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
                 inner.sent_messages_buffer.insert(SentMessage {
                     id: hyperactor_telemetry::generate_sent_message_id(event.sender_actor_id),
                     timestamp_us: timestamp_to_micros(&event.timestamp),
@@ -283,6 +335,28 @@ impl EntityEventDispatcher for EntityDispatcher {
                     shape_json: event.shape_json,
                 });
                 inner.flush_sent_messages_if_full()?;
+            }
+            EntityEvent::Message(event) => {
+                inner.messages_buffer.insert(Message {
+                    id: event.id,
+                    timestamp_us: timestamp_to_micros(&event.timestamp),
+                    from_actor_id: event.from_actor_id,
+                    to_actor_id: event.to_actor_id,
+                    endpoint: event.endpoint,
+                    port_id: event.port_id,
+                });
+                inner.flush_messages_if_full()?;
+            }
+            EntityEvent::MessageStatus(event) => {
+                inner
+                    .message_status_events_buffer
+                    .insert(MessageStatusEvent {
+                        id: event.id,
+                        timestamp_us: timestamp_to_micros(&event.timestamp),
+                        message_id: event.message_id,
+                        status: event.status,
+                    });
+                inner.flush_message_status_events_if_full()?;
             }
         }
         Ok(())

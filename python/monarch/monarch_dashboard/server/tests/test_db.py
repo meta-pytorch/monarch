@@ -291,13 +291,13 @@ class InitErrorTest(unittest.TestCase):
         """Calling a query before db.init() should raise RuntimeError."""
         import monarch.monarch_dashboard.server.db as fresh_db
 
-        saved = fresh_db._db_path
+        saved = fresh_db._adapter
         try:
-            fresh_db._db_path = None
+            fresh_db._adapter = None
             with self.assertRaises(RuntimeError):
                 fresh_db.list_meshes()
         finally:
-            fresh_db._db_path = saved
+            fresh_db._adapter = saved
 
 
 # ---------------------------------------------------------------------------
