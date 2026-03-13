@@ -76,13 +76,19 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
             env,
         }
     } else {
-        // For regular Python builds: use current_exe() and -m arguments
-        let current_exe = std::env::current_exe().map_err(|e| {
-            pyo3::PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to get current executable: {}",
-                e
-            ))
-        })?;
+        // For regular Python builds: use argv[0] to preserve the original
+        // invocation path.  current_exe() resolves symlinks, which breaks
+        // virtual environments — the resolved path doesn't find pyvenv.cfg
+        // so site-packages aren't activated in subprocesses.
+        let current_exe = std::env::args()
+            .next()
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_exe().ok())
+            .ok_or_else(|| {
+                pyo3::PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "Failed to determine current executable",
+                )
+            })?;
         let current_exe_str = current_exe.to_string_lossy().to_string();
         BootstrapCommand {
             program: current_exe,
