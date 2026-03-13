@@ -17,17 +17,18 @@ from isolate_in_subprocess import isolate_in_subprocess
 # This is required for the TraceEventDispatcher to be created, which processes sinks
 os.environ["USE_UNIFIED_LAYER"] = "1"
 
+from typing import cast
+
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
-from monarch._src.actor import proc_mesh
-from monarch._src.actor.actor_mesh import Actor
+from monarch._src.actor.actor_mesh import Actor, ActorMesh
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (
     _proc_mesh_spawn_callbacks,
     SetupActor,
     unregister_proc_mesh_spawn_callback,
 )
-from monarch.distributed_telemetry import start_telemetry
+from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob
 
 
@@ -118,7 +119,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
 def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn some worker actors - this should trigger notify_actor_created
     job = ProcessJob({"hosts": 1})
@@ -172,7 +173,7 @@ def test_actors_table() -> None:
 def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn some worker actors - this should trigger notify_mesh_created
     job = ProcessJob({"hosts": 1})
@@ -267,7 +268,7 @@ def test_meshes_table() -> None:
 @isolate_in_subprocess
 def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
     job = ProcessJob({"hosts": 1})
@@ -329,7 +330,7 @@ def test_proc_mesh_in_meshes_table() -> None:
 @pytest.mark.timeout(120)
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn actors — this populates both the actors and meshes tables
     job = ProcessJob({"hosts": 1})
@@ -377,7 +378,7 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 1})
@@ -437,7 +438,7 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 2})
@@ -513,7 +514,7 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn worker actors — actors go through status transitions during spawn
     job = ProcessJob({"hosts": 1})
@@ -528,10 +529,10 @@ def test_actor_status_events_table() -> None:
 
     # Verify the schema has the expected columns
     expected_columns = {
+        "id",
         "timestamp_us",
         "actor_id",
         "new_status",
-        "prev_status",
         "reason",
     }
     actual_columns = set(result_dict.keys())
@@ -572,7 +573,7 @@ def test_actor_status_events_table() -> None:
 @pytest.mark.timeout(120)
 def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn 3 workers so we can slice a subset
     job = ProcessJob({"hosts": 1})
@@ -651,50 +652,209 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
-def test_sent_messages_table(cleanup_callbacks) -> None:
-    """Test that the sent_messages table is populated when messages are sent."""
-    engine = start_telemetry(batch_size=10)
+@pytest.mark.parametrize(
+    "send_path, expected_view_labels",
+    [
+        # call() targets the full mesh — view Region has ["hosts", "workers"]
+        ("call", ["hosts", "workers"]),
+        # call_one() on a sliced single worker — workers dim collapsed, only ["hosts"]
+        ("call_one", ["hosts"]),
+        # broadcast() targets the full mesh — view Region has ["hosts", "workers"]
+        ("broadcast", ["hosts", "workers"]),
+        # choose() selects a single actor — scalar (0-dim) Region
+        ("choose", []),
+    ],
+)
+def test_sent_messages_table(
+    cleanup_callbacks, send_path: str, expected_view_labels: list
+) -> None:
+    """Test that sent_messages are logged with correct view/shape for each send path.
 
-    # Spawn worker actors and send messages to generate sent_messages events
+    All send paths (call, call_one, broadcast, choose) go through
+    cast_with_selection in actor_mesh.rs, which calls notify_sent_message
+    with a SentMessageEvent containing:
+      - sender_actor_id: hash of the sending actor's ActorId
+      - actor_mesh_id: hash of the target actor mesh name
+      - view_json: serialized ndslice::Region of the current view
+      - shape_json: serialized ndslice::Shape (converted from the Region)
+    """
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
-    workers = worker_procs.spawn("sent_msg_worker", WorkerActor)
+    mesh_name = f"sent_msg_{send_path}_worker"
+    workers = worker_procs.spawn(mesh_name, WorkerActor)
     workers.initialized.get()
 
-    # Cast a message to generate a sent_messages record via the cast path
     for _ in range(42):
+        if send_path == "call":
+            workers.ping.call().get()
+        elif send_path == "call_one":
+            workers.slice(workers=0).ping.call_one().get()
+        elif send_path == "broadcast":
+            workers.ping.broadcast()
+        elif send_path == "choose":
+            workers.ping.choose().get()
+
+    # Verify the schema matches SentMessage struct in entity_dispatcher.rs
+    # (only check once, for the "call" path)
+    if send_path == "call":
+        result = engine.query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
+        )
+        column_names = result.to_pydict().get("column_name", [])
+        assert column_names == [
+            "id",
+            "timestamp_us",
+            "sender_actor_id",
+            "actor_mesh_id",
+            "view_json",
+            "shape_json",
+        ], f"Unexpected columns: {column_names}"
+
+    # Verify 42 sent_messages join with the correct mesh
+    joined = engine.query(
+        "SELECT sm.id FROM sent_messages sm LEFT JOIN meshes m "
+        f"ON sm.actor_mesh_id = m.id WHERE m.given_name = '{mesh_name}'"
+    )
+    joined_count = len(joined.to_pydict().get("id", []))
+    assert joined_count == 42, (
+        f"Expected 42 sent_messages via {send_path}, got {joined_count}"
+    )
+
+    # Verify view_json (ndslice Region) and shape_json (ndslice Shape).
+    # Region serializes as {"labels": [...], "slice": {"offset": ..., "sizes": [...], "strides": [...]}}.
+    # Shape is Region converted via Region::into::<Shape>, same serialization format.
+    mesh = engine.query(f"SELECT id FROM meshes WHERE given_name = '{mesh_name}'")
+    mesh_id = mesh.to_pydict()["id"][0]
+    msgs = engine.query(
+        f"SELECT view_json, shape_json FROM sent_messages "
+        f"WHERE actor_mesh_id = {mesh_id} LIMIT 1"
+    )
+    msgs_dict = msgs.to_pydict()
+    view = json.loads(msgs_dict["view_json"][0])
+    shape = json.loads(msgs_dict["shape_json"][0])
+
+    assert view["labels"] == expected_view_labels, (
+        f"Expected {send_path}() view labels={expected_view_labels}, got {view['labels']}"
+    )
+    assert shape["labels"] == expected_view_labels, (
+        f"Expected {send_path}() shape labels={expected_view_labels}, got {shape['labels']}"
+    )
+
+    # For paths that target the full mesh, verify workers size=2
+    if "workers" in expected_view_labels:
+        workers_idx = view["labels"].index("workers")
+        assert view["slice"]["sizes"][workers_idx] == 2, (
+            f"Expected {send_path}() view workers size=2, "
+            f"got {view['slice']['sizes'][workers_idx]}"
+        )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_messages_table(cleanup_callbacks) -> None:
+    """Test that the messages table is populated when messages are received."""
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="msg_workers_procs")
+    workers = worker_procs.spawn("msg_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Send several messages to trigger telemetry
+    for _ in range(5):
         workers.ping.call().get()
 
-    # Verify the schema
+    # Verify schema
     result = engine.query(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'sent_messages' ORDER BY ordinal_position"
+        "WHERE table_name = 'messages' ORDER BY ordinal_position"
     )
     column_names = result.to_pydict().get("column_name", [])
     assert column_names == [
         "id",
         "timestamp_us",
-        "sender_actor_id",
-        "actor_mesh_id",
-        "view_json",
-        "shape_json",
+        "from_actor_id",
+        "to_actor_id",
+        "endpoint",
+        "port_id",
     ], f"Unexpected columns: {column_names}"
 
     # Verify rows exist
-    result = engine.query("SELECT * FROM sent_messages")
+    result = engine.query("SELECT * FROM messages")
     result_dict = result.to_pydict()
     row_count = len(result_dict.get("id", []))
-    assert row_count > 0, f"Expected at least one sent message, got {row_count}"
+    assert row_count > 0, f"Expected messages, got {row_count}"
 
-    # Verify join with mesh table
+    # Verify to_actor_id joins with actors table (receiver is a known actor)
     joined = engine.query(
-        "SELECT sm.id FROM sent_messages sm LEFT JOIN meshes m "
-        "ON sm.actor_mesh_id = m.id WHERE m.given_name = 'sent_msg_worker'"
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'msg_test_worker'"
     )
     joined_count = len(joined.to_pydict().get("id", []))
-    assert joined_count == 42, (
-        "Expected sent_messages to join with actors on sender_actor_id"
+    # 5 casts x 2 workers = 10 messages received by msg_test_worker actors
+    assert joined_count == 10, (
+        f"Expected 10 messages received by msg_test_worker, got {joined_count}"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_message_status_events_table(cleanup_callbacks) -> None:
+    """Test that message_status_events captures queued/active/complete transitions."""
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 1}, name="status_workers_procs"
+    )
+    workers = worker_procs.spawn("status_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    workers.ping.call().get()
+
+    # Verify schema
+    result = engine.query(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'message_status_events' ORDER BY ordinal_position"
+    )
+    column_names = result.to_pydict().get("column_name", [])
+    assert column_names == [
+        "id",
+        "timestamp_us",
+        "message_id",
+        "status",
+    ], f"Unexpected columns: {column_names}"
+
+    # Verify status values include queued, active, complete
+    result = engine.query("SELECT DISTINCT status FROM message_status_events")
+    statuses = set(result.to_pydict().get("status", []))
+    expected_statuses = {"queued", "active", "complete"}
+    assert expected_statuses.issubset(statuses), (
+        f"Expected statuses {expected_statuses} to be subset of {statuses}"
+    )
+
+    # Verify at least one message has all 3 status events (queued, active, complete)
+    result = engine.query(
+        "SELECT message_id, COUNT(*) as cnt "
+        "FROM message_status_events "
+        "GROUP BY message_id "
+        "HAVING COUNT(*) = 3"
+    )
+    result_dict = result.to_pydict()
+    assert len(result_dict.get("message_id", [])) > 0, (
+        "Expected at least one message with all 3 status events"
     )
 
     # Clean up
@@ -704,7 +864,7 @@ def test_sent_messages_table(cleanup_callbacks) -> None:
 @pytest.mark.timeout(120)
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -760,7 +920,7 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
 def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
-    engine = start_telemetry(batch_size=10)
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -818,6 +978,206 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
         assert sender_id not in target_actor_ids, (
             f"sender_actor_id {sender_id} should NOT be a target actor"
         )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
+    """Test that query still works after a user-spawned actor's proc mesh is stopped."""
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="stop_test_procs")
+
+    # Spawn and initialize a user actor
+    workers = worker_procs.spawn("stop_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Send messages to the workers so the messages table is populated
+    # on the child processes (notify_message fires on the receiver's process).
+    workers.ping.call().get()
+
+    # Verify the actor appears in the actors table before stopping
+    result = engine.query(
+        "SELECT full_name FROM actors WHERE full_name LIKE '%stop_test_worker%'"
+    )
+    pre_stop_count = len(result.to_pydict().get("full_name", []))
+    assert pre_stop_count > 0, "Expected stop_test_worker actors before stopping"
+
+    # Verify received messages exist before stopping. The messages table is
+    # populated on the child process via notify_message, so these records
+    # come from the child scanner.
+    pre_stop_msgs = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'stop_test_worker'"
+    )
+    pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+    assert pre_stop_msg_count > 0, (
+        "Expected received messages for stop_test_worker before stopping"
+    )
+
+    # Stop the proc mesh — this kills both user actors AND telemetry actors on it.
+    # The coordinator's _children list still references the dead telemetry actors.
+    worker_procs.stop().get()
+
+    # Query should still work after the proc mesh is stopped.
+    # The distributed telemetry scan must handle stopped children gracefully.
+    result = engine.query("SELECT * FROM actors")
+    result_dict = result.to_pydict()
+    actor_count = len(result_dict.get("id", []))
+    assert actor_count > 0, (
+        f"Expected actors in query result after stopping proc mesh, got {actor_count}"
+    )
+
+    # The stopped actor should still appear in historical data since
+    # it's event was emitted from the root client process.
+    full_names = result_dict.get("full_name", [])
+    assert any("stop_test_worker" in name for name in full_names), (
+        f"Expected 'stop_test_worker' in actors after stop, got: {full_names}"
+    )
+
+    # Received messages are lost after stopping the proc mesh because
+    # notify_message fires on the receiver's process. The child scanner
+    # that held those records is gone.
+    post_stop_msgs = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'stop_test_worker'"
+    )
+    post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
+    assert post_stop_msg_count == 0, (
+        f"Expected 0 received messages after stopping proc mesh, "
+        f"got {post_stop_msg_count} (was {pre_stop_msg_count} before stop)"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
+    """Test that stopping a user ActorMesh does not affect telemetry queries.
+
+    Stopping an ActorMesh is a user-initiated action that does not trigger
+    __supervise__ on the telemetry coordinator. The telemetry actors on the
+    ProcMesh remain alive, so all data (including process-local tables like
+    messages) is still queryable.
+    """
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 2}, name="actor_stop_test_procs"
+    )
+
+    # Spawn and initialize a user actor
+    workers = worker_procs.spawn("actor_stop_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Send messages so the messages table is populated on child processes
+    workers.ping.call().get()
+
+    # Verify received messages exist before stopping
+    pre_stop_msgs = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'actor_stop_worker'"
+    )
+    pre_stop_msg_count = len(pre_stop_msgs.to_pydict().get("id", []))
+    assert pre_stop_msg_count > 0, (
+        "Expected received messages for actor_stop_worker before stopping"
+    )
+
+    # Stop only the user ActorMesh, not the ProcMesh.
+    # The telemetry actors on the ProcMesh remain alive.
+    cast(ActorMesh[WorkerActor], workers).stop().get()
+
+    # The actor_status_events table should show a Stopped status for the
+    # stopped actors. This event fires on the child process, and is
+    # queryable because the ProcMesh (and its telemetry actor) is still alive.
+    status_result = engine.query(
+        "SELECT ase.new_status FROM actor_status_events ase "
+        "JOIN actors a ON ase.actor_id = a.id "
+        "JOIN meshes m ON a.mesh_id = m.id "
+        "WHERE m.given_name = 'actor_stop_worker'"
+    )
+    statuses = set(status_result.to_pydict().get("new_status", []))
+    assert "Stopped" in statuses, (
+        f"Expected 'Stopped' in actor status events after ActorMesh.stop(), "
+        f"got: {statuses}"
+    )
+
+    # Query should still work — the telemetry children are unaffected
+    result = engine.query("SELECT * FROM actors")
+    result_dict = result.to_pydict()
+    actor_count = len(result_dict.get("id", []))
+    assert actor_count > 0, (
+        f"Expected actors after stopping user ActorMesh, got {actor_count}"
+    )
+
+    # The stopped actor should still appear in the actors table
+    full_names = result_dict.get("full_name", [])
+    assert any("actor_stop_worker" in name for name in full_names), (
+        f"Expected 'actor_stop_worker' in actors after stop, got: {full_names}"
+    )
+
+    # Unlike stopping a ProcMesh, received messages are NOT lost because
+    # the telemetry actors and their scanners are still alive.
+    post_stop_msgs = engine.query(
+        "SELECT m.id FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'actor_stop_worker'"
+    )
+    post_stop_msg_count = len(post_stop_msgs.to_pydict().get("id", []))
+    assert post_stop_msg_count == pre_stop_msg_count, (
+        f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
+        f"got {post_stop_msg_count} (data should be preserved)"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_per_table_row_retention(cleanup_callbacks) -> None:
+    """Test that time-based retention deletes old rows from message tables."""
+    import time
+
+    # Use a 1-second retention window so rows expire quickly.
+    engine = start_telemetry(batch_size=2, retention_secs=1, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 8}, name="worker_procs")
+    workers = worker_procs.spawn("workers", WorkerActor)
+    workers.initialized.get()
+
+    for _ in range(50):
+        workers.ping.call().get()
+
+    # Verify events exist before retention kicks in.
+    before = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
+    before_count = before.to_pydict()["cnt"][0]
+    assert before_count > 0, "Expected message_status_events rows before retention"
+
+    # Wait for the 1-second retention window to expire, then query again.
+    # The query triggers flush(), which applies retention and trims old rows.
+    time.sleep(2)
+
+    after = engine.query("SELECT COUNT(*) AS cnt FROM message_status_events")
+    after_count = after.to_pydict()["cnt"][0]
+    assert after_count < before_count, (
+        f"Expected fewer rows after retention, got {after_count} vs {before_count}"
+    )
 
     # Clean up
     hosts.shutdown().get()

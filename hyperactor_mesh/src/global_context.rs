@@ -27,12 +27,13 @@
 //! [`ActorSupervisionEvent`]s, and forwards them to the currently
 //! active mesh supervision sink.
 //!
-//! **Invariant:** Any `Undeliverable<MessageEnvelope>` observed by
-//! the global root client must be reported as an
-//! [`ActorSupervisionEvent`] to the active `ProcMesh`, and handling
-//! that failure must never crash the global client. The root client
-//! acts as a monitor, not a participant: routing failures are treated
-//! as signals to be reported, not fatal errors.
+//! **GC-1 (undeliverable routing):** Any
+//! `Undeliverable<MessageEnvelope>` observed by the global root
+//! client must be reported as an [`ActorSupervisionEvent`] to the
+//! active `ProcMesh`, and handling that failure must never crash the
+//! global client. The root client acts as a monitor, not a
+//! participant: routing failures are treated as signals to be
+//! reported, not fatal errors.
 //!
 //! ## Multiple ProcMeshes
 //!
