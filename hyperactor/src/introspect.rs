@@ -60,6 +60,43 @@
 //!   `store_terminated_snapshot` writes to the proc's snapshot map,
 //!   not the instances map. `resolve_actor_ref` checks terminal
 //!   status independently and is unaffected by snapshot storage.
+//! - **S12.** Introspection must not impair actor liveness --
+//!   introspection queries (including DashMap reads for actor
+//!   enumeration) must not cause convoy starvation or scheduling
+//!   delays that stall concurrent actor spawn/stop operations.
+//!
+//! ## Introspection key invariants (IK-*)
+//!
+//! - **IK-1 (metadata completeness):** Every actor-runtime
+//!   introspection key must carry `@meta(INTROSPECT = ...)` with
+//!   non-empty `name` and `desc`.
+//! - **IK-2 (short-name uniqueness):** No two introspection keys
+//!   may share the same `IntrospectAttr.name`. Duplicates would break
+//!   the FQ-to-short HTTP remap and schema output.
+//!
+//! ## Failure introspection invariants (FI-*)
+//!
+//! The FailureInfo presentation type lives in
+//! `hyperactor_mesh::introspect`; these invariants are documented
+//! here because the enforcement sites are in hyperactor
+//! (`proc.rs` `serve()`, `live_actor_payload`).
+//!
+//! - **FI-1 (event-before-status):** All `InstanceCell` state that
+//!   `live_actor_payload` reads must be written BEFORE
+//!   `change_status()` transitions to terminal.
+//! - **FI-2 (write-once):** `InstanceCellState::supervision_event`
+//!   is written at most once per actor lifetime.
+//! - **FI-3 (failure attrs <-> status):** Failure attrs are present
+//!   iff status is `"failed"`.
+//! - **FI-4 (is_propagated <-> root_cause_actor):**
+//!   `failure_is_propagated == true` iff
+//!   `failure_root_cause_actor != this_actor_id`.
+//! - **FI-5 (is_poisoned <-> failed_actor_count):**
+//!   `is_poisoned == true` iff `failed_actor_count > 0`.
+//! - **FI-6 (clean stop = no artifacts):** When an actor stops
+//!   cleanly, `supervision_event` is `None`, failure attrs are
+//!   absent, and the actor does not contribute to
+//!   `failed_actor_count`.
 
 use std::time::SystemTime;
 
@@ -99,18 +136,8 @@ use crate::reference;
 //   IntrospectAttr { name, desc })`. Keep `name` explicit so API
 //   stability is decoupled from internal refactors.
 //
-// Invariants:
-//
-// - **IK-1 (metadata completeness):** Every actor-runtime
-//   introspection key must carry `@meta(INTROSPECT = ...)` with
-//   non-empty `name` and `desc`. Enforced by
-//   `test_introspect_keys_are_tagged`.
-// - **IK-2 (short-name uniqueness):** No two introspection keys
-//   may share the same `IntrospectAttr.name`. Duplicates would break
-//   the FQ→short HTTP remap and schema output. Enforced by
-//   `test_introspect_short_names_are_globally_unique` within this
-//   test binary; full cross-crate coverage requires an integration
-//   test that links all introspection key crates.
+// See IK-1 (metadata completeness) and IK-2 (short-name uniqueness)
+// in module doc.
 declare_attrs! {
     /// Actor lifecycle status: "running", "stopped", "failed".
     ///
@@ -251,33 +278,7 @@ declare_attrs! {
     pub attr FAILURE_IS_PROPAGATED: bool = false;
 }
 
-// Failure introspection pipeline invariants (FI-1 through FI-6).
-//
-// The FailureInfo presentation type lives in
-// hyperactor_mesh::introspect; these invariants are documented
-// here because the enforcement sites are in hyperactor
-// (proc.rs serve(), live_actor_payload).
-//
-// - **FI-1 (event-before-status):** All `InstanceCell` state that
-//   `live_actor_payload` reads must be written BEFORE
-//   `change_status()` transitions to terminal. Enforced in
-//   `proc.rs` `serve()`.
-// - **FI-2 (write-once):** `InstanceCellState::supervision_event`
-//   is written at most once per actor lifetime. Enforced in
-//   `proc.rs` `serve()` terminal paths.
-// - **FI-3 (failure attrs ↔ status):** Failure attrs are present
-//   iff status is `"failed"`. Enforced in `build_actor_attrs`.
-// - **FI-4 (is_propagated ↔ root_cause_actor):**
-//   `failure_is_propagated == true` iff
-//   `failure_root_cause_actor != this_actor_id`. Enforced in
-//   `live_actor_payload`.
-// - **FI-5 (is_poisoned ↔ failed_actor_count):**
-//   `is_poisoned == true` iff `failed_actor_count > 0`. Enforced
-//   in `ProcAgent::publish_introspect_properties()`.
-// - **FI-6 (clean stop = no artifacts):** When an actor stops
-//   cleanly, `supervision_event` is `None`, failure attrs are
-//   absent, and the actor does not contribute to
-//   `failed_actor_count`.
+// See FI-1 through FI-6 in module doc.
 
 /// Internal introspection result. Carries attrs as a JSON string.
 /// The mesh layer constructs the API-facing `NodePayload` (with
@@ -649,8 +650,7 @@ pub async fn serve_introspect(
 mod tests {
     use super::*;
 
-    /// Enforces IK-1 (metadata completeness) for all actor-runtime
-    /// introspection keys.
+    /// Exercises IK-1 (see module doc).
     #[test]
     fn test_introspect_keys_are_tagged() {
         let cases = vec![
@@ -674,8 +674,7 @@ mod tests {
         ];
 
         for (expected_name, meta) in &cases {
-            // IK-1: every key must have INTROSPECT with non-empty
-            // name and desc.
+            // IK-1: see module doc.
             let introspect = meta
                 .get(INTROSPECT)
                 .unwrap_or_else(|| panic!("{expected_name}: missing INTROSPECT meta-attr"));
@@ -705,11 +704,7 @@ mod tests {
         );
     }
 
-    /// Enforces IK-2 (short-name uniqueness) and metadata quality
-    /// across all crates linked into this test binary. Iterates
-    /// the global `declare_attrs!` inventory and checks that no two
-    /// keys tagged with `INTROSPECT` share the same short name, and
-    /// that all tagged keys have non-empty name and desc.
+    /// Exercises IK-2 (see module doc).
     #[test]
     fn test_introspect_short_names_are_globally_unique() {
         use hyperactor_config::attrs::AttrKeyInfo;
