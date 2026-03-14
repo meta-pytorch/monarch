@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # pyre-unsafe
+import inspect
 import os
 
 # required to enable RDMA support
@@ -12,18 +13,73 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import pytest
 import torch
-from monarch.actor import Actor, current_rank, endpoint, this_host
-from monarch.rdma import get_rdma_backend, is_rdma_available, RDMAAction, RDMABuffer
+from monarch.actor import Actor, context, current_rank, endpoint, ProcMesh, this_host
+from monarch.config import configured
+from monarch.rdma import get_rdma_backend, is_ibverbs_available, RDMAAction, RDMABuffer
+
+
+# TODO(slurye): Enable these tests in OSS once the shutdown hang issue is fixed.
+pytestmark = pytest.mark.oss_skip
 
 
 needs_cuda = pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="CUDA not available",
 )
-needs_rdma = pytest.mark.skipif(
-    not is_rdma_available(),
-    reason="RDMA not available",
-)
+
+# Backend parametrization for tests that work on both ibverbs and TCP.
+# ibverbs tests are only collected when hardware is present; TCP tests always run.
+RDMA_BACKENDS = []
+if is_ibverbs_available():
+    RDMA_BACKENDS.append("ibverbs")
+RDMA_BACKENDS.append("tcp")
+
+
+def rdma_backends(func):
+    """Parametrize a test on RDMA backend (ibverbs, tcp).
+
+    ibverbs variant is only collected when hardware is present.
+    TCP variant sets rdma_disable_ibverbs=True so the manager
+    falls back to TCP even on RDMA-capable machines.
+    """
+
+    if inspect.iscoroutinefunction(func):
+
+        @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
+        async def wrapper(*args, rdma_backend, **kwargs):
+            if rdma_backend == "tcp":
+                cm = configured(rdma_disable_ibverbs=True)
+            else:
+                cm = configured(rdma_allow_tcp_fallback=False)
+            with cm:
+                return await func(*args, **kwargs)
+
+    else:
+
+        @pytest.mark.parametrize("rdma_backend", RDMA_BACKENDS)
+        def wrapper(*args, rdma_backend, **kwargs):
+            if rdma_backend == "tcp":
+                cm = configured(rdma_disable_ibverbs=True)
+            else:
+                cm = configured(rdma_allow_tcp_fallback=False)
+            with cm:
+                return func(*args, **kwargs)
+
+    wrapper.__name__ = func.__name__
+    wrapper.__module__ = func.__module__
+    return wrapper
+
+
+@pytest.fixture(autouse=True)
+async def stop_all_proc_meshes():
+    with configured(stop_actor_timeout="5s", mesh_terminate_timeout="15s"):
+        yield
+        instance = context().actor_instance
+        children = instance._children or []
+        for child in children:
+            if isinstance(child, ProcMesh):
+                await child.stop()
+        instance._children = None
 
 
 # ---------------------------------------------------------------------------
@@ -32,12 +88,12 @@ needs_rdma = pytest.mark.skipif(
 
 
 def test_rdma_api_basics():
-    """is_rdma_available() and get_rdma_backend() return sane values."""
-    result = is_rdma_available()
+    """is_ibverbs_available() and get_rdma_backend() return sane values."""
+    result = is_ibverbs_available()
     assert isinstance(result, bool)
 
     backend = get_rdma_backend()
-    assert backend in ("ibverbs", "none")
+    assert backend in ("ibverbs", "tcp", "none")
 
 
 def test_memoryview_addr_and_contiguity():
@@ -177,7 +233,7 @@ class ParameterClient(Actor):
         return self.buffer
 
 
-@needs_rdma
+@rdma_backends
 @needs_cuda
 async def test_proc_mesh_rdma():
     proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -226,7 +282,7 @@ async def test_proc_mesh_rdma():
     assert torch.allclose(buffer_gpu.cpu(), remote_grad.cpu())
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_buffer_drop():
     """Test the new drop() and owner methods on RDMABuffer with two actors"""
     prod_proc = this_host().spawn_procs(per_host={"processes": 1})
@@ -292,10 +348,6 @@ async def test_rdma_buffer_drop():
 
     print(f"✓ Buffer operations failed after drop as expected: {error_result}")
 
-    # Clean up proc mesh
-    await prod_proc.stop()
-    await cons_proc.stop()
-
 
 class TrainerActor(Actor):
     def __init__(self):
@@ -344,7 +396,7 @@ class GeneratorActor(Actor):
         )
 
 
-@needs_rdma
+@rdma_backends
 @needs_cuda
 async def test_gpu_trainer_generator():
     trainer_proc = this_host().spawn_procs(per_host={"gpus": 2})
@@ -361,7 +413,7 @@ async def test_gpu_trainer_generator():
         await generator.update_weights.call()
 
 
-@needs_rdma
+@rdma_backends
 @needs_cuda
 def test_gpu_trainer_generator_sync() -> None:
     trainer_proc = this_host().spawn_procs(per_host={"gpus": 1})
@@ -378,7 +430,7 @@ def test_gpu_trainer_generator_sync() -> None:
         generator.update_weights.call().get()
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_concurrent_2gb_writes_in_order():
     """Test concurrent 2GB RDMA buffer writes with reverse-order awaiting"""
     owner_proc = this_host().spawn_procs(per_host={"processes": 1})
@@ -479,10 +531,6 @@ async def test_rdma_concurrent_2gb_writes_in_order():
     # Drop the buffer
     await buffer_owner.drop_buffer.call_one()
     print("✓ Buffer dropped successfully")
-
-    # Clean up proc mesh
-    await owner_proc.stop()
-    await writer_proc.stop()
 
 
 class DataServerActor(Actor):
@@ -646,7 +694,7 @@ class ClientActor(Actor):
         _ = buffer.size()
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_action_concurrent_execution():
     """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
 
@@ -703,7 +751,7 @@ async def test_rdma_action_concurrent_execution():
     assert sum_c_after == 6700.0  # C should be unchanged
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_action_second_call():
     """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
 
@@ -774,7 +822,7 @@ async def test_rdma_action_second_call():
     assert sum_c_after == await server_c.get_sum.call_one()
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_action_data_races():
     """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
 
@@ -809,7 +857,7 @@ async def test_rdma_action_data_races():
         await client.perform_data_race_w_slices.call_one(buffer_a, buffer_b, buffer_c)
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_action_slicing():
     """Test RDMAAction with concurrent execution across multiple remote actors (2 remote + 1 local)"""
 
@@ -847,7 +895,7 @@ async def test_rdma_action_slicing():
     )  # multi-filled from 100 to 250
 
 
-@needs_rdma
+@rdma_backends
 async def test_rdma_buffer_retains_tensor_reference():
     """RDMABuffer must retain a reference to its backing tensor so it cannot
     be garbage collected while the buffer holds its raw memory address.
