@@ -6,9 +6,10 @@
 
 import logging
 import os
+import subprocess
 import time
+from typing import Optional
 
-import cloudpickle
 from monarch._rust_bindings.monarch_extension.fast_pack import (
     pack_files_to_shm as _c_pack_files_to_shm,
     pack_files_with_offsets as _c_pack_files,
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = (1024 * 1024 * 1024) * 8
 HASH_BLOCK_SIZE = 64 * 1024 * 1024  # 64MB blocks for incremental diffing
+CACHE_DIR = "/tmp/monarch_remotemount_cache"
 
 
 def block_hashes(data_mv, block_size=HASH_BLOCK_SIZE):
@@ -73,7 +75,7 @@ def pack_directory_chunked(source_path, chunk_size=None, use_shm=False):
     - staging_mv: memoryview over the packed data
     - chunks: list of chunk-sized memoryview slices
     - shm_path: path to named pack file if use_shm=True, else None
-    - block_hashes_list: list of xxh64 hex digest strings per block
+    - block_hashes_list: list of xxh64 hex digest strings per 100 MB block
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -179,232 +181,641 @@ def pack_directory_chunked(source_path, chunk_size=None, use_shm=False):
     return fs_metadata, staging_mv, chunks, shm_path, list(hashes)
 
 
-def _make_server_ssl_context():
-    """Create a TLS server context using MetaTLS certificates.
-
-    Uses the well-known Meta cert paths so SSLWall allows the
-    cross-DC connection (it inspects egress and RSTs non-TLS traffic).
-    """
-    import ssl
-
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    # server.pem is a combined cert+key PEM file.
-    ctx.load_cert_chain(
-        certfile="/var/facebook/x509_identities/server.pem",
-        keyfile="/var/facebook/x509_identities/server.pem",
-    )
-    ctx.load_verify_locations(cafile="/var/facebook/rootcanal/ca.pem")
-    # Don't require client certs — SSLWall only checks that TLS is used.
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
-def _make_client_ssl_context():
-    """Create a TLS client context using MetaTLS certificates."""
-    import ssl
-
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.load_verify_locations(cafile="/var/facebook/rootcanal/ca.pem")
-    # Load client cert for mutual TLS (some firewalls may require it).
-    ctx.load_cert_chain(
-        certfile="/var/facebook/x509_identities/server.pem",
-        keyfile="/var/facebook/x509_identities/server.pem",
-    )
-    # The cert CN may not match the FQDN we connect to, so disable
-    # hostname verification. The CA check is sufficient for SSLWall.
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    return ctx
-
-
-class TransferShardActor(Actor):
-    """Receives data blocks via persistent TLS connection.
-
-    Each instance runs in its own process and opens its own TLS listener.
-    The sender connects directly to this listener, bypassing the
-    hyperactor host_agent relay that bottlenecks all actor messages
-    through a single TCP connection per host pair. Multiple blocks are
-    sent over a single persistent connection to avoid per-block TLS
-    handshake overhead. TLS is required because SSLWall RSTs raw TCP
-    connections that cross datacenters.
-    """
+class FUSEActor(Actor):
+    def __init__(self, chunk_size, backend="slurm"):
+        self.chunk_size = chunk_size
+        self.backend = backend
+        self.meta = None
+        self.chunks = []
+        self._chunk_storage = None
+        self._chunk_offsets = None
+        self._next_chunk_idx = 0
+        self._block_hashes = []
+        self._total_size = 0
+        self._fuse_handle = None
+        self._cache_path = None
+        self._tls_receiver = None
 
     @endpoint
-    def start_persistent_receiver(self, cache_path, total_size):
-        """Start a TLS listener that receives multiple blocks over one connection.
+    def try_load_cache(self, cache_key):
+        """Load cached chunk data from a previous run, if available.
 
-        The sender sends a stream of (offset_u64, size_u64, data) tuples.
-        A size of 0 signals completion. All data is written into the
-        cache file at the specified offsets.
+        Sets ``_cache_path`` so that subsequent ``init_chunk_storage`` and
+        ``collect_shards`` calls use file-backed mmap. If a cache file
+        already exists, mmaps it and computes block hashes so the client
+        can classify this worker as fresh or partial.
         """
         import mmap
-        import socket
-        import struct
-        import threading
 
-        t0 = time.time()
-        fd = os.open(cache_path, os.O_RDWR)
-        mm = mmap.mmap(fd, total_size)
-        os.close(fd)
-        self._persistent_mm = mm
-        self._persistent_mv = memoryview(mm)
-        self._recv_error = None
-        self._recv_done = threading.Event()
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        self._cache_path = os.path.join(CACHE_DIR, cache_key)
 
-        ssl_ctx = _make_server_ssl_context()
+        try:
+            if os.path.exists(self._cache_path):
+                size = os.path.getsize(self._cache_path)
+                if size > 0:
+                    fd = os.open(self._cache_path, os.O_RDWR)
+                    try:
+                        self._chunk_storage = mmap.mmap(fd, size)
+                    finally:
+                        os.close(fd)
+                    self._chunk_storage_mv = memoryview(self._chunk_storage)
+                    self._total_size = size
+                    self._block_hashes = block_hashes(self._chunk_storage_mv)
 
-        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-        sock.bind(("::", 0))
-        sock.listen(1)
-        port = sock.getsockname()[1]
+                    # Build chunks list so mount() works with cached data.
+                    self.chunks = []
+                    self._chunk_offsets = []
+                    remaining = size
+                    off = 0
+                    idx = 0
+                    while remaining > 0:
+                        sz = min(remaining, self.chunk_size)
+                        self._chunk_offsets.append((off, sz))
+                        self.chunks.append(self._chunk_storage_mv[off : off + sz])
+                        off += sz
+                        remaining -= sz
+                        idx += 1
+                    self._next_chunk_idx = idx
 
-        import socket as _socket
-
-        hostname = _socket.getfqdn()
-        addr = f"{hostname}:{port}"
-        t1 = time.time()
-
-        def _recv_exact(conn, n):
-            buf = bytearray(n)
-            pos = 0
-            while pos < n:
-                chunk = conn.recv(n - pos)
-                if not chunk:
-                    return None
-                buf[pos : pos + len(chunk)] = chunk
-                pos += len(chunk)
-            return bytes(buf)
-
-        def _receive_loop():
-            try:
-                conn, _ = sock.accept()
-                conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-                conn = ssl_ctx.wrap_socket(conn, server_side=True)
-                blocks = 0
-
-                while True:
-                    header = _recv_exact(conn, 16)
-                    if header is None:
-                        break
-                    offset, size = struct.unpack("!QQ", header)
-                    if size == 0:
-                        break
-
-                    mv = self._persistent_mv[offset : offset + size]
-                    received = 0
-                    while received < size:
-                        n = conn.recv_into(mv[received:])
-                        if n == 0:
-                            self._recv_error = (
-                                f"short read at offset {offset}: "
-                                f"got {received}, expected {size}"
-                            )
-                            return
-                        received += n
-                    blocks += 1
-
-                conn.close()
-                logger.info(f"[SHARD] persistent receiver: {blocks} blocks received")
-            except Exception as e:
-                self._recv_error = str(e)
-            finally:
-                sock.close()
-                self._recv_done.set()
-
-        self._recv_thread = threading.Thread(target=_receive_loop, daemon=True)
-        self._recv_thread.start()
-
-        logger.info(
-            f"[SHARD] start_persistent_receiver: "
-            f"listening on {addr}, setup={t1 - t0:.3f}s"
-        )
-        return addr
+                    logger.info(
+                        f"[CACHE] Loaded {self._cache_path}: "
+                        f"{size // (1024**2)}MiB, "
+                        f"{len(self._block_hashes)} block hashes"
+                    )
+        except Exception:
+            logger.warning(
+                f"[CACHE] Failed to load cache {self._cache_path}, "
+                "will do full transfer",
+                exc_info=True,
+            )
+            self._block_hashes = []
+            self._total_size = 0
 
     @endpoint
-    def wait_for_data(self):
-        """Block until the receiver thread has finished."""
-        self._recv_done.wait()
-        if self._recv_error:
-            raise RuntimeError(f"receive failed: {self._recv_error}")
+    def set_meta(self, meta):
+        self.meta = meta
+
+    @endpoint
+    def init_chunk_storage(self, chunk_sizes):
+        import mmap
+
+        # Reset state from any previous transfer.
+        self.chunks = []
+        self._next_chunk_idx = 0
+
+        total_size = sum(chunk_sizes)
+        if self._cache_path:
+            fd = os.open(self._cache_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.ftruncate(fd, total_size)
+                self._chunk_storage = mmap.mmap(fd, total_size)
+            finally:
+                os.close(fd)
+        else:
+            self._chunk_storage = mmap.mmap(
+                -1, total_size, mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS
+            )
+        self._chunk_storage_mv = memoryview(self._chunk_storage)
+        self._chunk_offsets = []
+        offset = 0
+        for size in chunk_sizes:
+            self._chunk_offsets.append((offset, size))
+            offset += size
+        self._next_chunk_idx = 0
+
+        # EFA requires explicit initialization of its manager actor on each worker.
+        # Unlike ibverbs which lazily initializes its RDMA context when creating
+        # buffers, EFA uses an actor-based approach (EfaManagerActor) that must be
+        # spawned before workers can register destination buffers for RDMA transfers.
+        # Only needed on SLURM (EFA), not MAST (ibverbs).
+        if self.backend == "slurm":
+            from monarch.rdma import is_rdma_available
+
+            if not is_rdma_available():
+                try:
+                    logger.debug("[WORKER] init_chunk_storage: starting EFA init")
+                    from monarch._src.rdma.rdma import _ensure_init_efa_manager
+
+                    _ensure_init_efa_manager().block_on()
+                    logger.debug("[WORKER] init_chunk_storage: EFA init complete")
+                except ImportError:
+                    logger.debug(
+                        "[WORKER] init_chunk_storage: EFA APIs not available, skipping"
+                    )
+
+    @endpoint
+    def fetch_chunk_rdma(self, rdma_buffer, chunk_size: int, timeout: int = 300):
+        """Receive RDMABuffer (works with both ibverbs and EFA) and read from it."""
+        import mmap as _mmap
+
+        idx = self._next_chunk_idx
+
+        # Copy into pre-allocated mmap via RDMA (ibverbs or TCP fallback).
+        offset, _ = self._chunk_offsets[idx]
+        dst_mv = self._chunk_storage_mv[offset : offset + chunk_size]
+        t1 = time.time()
+
+        if self._cache_path:
+            # RDMA memory registration fails on file-backed MAP_SHARED pages.
+            # Receive into an anonymous buffer, then copy to the cache file.
+            # Don't explicitly close the anonymous mmap — it can raise
+            # BufferError if the Rust RDMABuffer still holds a reference.
+            anon = _mmap.mmap(-1, chunk_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
+            anon_mv = memoryview(anon)
+            rdma_buffer.read_into(anon_mv, timeout=timeout).get()
+            dst_mv[:] = anon_mv
+        else:
+            rdma_buffer.read_into(dst_mv, timeout=timeout).get()
+
+        t2 = time.time()
+        self.chunks.append(dst_mv)
+        self._next_chunk_idx += 1
+        gbps = (chunk_size * 8.0 / 1e9) / max(t2 - t1, 1e-9)
+        logger.info(
+            f"[WORKER] fetch_chunk {idx}: {chunk_size / (1024**2):.0f}MiB "
+            f"in {t2 - t1:.3f}s ({gbps:.1f} Gbps)"
+        )
+
+    @endpoint
+    def fanout_chunk_rdma(
+        self, peer_actors, chunk_size: int, chunk_idx: int = -1, timeout: int = 300
+    ):
+        """Fan out a chunk to peer workers via RDMA.
+
+        Args:
+            peer_actors: Mesh of peer FUSEActors to receive the chunk.
+            chunk_size: Size of the chunk in bytes.
+            chunk_idx: Which chunk to fan out. Defaults to -1 (last received).
+            timeout: RDMA timeout in seconds.
+        """
+        import mmap
+
+        from monarch.rdma import RDMABuffer
+
+        t0 = time.time()
+        idx = chunk_idx if chunk_idx >= 0 else self._next_chunk_idx - 1
+        offset, _ = self._chunk_offsets[idx]
+        src_mv = self._chunk_storage_mv[offset : offset + chunk_size]
+
+        # RDMA memory registration (ibv_reg_mr) can fail on file-backed
+        # MAP_SHARED mmap pages.  Copy into an anonymous buffer so the
+        # RDMABuffer always uses anonymous memory.
+        anon = None
+        if self._cache_path:
+            anon = mmap.mmap(-1, chunk_size, mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+            anon_mv = memoryview(anon)
+            anon_mv[:] = src_mv
+            rdma_buffer = RDMABuffer(anon_mv)
+        else:
+            rdma_buffer = RDMABuffer(src_mv)
+        flat_peers = peer_actors.flatten("rank")
+        t1 = time.time()
+        futures = []
+        for rank in range(len(flat_peers)):
+            peer = flat_peers.slice(rank=rank)
+            futures.append(peer.fetch_chunk_rdma.call(rdma_buffer, chunk_size, timeout))
+        t2 = time.time()
+        for f in futures:
+            f.get()
+        t3 = time.time()
+
+        # Anonymous mmap is reclaimed on GC; explicit close() can raise
+        # BufferError if the Rust RDMABuffer still holds a reference.
+
+        n = len(flat_peers)
+        gbps = (chunk_size * n * 8.0 / 1e9) / max(t3 - t1, 1e-9)
+        logger.info(
+            f"[WORKER] fanout_chunk {idx}: setup={t1 - t0:.3f}s, "
+            f"dispatch={t2 - t1:.3f}s, wait={t3 - t2:.3f}s, "
+            f"total={t3 - t0:.3f}s ({gbps:.1f} Gbps aggregate, {n} peers)"
+        )
+
+    @endpoint
+    def replace_block(
+        self, block_idx: int, rdma_buffer, block_size: int, timeout: int = 300
+    ):
+        """Overwrite a single hash block in existing storage via RDMA."""
+        import mmap as _mmap
+
+        offset = block_idx * HASH_BLOCK_SIZE
+        dst_mv = self._chunk_storage_mv[offset : offset + block_size]
+
+        if self._cache_path:
+            # Don't explicitly close the anonymous mmap — it can raise
+            # BufferError if the Rust RDMABuffer still holds a reference.
+            anon = _mmap.mmap(-1, block_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
+            anon_mv = memoryview(anon)
+            rdma_buffer.read_into(anon_mv, timeout=timeout).get()
+            dst_mv[:] = anon_mv
+        else:
+            rdma_buffer.read_into(dst_mv, timeout=timeout).get()
+
+    @endpoint
+    def mount(self, mount_point, new_block_hashes=None, total_size=0):
+        import json
+
+        from monarch._rust_bindings.monarch_extension.chunked_fuse import (
+            mount_chunked_fuse,
+        )
+
+        # Flush mmap to disk so the cache file persists across actor restarts.
+        if self._cache_path and self._chunk_storage is not None:
+            try:
+                self._chunk_storage.flush()
+            except Exception:
+                pass
+
+        self._fuse_handle = mount_chunked_fuse(
+            json.dumps(self.meta),
+            self.chunks,
+            self.chunk_size,
+            mount_point,
+        )
+        self._block_hashes = new_block_hashes or []
+        self._total_size = total_size
+        return 0
+
+    @endpoint
+    def get_block_hashes(self):
+        """Return per-block hashes and total size of the mounted data."""
+        return (self._block_hashes, self._total_size)
+
+    @endpoint
+    def get_cache_path(self):
+        """Return the cache file path for this worker."""
+        return self._cache_path
+
+    @endpoint
+    def prepare_receiver(self, num_streams, total_size):
+        """Create a Rust TLS receiver and return its address.
+
+        Allocates chunk storage (file-backed or anonymous mmap) and creates
+        a TlsReceiver that will write received blocks directly into it.
+        """
+        import mmap
+
+        from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
+
+        # Allocate storage if not already present.
+        if self._chunk_storage is None or self._total_size != total_size:
+            if self._cache_path:
+                fd = os.open(
+                    self._cache_path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600
+                )
+                try:
+                    os.ftruncate(fd, total_size)
+                    self._chunk_storage = mmap.mmap(fd, total_size)
+                finally:
+                    os.close(fd)
+            else:
+                self._chunk_storage = mmap.mmap(
+                    -1, total_size, mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS
+                )
+            self._chunk_storage_mv = memoryview(self._chunk_storage)
+            self._total_size = total_size
+
+            # Build chunks list for mount().
+            self.chunks = []
+            self._chunk_offsets = []
+            remaining = total_size
+            off = 0
+            while remaining > 0:
+                sz = min(remaining, self.chunk_size)
+                self._chunk_offsets.append((off, sz))
+                self.chunks.append(self._chunk_storage_mv[off : off + sz])
+                off += sz
+                remaining -= sz
+            self._next_chunk_idx = len(self._chunk_offsets)
+
+        self._tls_receiver = TlsReceiver(num_streams)
+        return self._tls_receiver.addr
+
+    @endpoint
+    def receive_blocks(self):
+        """Block until the TLS receiver has finished receiving all blocks."""
+        if self._tls_receiver is None:
+            raise RuntimeError("prepare_receiver() not called")
+        self._tls_receiver.wait(self._chunk_storage_mv)
+        self._tls_receiver = None
         return True
 
-
-class SenderShardActor(Actor):
-    """Client-side actor for parallel data sending via direct TLS.
-
-    Each instance runs in its own process and connects directly to
-    a TransferShardActor's TLS listener, bypassing the hyperactor
-    host_agent relay. This gives each sender-receiver pair its own
-    independent TLS connection with its own congestion window.
-    """
-
     @endpoint
-    def connect_persistent(self, dest_addr, shm_path, total_size):
-        """Establish a persistent TLS connection to a receiver.
+    def run_commands(self, commands):
+        result = subprocess.run(commands, capture_output=True, text=True)
+        return result.returncode, result.stdout, result.stderr
 
-        The connection is kept open so multiple blocks can be pushed
-        without re-handshaking TLS for each one.
-        """
-        import mmap
-        import socket
 
-        t0 = time.time()
-        fd = os.open(shm_path, os.O_RDONLY)
-        self._persistent_mm = mmap.mmap(
-            fd, total_size, mmap.MAP_PRIVATE, mmap.PROT_READ
+class MountHandler:
+    def __init__(
+        self,
+        host_mesh,
+        sourcepath: str,
+        mntpoint: Optional[str] = None,
+        chunk_size=None,
+        backend: str = "slurm",
+        num_parallel_streams: int = 8,
+    ):
+        self.sourcepath = sourcepath
+        if mntpoint is None:
+            mntpoint = sourcepath
+        self.mntpoint = mntpoint
+        self.fuse_actors = None
+        self.host_mesh = host_mesh
+        self.procs = None
+        self.chunk_size = chunk_size
+        self.backend = backend
+        if num_parallel_streams < 1:
+            raise ValueError(
+                f"num_parallel_streams must be >= 1, got {num_parallel_streams}"
+            )
+        self.num_parallel_streams = num_parallel_streams
+        self._staging_mv = None
+
+    def open(self):
+        t_open_start = time.time()
+
+        # Reuse existing actors if available (preserves block hashes
+        # for incremental update checks).
+        if self.fuse_actors is None:
+            self.procs = self.host_mesh.spawn_procs(per_host={"gpus": 1})
+            self.fuse_actors = self.procs.spawn(
+                "FUSEActor", FUSEActor, self.chunk_size, self.backend
+            )
+            self.fuse_actors.run_commands.call(["mkdir", "-p", self.mntpoint]).get()
+
+            import xxhash
+
+            cache_key = xxhash.xxh64(
+                (self.sourcepath + ":" + self.mntpoint).encode()
+            ).hexdigest()
+            self.fuse_actors.try_load_cache.call(cache_key).get()
+
+        t_actors_ready = time.time()
+
+        # Fire get_block_hashes before packing so the network round-trip
+        # overlaps with the CPU-bound pack+hash step.
+        flat_actors = self.fuse_actors.flatten("rank")
+        num_workers = len(flat_actors)
+        hashes_future = self.fuse_actors.get_block_hashes.call()
+
+        meta, self._staging_mv, chunks, self._pack_shm_path, client_hashes = (
+            pack_directory_chunked(self.sourcepath, self.chunk_size, use_shm=True)
         )
-        os.close(fd)
-        self._persistent_mv = memoryview(self._persistent_mm)
+        staging_mv = self._staging_mv
+        client_total_size = len(staging_mv) if staging_mv is not None else 0
 
-        host, port_str = dest_addr.rsplit(":", 1)
-        port = int(port_str)
+        t_pack_done = time.time()
 
-        ssl_ctx = _make_client_ssl_context()
+        # Collect worker hashes (should already be available after packing).
+        try:
+            result = hashes_future.get()
+            worker_states = [
+                (remote_hashes, remote_size)
+                for _point, (remote_hashes, remote_size) in result
+            ]
+            fresh_ranks, worker_dirty = classify_workers(
+                client_hashes, client_total_size, worker_states
+            )
+        except Exception as e:
+            logger.info(f"Block hash query failed: {e}")
+            fresh_ranks = []
+            worker_dirty = {rank: None for rank in range(num_workers)}
 
-        sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16 * 1024 * 1024)
-        sock.settimeout(300)
-        sock.connect((host, port))
-        self._persistent_conn = ssl_ctx.wrap_socket(sock, server_hostname=host)
-        t1 = time.time()
+        t_classify_done = time.time()
+
+        # Always send metadata so newly spawned actors (which loaded
+        # block data from the persistent cache) have filesystem layout.
+        self.fuse_actors.set_meta.call(meta).get()
+
+        t_meta_done = time.time()
+
+        if not worker_dirty:
+            self.fuse_actors.mount.call(
+                self.mntpoint, client_hashes, client_total_size
+            ).get()
+            t_mount_done = time.time()
+            logger.info(
+                f"All {num_workers} workers up-to-date — skipping transfer, re-mounting. "
+                f"Timings: actors={t_actors_ready - t_open_start:.2f}s, "
+                f"pack+hash={t_pack_done - t_actors_ready:.2f}s "
+                f"({client_total_size / (1024**2):.0f}MiB), "
+                f"classify={t_classify_done - t_pack_done:.2f}s, "
+                f"set_meta={t_meta_done - t_classify_done:.2f}s, "
+                f"mount={t_mount_done - t_meta_done:.2f}s, "
+                f"total={t_mount_done - t_open_start:.2f}s"
+            )
+            return self
+
+        n_partial = sum(1 for v in worker_dirty.values() if v is not None)
+        n_stale = sum(1 for v in worker_dirty.values() if v is None)
+        logger.info(
+            f"{len(fresh_ranks)} fresh, {n_partial} partial, "
+            f"{n_stale} stale out of {num_workers} workers"
+        )
+
+        # Unmount workers that need updating.
+        for rank in worker_dirty:
+            try:
+                flat_actors.slice(rank=rank).run_commands.call(
+                    ["fusermount3", "-u", self.mntpoint]
+                ).get()
+            except Exception:
+                pass
+
+        t_unmount_done = time.time()
+
+        # Update each non-fresh worker.
+        stale_ranks = [r for r, d in worker_dirty.items() if d is None]
+        partial_ranks = [r for r, d in worker_dirty.items() if d is not None]
+
+        for rank in partial_ranks:
+            actor = flat_actors.slice(rank=rank)
+            dirty = worker_dirty[rank]
+            logger.info(
+                f"Worker {rank}: {len(dirty)}/{len(client_hashes)} blocks dirty"
+            )
+            self._transfer_blocks_rust_tls(actor, dirty, client_total_size)
+
+        t_partial_done = time.time()
+
+        if stale_ranks and staging_mv is not None:
+            # Rust TLS to leader, RDMA fan-out to peers (if any).
+            self._transfer_fanout(
+                flat_actors, stale_ranks, staging_mv, chunks, client_total_size
+            )
+
+            # Clean up the client-side pack file after all transfers.
+            if self._pack_shm_path is not None:
+                try:
+                    os.unlink(self._pack_shm_path)
+                except OSError:
+                    pass
+                self._pack_shm_path = None
+
+        t_transfer_done = time.time()
+
+        # Remount all workers (fresh ones for metadata update).
+        self.fuse_actors.mount.call(
+            self.mntpoint, client_hashes, client_total_size
+        ).get()
+
+        t_mount_done = time.time()
 
         logger.info(
-            f"[SENDER] connect_persistent to {dest_addr}: connect+tls={t1 - t0:.3f}s"
+            f"open() timings: actors={t_actors_ready - t_open_start:.2f}s, "
+            f"pack+hash={t_pack_done - t_actors_ready:.2f}s "
+            f"({client_total_size / (1024**2):.0f}MiB), "
+            f"classify={t_classify_done - t_pack_done:.2f}s, "
+            f"set_meta={t_meta_done - t_classify_done:.2f}s, "
+            f"unmount={t_unmount_done - t_meta_done:.2f}s, "
+            f"partial={t_partial_done - t_unmount_done:.2f}s, "
+            f"transfer={t_transfer_done - t_partial_done:.2f}s, "
+            f"mount={t_mount_done - t_transfer_done:.2f}s, "
+            f"total={t_mount_done - t_open_start:.2f}s"
+        )
+        return self
+
+    def _transfer_blocks_rust_tls(self, fuse_actor, dirty_blocks, total_size):
+        """Transfer dirty blocks to a single worker using Rust TLS.
+
+        Sends blocks directly from ``self._staging_mv`` (the buffer produced
+        by ``pack_directory_chunked``) so no second pack step is needed.
+
+        Flow:
+          1. Worker: prepare_receiver() → creates TlsReceiver, returns address
+          2. Client: send_blocks_from_buffer() → parallel TLS connections
+          3. Worker: receive_blocks() → waits for all data
+        """
+        if not dirty_blocks:
+            return
+
+        from monarch._rust_bindings.monarch_extension.tls_sender import (
+            send_blocks_from_buffer,
         )
 
-    @endpoint
-    def push_block(self, offset, size):
-        """Send one block over the persistent connection.
+        num_streams = self.num_parallel_streams
 
-        Sends a 16-byte header (offset_u64, size_u64) followed by data.
+        # Get cache path from the FUSEActor.
+        cache_result = fuse_actor.get_cache_path.call().get()
+        cache_path = [v for _, v in cache_result][0]
+        if cache_path is None:
+            cache_path = ""
+
+        total_bytes = sum(
+            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
+            for bi in dirty_blocks
+        )
+
+        # 1. Start receiver on worker.
+        t_start = time.time()
+        addr_result = fuse_actor.prepare_receiver.call(num_streams, total_size).get()
+        addr = [v for _, v in addr_result][0]
+        addresses = [addr] * num_streams
+
+        # 2. Fire receive_blocks (non-blocking) so worker starts waiting.
+        recv_future = fuse_actor.receive_blocks.call()
+
+        # 3. Send blocks directly from the staging buffer.
+        t_setup = time.time()
+        send_blocks_from_buffer(
+            self._staging_mv, total_size, dirty_blocks, addresses, cache_path
+        )
+        t_send = time.time()
+
+        # 4. Wait for receiver to finish.
+        recv_future.get()
+        t_done = time.time()
+
+        gbps = (total_bytes * 8.0 / 1e9) / max(t_send - t_setup, 1e-9)
+        logger.info(
+            f"Rust TLS block transfer ({len(dirty_blocks)} blocks, "
+            f"{num_streams} streams): {total_bytes // (1024**2)}MiB "
+            f"in {t_send - t_setup:.1f}s ({gbps:.1f} Gbps), "
+            f"setup={t_setup - t_start:.2f}s, "
+            f"total={t_done - t_start:.1f}s"
+        )
+
+    def _transfer_fanout(
+        self, flat_actors, stale_ranks, staging_mv, chunks, total_size
+    ):
+        """Transfer data to leader via Rust TLS, then fan out to peers via RDMA.
+
+        Phase 1: Send full payload to stale_ranks[0] using Rust TLS.
+        Phase 2: Leader fans out each chunk to all other stale workers via RDMA.
+
+        Metadata must already be sent to all workers before calling this.
         """
-        import struct
+        leader_rank = stale_ranks[0]
+        peer_ranks = stale_ranks[1:]
+        leader = flat_actors.slice(rank=leader_rank)
 
-        header = struct.pack("!QQ", offset, size)
-        self._persistent_conn.sendall(header)
-        self._persistent_conn.sendall(self._persistent_mv[offset : offset + size])
+        chunk_sizes = [len(c) for c in chunks]
+        all_blocks = list(range((total_size + HASH_BLOCK_SIZE - 1) // HASH_BLOCK_SIZE))
 
-    @endpoint
-    def push_done(self):
-        """Send zero-size sentinel and close the persistent connection."""
-        import struct
+        # Phase 1: Rust TLS transfer to leader.
+        t0 = time.time()
+        self._transfer_blocks_rust_tls(leader, all_blocks, total_size)
+        t1 = time.time()
 
-        header = struct.pack("!QQ", 0, 0)
-        self._persistent_conn.sendall(header)
-        try:
-            raw = self._persistent_conn.unwrap()
-            raw.close()
-        except Exception:
-            self._persistent_conn.close()
-        del self._persistent_mv
-        self._persistent_mm.close()
+        # Phase 2: RDMA fan-out from leader to peers (skip if single worker).
+        if peer_ranks:
+            for rank in peer_ranks:
+                flat_actors.slice(rank=rank).init_chunk_storage.call(chunk_sizes).get()
+
+            # Build a mesh of peer FUSEActors for the fan-out call.
+            if peer_ranks == list(range(peer_ranks[0], peer_ranks[-1] + 1)):
+                peer_mesh = flat_actors.slice(
+                    rank=slice(peer_ranks[0], peer_ranks[-1] + 1)
+                )
+            else:
+                peer_mesh = flat_actors.slice(rank=peer_ranks[0])
+                for rank in peer_ranks[1:]:
+                    peer_mesh = peer_mesh.concat(flat_actors.slice(rank=rank))
+
+            for i, chunk in enumerate(chunks):
+                leader.fanout_chunk_rdma.call(peer_mesh, len(chunk), chunk_idx=i).get()
+
+        t2 = time.time()
+        n_peers = len(peer_ranks)
+        total_elapsed = t2 - t0
+        gbps = (total_size * n_peers * 8.0 / 1e9) / max(t2 - t1, 1e-9)
+        logger.info(
+            f"Fan-out: {total_size // (1024**2)}MiB to {n_peers + 1} workers "
+            f"in {total_elapsed:.1f}s (TLS={t1 - t0:.1f}s, "
+            f"RDMA={t2 - t1:.1f}s, {gbps:.1f} Gbps aggregate)"
+        )
+
+    def close(self):
+        """Unmount FUSE but keep actors alive for incremental updates."""
+        if self.fuse_actors is not None:
+            try:
+                self.fuse_actors.run_commands.call(
+                    ["fusermount3", "-u", self.mntpoint]
+                ).get()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False  # Don't suppress exceptions
 
 
-# Register for pickle-by-value so classes are serialized to remote workers
-import monarch.remotemount.remotemount as _this_module  # noqa: E402
-
-cloudpickle.register_pickle_by_value(_this_module)
+def remotemount(
+    host_mesh,
+    sourcepath: str,
+    mntpoint: Optional[str] = None,
+    chunk_size=None,
+    backend: str = "slurm",
+    num_parallel_streams: int = 8,
+):
+    """Mount a local directory on remote hosts via RDMA transfer and FUSE."""
+    if chunk_size is None:
+        chunk_size = CHUNK_SIZE
+    return MountHandler(
+        host_mesh, sourcepath, mntpoint, chunk_size, backend, num_parallel_streams
+    )
