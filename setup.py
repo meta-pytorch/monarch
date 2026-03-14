@@ -96,7 +96,7 @@ def get_cuda_home() -> Optional[str]:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # Check common locations
+    # Check common CUDA locations
     for path in ["/usr/local/cuda", "/usr/cuda"]:
         if os.path.exists(path):
             return path
@@ -104,9 +104,29 @@ def get_cuda_home() -> Optional[str]:
     return None
 
 
+def get_rocm_home() -> Optional[str]:
+    """
+    Find ROCm installation.
+
+    Returns:
+        Path to ROCm installation or None if not found
+    """
+    # Check environment variable first
+    rocm_home = os.environ.get("ROCM_PATH") or os.environ.get("ROCM_HOME")
+    if rocm_home and os.path.exists(rocm_home):
+        return rocm_home
+
+    # Check default ROCm location
+    if os.path.exists("/opt/rocm"):
+        return "/opt/rocm"
+
+    return None
+
+
 # Build config detection
 torch_config = get_torch_config()
 cuda_home = get_cuda_home()
+rocm_home = get_rocm_home()
 use_tensor_engine = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
 
 if use_tensor_engine and not torch_config:
@@ -123,16 +143,38 @@ if use_tensor_engine and not torch_config:
     sys.exit(1)
 
 build_tensor_engine = use_tensor_engine and torch_config is not None
-build_cuda = build_tensor_engine and cuda_home is not None
+
+# GPU platform selection: use MONARCH_RDMA_GPU_PLATFORM env var or auto-detect
+gpu_platform = os.environ.get("MONARCH_RDMA_GPU_PLATFORM", "").lower()
+if gpu_platform and gpu_platform not in ("cuda", "rocm"):
+    sys.exit(f"Invalid MONARCH_RDMA_GPU_PLATFORM={gpu_platform}. Use 'cuda' or 'rocm'")
+if gpu_platform == "rocm" and not rocm_home:
+    sys.exit("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm not found")
+if gpu_platform == "cuda" and not cuda_home:
+    sys.exit("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA not found")
+if not gpu_platform and build_tensor_engine and cuda_home and rocm_home:
+    sys.exit("Both CUDA and ROCm detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or =rocm")
+
+build_cuda = build_tensor_engine and (
+    gpu_platform == "cuda" or (not gpu_platform and cuda_home)
+)
+build_rocm = build_tensor_engine and (
+    gpu_platform == "rocm" or (not gpu_platform and rocm_home)
+)
 
 print("=" * 80)
 if build_tensor_engine:
-    print("✓ Building WITH tensor_engine (CUDA/GPU support)")
+    print("✓ Building WITH tensor_engine (GPU support)")
     print(f"  - PyTorch: {torch_config['lib_path']}")
-    print(f"  - CUDA: {cuda_home if build_cuda else 'Not found (CPU-only)'}")
+    if build_cuda:
+        print(f"  - CUDA: {cuda_home}")
+    elif build_rocm:
+        print(f"  - ROCm: {rocm_home}")
+    else:
+        print("  - GPU: Not found (CPU-only)")
     print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
 else:
-    print("Building WITHOUT tensor_engine (CPU-only, no CUDA support)")
+    print("Building WITHOUT tensor_engine (CPU-only, no GPU support)")
 print("=" * 80)
 
 # Set PYO3_PYTHON for Rust binaries
@@ -162,6 +204,8 @@ else:
 
 if build_cuda:
     env_vars["CUDA_HOME"] = cuda_home
+elif build_rocm:
+    env_vars["ROCM_PATH"] = rocm_home
 
 os.environ.update(env_vars)
 
@@ -236,6 +280,7 @@ ext_modules = []
 if build_tensor_engine:
     cpp_sources = ["python/monarch/common/init.cpp"]
     if build_cuda:
+        # mock_cuda.cpp is not compatible with ROCm (relies on CUDA-specific assembly)
         cpp_sources.append("python/monarch/common/mock_cuda.cpp")
 
     ext_modules = [
