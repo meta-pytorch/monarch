@@ -18,6 +18,7 @@
 | monarch.rdma | `docs/source/api/monarch.rdma.rst` |
 | monarch.config | `docs/source/api/monarch.config.rst` |
 | monarch.job | `docs/source/api/monarch.job.rst` |
+| monarch.remotemount | `docs/source/api/monarch.remotemount.rst` |
 | monarch.spmd | `docs/source/api/monarch.spmd.rst` |
 
 ## Examples
@@ -31,3 +32,4 @@
 | spmd_ddp.py | `docs/source/examples/ddp/spmd_ddp.py` |
 | kubernetes_ddp.py | `docs/source/examples/ddp/kubernetes_ddp.py` |
 | train.py | `docs/source/examples/ddp/train.py` |
+| remotemount.py | `docs/source/examples/remotemount.py` |
