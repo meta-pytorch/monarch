@@ -11,15 +11,21 @@ import mmap
 import os
 import subprocess
 import tempfile
+import threading
 
+import pytest
 from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
-from monarch.remotemount.remotemount import block_hashes, pack_directory_chunked
+from monarch.remotemount.remotemount import (
+    block_hashes,
+    classify_workers,
+    pack_directory_chunked,
+)
 
 
 @contextlib.contextmanager
 def fuse_mount(source_dir, chunk_size=None):
     """Pack a directory and mount it as a FUSE filesystem. Yields the mount path."""
-    meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(
+    meta, _staging_mv, chunks, _shm_path, _hashes = pack_directory_chunked(
         source_dir, chunk_size=chunk_size
     )
     cs = chunk_size if chunk_size is not None else (1024 * 1024 * 1024) * 8
@@ -35,7 +41,7 @@ def fuse_mount(source_dir, chunk_size=None):
 class TestPackDirectoryChunked:
     def test_empty_directory(self):
         with tempfile.TemporaryDirectory() as d:
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, _shm_path, _hashes = pack_directory_chunked(d)
             assert chunks == []
             assert "/" in meta
             assert "children" in meta["/"]
@@ -47,7 +53,7 @@ class TestPackDirectoryChunked:
             with open(os.path.join(d, "a.txt"), "wb") as f:
                 f.write(content)
 
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, _shm_path, _hashes = pack_directory_chunked(d)
 
             assert "/a.txt" in meta
             file_meta = meta["/a.txt"]
@@ -64,7 +70,7 @@ class TestPackDirectoryChunked:
                 with open(os.path.join(d, name), "wb") as f:
                     f.write(content)
 
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, _shm_path, _hashes = pack_directory_chunked(d)
             packed = b"".join(bytes(c) for c in chunks)
 
             # Verify each file's content at its offset
@@ -97,7 +103,7 @@ class TestPackDirectoryChunked:
                 f.write("target")
             os.symlink(target, os.path.join(d, "link.txt"))
 
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, _shm_path, _hashes = pack_directory_chunked(d)
 
             assert "/link.txt" in meta
             link_meta = meta["/link.txt"]
@@ -111,7 +117,7 @@ class TestPackDirectoryChunked:
             with open(os.path.join(d, "sub", "f.txt"), "w") as f:
                 f.write("x")
 
-            meta, _, _, _ = pack_directory_chunked(d)
+            meta, _, _, _, _ = pack_directory_chunked(d)
 
             assert "/" in meta
             assert "sub" in meta["/"]["children"]
@@ -126,7 +132,7 @@ class TestPackDirectoryChunked:
                 f.write(content)
 
             chunk_size = 300
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(
+            meta, _staging_mv, chunks, _shm_path, _hashes = pack_directory_chunked(
                 d, chunk_size=chunk_size
             )
 
@@ -153,6 +159,25 @@ class TestBlockHashes:
 
     def test_empty(self):
         assert block_hashes(memoryview(b""), block_size=100) == []
+
+
+class TestPackAndHash:
+    """Verify that Rust-computed block hashes match Python-computed ones."""
+
+    def test_hashes_match_python(self):
+        with tempfile.TemporaryDirectory() as d:
+            content = os.urandom(1000)
+            with open(os.path.join(d, "data.bin"), "wb") as f:
+                f.write(content)
+
+            _, staging_mv, _, _, rust_hashes = pack_directory_chunked(d)
+            python_hashes = block_hashes(staging_mv, block_size=64 * 1024 * 1024)
+            assert rust_hashes == python_hashes
+
+    def test_empty_returns_no_hashes(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, _, _, _, hashes = pack_directory_chunked(d)
+            assert hashes == []
 
 
 class TestShmRoundTrip:
@@ -293,3 +318,324 @@ class TestFuseMount:
                     assert f.read(5) == b"hello"
                     f.seek(6)
                     assert f.read(5) == b"world"
+
+
+class TestIncrementalHashing:
+    """Test block hash comparison logic used for incremental updates."""
+
+    def test_classify_fresh(self):
+        """Two identical memoryviews produce matching block hashes."""
+        data = os.urandom(500)
+        mv1 = memoryview(bytearray(data))
+        mv2 = memoryview(bytearray(data))
+        h1 = block_hashes(mv1, block_size=200)
+        h2 = block_hashes(mv2, block_size=200)
+        assert h1 == h2
+
+    def test_classify_partial(self):
+        """Memoryviews differing in one block produce one dirty index."""
+        data = bytearray(600)
+        mv1 = memoryview(data)
+        h1 = block_hashes(mv1, block_size=200)
+
+        modified = bytearray(data)
+        modified[400] = 0xFF  # Modify only the third block
+        mv2 = memoryview(modified)
+        h2 = block_hashes(mv2, block_size=200)
+
+        # Find dirty blocks
+        dirty = [i for i, (a, b) in enumerate(zip(h1, h2)) if a != b]
+        assert dirty == [2]
+
+    def test_classify_stale(self):
+        """Different total sizes produce different-length hash lists."""
+        mv_small = memoryview(bytearray(300))
+        mv_large = memoryview(bytearray(600))
+        h_small = block_hashes(mv_small, block_size=200)
+        h_large = block_hashes(mv_large, block_size=200)
+        # Different sizes → different number of blocks → "stale"
+        assert len(h_small) != len(h_large)
+
+
+class TestClassifyWorkers:
+    """Test classify_workers() pure function."""
+
+    def test_all_fresh(self):
+        hashes = ["aaa", "bbb", "ccc"]
+        states = [(hashes, 300), (hashes, 300)]
+        fresh, dirty = classify_workers(hashes, 300, states)
+        assert fresh == [0, 1]
+        assert dirty == {}
+
+    def test_all_stale(self):
+        client_hashes = ["aaa", "bbb"]
+        states = [(["aaa"], 100), (["xxx", "yyy", "zzz"], 900)]
+        fresh, dirty = classify_workers(client_hashes, 200, states)
+        assert fresh == []
+        assert dirty == {0: None, 1: None}
+
+    def test_partial(self):
+        client_hashes = ["aaa", "bbb", "ccc"]
+        remote_hashes = ["aaa", "XXX", "ccc"]
+        states = [(remote_hashes, 300)]
+        fresh, dirty = classify_workers(client_hashes, 300, states)
+        assert fresh == []
+        assert dirty == {0: [1]}
+
+    def test_mixed(self):
+        client_hashes = ["aaa", "bbb"]
+        states = [
+            (["aaa", "bbb"], 200),  # fresh
+            (["aaa", "XXX"], 200),  # partial — block 1 dirty
+            (["zzz"], 100),  # stale — different size
+        ]
+        fresh, dirty = classify_workers(client_hashes, 200, states)
+        assert fresh == [0]
+        assert dirty == {1: [1], 2: None}
+
+    def test_empty(self):
+        fresh, dirty = classify_workers([], 0, [([], 0), ([], 0)])
+        assert fresh == [0, 1]
+        assert dirty == {}
+
+
+@pytest.mark.skipif(
+    not os.path.exists("/var/facebook/x509_identities/server.pem")
+    or not os.path.exists("/var/facebook/rootcanal/ca.pem"),
+    reason="TLS certificates not available",
+)
+class TestRustTlsTransfer:
+    """Test Rust TLS receiver + sender round-trip (no actors needed).
+
+    Each test packs source data with ``pack_and_hash``, starts a
+    ``TlsReceiver`` writing into an anonymous mmap, then sends blocks
+    via ``PackedBuffer.send_blocks`` and verifies the result.
+
+    Note: ``receiver.addr`` must be read *before* starting the receiver
+    thread because ``wait()`` takes ``&mut self`` (PyO3 mutable borrow),
+    and accessing any attribute from another thread while that borrow is
+    active raises ``RuntimeError: Already mutably borrowed``.
+    """
+
+    def test_single_stream_round_trip(self):
+        """Send all blocks over one TLS stream; verify data arrives intact."""
+        from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
+        from monarch._rust_bindings.monarch_extension.tls_sender import pack_and_hash
+
+        total_size = 4096
+        block_size = 2048
+        data = os.urandom(total_size)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+            src_path = f.name
+
+        try:
+            packed = pack_and_hash(
+                [(src_path, 0, total_size)],
+                total_size,
+                hash_block_size=block_size,
+            )
+            assert len(packed.hashes) == 2
+
+            receiver = TlsReceiver(num_streams=1)
+            recv_addr = receiver.addr
+            dest = mmap.mmap(-1, total_size)
+            dest_mv = memoryview(dest)
+
+            errors = []
+
+            def run_receiver():
+                try:
+                    receiver.wait(dest_mv)  # noqa: F821
+                except Exception as e:
+                    errors.append(e)
+
+            t = threading.Thread(target=run_receiver)
+            t.start()
+
+            num_blocks = (total_size + block_size - 1) // block_size
+            packed.send_blocks(
+                dirty_blocks=list(range(num_blocks)),
+                addresses=[recv_addr],
+                cache_path="",
+                hash_block_size=block_size,
+            )
+
+            t.join(timeout=30)
+            assert not t.is_alive(), "Receiver thread timed out"
+            assert not errors, f"Receiver errors: {errors}"
+            assert bytes(dest[:]) == data
+        finally:
+            os.unlink(src_path)
+            del dest_mv
+            dest.close()
+
+    def test_multiple_streams_round_trip(self):
+        """Send blocks over 3 parallel TLS streams."""
+        from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
+        from monarch._rust_bindings.monarch_extension.tls_sender import pack_and_hash
+
+        num_streams = 3
+        total_size = 8192
+        block_size = 2048
+        data = os.urandom(total_size)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+            src_path = f.name
+
+        try:
+            packed = pack_and_hash(
+                [(src_path, 0, total_size)],
+                total_size,
+                hash_block_size=block_size,
+            )
+            assert len(packed.hashes) == 4
+
+            receiver = TlsReceiver(num_streams=num_streams)
+            recv_addr = receiver.addr
+            dest = mmap.mmap(-1, total_size)
+            dest_mv = memoryview(dest)
+
+            errors = []
+
+            def run_receiver():
+                try:
+                    receiver.wait(dest_mv)  # noqa: F821
+                except Exception as e:
+                    errors.append(e)
+
+            t = threading.Thread(target=run_receiver)
+            t.start()
+
+            num_blocks = (total_size + block_size - 1) // block_size
+            packed.send_blocks(
+                dirty_blocks=list(range(num_blocks)),
+                addresses=[recv_addr] * num_streams,
+                cache_path="",
+                hash_block_size=block_size,
+            )
+
+            t.join(timeout=30)
+            assert not t.is_alive(), "Receiver thread timed out"
+            assert not errors, f"Receiver errors: {errors}"
+            assert bytes(dest[:]) == data
+        finally:
+            os.unlink(src_path)
+            del dest_mv
+            dest.close()
+
+    def test_partial_blocks(self):
+        """Only dirty blocks are transferred; clean blocks remain zeroed."""
+        from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
+        from monarch._rust_bindings.monarch_extension.tls_sender import pack_and_hash
+
+        total_size = 4096
+        block_size = 1024
+        data = os.urandom(total_size)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+            src_path = f.name
+
+        try:
+            packed = pack_and_hash(
+                [(src_path, 0, total_size)],
+                total_size,
+                hash_block_size=block_size,
+            )
+            assert len(packed.hashes) == 4
+
+            receiver = TlsReceiver(num_streams=1)
+            recv_addr = receiver.addr
+            dest = mmap.mmap(-1, total_size)
+            dest_mv = memoryview(dest)
+
+            errors = []
+
+            def run_receiver():
+                try:
+                    receiver.wait(dest_mv)  # noqa: F821
+                except Exception as e:
+                    errors.append(e)
+
+            t = threading.Thread(target=run_receiver)
+            t.start()
+
+            # Only send blocks 1 and 3 (skip 0 and 2).
+            packed.send_blocks(
+                dirty_blocks=[1, 3],
+                addresses=[recv_addr],
+                cache_path="",
+                hash_block_size=block_size,
+            )
+
+            t.join(timeout=30)
+            assert not t.is_alive(), "Receiver thread timed out"
+            assert not errors, f"Receiver errors: {errors}"
+
+            # Blocks 0 and 2 should still be zeroed.
+            assert bytes(dest[0:1024]) == b"\x00" * 1024
+            assert bytes(dest[2048:3072]) == b"\x00" * 1024
+            # Blocks 1 and 3 should match source data.
+            assert bytes(dest[1024:2048]) == data[1024:2048]
+            assert bytes(dest[3072:4096]) == data[3072:4096]
+        finally:
+            os.unlink(src_path)
+            del dest_mv
+            dest.close()
+
+    def test_large_transfer(self):
+        """Transfer 10 MB to verify multi-block handling at scale."""
+        from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
+        from monarch._rust_bindings.monarch_extension.tls_sender import pack_and_hash
+
+        total_size = 10 * 1024 * 1024  # 10 MB
+        block_size = 1024 * 1024  # 1 MB blocks
+        data = os.urandom(total_size)
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(data)
+            src_path = f.name
+
+        try:
+            packed = pack_and_hash(
+                [(src_path, 0, total_size)],
+                total_size,
+                hash_block_size=block_size,
+            )
+            assert len(packed.hashes) == 10
+
+            receiver = TlsReceiver(num_streams=2)
+            recv_addr = receiver.addr
+            dest = mmap.mmap(-1, total_size)
+            dest_mv = memoryview(dest)
+
+            errors = []
+
+            def run_receiver():
+                try:
+                    receiver.wait(dest_mv)  # noqa: F821
+                except Exception as e:
+                    errors.append(e)
+
+            t = threading.Thread(target=run_receiver)
+            t.start()
+
+            num_blocks = (total_size + block_size - 1) // block_size
+            packed.send_blocks(
+                dirty_blocks=list(range(num_blocks)),
+                addresses=[recv_addr] * 2,
+                cache_path="",
+                hash_block_size=block_size,
+            )
+
+            t.join(timeout=60)
+            assert not t.is_alive(), "Receiver thread timed out"
+            assert not errors, f"Receiver errors: {errors}"
+            assert bytes(dest[:]) == data
+        finally:
+            os.unlink(src_path)
+            del dest_mv
+            dest.close()
