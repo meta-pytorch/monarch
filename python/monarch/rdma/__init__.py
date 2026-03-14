@@ -12,18 +12,20 @@ Monarch RDMA API - Public interface for RDMA functionality.
 
 from monarch._src.rdma.rdma import (
     get_rdma_backend,
-    is_rdma_available,
+    is_ibverbs_available,
     RDMAAction,
     RDMABuffer,
     RDMAReadTransferWarning,
+    RDMATcpFallbackWarning,
     RDMAWriteTransferWarning,
 )
 
 __all__ = [
     "get_rdma_backend",
-    "is_rdma_available",
+    "is_ibverbs_available",
     "RDMABuffer",
     "RDMAAction",
     "RDMAReadTransferWarning",
+    "RDMATcpFallbackWarning",
     "RDMAWriteTransferWarning",
 ]
