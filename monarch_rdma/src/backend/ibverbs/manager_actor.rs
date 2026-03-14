@@ -179,6 +179,11 @@ pub struct IbvManagerActor {
 
     // Map from buffer_id to registration details.
     buffer_registrations: HashMap<usize, IbvBuffer>,
+
+    // Cache of local MR registrations keyed by (addr, size).
+    // Avoids re-registering the same staging buffer on every write_from call.
+    // Entries persist until the actor drops (cleaned up via mr_map).
+    local_mr_cache: HashMap<(usize, usize), (IbvMemoryRegionView, String)>,
 }
 
 #[async_trait]
@@ -325,6 +330,7 @@ impl IbvManagerActor {
             mrv_id: 0,
             pci_to_device,
             buffer_registrations: HashMap::new(),
+            local_mr_cache: HashMap::new(),
         })
     }
 
@@ -632,17 +638,32 @@ impl IbvManagerActor {
         ))
     }
 
-    /// Core submit logic: registers local MR, resolves remote
-    /// IbvBuffer lazily, executes the op, and deregisters local MR.
+    /// Core submit logic: registers local MR (with caching), resolves
+    /// remote IbvBuffer lazily, and executes the op.
+    ///
+    /// Local MR registrations are cached by (addr, size) so repeated
+    /// operations on the same buffer (e.g. a reusable staging buffer)
+    /// skip the expensive `ibv_reg_mr` call.  Cached MRs persist until
+    /// the actor drops (cleaned up via `mr_map`).
     async fn execute_op(
         &mut self,
         cx: &Context<'_, Self>,
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
-        // Register the local memory to get an IbvBuffer
+        let addr = op.local_memory.addr();
+        let size = op.local_memory.size();
+
+        // Reuse cached local MR if available; otherwise register and cache.
         let (local_mrv, local_device_name) =
-            self.register_mr(op.local_memory.addr(), op.local_memory.size())?;
+            if let Some(cached) = self.local_mr_cache.get(&(addr, size)) {
+                cached.clone()
+            } else {
+                let result = self.register_mr(addr, size)?;
+                self.local_mr_cache.insert((addr, size), result.clone());
+                result
+            };
+
         let local_buffer = IbvBuffer {
             mr_id: local_mrv.id,
             lkey: local_mrv.lkey,
@@ -652,39 +673,22 @@ impl IbvManagerActor {
             device_name: local_device_name,
         };
 
-        let op_result = async {
-            let mut qp = self
-                .request_queue_pair(
-                    cx,
-                    op.remote_manager.clone(),
-                    local_buffer.device_name.clone(),
-                    op.remote_buffer.device_name.clone(),
-                )
-                .await?;
+        let mut qp = self
+            .request_queue_pair(
+                cx,
+                op.remote_manager.clone(),
+                local_buffer.device_name.clone(),
+                op.remote_buffer.device_name.clone(),
+            )
+            .await?;
 
-            let wr_id = match op.op_type {
-                RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
-                RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
-            };
+        let wr_id = match op.op_type {
+            RdmaOpType::WriteFromLocal => qp.put(local_buffer.clone(), op.remote_buffer)?,
+            RdmaOpType::ReadIntoLocal => qp.get(local_buffer.clone(), op.remote_buffer)?,
+        };
 
-            self.wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
-                .await
-        }
-        .await;
-
-        // Always deregister the locally registered MR
-        let dereg_result = self.deregister_mr(local_buffer.mr_id);
-
-        match (op_result, dereg_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(e), Ok(())) => Err(e),
-            (Ok(()), Err(e)) => Err(e),
-            (Err(op_err), Err(dereg_err)) => Err(anyhow::anyhow!(
-                "deregister MR error: {}; op error: {}",
-                dereg_err,
-                op_err
-            )),
-        }
+        self.wait_for_completion(&local_buffer, &mut qp, PollTarget::Send, &wr_id, timeout)
+            .await
     }
 }
 

@@ -4,19 +4,24 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
-import os
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
+import time as _time_mod
 
-import cloudpickle
-import fire
-from monarch.actor import Actor, endpoint, this_host
-from monarch.config import configure
-from monarch.job import SlurmJob
-from monarch.remotemount import remotemount
+_t_import_start = _time_mod.time()
+
+import logging  # noqa: E402
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import cloudpickle  # noqa: E402
+import fire  # noqa: E402
+from monarch.actor import Actor, endpoint, this_host  # noqa: E402
+from monarch.config import configure  # noqa: E402
+from monarch.job import SlurmJob  # noqa: E402
+from monarch.remotemount import remotemount  # noqa: E402
 
 
 class BashActor(Actor):
@@ -43,10 +48,13 @@ def _get_mast_host_mesh(
     locality_constraints,
     host_type,
 ):
+    t0 = time.time()
     from monarch.actor import enable_transport
     from monarch.job.meta import MASTJob
 
+    t1 = time.time()
     enable_transport("metatls-hostname")
+    t2 = time.time()
 
     if locality_constraints is None:
         locality_constraints = []
@@ -66,13 +74,22 @@ def _get_mast_host_mesh(
             "RUST_LOG": "info",
         },
     )
+    t3 = time.time()
     job.add_mesh("workers", num_hosts, host_type=host_type)
     # A workspace directory is required to trigger conda-packing of
     # CONDA_PREFIX into an ephemeral fbpkg.  Without it the scheduler
     # deploys the base image as-is, which fails on cross-arch hosts
     # (e.g. aarch64 GB300 with an x86 base image).
     job.add_directory(tempfile.mkdtemp())
+    t4 = time.time()
     host_meshes = job.state()
+    t5 = time.time()
+    print(
+        f"remoterun timings: mast_import={t1 - t0:.2f}s, "
+        f"enable_transport={t2 - t1:.2f}s, MASTJob()={t3 - t2:.2f}s, "
+        f"add_mesh+dir={t4 - t3:.2f}s, job.state()={t5 - t4:.2f}s",
+        flush=True,
+    )
     return host_meshes.workers, {"job": job}
 
 
@@ -111,6 +128,7 @@ def main(
     host_type: str = "grandteton",
     num_parallel_streams: int = 8,
 ):
+    t_main_start = time.time()
     if verbose:
         logging.basicConfig(
             level=logging.DEBUG,
@@ -126,6 +144,7 @@ def main(
     # timeouts that gate on worker readiness must account for this
     # gap, including mesh_attach_config_timeout (the push_config ack
     # during attach) and the spawn idle timeouts.
+    t_configure_start = time.time()
     configure(
         enable_log_forwarding=True,
         tail_log_lines=100,
@@ -135,6 +154,12 @@ def main(
         actor_spawn_max_idle="120s",
         message_delivery_timeout="600s",
         rdma_max_chunk_size_mb=256,
+    )
+    t_configure_done = time.time()
+    print(
+        f"remoterun timings: import={t_main_start - _t_import_start:.2f}s, "
+        f"configure={t_configure_done - t_configure_start:.2f}s",
+        flush=True,
     )
 
     mount_point = source_dir if mount_point is None else mount_point
@@ -177,6 +202,7 @@ def main(
                 else [locality_constraints]
             )
 
+        t_mast_start = time.time()
         host_mesh, job_info = _get_mast_host_mesh(
             num_hosts,
             gpus_per_host,
@@ -188,6 +214,11 @@ def main(
             host_type,
         )
         procs = host_mesh.spawn_procs(per_host={"gpus": gpus_per_host})
+        t_mast_done = time.time()
+        print(
+            f"remoterun timings: mast_reconnect={t_mast_done - t_mast_start:.2f}s",
+            flush=True,
+        )
     else:
         raise ValueError(f"Unknown backend: {backend}. Must be 'slurm' or 'mast'.")
 
@@ -201,33 +232,44 @@ def main(
         chunk_size_mb = 1024
     chunk_size = chunk_size_mb * 1024 * 1024
 
-    with remotemount(
+    t_rm_start = time.time()
+    rm = remotemount(
         host_mesh,
         str(source_dir),
         str(mount_point),
         chunk_size=chunk_size,
         backend=backend,
         num_parallel_streams=num_parallel_streams,
-    ):
-        bash_actors = procs.spawn("BashActor", BashActor)
-        results = bash_actors.run.call(script).get()
-        # Print stdout for each rank in order
-        print(
-            "\n".join(
-                [
-                    f"== rank{i} stdout ==\n{r[1]['stdout']}"
-                    for i, r in enumerate(results)
-                ]
-            )
+    )
+    rm.open()
+    t_rm_open = time.time()
+
+    bash_actors = procs.spawn("BashActor", BashActor)
+    t_bash_spawn = time.time()
+    results = bash_actors.run.call(script).get()
+    t_bash_run = time.time()
+    # Print stdout for each rank in order
+    print(
+        "\n".join(
+            [f"== rank{i} stdout ==\n{r[1]['stdout']}" for i, r in enumerate(results)]
         )
-        print(
-            "\n".join(
-                [
-                    f"== rank{i} stderr ==\n{r[1]['stderr']}"
-                    for i, r in enumerate(results)
-                ]
-            )
+    )
+    print(
+        "\n".join(
+            [f"== rank{i} stderr ==\n{r[1]['stderr']}" for i, r in enumerate(results)]
         )
+    )
+
+    rm.close()
+    t_rm_close = time.time()
+    print(
+        f"remoterun timings: open={t_rm_open - t_rm_start:.2f}s, "
+        f"bash_spawn={t_bash_spawn - t_rm_open:.2f}s, "
+        f"bash_run={t_bash_run - t_bash_spawn:.2f}s, "
+        f"close={t_rm_close - t_bash_run:.2f}s, "
+        f"total={t_rm_close - t_rm_start:.2f}s",
+        flush=True,
+    )
 
     if backend == "mast" and job_info is not None and kill_job:
         _cleanup_mast_job(job_info, host_mesh, kill_job)
