@@ -234,11 +234,6 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch_extension.fast_pack",
     )?)?;
 
-    crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
-        module,
-        "monarch_extension.chunked_fuse",
-    )?)?;
-
     crate::tls_receiver::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.tls_receiver",
@@ -247,6 +242,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::tls_sender::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.tls_sender",
+    )?)?;
+
+    crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.chunked_fuse",
     )?)?;
 
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
