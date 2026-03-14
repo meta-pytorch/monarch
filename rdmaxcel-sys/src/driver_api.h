@@ -109,6 +109,10 @@ CUresult rdmaxcel_cuCtxSynchronize(void);
 // Error handling
 CUresult rdmaxcel_cuGetErrorString(CUresult error, const char** pStr);
 
+// Returns the error message from CUDA driver initialization failure,
+// or nullptr if initialization succeeded.
+const char* rdmaxcel_driver_init_error();
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
