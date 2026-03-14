@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Include real CUDA runtime headers for CUDA types
+// Include CUDA runtime headers
 #include <cuda_runtime_api.h>
 
 #ifdef __cplusplus

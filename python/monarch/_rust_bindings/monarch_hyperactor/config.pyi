@@ -82,6 +82,8 @@ def configure(
     mesh_admin_addr: str = ...,
     mesh_attach_config_timeout: str = ...,
     mesh_orphan_timeout: str = ...,
+    rdma_allow_tcp_fallback: bool = ...,
+    rdma_max_chunk_size_mb: int = ...,
     **kwargs: object,
 ) -> None:
     """Configure Hyperactor runtime defaults for this process.
@@ -173,6 +175,13 @@ def configure(
             HTTP server (e.g. "[::]:1729", "0.0.0.0:8080")
         mesh_attach_config_timeout: Timeout for the config-push barrier
             during attach_to_workers() (humantime, default "10s")
+        rdma_allow_tcp_fallback: Allow TCP fallback when ibverbs RDMA
+            hardware is unavailable. When True (default), RDMA operations
+            fall back to chunked hyperactor messaging over the default
+            channel transport. When False, operations fail if no ibverbs
+            backend is available.
+        rdma_max_chunk_size_mb: Maximum chunk size in MiB for
+            TCP-based RDMA transfers (default: 64)
         **kwargs: Reserved for future configuration keys
 
     For historical reasons, this API is named ``configure(...)``;
