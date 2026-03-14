@@ -4,12 +4,32 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import contextlib
+import json
 import math
 import mmap
 import os
+import subprocess
 import tempfile
 
+from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
 from monarch.remotemount.remotemount import block_hashes, pack_directory_chunked
+
+
+@contextlib.contextmanager
+def fuse_mount(source_dir, chunk_size=None):
+    """Pack a directory and mount it as a FUSE filesystem. Yields the mount path."""
+    meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(
+        source_dir, chunk_size=chunk_size
+    )
+    cs = chunk_size if chunk_size is not None else (1024 * 1024 * 1024) * 8
+    with tempfile.TemporaryDirectory() as mnt:
+        handle = mount_chunked_fuse(json.dumps(meta), chunks, cs, mnt)
+        try:
+            yield mnt
+        finally:
+            handle.unmount()
+            subprocess.run(["fusermount3", "-u", mnt], capture_output=True, timeout=10)
 
 
 class TestPackDirectoryChunked:
@@ -191,3 +211,85 @@ class TestShmRoundTrip:
         # Data still accessible via mmap.
         assert bytes(mm[:]) == data
         mm.close()
+
+
+class TestFuseMount:
+    """Test the Rust FUSE filesystem by mounting and reading files."""
+
+    def test_single_file_read(self):
+        with tempfile.TemporaryDirectory() as src:
+            content = b"hello from fuse"
+            with open(os.path.join(src, "test.txt"), "wb") as f:
+                f.write(content)
+
+            with fuse_mount(src) as mnt:
+                with open(os.path.join(mnt, "test.txt"), "rb") as f:
+                    assert f.read() == content
+
+    def test_multiple_files(self):
+        with tempfile.TemporaryDirectory() as src:
+            files = {"a.txt": b"aaa", "b.txt": b"bbbbbb", "c.txt": b"c"}
+            for name, data in files.items():
+                with open(os.path.join(src, name), "wb") as f:
+                    f.write(data)
+
+            with fuse_mount(src) as mnt:
+                for name, expected in files.items():
+                    with open(os.path.join(mnt, name), "rb") as f:
+                        assert f.read() == expected, f"mismatch for {name}"
+
+    def test_subdirectory(self):
+        with tempfile.TemporaryDirectory() as src:
+            os.makedirs(os.path.join(src, "sub"))
+            content = b"nested file"
+            with open(os.path.join(src, "sub", "deep.txt"), "wb") as f:
+                f.write(content)
+
+            with fuse_mount(src) as mnt:
+                assert os.path.isdir(os.path.join(mnt, "sub"))
+                with open(os.path.join(mnt, "sub", "deep.txt"), "rb") as f:
+                    assert f.read() == content
+
+    def test_listdir(self):
+        with tempfile.TemporaryDirectory() as src:
+            for name in ["x.txt", "y.txt", "z.txt"]:
+                with open(os.path.join(src, name), "w") as f:
+                    f.write(name)
+
+            with fuse_mount(src) as mnt:
+                entries = sorted(os.listdir(mnt))
+                assert entries == ["x.txt", "y.txt", "z.txt"]
+
+    def test_symlink(self):
+        with tempfile.TemporaryDirectory() as src:
+            with open(os.path.join(src, "target.txt"), "w") as f:
+                f.write("target")
+            target_path = os.path.join(src, "target.txt")
+            os.symlink(target_path, os.path.join(src, "link.txt"))
+
+            with fuse_mount(src) as mnt:
+                assert os.path.islink(os.path.join(mnt, "link.txt"))
+                assert os.readlink(os.path.join(mnt, "link.txt")) == target_path
+
+    def test_small_chunk_size(self):
+        """Files larger than chunk_size are split across chunks."""
+        with tempfile.TemporaryDirectory() as src:
+            content = b"x" * 1000
+            with open(os.path.join(src, "big.txt"), "wb") as f:
+                f.write(content)
+
+            with fuse_mount(src, chunk_size=300) as mnt:
+                with open(os.path.join(mnt, "big.txt"), "rb") as f:
+                    assert f.read() == content
+
+    def test_partial_read(self):
+        with tempfile.TemporaryDirectory() as src:
+            content = b"hello world"
+            with open(os.path.join(src, "f.txt"), "wb") as f:
+                f.write(content)
+
+            with fuse_mount(src) as mnt:
+                with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                    assert f.read(5) == b"hello"
+                    f.seek(6)
+                    assert f.read(5) == b"world"

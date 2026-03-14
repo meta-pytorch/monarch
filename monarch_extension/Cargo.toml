@@ -17,7 +17,10 @@ crate-type = ["cdylib"]
 anyhow = "1.0.102"
 async-trait = "0.1.86"
 bincode = "1.3.3"
+bytes = { version = "1.11.1", features = ["serde"] }
+fuse3 = { version = "0.8.1", features = ["tokio-runtime", "unprivileged"] }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures-util = { version = "0.3.30", features = ["compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
@@ -33,8 +36,10 @@ ndslice = { version = "0.0.0", path = "../ndslice" }
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 rdmaxcel-sys = { path = "../rdmaxcel-sys", optional = true }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
 torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
 xxhash-rust = { version = "0.8.15", features = ["xxh3", "xxh64"] }
 
