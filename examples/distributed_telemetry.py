@@ -21,6 +21,13 @@ via the ActorEventSink.
 Usage:
     buck2 run //monarch/examples:distributed_telemetry
     buck2 run //monarch/examples:distributed_telemetry -- --summary
+    buck2 run //monarch/examples:distributed_telemetry -- --interactive
+
+To browse the dashboard interactively, use --interactive. This pauses after
+actors are spawned so you can open the dashboard in a browser:
+    buck2 run //monarch/examples:distributed_telemetry -- --interactive
+    # Then SSH-tunnel: ssh -L 8265:localhost:8265 <devserver>
+    # Open http://localhost:8265, press Ctrl+C to continue to queries.
 """
 
 import argparse
@@ -425,12 +432,13 @@ def run_queries(engine, summary: bool = False) -> None:
         print()
 
 
-def run_workload(job, summary=False):
+def run_workload(job, summary=False, interactive=False):
     """Run the full telemetry demo: spawn actors, run work, query, and shut down.
 
     Args:
         job: JobTrait whose state has a "workers" HostMesh.
         summary: If True, print summary output instead of full tables.
+        interactive: If True, pause after setup so the dashboard can be browsed.
     """
     print("=" * 50)
     print()
@@ -472,6 +480,17 @@ def run_workload(job, summary=False):
     print("Waiting for trace events to flush...")
     time.sleep(1.0)
 
+    if interactive:
+        import signal
+
+        dashboard_url = os.environ.get("MONARCH_DASHBOARD_URL", "http://localhost:8265")
+        print(f"\nDashboard at {dashboard_url}")
+        print("Press Ctrl+C to continue to queries...")
+        try:
+            signal.pause()
+        except KeyboardInterrupt:
+            print()
+
     print()
     print("Querying real telemetry data...")
     print("-" * 50)
@@ -484,16 +503,22 @@ def run_workload(job, summary=False):
     hosts.shutdown().get()
 
 
-def main(summary: bool = False) -> None:
+def main(summary: bool = False, interactive: bool = False) -> None:
     run_workload(
         ProcessJob({"hosts": 2}),
-        summary,
+        summary=summary,
+        interactive=interactive,
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--summary", action="store_true")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Pause after setup so the dashboard can be browsed",
+    )
     args = parser.parse_args()
 
-    main(summary=args.summary)
+    main(summary=args.summary, interactive=args.interactive)
