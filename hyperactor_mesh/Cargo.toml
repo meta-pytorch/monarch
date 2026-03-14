@@ -70,7 +70,7 @@ mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 opentelemetry = "0.31"
-pin-project = "1.1.10"
+pin-project = "1.1.11"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
 rand = { version = "0.9", features = ["small_rng"] }
 ratatui = { version = "0.29.0", features = ["termion", "termwiz", "unstable-rendered-line-info"] }
