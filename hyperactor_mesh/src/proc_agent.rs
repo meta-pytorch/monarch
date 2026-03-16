@@ -1298,6 +1298,7 @@ impl ReconfigurableMailboxSender {
     }
 }
 
+#[async_trait]
 impl MailboxSender for ReconfigurableMailboxSender {
     fn post(
         &self,
@@ -1327,6 +1328,14 @@ impl MailboxSender for ReconfigurableMailboxSender {
                 sender.post_unchecked(envelope, return_handle);
             }
         }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let sender = match &*self.state.read().unwrap() {
+            ReconfigurableMailboxSenderState::Queueing(_) => return Ok(()),
+            ReconfigurableMailboxSenderState::Configured(sender) => sender.clone(),
+        };
+        sender.flush().await
     }
 }
 
@@ -1364,6 +1373,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl MailboxSender for QueueingMailboxSender {
         fn post_unchecked(
             &self,
