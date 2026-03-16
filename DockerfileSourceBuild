@@ -1,0 +1,84 @@
+# Dockerfile for building Monarch from source
+# Usage: docker build -f DockerfileSourceBuild -t monarch:source-build .
+#
+# Multi-stage build:
+#   Stage 1 (builder): Full build environment with Rust, clang, CUDA devel, etc.
+#   Stage 2 (runtime): Slim runtime image with CUDA runtime (not devel)
+#
+# The devel image (~15GB) is only used for building. The final image uses
+# the runtime variant (~5GB) which excludes compilers, headers, and static libs.
+
+# Override on build from CI.
+ARG PYTORCH_NIGHTLY_TAG=2.11.0.dev20260103-cuda12.6-cudnn9-devel
+# Runtime tag should match CUDA version but use runtime instead of devel
+ARG PYTORCH_RUNTIME_TAG=2.11.0.dev20260103-cuda12.6-cudnn9-runtime
+
+# ============================================================
+# STAGE 1: Builder - compile Monarch from source
+# ============================================================
+FROM ghcr.io/pytorch/pytorch-nightly:${PYTORCH_NIGHTLY_TAG} AS builder
+
+SHELL ["/bin/bash", "-c"]
+
+# System dependencies for building
+RUN apt-get update -y && \
+    apt-get install -y \
+    curl \
+    clang \
+    liblzma-dev \
+    libunwind-dev \
+    libibverbs-dev \
+    librdmacm-dev \
+    protobuf-compiler \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust nightly toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup toolchain install nightly-2025-09-14 && \
+    rustup default nightly-2025-09-14
+
+# Copy source code
+WORKDIR /monarch
+COPY . .
+
+# Build monarch wheel (without tensor_engine for broader compatibility)
+RUN USE_TENSOR_ENGINE=0 pip wheel --no-deps -w /wheels .
+
+# ============================================================
+# STAGE 2: Runtime - slim image with only what's needed to run
+# ============================================================
+FROM ghcr.io/pytorch/pytorch-nightly:${PYTORCH_RUNTIME_TAG} AS runtime
+
+SHELL ["/bin/bash", "-c"]
+
+# Runtime-only system dependencies (RDMA libs needed at runtime)
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    libibverbs1 \
+    librdmacm1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the built wheel from builder and install it (this also installs dependencies)
+COPY --from=builder /wheels/*.whl /wheels/
+RUN pip install --break-system-packages /wheels/*.whl && \
+    pip install --break-system-packages torchx-nightly[kubernetes] && \
+    rm -rf /wheels /root/.cache/pip
+
+# Set up library path for PyTorch libs
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/torch/lib:/usr/local/lib:$LD_LIBRARY_PATH
+
+# Install kubectl (nice to have on client for debugging)
+RUN curl -LO https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl && \
+    chmod +x kubectl && \
+    mv kubectl /usr/local/bin
+
+WORKDIR /workspace
+
+# Default command
+CMD ["/bin/bash"]
