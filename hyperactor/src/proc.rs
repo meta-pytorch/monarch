@@ -961,6 +961,13 @@ impl Proc {
     pub fn downgrade(&self) -> WeakProc {
         WeakProc::new(self)
     }
+
+    /// Flush the forwarder so that any buffered outbound messages
+    /// (e.g. supervision events posted during teardown) are
+    /// wire-delivered before the proc's networking is torn down.
+    pub async fn flush(&self) -> Result<(), anyhow::Error> {
+        self.state().forwarder.flush().await
+    }
 }
 
 #[async_trait]
@@ -1576,8 +1583,7 @@ impl<A: Actor> Instance<A> {
                     None,
                 );
                 // FI-1: store supervision_event BEFORE change_status.
-                *self.inner.cell.inner.supervision_event.lock().unwrap() =
-                    Some(event.clone());
+                *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
                 self.change_status(status);
                 Some(event)
             }

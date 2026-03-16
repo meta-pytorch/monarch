@@ -381,11 +381,16 @@ impl ProcAgent {
         self.actor_states.values().all(|state| state.is_terminal())
     }
 
-    /// Trigger process shutdown. Sends through `shutdown_tx` if available,
-    /// otherwise calls `process::exit`.
-    fn shutdown(&mut self) {
+    /// Trigger process shutdown. Flushes the forwarder first so that
+    /// supervision events reach their destinations, then sends through
+    /// `shutdown_tx` if available, otherwise calls `process::exit`.
+    async fn shutdown(&mut self) {
         let has_errors = self.actor_states.values().any(|state| state.has_errors());
         let exit_code = if has_errors { 1 } else { 0 };
+
+        if let Err(err) = self.proc.flush().await {
+            tracing::warn!("failed to flush forwarder during shutdown: {}", err);
+        }
 
         tracing::info!(
             "shutting down process after all actors reached terminal state (exit_code={})",
@@ -755,7 +760,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
             // If StopAll was requested, check whether all actors have now
             // reached terminal state. If so, shut down the process.
             if self.stopping_all && self.all_actors_terminal() {
-                self.shutdown();
+                self.shutdown().await;
             }
         }
         if let Some(supervisor) = self.state.supervisor() {
@@ -932,7 +937,7 @@ impl Handler<resource::StopAll> for ProcAgent {
 
         // If there are no actors to stop, shut down immediately.
         if self.all_actors_terminal() {
-            self.shutdown();
+            self.shutdown().await;
         }
 
         Ok(())
