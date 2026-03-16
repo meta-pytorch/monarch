@@ -203,13 +203,13 @@ impl Handler<CudaActorMessage> for CudaActor {
                 // Register via RdmaManagerActor request_buffer; the ibverbs MR
                 // will be registered lazily by resolve_ibv().
                 let local_memory: Arc<dyn RdmaLocalMemory> =
-                    Arc::new(UnsafeLocalMemory::new(dptr as usize, padded_size));
+                    Arc::new(UnsafeLocalMemory::new(dptr, padded_size));
                 let handle = rdma_actor
                     .downcast_handle(cx)
                     .ok_or_else(|| anyhow::anyhow!("failed to get handle"))?;
                 let rdma_handle = handle.request_buffer(cx, local_memory).await?;
 
-                reply.send(cx, (rdma_handle, dptr as usize))?;
+                reply.send(cx, (rdma_handle, dptr))?;
                 Ok(())
             }
             CudaActorMessage::FillBuffer {
