@@ -693,15 +693,15 @@ mod tests {
             "env-safe encoding should be deterministic/stable"
         );
 
-        // Process name: don't overfit; assert it includes the "proc "
-        // prefix and proc name.
+        // Process name: don't overfit; assert it includes the proc name
+        // and " @ " separator.
         assert!(
-            proc_name_env.starts_with("proc "),
+            proc_name_env.starts_with("test_7"),
             "PROCESS_NAME_ENV looks wrong: {proc_name_env:?}"
         );
         assert!(
-            proc_name_env.contains("test_7"),
-            "expected proc name in process name: {proc_name_env:?}"
+            proc_name_env.contains(" @ "),
+            "expected ' @ ' separator in process name: {proc_name_env:?}"
         );
 
         // Log channel propagated

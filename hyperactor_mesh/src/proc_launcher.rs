@@ -51,6 +51,7 @@ use tokio::process::ChildStderr;
 use tokio::process::ChildStdout;
 use tokio::sync::oneshot;
 
+use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 
 mod native;
@@ -236,22 +237,22 @@ pub struct LaunchOptions {
 /// include a friendly identifier in logs, crash reports, etc.
 ///
 /// Format:
-/// - `ProcId(_, name)` → `proc <name> @ <hostname>`
+/// - `ProcId(_, name)` → `<name> @ <host_process_name>`
 ///
-/// Notes:
-/// - We best-effort resolve the local hostname; on failure or
-///   non-UTF8 we fall back to `"unknown_host"`.
-/// - This is **not** guaranteed to be unique and should not be parsed
-///   for program logic.
+/// The host identity is taken from the current process's
+/// `HYPERACTOR_PROCESS_NAME`, falling back to the machine hostname.
+/// This groups procs under their host process in traces and logs.
 pub fn format_process_name(proc_id: &hyperactor_reference::ProcId) -> String {
     let who = proc_id.name();
 
-    let host = hostname::get()
-        .unwrap_or_else(|_| "unknown_host".into())
-        .into_string()
-        .unwrap_or("unknown_host".to_string());
+    let host = std::env::var(bootstrap::PROCESS_NAME_ENV).unwrap_or_else(|_| {
+        hostname::get()
+            .unwrap_or_else(|_| "unknown_host".into())
+            .into_string()
+            .unwrap_or("unknown_host".to_string())
+    });
 
-    format!("proc {} @ {}", who, host)
+    format!("{} @ {}", who, host)
 }
 
 /// Strategy interface for launching and stopping a proc.
