@@ -117,7 +117,7 @@ impl HealthState {
         match self.statuses.entry(point) {
             Entry::Occupied(mut entry) => {
                 let (old_status, old_gen) = entry.get();
-                if *old_gen > generation {
+                if old_status.is_terminating() || *old_gen > generation {
                     return false;
                 }
                 let changed = *old_status != status;
