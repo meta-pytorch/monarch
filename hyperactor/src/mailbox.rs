@@ -2647,13 +2647,7 @@ impl MailboxSender for MailboxRouter {
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
-        let senders: Vec<_> = self
-            .entries
-            .read()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect();
+        let senders: Vec<_> = self.entries.read().unwrap().values().cloned().collect();
         let futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
         futures::future::try_join_all(futs).await?;
         Ok(())
@@ -4462,8 +4456,7 @@ mod tests {
         let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
 
         // Serve the mailbox on a unix domain socket channel.
-        let (addr, rx) =
-            channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
+        let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
         let serve_handle = mbox.clone().serve(rx);
 
         // Dial the unix address to get a MailboxClient.
