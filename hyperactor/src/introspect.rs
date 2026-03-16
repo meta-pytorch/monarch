@@ -97,9 +97,25 @@
 //!   cleanly, `supervision_event` is `None`, failure attrs are
 //!   absent, and the actor does not contribute to
 //!   `failed_actor_count`.
+//!
+//! ## Attrs view invariants (AV-*)
+//!
+//! These govern the typed view layer (`ActorAttrsView`). The
+//! full AV-* / DP-* family is documented in
+//! `hyperactor_mesh::introspect`; the subset relevant to this
+//! crate:
+//!
+//! - **AV-1 (view-roundtrip):** For each view V,
+//!   `V::from_attrs(&v.to_attrs()) == Ok(v)`.
+//! - **AV-2 (required-key-strictness):** `from_attrs` fails iff
+//!   required keys for that view are missing.
+//! - **AV-3 (unknown-key-tolerance):** Unknown attrs keys must
+//!   not affect successful decode outcome.
 
+use std::fmt;
 use std::time::SystemTime;
 
+use hyperactor_config::Attrs;
 use hyperactor_config::INTROSPECT;
 use hyperactor_config::IntrospectAttr;
 use hyperactor_config::declare_attrs;
@@ -279,6 +295,221 @@ declare_attrs! {
 }
 
 // See FI-1 through FI-6 in module doc.
+
+/// Error from decoding an `Attrs` bag into a typed view.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttrsViewError {
+    /// A required key was absent (and has no default).
+    MissingKey {
+        /// The attr key that was absent.
+        key: &'static str,
+    },
+    /// A cross-field coherence check failed.
+    InvariantViolation {
+        /// Invariant label (e.g. "IA-4").
+        label: &'static str,
+        /// Human-readable description of the violation.
+        detail: String,
+    },
+}
+
+impl fmt::Display for AttrsViewError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingKey { key } => write!(f, "missing required key: {key}"),
+            Self::InvariantViolation { label, detail } => {
+                write!(f, "invariant {label} violated: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AttrsViewError {}
+
+impl AttrsViewError {
+    /// Convenience constructor for a missing required key.
+    pub fn missing(key: &'static str) -> Self {
+        Self::MissingKey { key }
+    }
+
+    /// Convenience constructor for an invariant violation.
+    pub fn invariant(label: &'static str, detail: String) -> Self {
+        Self::InvariantViolation { label, detail }
+    }
+}
+
+/// Structured failure fields decoded from `FAILURE_*` attrs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FailureAttrs {
+    /// Error message describing the failure.
+    pub error_message: String,
+    /// Actor ID of the root-cause actor.
+    pub root_cause_actor: String,
+    /// Display name of the root-cause actor, if available.
+    pub root_cause_name: Option<String>,
+    /// When the failure occurred.
+    pub occurred_at: SystemTime,
+    /// Whether this failure was propagated from a child.
+    pub is_propagated: bool,
+}
+
+/// Typed view over attrs for an actor node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActorAttrsView {
+    /// Lifecycle status: "running", "stopped", "failed".
+    pub status: String,
+    /// Reason for stop/failure, if any.
+    pub status_reason: Option<String>,
+    /// Fully-qualified actor type name.
+    pub actor_type: String,
+    /// Number of messages processed.
+    pub messages_processed: u64,
+    /// When this actor was created.
+    pub created_at: Option<SystemTime>,
+    /// Name of the last message handler invoked.
+    pub last_handler: Option<String>,
+    /// Total CPU time in message handlers (microseconds).
+    pub total_processing_time_us: u64,
+    /// Flight recorder JSON, if available.
+    pub flight_recorder: Option<String>,
+    /// Whether this is a system/infrastructure actor.
+    pub is_system: bool,
+    /// Failure details, present iff status == "failed".
+    pub failure: Option<FailureAttrs>,
+}
+
+impl ActorAttrsView {
+    /// Decode from an `Attrs` bag (AV-2, AV-3). Requires `STATUS`
+    /// and `ACTOR_TYPE`. Enforces IA-3 (status_reason must not be
+    /// present for non-terminal status), IA-4 (failure attrs iff
+    /// failed), and failure completeness (if any required failure
+    /// key is present, all three required keys must be).
+    pub fn from_attrs(attrs: &Attrs) -> Result<Self, AttrsViewError> {
+        let status = attrs
+            .get(STATUS)
+            .ok_or_else(|| AttrsViewError::missing("status"))?
+            .clone();
+        let status_reason = attrs.get(STATUS_REASON).cloned();
+        let actor_type = attrs
+            .get(ACTOR_TYPE)
+            .ok_or_else(|| AttrsViewError::missing("actor_type"))?
+            .clone();
+        let messages_processed = *attrs.get(MESSAGES_PROCESSED).unwrap_or(&0);
+        let created_at = attrs.get(CREATED_AT).copied();
+        let last_handler = attrs.get(LAST_HANDLER).cloned();
+        let total_processing_time_us = *attrs.get(TOTAL_PROCESSING_TIME_US).unwrap_or(&0);
+        let flight_recorder = attrs.get(FLIGHT_RECORDER).cloned();
+        let is_system = *attrs.get(IS_SYSTEM).unwrap_or(&false);
+
+        // IA-3 (one-sided): status_reason must not be present for
+        // non-terminal status. The converse is not enforced —
+        // terminal status without a reason is valid (clean shutdown).
+        let is_terminal = status == "stopped" || status == "failed";
+        if status_reason.is_some() && !is_terminal {
+            return Err(AttrsViewError::invariant(
+                "IA-3",
+                format!(
+                    "status_reason present but status is '{status}' (expected stopped or failed)"
+                ),
+            ));
+        }
+
+        // Decode failure attrs. If any of the three required
+        // failure keys is present, require all three.
+        // FAILURE_IS_PROPAGATED has a declare_attrs! default of
+        // false, so it always resolves via attrs.get() and needs
+        // no explicit presence check. FAILURE_ROOT_CAUSE_NAME is
+        // genuinely optional.
+        let has_any_failure = attrs.get(FAILURE_ERROR_MESSAGE).is_some()
+            || attrs.get(FAILURE_ROOT_CAUSE_ACTOR).is_some()
+            || attrs.get(FAILURE_OCCURRED_AT).is_some();
+
+        let failure = if has_any_failure {
+            let error_message = attrs
+                .get(FAILURE_ERROR_MESSAGE)
+                .ok_or_else(|| AttrsViewError::missing("failure_error_message"))?
+                .clone();
+            let root_cause_actor = attrs
+                .get(FAILURE_ROOT_CAUSE_ACTOR)
+                .ok_or_else(|| AttrsViewError::missing("failure_root_cause_actor"))?
+                .clone();
+            let root_cause_name = attrs.get(FAILURE_ROOT_CAUSE_NAME).cloned();
+            let occurred_at = *attrs
+                .get(FAILURE_OCCURRED_AT)
+                .ok_or_else(|| AttrsViewError::missing("failure_occurred_at"))?;
+            // Default false: failure originated at this actor.
+            let is_propagated = *attrs.get(FAILURE_IS_PROPAGATED).unwrap_or(&false);
+            Some(FailureAttrs {
+                error_message,
+                root_cause_actor,
+                root_cause_name,
+                occurred_at,
+                is_propagated,
+            })
+        } else {
+            None
+        };
+
+        // IA-4: failure attrs present iff status == "failed".
+        if status == "failed" && failure.is_none() {
+            return Err(AttrsViewError::invariant(
+                "IA-4",
+                "status is 'failed' but no failure_* attrs present".to_string(),
+            ));
+        }
+        if status != "failed" && failure.is_some() {
+            return Err(AttrsViewError::invariant(
+                "IA-4",
+                format!("status is '{status}' but failure_* attrs are present"),
+            ));
+        }
+
+        Ok(Self {
+            status,
+            status_reason,
+            actor_type,
+            messages_processed,
+            created_at,
+            last_handler,
+            total_processing_time_us,
+            flight_recorder,
+            is_system,
+            failure,
+        })
+    }
+
+    /// Encode into an `Attrs` bag (AV-1 round-trip producer).
+    pub fn to_attrs(&self) -> Attrs {
+        let mut attrs = Attrs::new();
+        attrs.set(STATUS, self.status.clone());
+        if let Some(reason) = &self.status_reason {
+            attrs.set(STATUS_REASON, reason.clone());
+        }
+        attrs.set(ACTOR_TYPE, self.actor_type.clone());
+        attrs.set(MESSAGES_PROCESSED, self.messages_processed);
+        if let Some(t) = self.created_at {
+            attrs.set(CREATED_AT, t);
+        }
+        if let Some(handler) = &self.last_handler {
+            attrs.set(LAST_HANDLER, handler.clone());
+        }
+        attrs.set(TOTAL_PROCESSING_TIME_US, self.total_processing_time_us);
+        if let Some(fr) = &self.flight_recorder {
+            attrs.set(FLIGHT_RECORDER, fr.clone());
+        }
+        attrs.set(IS_SYSTEM, self.is_system);
+        if let Some(fi) = &self.failure {
+            attrs.set(FAILURE_ERROR_MESSAGE, fi.error_message.clone());
+            attrs.set(FAILURE_ROOT_CAUSE_ACTOR, fi.root_cause_actor.clone());
+            if let Some(name) = &fi.root_cause_name {
+                attrs.set(FAILURE_ROOT_CAUSE_NAME, name.clone());
+            }
+            attrs.set(FAILURE_OCCURRED_AT, fi.occurred_at);
+            attrs.set(FAILURE_IS_PROPAGATED, fi.is_propagated);
+        }
+        attrs
+    }
+}
 
 /// Internal introspection result. Carries attrs as a JSON string.
 /// The mesh layer constructs the API-facing `NodePayload` (with
@@ -735,7 +966,135 @@ mod tests {
         }
     }
 
-    // IA-1, IA-3, IA-4 tests require spawning actors and live in
-    // actor.rs where #[hyperactor::export] and test infrastructure
-    // are available.
+    // IA-1 tests require spawning actors and live in actor.rs
+    // where #[hyperactor::export] and test infrastructure are
+    // available. IA-3 and IA-4 are tested below at the view level.
+
+    fn running_actor_attrs() -> Attrs {
+        let mut attrs = Attrs::new();
+        attrs.set(STATUS, "running".to_string());
+        attrs.set(ACTOR_TYPE, "MyActor".to_string());
+        attrs.set(MESSAGES_PROCESSED, 42u64);
+        attrs.set(CREATED_AT, SystemTime::UNIX_EPOCH);
+        attrs.set(IS_SYSTEM, false);
+        attrs
+    }
+
+    fn failed_actor_attrs() -> Attrs {
+        let mut attrs = running_actor_attrs();
+        attrs.set(STATUS, "failed".to_string());
+        attrs.set(STATUS_REASON, "something broke".to_string());
+        attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, "other[0]".to_string());
+        attrs.set(FAILURE_ROOT_CAUSE_NAME, "OtherActor".to_string());
+        attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
+        attrs.set(FAILURE_IS_PROPAGATED, true);
+        attrs
+    }
+
+    /// AV-1: from_attrs(to_attrs(v)) == v.
+    #[test]
+    fn test_actor_view_round_trip_running() {
+        let view = ActorAttrsView::from_attrs(&running_actor_attrs()).unwrap();
+        assert_eq!(view.status, "running");
+        assert_eq!(view.actor_type, "MyActor");
+        assert_eq!(view.messages_processed, 42);
+        assert!(view.failure.is_none());
+
+        let round_tripped = ActorAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(round_tripped, view);
+    }
+
+    /// AV-1.
+    #[test]
+    fn test_actor_view_round_trip_failed() {
+        let view = ActorAttrsView::from_attrs(&failed_actor_attrs()).unwrap();
+        assert_eq!(view.status, "failed");
+        let fi = view.failure.as_ref().unwrap();
+        assert_eq!(fi.error_message, "boom");
+        assert!(fi.is_propagated);
+
+        let round_tripped = ActorAttrsView::from_attrs(&view.to_attrs()).unwrap();
+        assert_eq!(round_tripped, view);
+    }
+
+    /// AV-2: missing required key rejected.
+    #[test]
+    fn test_actor_view_missing_status() {
+        let mut attrs = Attrs::new();
+        attrs.set(ACTOR_TYPE, "X".to_string());
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert_eq!(err, AttrsViewError::MissingKey { key: "status" });
+    }
+
+    /// AV-2.
+    #[test]
+    fn test_actor_view_missing_actor_type() {
+        let mut attrs = Attrs::new();
+        attrs.set(STATUS, "running".to_string());
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert_eq!(err, AttrsViewError::MissingKey { key: "actor_type" });
+    }
+
+    #[test]
+    fn test_actor_view_ia3_rejects_reason_on_running() {
+        let mut attrs = running_actor_attrs();
+        attrs.set(STATUS_REASON, "should not be here".to_string());
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert!(matches!(
+            err,
+            AttrsViewError::InvariantViolation { label: "IA-3", .. }
+        ));
+    }
+
+    #[test]
+    fn test_actor_view_ia3_allows_terminal_without_reason() {
+        let mut attrs = running_actor_attrs();
+        attrs.set(STATUS, "stopped".to_string());
+        // No status_reason — should be fine.
+        let view = ActorAttrsView::from_attrs(&attrs).unwrap();
+        assert_eq!(view.status, "stopped");
+        assert!(view.status_reason.is_none());
+    }
+
+    #[test]
+    fn test_actor_view_ia4_rejects_failed_without_failure_attrs() {
+        let mut attrs = running_actor_attrs();
+        attrs.set(STATUS, "failed".to_string());
+        // No failure_* keys.
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert!(matches!(
+            err,
+            AttrsViewError::InvariantViolation { label: "IA-4", .. }
+        ));
+    }
+
+    #[test]
+    fn test_actor_view_ia4_rejects_failure_attrs_on_running() {
+        let mut attrs = running_actor_attrs();
+        attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
+        attrs.set(FAILURE_ROOT_CAUSE_ACTOR, "x[0]".to_string());
+        attrs.set(FAILURE_OCCURRED_AT, SystemTime::UNIX_EPOCH);
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert!(matches!(
+            err,
+            AttrsViewError::InvariantViolation { label: "IA-4", .. }
+        ));
+    }
+
+    /// AV-2: partial failure set → missing key.
+    #[test]
+    fn test_actor_view_partial_failure_attrs_rejected() {
+        let mut attrs = running_actor_attrs();
+        attrs.set(STATUS, "failed".to_string());
+        // Only one of the three required failure keys.
+        attrs.set(FAILURE_ERROR_MESSAGE, "boom".to_string());
+        let err = ActorAttrsView::from_attrs(&attrs).unwrap_err();
+        assert_eq!(
+            err,
+            AttrsViewError::MissingKey {
+                key: "failure_root_cause_actor"
+            }
+        );
+    }
 }
