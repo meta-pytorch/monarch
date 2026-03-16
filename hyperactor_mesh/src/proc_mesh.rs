@@ -874,6 +874,8 @@ impl ProcMeshRef {
                             status: resource::Status::Timeout(timeout),
                             // We don't know the ActorId that used to live on this rank.
                             // But we do know the mesh agent id, so we'll use that.
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                             state: Some(ActorState {
                                 actor_id: agent_id.clone(),
                                 create_rank: rank,

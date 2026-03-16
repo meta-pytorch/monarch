@@ -255,8 +255,6 @@ impl HostAgent {
     /// introspection. Called from init and after each state change
     /// (proc created/stopped).
     fn publish_introspect_properties(&self, cx: &Instance<Self>) {
-        use hyperactor::introspect::PublishedPropertiesKind;
-
         let host = match self.host.as_ref() {
             Some(h) => h,
             None => return, // host shut down
@@ -282,12 +280,14 @@ impl HostAgent {
         }
 
         let num_procs = children.len();
-        cx.publish_properties(PublishedPropertiesKind::Host {
-            addr,
-            num_procs,
-            children,
-            system_children,
-        });
+
+        let mut attrs = hyperactor_config::Attrs::new();
+        attrs.set(crate::introspect::NODE_TYPE, "host".to_string());
+        attrs.set(crate::introspect::ADDR, addr);
+        attrs.set(crate::introspect::NUM_PROCS, num_procs);
+        attrs.set(hyperactor::introspect::CHILDREN, children);
+        attrs.set(crate::introspect::SYSTEM_CHILDREN, system_children);
+        cx.publish_attrs(attrs);
     }
 }
 
@@ -326,8 +326,7 @@ impl Actor for HostAgent {
         let local_proc = host.local_proc().clone();
         let self_id = this.self_id().clone();
         this.set_query_child_handler(move |child_ref| {
-            use hyperactor::introspect::NodePayload;
-            use hyperactor::introspect::NodeProperties;
+            use hyperactor::introspect::IntrospectResult;
 
             let proc = match child_ref {
                 hyperactor::reference::Reference::Proc(proc_id) => {
@@ -344,44 +343,64 @@ impl Actor for HostAgent {
 
             match proc {
                 Some((proc, label)) => {
-                    let all_ids = proc.all_actor_ids();
-                    let mut actors = Vec::with_capacity(all_ids.len());
+                    // Use all_instance_keys() instead of
+                    // all_actor_ids() to avoid holding DashMap shard
+                    // read locks while doing Weak::upgrade() +
+                    // watch::borrow() + is_terminal() per entry.
+                    // Under rapid actor churn the per-entry work in
+                    // all_actor_ids() causes convoy starvation with
+                    // concurrent insert/remove operations, stalling
+                    // the spawn/exit path. all_instance_keys() just
+                    // clones keys — microseconds per shard. The
+                    // is_system check uses individual point lookups
+                    // outside the iteration. Stale keys (terminal
+                    // actors) may appear but are harmless — the TUI
+                    // handles "not found" gracefully.
+                    let all_keys = proc.all_instance_keys();
+                    let mut actors = Vec::with_capacity(all_keys.len());
                     let mut system_actors = Vec::new();
-                    for id in all_ids {
+                    for id in all_keys {
                         let ref_str = id.to_string();
                         if proc.get_instance(&id).is_some_and(|cell| cell.is_system()) {
                             system_actors.push(ref_str.clone());
                         }
                         actors.push(ref_str);
                     }
-                    NodePayload {
+                    // Build attrs for this proc node.
+                    let mut attrs = hyperactor_config::Attrs::new();
+                    attrs.set(crate::introspect::NODE_TYPE, "proc".to_string());
+                    attrs.set(crate::introspect::PROC_NAME, label.to_string());
+                    attrs.set(crate::introspect::NUM_ACTORS, actors.len());
+                    attrs.set(crate::introspect::SYSTEM_CHILDREN, system_actors.clone());
+                    let attrs_json =
+                        serde_json::to_string(&attrs).unwrap_or_else(|_| "{}".to_string());
+
+                    IntrospectResult {
                         identity: proc.proc_id().to_string(),
-                        properties: NodeProperties::Proc {
-                            proc_name: label.to_string(),
-                            num_actors: actors.len(),
-                            system_children: system_actors,
-                            stopped_children: Vec::new(),
-                            stopped_retention_cap: 0,
-                            is_poisoned: false,
-                            failed_actor_count: 0,
-                        },
+                        attrs: attrs_json,
                         children: actors,
                         parent: Some(HostId(self_id.clone()).to_string()),
                         as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
                             .to_string(),
                     }
                 }
-                None => NodePayload {
-                    identity: String::new(),
-                    properties: NodeProperties::Error {
-                        code: "not_found".into(),
-                        message: format!("child {} not found", child_ref),
-                    },
-                    children: Vec::new(),
-                    parent: None,
-                    as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
-                        .to_string(),
-                },
+                None => {
+                    let mut error_attrs = hyperactor_config::Attrs::new();
+                    error_attrs.set(hyperactor::introspect::ERROR_CODE, "not_found".to_string());
+                    error_attrs.set(
+                        hyperactor::introspect::ERROR_MESSAGE,
+                        format!("child {} not found", child_ref),
+                    );
+                    IntrospectResult {
+                        identity: String::new(),
+                        attrs: serde_json::to_string(&error_attrs)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                        children: Vec::new(),
+                        parent: None,
+                        as_of: humantime::format_rfc3339_millis(std::time::SystemTime::now())
+                            .to_string(),
+                    }
+                }
             }
         });
 
@@ -638,6 +657,8 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                         bootstrap_command,
                         proc_status,
                     }),
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
                 }
             }
             Some(ProcCreationState {
@@ -646,11 +667,15 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                 name: get_state.name.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
             None => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::NotExist,
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
         };
 
@@ -956,6 +981,7 @@ mod tests {
                     proc_status: Some(ProcStatus::Ready { started_at: _, addr: _, agent: proc_status_mesh_agent}),
                     ..
                 }),
+                ..
             } if name == resource_name
               && proc_id == hyperactor_reference::ProcId::with_name(host_addr.clone(), name.to_string())
               && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcId::with_name(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
