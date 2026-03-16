@@ -1502,8 +1502,7 @@ impl<A: Actor> Instance<A> {
                     None,
                 );
                 // FI-1: store supervision_event BEFORE change_status.
-                *self.inner.cell.inner.supervision_event.lock().unwrap() =
-                    Some(event.clone());
+                *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
                 self.change_status(status);
                 Some(event)
             }
