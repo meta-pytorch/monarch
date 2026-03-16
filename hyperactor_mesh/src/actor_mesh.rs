@@ -617,7 +617,7 @@ impl<A: Referable> ActorMeshRef<A> {
         &self.controller
     }
 
-    fn set_controller(
+    pub(crate) fn set_controller(
         &mut self,
         controller: Option<hyperactor_reference::ActorRef<ActorMeshController<A>>>,
     ) {

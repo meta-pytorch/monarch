@@ -36,6 +36,8 @@ pub mod mesh;
 pub mod mesh_admin;
 pub mod mesh_controller;
 pub mod mesh_selection;
+#[cfg(fbcode_build)]
+pub mod meta;
 mod metrics;
 pub mod namespace;
 pub mod proc_agent;

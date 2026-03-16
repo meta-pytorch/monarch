@@ -48,6 +48,7 @@ use crate::context::PyInstance;
 use crate::pickle::PendingMessage;
 use crate::proc::PyActorId;
 use crate::pytokio::PyPythonTask;
+use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
@@ -116,6 +117,9 @@ pub(crate) trait ActorMeshProtocol: Send + Sync {
 
 pub(crate) trait SupervisableActorMesh: ActorMeshProtocol + Supervisable {
     fn new_with_region(&self, region: &PyRegion) -> PyResult<Box<dyn SupervisableActorMesh>>;
+
+    /// Get the region of this actor mesh.
+    fn region(&self) -> PyResult<PyRegion>;
 }
 
 /// This just forwards to the rust trait that can implement these bindings
@@ -202,6 +206,11 @@ impl PythonActorMesh {
 
     fn name(&self) -> PyResult<PyPythonTask> {
         self.inner.name()
+    }
+
+    #[getter]
+    fn region(&self) -> PyResult<PyRegion> {
+        self.inner.region()
     }
 
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
@@ -452,6 +461,15 @@ impl SupervisableActorMesh for AsyncActorMesh {
                 .shared(),
         )))
     }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        match self.mesh.peek().cloned() {
+            Some(mesh) => mesh?.region(),
+            None => Err(PyRuntimeError::new_err(
+                "Cannot get region: actor mesh is not yet initialized",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -559,6 +577,12 @@ impl SupervisableActorMesh for PythonActorMeshImpl {
             self.mesh_ref().sliced(region.as_inner().clone()),
         )))
     }
+
+    fn region(&self) -> PyResult<PyRegion> {
+        Ok(ndslice::view::Ranked::region(self.mesh_ref())
+            .clone()
+            .into())
+    }
 }
 
 // Convert a hyperactor_mesh::Error to a Python exception. hyperactor_mesh::Error::Supervision becomes a SupervisionError,
@@ -636,6 +660,73 @@ impl PythonActorMeshImpl {
             .get(rank)
             .map(|r| reference::ActorRef::into_actor_id(r.clone()))
             .map(PyActorId::from))
+    }
+
+    #[getter]
+    fn region(&self) -> PyRegion {
+        ndslice::view::Ranked::region(self.mesh_ref())
+            .clone()
+            .into()
+    }
+
+    fn cast(
+        &self,
+        message: &PythonMessage,
+        selection: &str,
+        instance: &PyInstance,
+    ) -> PyResult<()> {
+        let sel = to_hy_sel(selection)?;
+        <Self as ActorMeshProtocol>::cast(self, message.clone(), sel, instance)
+    }
+
+    fn new_with_region(&self, region: &PyRegion) -> PyResult<PythonActorMeshImpl> {
+        let mesh_ref = self.mesh_ref();
+        assert!(
+            region
+                .as_inner()
+                .is_subset(ndslice::view::Ranked::region(mesh_ref))
+        );
+        Ok(PythonActorMeshImpl::new_ref(
+            mesh_ref.sliced(region.as_inner().clone()),
+        ))
+    }
+
+    fn supervision_event(&self, instance: &PyInstance) -> PyResult<Option<PyShared>> {
+        // We clone here so the future can outlive the self reference, but we want
+        // to share the supervision receiver with the original mesh. This way
+        // if a second endpoint is started, it can reuse the same subscriber.
+        let mesh = self.mesh_ref().clone_with_supervision_receiver();
+        let instance = monarch_with_gil_blocking(|_py| instance.clone());
+        let shared = PyPythonTask::new::<_, ()>(async move {
+            let supervision_failure = mesh
+                .next_supervision_event(instance.deref())
+                .await
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            // Don't Unsubscribe here, as the receiver may have other copies being
+            // used.
+            Err(SupervisionError::new_err_from(supervision_failure))
+        })?
+        .spawn_abortable()?;
+        Ok(Some(shared))
+    }
+
+    fn start_supervision(
+        &self,
+        _instance: &PyInstance,
+        _supervision_display_name: String,
+    ) -> PyResult<()> {
+        // This function is a no-op since moving the monitor loop to ActorMeshController.
+        // Initializing the receiver changes no received events.
+        Ok(())
+    }
+
+    fn stop(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {
+        <Self as ActorMeshProtocol>::stop(self, instance, reason)
+    }
+
+    fn initialized(&self) -> PyResult<PyPythonTask> {
+        // PythonActorMeshImpl doesn't have an async initialization; it's already initialized
+        PyPythonTask::new(async { Ok(None::<()>) })
     }
 
     fn __repr__(&self) -> String {

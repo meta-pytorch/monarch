@@ -6,41 +6,41 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::fmt::Debug;
 use std::ops::Deref;
+use std::sync::Arc;
 
-use hyperactor_mesh::ProcMesh;
-use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::shared_cell::SharedCell;
+use hyperactor_mesh::v1;
+use hyperactor_mesh::v1::proc_mesh::ProcMesh;
+use hyperactor_mesh::v1::proc_mesh::ProcMeshRef;
 use monarch_types::PickledPyObject;
-use monarch_types::py_module_add_function;
 use ndslice::View;
 use ndslice::view::RankedSliceable;
 use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyNotImplementedError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::types::PyType;
 
-use crate::actor::PythonActorParams;
+use crate::actor::to_py_error;
+use crate::actor_mesh::ActorMeshProtocol;
 use crate::actor_mesh::PythonActorMesh;
-use crate::actor_mesh::PythonActorMeshImpl;
-use crate::actor_mesh::SupervisableActorMesh;
 use crate::alloc::PyAlloc;
 use crate::context::PyInstance;
-use crate::pickle::PendingMessage;
 use crate::pytokio::PyPythonTask;
 use crate::pytokio::PyShared;
 use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::shape::PyRegion;
+use crate::v1::actor_mesh::PythonActorMeshImpl;
 
 #[pyclass(
     name = "ProcMesh",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh"
 )]
 pub enum PyProcMesh {
     Owned(PyProcMeshImpl),
@@ -48,7 +48,7 @@ pub enum PyProcMesh {
 }
 
 impl PyProcMesh {
-    pub fn new_owned(inner: ProcMesh) -> Self {
+    pub(crate) fn new_owned(inner: ProcMesh) -> Self {
         Self::Owned(PyProcMeshImpl(inner.into()))
     }
 
@@ -95,42 +95,64 @@ impl PyProcMesh {
         })
     }
 
+    #[pyo3(signature = (instance, name, actor, supervision_display_name = None))]
+    fn spawn_nonblocking<'py>(
+        &self,
+        instance: &PyInstance,
+        name: String,
+        actor: &Bound<'py, PyType>,
+        supervision_display_name: Option<String>,
+    ) -> PyResult<PyPythonTask> {
+        let pickled_type = PickledPyObject::pickle(actor.as_any())?;
+        let proc_mesh = self.mesh_ref()?.clone();
+        let instance = instance.clone();
+        let mesh_impl = async move {
+            let full_name = v1::Name::new(name).unwrap();
+            let actor_mesh = proc_mesh
+                .spawn_with_name(
+                    instance.deref(),
+                    full_name,
+                    &pickled_type,
+                    supervision_display_name,
+                    false,
+                )
+                .await
+                .map_err(to_py_error)?;
+            Ok(PythonActorMesh::from_impl(Arc::new(
+                PythonActorMeshImpl::new_owned(actor_mesh),
+            )))
+        };
+        PyPythonTask::new(mesh_impl)
+    }
+
     #[staticmethod]
-    #[pyo3(signature = (proc_mesh, instance, name, actor, init_message, emulated, supervision_display_name = None))]
+    #[pyo3(signature = (proc_mesh, instance, name, actor, emulated, supervision_display_name = None))]
     fn spawn_async(
         proc_mesh: &mut PyShared,
         instance: &PyInstance,
         name: String,
         actor: Py<PyType>,
-        init_message: &mut PendingMessage,
         emulated: bool,
         supervision_display_name: Option<String>,
-    ) -> PyResult<Py<PyAny>> {
-        let init_message = init_message.take()?;
+    ) -> PyResult<PyObject> {
         let task = proc_mesh.task()?.take_task()?;
         let instance = instance.clone();
         let mesh_impl = async move {
             let proc_mesh = task.await?;
-
-            let init_message = init_message.resolve().await?;
-
-            let (proc_mesh, params) = monarch_with_gil(|py| -> PyResult<_> {
+            let (proc_mesh, pickled_type) = monarch_with_gil(|py| -> PyResult<_> {
                 let slf: Bound<PyProcMesh> = proc_mesh.extract(py)?;
                 let slf = slf.borrow();
                 let pickled_type = PickledPyObject::pickle(actor.bind(py).as_any())?;
-                Ok((
-                    slf.mesh_ref()?.clone(),
-                    PythonActorParams::new(pickled_type, Some(init_message)),
-                ))
+                Ok((slf.mesh_ref()?.clone(), pickled_type))
             })
             .await?;
 
-            let full_name = hyperactor_mesh::Name::new(name).unwrap();
+            let full_name = v1::Name::new(name).unwrap();
             let actor_mesh = proc_mesh
                 .spawn_with_name(
                     instance.deref(),
                     full_name,
-                    &params,
+                    &pickled_type,
                     supervision_display_name,
                     false,
                 )
@@ -146,7 +168,7 @@ impl PyProcMesh {
         } else {
             let r = PythonActorMesh::new(
                 async move {
-                    let mesh_impl: Box<dyn SupervisableActorMesh> = mesh_impl.await?;
+                    let mesh_impl: Box<dyn ActorMeshProtocol> = mesh_impl.await?;
                     Ok(mesh_impl)
                 },
                 true,
@@ -167,9 +189,15 @@ impl PyProcMesh {
             .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
         let py_bytes = (PyBytes::new(py, &bytes),).into_bound_py_any(py).unwrap();
         let from_bytes =
-            PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.proc_mesh")?
+            PyModule::import(py, "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh")?
                 .getattr("py_proc_mesh_from_bytes")?;
         Ok((from_bytes, py_bytes))
+    }
+
+    fn monitor(&self) -> PyResult<PyObject> {
+        Err(PyNotImplementedError::new_err(
+            "v1::PyProcMesh::monitor not implemented",
+        ))
     }
 
     #[getter]
@@ -224,7 +252,7 @@ impl PyProcMesh {
 #[derive(Clone)]
 #[pyclass(
     name = "ProcMeshImpl",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh"
 )]
 pub struct PyProcMeshImpl(SharedCell<ProcMesh>);
 
@@ -240,7 +268,7 @@ impl PyProcMeshImpl {
 #[derive(Debug, Clone)]
 #[pyclass(
     name = "ProcMeshRefImpl",
-    module = "monarch._rust_bindings.monarch_hyperactor.proc_mesh"
+    module = "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh"
 )]
 pub struct PyProcMeshRefImpl(ProcMeshRef);
 
@@ -258,11 +286,12 @@ fn py_proc_mesh_from_bytes(bytes: &Bound<'_, PyBytes>) -> PyResult<PyProcMesh> {
 }
 
 pub fn register_python_bindings(hyperactor_mod: &Bound<'_, PyModule>) -> PyResult<()> {
+    let f = wrap_pyfunction!(py_proc_mesh_from_bytes, hyperactor_mod)?;
+    f.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_hyperactor.v1.proc_mesh",
+    )?;
+    hyperactor_mod.add_function(f)?;
     hyperactor_mod.add_class::<PyProcMesh>()?;
-    py_module_add_function!(
-        hyperactor_mod,
-        "monarch._rust_bindings.monarch_hyperactor.proc_mesh",
-        py_proc_mesh_from_bytes
-    );
     Ok(())
 }
