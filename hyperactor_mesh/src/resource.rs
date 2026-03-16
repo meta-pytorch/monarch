@@ -226,7 +226,18 @@ impl GetRankStatus {
 }
 
 /// The state of a resource.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq, Handler, Bind, Unbind)]
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialEq,
+    Eq,
+    Handler,
+    Bind,
+    Unbind
+)]
 pub struct State<S> {
     /// The name of the resource.
     pub name: Name,

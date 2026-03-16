@@ -907,7 +907,14 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 continue;
             }
             did_send_state_change = true;
-            send_state_change(cx, rank, events[0].clone(), mesh.name(), false, &mut self.health_state);
+            send_state_change(
+                cx,
+                rank,
+                events[0].clone(),
+                mesh.name(),
+                false,
+                &mut self.health_state,
+            );
         }
         if !did_send_state_change && !is_terminal {
             // No state change, but subscribers need to be sent a message
