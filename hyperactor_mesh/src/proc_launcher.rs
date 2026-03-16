@@ -41,15 +41,19 @@
 //! launcher (`ManagedByLauncher`).
 #![allow(dead_code, unused_imports)] // Temporary
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::reference as hyperactor_reference;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::process::ChildStderr;
 use tokio::process::ChildStdout;
 use tokio::sync::oneshot;
+use typeuri::Named;
 
 use crate::bootstrap::BootstrapCommand;
 
@@ -158,6 +162,34 @@ pub enum ProcLauncherError {
     Other(String),
 }
 
+/// Per-process CPU/NUMA binding configuration.
+///
+/// When attached to a proc spec, the bootstrap command is wrapped with
+/// `numactl` (on NUMA systems) or `taskset` (Linux fallback) before launch.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Named)]
+pub struct ProcBind {
+    /// NUMA node for CPU binding (`numactl --cpunodebind`).
+    pub cpunodebind: Option<String>,
+    /// NUMA node for memory binding (`numactl --membind`).
+    pub membind: Option<String>,
+    /// Physical CPU list (`numactl --physcpubind`).
+    pub physcpubind: Option<String>,
+    /// CPU set for taskset fallback (`taskset -c`).
+    pub cpus: Option<String>,
+}
+wirevalue::register_type!(ProcBind);
+
+impl From<HashMap<String, String>> for ProcBind {
+    fn from(map: HashMap<String, String>) -> Self {
+        Self {
+            cpunodebind: map.get("cpunodebind").cloned(),
+            membind: map.get("membind").cloned(),
+            physcpubind: map.get("physcpubind").cloned(),
+            cpus: map.get("cpus").cloned(),
+        }
+    }
+}
+
 /// Per-launch policy computed by the manager and handed to the
 /// launcher.
 ///
@@ -224,6 +256,14 @@ pub struct LaunchOptions {
     /// env when `Some`. Other backends may ignore it or use it to
     /// wire their own forwarding mechanism.
     pub log_channel: Option<ChannelAddr>,
+
+    /// Optional CPU/NUMA binding for this proc.
+    ///
+    /// Launchers that support binding should apply it using
+    /// backend-appropriate mechanisms (e.g., `numactl` for native,
+    /// unit properties for systemd). Launchers that do not support
+    /// it may ignore this field.
+    pub proc_bind: Option<ProcBind>,
 }
 
 /// Format a human-readable process name for diagnostics and logs.

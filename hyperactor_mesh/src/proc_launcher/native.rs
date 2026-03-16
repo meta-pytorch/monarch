@@ -94,6 +94,7 @@ use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::PROCESS_NAME_ENV;
 use crate::proc_launcher::LaunchOptions;
 use crate::proc_launcher::LaunchResult;
+use crate::proc_launcher::ProcBind;
 use crate::proc_launcher::ProcExitKind;
 use crate::proc_launcher::ProcExitResult;
 use crate::proc_launcher::ProcLauncher;
@@ -184,6 +185,57 @@ impl NativeProcLauncher {
     }
 }
 
+#[cfg(target_os = "linux")]
+/// Wrap a [`BootstrapCommand`] with `numactl` or `taskset` based on the
+/// binding config. On NUMA-capable systems the numactl keys
+/// (`cpunodebind`, `membind`, `physcpubind`) take precedence. On Linux,
+/// `cpus` falls back to `taskset -c`.
+fn wrap_command_for_binding(mut cmd: BootstrapCommand, bind: &ProcBind) -> BootstrapCommand {
+    let numa = std::path::Path::new("/sys/devices/system/node/node0").exists();
+
+    if numa {
+        let mut numactl_args = Vec::new();
+        if let Some(v) = bind.cpunodebind.as_deref() {
+            numactl_args.push(format!("--cpunodebind={v}"));
+        }
+        if let Some(v) = bind.membind.as_deref() {
+            numactl_args.push(format!("--membind={v}"));
+        }
+        if let Some(v) = bind.physcpubind.as_deref() {
+            numactl_args.push(format!("--physcpubind={v}"));
+        }
+        if !numactl_args.is_empty() {
+            numactl_args.push(cmd.program.to_string_lossy().into_owned());
+            numactl_args.append(&mut cmd.args);
+            cmd.program = "numactl".into();
+            cmd.arg0 = None;
+            cmd.args = numactl_args;
+            return cmd;
+        }
+    }
+
+    // Fallback: taskset for CPU pinning on Linux.
+    if let Some(cpus) = bind.cpus.as_deref() {
+        let mut taskset_args = vec![
+            "-c".to_string(),
+            cpus.to_string(),
+            cmd.program.to_string_lossy().into_owned(),
+        ];
+        taskset_args.append(&mut cmd.args);
+        cmd.program = "taskset".into();
+        cmd.arg0 = None;
+        cmd.args = taskset_args;
+    }
+
+    cmd
+}
+
+#[cfg(not(target_os = "linux"))]
+/// No bindings available outside of Linux.
+fn wrap_command_for_binding(cmd: BootstrapCommand, _bind: &ProcBind) -> BootstrapCommand {
+    cmd
+}
+
 /// Convert a platform `std::process::ExitStatus` into our
 /// launcher-neutral [`ProcExitKind`] representation.
 ///
@@ -265,8 +317,14 @@ impl ProcLauncher for NativeProcLauncher {
         proc_id: &hyperactor_reference::ProcId,
         opts: LaunchOptions,
     ) -> Result<LaunchResult, ProcLauncherError> {
+        // Apply NUMA/CPU binding if requested.
+        let command = match &opts.proc_bind {
+            Some(bind) => wrap_command_for_binding(opts.command.clone(), bind),
+            None => opts.command.clone(),
+        };
+
         // New Tokio Command from BootstrapCommand (template)
-        let mut cmd = opts.command.new();
+        let mut cmd = command.new();
 
         // Bootstrap payload
         cmd.env(BOOTSTRAP_MODE_ENV, opts.bootstrap_payload);
@@ -668,6 +726,7 @@ mod tests {
             want_stdio: true,
             tail_lines: 0,
             log_channel: Some(log_channel.clone()),
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -755,6 +814,7 @@ mod tests {
                 want_stdio: true,
                 tail_lines: 0,
                 log_channel: None,
+                proc_bind: None,
             };
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
             let (lines, stderr_bytes) = read_captured_lines(lr.stdio).await;
@@ -789,6 +849,7 @@ mod tests {
                 want_stdio: false,
                 tail_lines: 0,
                 log_channel: None,
+                proc_bind: None,
             };
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
 
@@ -826,6 +887,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -864,6 +926,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -936,6 +999,7 @@ mod tests {
             want_stdio: true,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1021,6 +1085,7 @@ while True:
             want_stdio: true,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         // Keep stdout in outer scope so we can read after launcher

@@ -1200,6 +1200,7 @@ mod tests {
             want_stdio: true,
             tail_lines: 0,
             log_channel: Some(log_channel.clone()),
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1296,6 +1297,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1337,6 +1339,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1398,6 +1401,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1572,6 +1576,7 @@ mod tests {
                 want_stdio: false,
                 tail_lines: 0,
                 log_channel: None,
+                proc_bind: None,
             };
 
             let lr = launcher.launch(&proc_id, opts).await.expect("launch");
@@ -1665,6 +1670,7 @@ mod tests {
             want_stdio: false,
             tail_lines: 0,
             log_channel: None,
+            proc_bind: None,
         };
 
         // IMPORTANT: lr must be mutable because we take &mut

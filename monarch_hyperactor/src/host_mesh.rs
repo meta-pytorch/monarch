@@ -17,6 +17,7 @@ use hyperactor::Instance;
 use hyperactor::Proc;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::bootstrap::BootstrapCommand;
+use hyperactor_mesh::bootstrap::ProcBind;
 use hyperactor_mesh::bootstrap::host;
 use hyperactor_mesh::host_mesh::HostMesh;
 use hyperactor_mesh::host_mesh::HostMeshRef;
@@ -163,18 +164,21 @@ impl PyHostMesh {
         })
     }
 
+    #[pyo3(signature = (instance, name, per_host, proc_bind = None))]
     fn spawn_nonblocking(
         &self,
         instance: &PyInstance,
         name: String,
         per_host: &PyExtent,
+        proc_bind: Option<Vec<HashMap<String, String>>>,
     ) -> PyResult<PyPythonTask> {
         let host_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         let per_host = per_host.clone().into();
+        let proc_bind = proc_bind.map(|v| v.into_iter().map(ProcBind::from).collect());
         let mesh_impl = async move {
             let proc_mesh = host_mesh
-                .spawn(instance.deref(), &name, per_host)
+                .spawn(instance.deref(), &name, per_host, proc_bind)
                 .await
                 .map_err(to_py_error)?;
             Ok(PyProcMesh::new_owned(proc_mesh))
