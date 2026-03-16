@@ -26,6 +26,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::actor::PythonActor;
+use crate::actor_mesh::AsyncActorMesh;
+use crate::actor_mesh::PythonActorMesh;
 use crate::actor_mesh::PythonActorMeshImpl;
 use crate::host_mesh::PyHostMesh;
 use crate::proc_mesh::PyProcMesh;
@@ -186,7 +188,9 @@ impl PyNamespace {
             PyMeshKind::Actor => PyPythonTask::new(async move {
                 let mesh: ActorMeshRef<PythonActor> =
                     ns.get(&name).await.map_err(namespace_error_to_pyerr)?;
-                Ok(PythonActorMeshImpl::new_ref(mesh))
+                let impl_ref = PythonActorMeshImpl::new_ref(mesh);
+                let async_mesh = AsyncActorMesh::from_impl(Arc::new(impl_ref));
+                Ok(PythonActorMesh::from_impl(Arc::from(async_mesh)))
             }),
         }
     }
@@ -208,9 +212,48 @@ fn create_in_memory_namespace(name: String) -> PyNamespace {
     PyNamespace::new(Arc::new(InMemoryNamespace::new(name)))
 }
 
+/// Configure the global namespace with an in-memory backend.
+/// This is primarily used for testing.
+///
+/// This function creates an in-memory namespace and sets it as the global
+/// namespace, enabling automatic registration of actor meshes when they spawn.
+///
+/// Args:
+///     name: The namespace name (e.g., "monarch")
+///
+/// Raises:
+///     RuntimeError: If the global namespace has already been configured
+#[pyfunction]
+fn configure_in_memory_namespace(name: String) -> PyResult<()> {
+    let namespace = Arc::new(InMemoryNamespace::new(name));
+    hyperactor_mesh::namespace::set_global_namespace(namespace)
+        .map_err(|_| PyRuntimeError::new_err("Global namespace has already been configured"))
+}
+
+/// Check if the global namespace has been configured.
+///
+/// Returns:
+///     True if the namespace is configured, False otherwise
+#[pyfunction]
+fn is_global_namespace_configured() -> bool {
+    hyperactor_mesh::namespace::global_namespace().is_some()
+}
+
+/// Get the global namespace.
+///
+/// Returns:
+///     The global Namespace instance if configured, None otherwise.
+#[pyfunction]
+fn get_global_namespace() -> Option<PyNamespace> {
+    hyperactor_mesh::namespace::global_namespace().map(|ns| PyNamespace::new(ns.clone()))
+}
+
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMeshKind>()?;
     module.add_class::<PyNamespace>()?;
     module.add_function(wrap_pyfunction!(create_in_memory_namespace, module)?)?;
+    module.add_function(wrap_pyfunction!(configure_in_memory_namespace, module)?)?;
+    module.add_function(wrap_pyfunction!(is_global_namespace_configured, module)?)?;
+    module.add_function(wrap_pyfunction!(get_global_namespace, module)?)?;
     Ok(())
 }
