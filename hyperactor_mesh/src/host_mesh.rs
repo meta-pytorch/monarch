@@ -1190,6 +1190,8 @@ impl HostMeshRef {
                             name: proc_name.clone(),
                             status,
                             state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                         },
                     };
 
@@ -1499,6 +1501,8 @@ impl HostMeshRef {
                             name: proc_names[rank].clone(),
                             status: resource::Status::Timeout(timeout),
                             state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                         },
                     ));
                 }

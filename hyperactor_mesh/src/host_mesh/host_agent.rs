@@ -657,6 +657,8 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                         bootstrap_command,
                         proc_status,
                     }),
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
                 }
             }
             Some(ProcCreationState {
@@ -665,11 +667,15 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                 name: get_state.name.clone(),
                 status: resource::Status::Failed(e.to_string()),
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
             None => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::NotExist,
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
         };
 
@@ -975,6 +981,7 @@ mod tests {
                     proc_status: Some(ProcStatus::Ready { started_at: _, addr: _, agent: proc_status_mesh_agent}),
                     ..
                 }),
+                ..
             } if name == resource_name
               && proc_id == hyperactor_reference::ProcId::with_name(host_addr.clone(), name.to_string())
               && mesh_agent == hyperactor_reference::ActorRef::attest(hyperactor_reference::ProcId::with_name(host_addr.clone(), name.to_string()).actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0)) && bootstrap_command == Some(BootstrapCommand::test())
