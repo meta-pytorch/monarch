@@ -16,10 +16,10 @@ use std::sync::Arc;
 use hyperactor_mesh::ActorMeshRef;
 use hyperactor_mesh::HostMeshRef;
 use hyperactor_mesh::ProcMeshRef;
-use hyperactor_mesh::namespace::InMemoryNamespace;
 use hyperactor_mesh::namespace::MeshKind;
 use hyperactor_mesh::namespace::Namespace;
 use hyperactor_mesh::namespace::NamespaceError;
+use hyperactor_mesh::namespace::SharedNamespace;
 use pyo3::exceptions::PyKeyError;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyValueError;
@@ -114,13 +114,14 @@ impl From<MeshKind> for PyMeshKind {
     name = "Namespace",
     module = "monarch._rust_bindings.monarch_hyperactor.namespace"
 )]
+#[derive(Clone)]
 pub struct PyNamespace {
-    inner: Arc<InMemoryNamespace>,
+    inner: SharedNamespace,
 }
 
 impl PyNamespace {
-    /// Create a new PyNamespace from an InMemoryNamespace.
-    pub fn new(namespace: Arc<InMemoryNamespace>) -> Self {
+    /// Create a new PyNamespace from a SharedNamespace.
+    pub fn new(namespace: SharedNamespace) -> Self {
         Self { inner: namespace }
     }
 }
@@ -209,7 +210,41 @@ impl PyNamespace {
 ///     A Namespace instance backed by in-memory storage
 #[pyfunction]
 fn create_in_memory_namespace(name: String) -> PyNamespace {
-    PyNamespace::new(Arc::new(InMemoryNamespace::new(name)))
+    PyNamespace::new(hyperactor_mesh::namespace::create_in_memory_namespace(name))
+}
+
+/// Configure the global namespace with an SMC backend.
+///
+/// Args:
+///     name: The namespace name (e.g., "monarch")
+///     tier: Optional SMC tier name
+///
+/// Raises:
+///     RuntimeError: If the global namespace has already been configured
+#[cfg(fbcode_build)]
+#[pyfunction]
+#[pyo3(signature = (name, tier=None))]
+fn configure_smc_namespace(name: String, tier: Option<String>) -> PyResult<()> {
+    use hyperactor_mesh::namespace::set_global_namespace;
+
+    let fb = fbinit::expect_init();
+    let tier = tier.unwrap_or_else(|| "monarch".to_string());
+    let smc_ns = hyperactor_mesh::namespace::create_smc_namespace(fb, name, tier)
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    set_global_namespace(smc_ns)
+        .map_err(|_| PyRuntimeError::new_err("Global namespace has already been configured"))
+}
+
+/// Check if the global namespace is configured.
+#[pyfunction]
+fn is_namespace_configured() -> bool {
+    hyperactor_mesh::namespace::global_namespace().is_some()
+}
+
+/// Get the global namespace if configured.
+#[pyfunction]
+fn get_global_namespace() -> Option<PyNamespace> {
+    hyperactor_mesh::namespace::global_namespace().map(|ns| PyNamespace::new(ns.clone()))
 }
 
 /// Configure the global namespace with an in-memory backend.
@@ -225,27 +260,9 @@ fn create_in_memory_namespace(name: String) -> PyNamespace {
 ///     RuntimeError: If the global namespace has already been configured
 #[pyfunction]
 fn configure_in_memory_namespace(name: String) -> PyResult<()> {
-    let namespace = Arc::new(InMemoryNamespace::new(name));
+    let namespace = hyperactor_mesh::namespace::create_in_memory_namespace(name);
     hyperactor_mesh::namespace::set_global_namespace(namespace)
         .map_err(|_| PyRuntimeError::new_err("Global namespace has already been configured"))
-}
-
-/// Check if the global namespace has been configured.
-///
-/// Returns:
-///     True if the namespace is configured, False otherwise
-#[pyfunction]
-fn is_global_namespace_configured() -> bool {
-    hyperactor_mesh::namespace::global_namespace().is_some()
-}
-
-/// Get the global namespace.
-///
-/// Returns:
-///     The global Namespace instance if configured, None otherwise.
-#[pyfunction]
-fn get_global_namespace() -> Option<PyNamespace> {
-    hyperactor_mesh::namespace::global_namespace().map(|ns| PyNamespace::new(ns.clone()))
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -253,7 +270,9 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyNamespace>()?;
     module.add_function(wrap_pyfunction!(create_in_memory_namespace, module)?)?;
     module.add_function(wrap_pyfunction!(configure_in_memory_namespace, module)?)?;
-    module.add_function(wrap_pyfunction!(is_global_namespace_configured, module)?)?;
+    module.add_function(wrap_pyfunction!(is_namespace_configured, module)?)?;
     module.add_function(wrap_pyfunction!(get_global_namespace, module)?)?;
+    #[cfg(fbcode_build)]
+    module.add_function(wrap_pyfunction!(configure_smc_namespace, module)?)?;
     Ok(())
 }
