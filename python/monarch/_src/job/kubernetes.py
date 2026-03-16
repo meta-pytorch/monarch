@@ -101,6 +101,7 @@ class KubernetesJob(JobTrait):
         self,
         namespace: str,
         timeout: int | None = None,
+        max_retries: int = 3,
     ) -> None:
         """
         Initialize a KubernetesJob.
@@ -108,10 +109,13 @@ class KubernetesJob(JobTrait):
         Args:
             namespace: Kubernetes namespace for all meshes
             timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely)
+            max_retries: Maximum number of times to retry pod discovery if
+                         pods change between discovery and attachment (default: 3)
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._namespace = namespace
         self._timeout = timeout
+        self._max_retries = max_retries
         self._meshes: Dict[str, Dict[str, Any]] = {}
         super().__init__()
 
@@ -470,6 +474,59 @@ class KubernetesJob(JobTrait):
         finally:
             w.stop()
 
+    def _verify_pods_ready(
+        self,
+        label_selector: str,
+        num_replicas: int,
+        pod_rank_label: str,
+        expected_endpoints: List[tuple[str, int]],
+    ) -> bool:
+        """
+        Verify that discovered pod endpoints are still current.
+
+        Does a single list-pods call and compares the Ready pods against
+        the endpoints returned by ``_wait_for_ready_pods()``.
+
+        Args:
+            label_selector: Kubernetes label selector
+            num_replicas: Expected number of replicas
+            pod_rank_label: Label key containing the pod rank
+            expected_endpoints: The (pod_ip, port) tuples to verify
+
+        Returns:
+            True if all pods are still Ready with matching IPs and ports
+        """
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            return False
+
+        c = client.CoreV1Api()
+        pods = c.list_namespaced_pod(
+            namespace=self._namespace,
+            label_selector=label_selector,
+        )
+
+        ready_by_rank: Dict[int, tuple[str, int]] = {}
+        for pod in pods.items:
+            try:
+                rank = self._get_pod_rank(pod, pod_rank_label)
+            except ValueError:
+                continue
+            if rank < 0 or rank >= num_replicas:
+                continue
+            if self._is_pod_worker_ready(pod):
+                ready_by_rank[rank] = (
+                    pod.status.pod_ip,
+                    self._discover_monarch_port(pod),
+                )
+
+        if len(ready_by_rank) != num_replicas:
+            return False
+
+        current_endpoints = [ready_by_rank[rank] for rank in range(num_replicas)]
+        return current_endpoints == expected_endpoints
+
     # TODO: Consider using named port instead of env var for monarch port
     def _discover_monarch_port(self, pod: client.V1Pod) -> int:
         """
@@ -500,35 +557,91 @@ class KubernetesJob(JobTrait):
 
         return _DEFAULT_MONARCH_PORT
 
+    def _discover_all_mesh_endpoints(
+        self,
+    ) -> Dict[str, List[tuple[str, int]]]:
+        """
+        Wait for all meshes' pods to be ready.
+
+        Returns:
+            Mapping of mesh name to list of (pod_ip, port) tuples sorted by rank.
+        """
+        all_endpoints: Dict[str, List[tuple[str, int]]] = {}
+        for mesh_name, mesh_config in self._meshes.items():
+            all_endpoints[mesh_name] = self._wait_for_ready_pods(
+                mesh_config["label_selector"],
+                mesh_config["num_replicas"],
+                mesh_config["pod_rank_label"],
+                timeout=self._timeout,
+            )
+        return all_endpoints
+
+    def _verify_all_mesh_endpoints(
+        self,
+        all_endpoints: Dict[str, List[tuple[str, int]]],
+    ) -> bool:
+        """
+        Verify that every mesh's discovered endpoints are still current.
+
+        Args:
+            all_endpoints: Mapping of mesh name to expected (pod_ip, port) tuples.
+
+        Returns:
+            True if all meshes still have the same Ready pods.
+        """
+        for mesh_name, expected in all_endpoints.items():
+            mesh_config = self._meshes[mesh_name]
+            if not self._verify_pods_ready(
+                mesh_config["label_selector"],
+                mesh_config["num_replicas"],
+                mesh_config["pod_rank_label"],
+                expected,
+            ):
+                return False
+        return True
+
     def _state(self) -> JobState:
         """
         Get the current state by connecting to ready pods for each mesh.
 
+        Discovers all meshes' pods, then verifies that none changed during
+        discovery. If any mesh's pods shifted, retries the entire discovery
+        up to ``max_retries`` times before attaching.
+
         Returns:
             JobState containing HostMesh objects for each configured mesh
+
+        Raises:
+            RuntimeError: If stable endpoints cannot be obtained after retries.
         """
-        host_meshes = {}
+        all_endpoints: Dict[str, List[tuple[str, int]]] | None = None
 
-        for mesh_name, mesh_config in self._meshes.items():
-            label_selector = mesh_config["label_selector"]
-            num_replicas = mesh_config["num_replicas"]
-            pod_rank_label = mesh_config["pod_rank_label"]
+        for attempt in range(self._max_retries):
+            all_endpoints = self._discover_all_mesh_endpoints()
 
-            # Wait for pods to be ready and discover their ports
-            pod_endpoints = self._wait_for_ready_pods(
-                label_selector, num_replicas, pod_rank_label, timeout=self._timeout
+            if self._verify_all_mesh_endpoints(all_endpoints):
+                break
+
+            logger.warning(
+                "Mesh endpoints changed after discovery (attempt %d/%d), retrying",
+                attempt + 1,
+                self._max_retries,
+            )
+            all_endpoints = None
+
+        if all_endpoints is None:
+            raise RuntimeError(
+                f"Failed to get stable mesh endpoints after {self._max_retries} attempts"
             )
 
-            # Create worker addresses using discovered IPs and ports
+        host_meshes = {}
+        for mesh_name, pod_endpoints in all_endpoints.items():
             workers = [f"tcp://{pod_ip}:{port}" for pod_ip, port in pod_endpoints]
-
-            # Create host mesh by attaching to workers
-            host_mesh = attach_to_workers(
+            host_meshes[mesh_name] = attach_to_workers(
                 name=mesh_name,
                 ca="trust_all_connections",
                 workers=workers,  # type: ignore[arg-type]
             )
-            host_meshes[mesh_name] = host_mesh
 
         return JobState(host_meshes)
 
