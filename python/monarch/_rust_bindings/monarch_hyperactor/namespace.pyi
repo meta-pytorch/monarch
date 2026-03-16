@@ -101,7 +101,7 @@ def configure_in_memory_namespace(name: str) -> None:
     """
     ...
 
-def is_global_namespace_configured() -> bool:
+def is_namespace_configured() -> bool:
     """
     Check if the global namespace has been configured.
 
@@ -116,5 +116,21 @@ def get_global_namespace() -> Namespace | None:
 
     Returns:
         The global Namespace instance if configured, None otherwise.
+    """
+    ...
+
+def configure_smc_namespace(name: str, tier: str | None = None) -> None:
+    """
+    Configure the global namespace with an SMC backend.
+
+    Args:
+        name: The namespace name (e.g., "monarch")
+        tier: Optional SMC tier name. If not provided, uses "monarch" as default.
+
+    Raises:
+        RuntimeError: If the global namespace has already been configured
+
+    Note:
+        This function is only available in fbcode builds.
     """
     ...
