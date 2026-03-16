@@ -22,6 +22,74 @@
 //! tree-shaped model (`NodeProperties` + children references)
 //! suitable for topology-agnostic clients such as the admin TUI.
 //!
+//! # Schema strategy
+//!
+//! The external API contract is schema-first: the JSON Schema
+//! (Draft 2020-12) served at `GET /v1/schema` is the
+//! authoritative definition of the response shape, derived
+//! directly from the Rust types (`NodePayload`,
+//! `NodeProperties`, `FailureInfo`) via `schemars::JsonSchema`.
+//! The error envelope schema is at `GET /v1/schema/error`.
+//!
+//! This follows the "Admin Gateway Pattern" RFC
+//! ([doc](https://fburl.com/1dvah88uutaiyesebojouen2)):
+//! schema is the product; transports and tooling are projections.
+//!
+//! ## Schema generation pipeline
+//!
+//! 1. `#[derive(JsonSchema)]` on `NodePayload`, `NodeProperties`,
+//!    `FailureInfo`, `ApiError`, `ApiErrorEnvelope`.
+//! 2. `schemars::schema_for!(T)` produces a `Schema` value at
+//!    runtime (Draft 2020-12).
+//! 3. The `serve_schema` / `serve_error_schema` handlers inject a
+//!    `$id` field (SC-4) and serve the result as JSON.
+//! 4. Snapshot tests in `introspect::tests` compare the raw
+//!    schemars output (without `$id`) against checked-in golden
+//!    files to detect drift (SC-2).
+//! 5. Validation tests confirm that real `NodePayload` samples
+//!    pass schema validation (SC-3).
+//!
+//! ## Regenerating snapshots
+//!
+//! After intentional type changes to `NodePayload`,
+//! `NodeProperties`, `FailureInfo`, `ApiError`, or
+//! `ApiErrorEnvelope`, regenerate the golden files:
+//!
+//! ```sh
+//! buck run fbcode//monarch/hyperactor_mesh:generate_api_artifacts \
+//!   @fbcode//mode/dev-nosan -- \
+//!   fbcode/monarch/hyperactor_mesh/src/testdata
+//! ```
+//!
+//! Or via cargo:
+//!
+//! ```sh
+//! cargo run -p hyperactor_mesh --bin generate_api_artifacts -- \
+//!   hyperactor_mesh/src/testdata
+//! ```
+//!
+//! Then re-run tests to confirm the new snapshot passes.
+//!
+//! ## Schema invariants (SC-*)
+//!
+//! - **SC-1 (schema-derived):** Schema is derived from Rust
+//!   types via `schemars::JsonSchema`, not hand-written.
+//! - **SC-2 (schema-snapshot-stability):** Schema changes must
+//!   be explicit — a snapshot test catches unintentional drift.
+//! - **SC-3 (schema-payload-conformance):** Real `NodePayload`
+//!   instances validate against the generated schema.
+//! - **SC-4 (schema-version-identity):** Served schemas carry a
+//!   `$id` tied to the API version (e.g.
+//!   `https://monarch.meta.com/schemas/v1/node_payload`).
+//! - **SC-5 (route-precedence):** Literal schema routes are
+//!   matched by specificity before the `{*reference}` wildcard
+//!   (axum 0.8 specificity-based routing).
+//!
+//! Note on `ApiError.details`: the derived schema is maximally
+//! permissive for `details` (any valid JSON). This is intentional
+//! for v1 — `details` is a domain-specific escape hatch.
+//! Consumers must not assume a fixed shape.
+//!
 //! # Introspection visibility policy
 //!
 //! Admin tooling only displays **introspectable** nodes: entities
@@ -318,19 +386,21 @@ fn max_concurrent_resolves() -> usize {
 
 /// Structured error response following the gateway RFC envelope
 /// pattern.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApiError {
     /// Machine-readable error code (e.g. "not_found", "bad_request").
     pub code: String,
     /// Human-readable error message.
     pub message: String,
-    /// Additional context about the error.
+    /// Additional context about the error. Schema is permissive
+    /// (any valid JSON) — `details` is a domain-specific escape
+    /// hatch. Do not assume a fixed shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Value>,
 }
 
 /// Wrapper for the structured error envelope.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ApiErrorEnvelope {
     pub error: ApiError,
 }
@@ -1279,20 +1349,20 @@ impl MeshAdminAgent {
 
 /// Build the Axum router for the mesh admin HTTP server.
 ///
-/// Serves two routes, both backed by the introspection-based
-/// resolver:
-/// - `GET /v1/tree` — ASCII topology dump (walks the reference graph
-///   and formats the result as a human-readable tree; intended for
-///   quick `curl` inspection).
-/// - `GET /v1/{*reference}` — JSON `NodePayload` for a single
-///   reference (the primary API used by the TUI and programmatic
-///   clients).
-/// - `GET /SKILL.md` — self-describing API documentation (markdown).
+/// Routes:
+/// - `GET /v1/schema` — JSON Schema (Draft 2020-12) for `NodePayload`.
+/// - `GET /v1/schema/error` — JSON Schema for `ApiErrorEnvelope`.
+/// - `GET /v1/openapi.json` — OpenAPI 3.1 spec (embeds JSON Schemas).
+/// - `GET /v1/tree` — ASCII topology dump.
+/// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
+/// - `GET /SKILL.md` — agent-facing API documentation (markdown).
 fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
     Router::new()
         .route("/SKILL.md", get(serve_skill_md))
-        // `/v1/tree` is more specific than the wildcard and takes
-        // precedence in Axum's router.
+        // Literal paths matched by specificity before wildcard (SC-5).
+        .route("/v1/schema", get(serve_schema))
+        .route("/v1/schema/error", get(serve_error_schema))
+        .route("/v1/openapi.json", get(serve_openapi))
         .route("/v1/tree", get(tree_dump))
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
@@ -1301,9 +1371,12 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
 /// Raw markdown template for the SKILL.md API document.
 const SKILL_MD_TEMPLATE: &str = include_str!("mesh_admin_skill.md");
 
-/// Serves the self-describing API document with the base URL
-/// interpolated so examples are copy-pasteable.
-async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::IntoResponse {
+/// Extract base URL from request headers.
+///
+/// Defaults to `https` when `x-forwarded-proto` is absent — the
+/// admin server uses TLS in production, so `http` is the wrong
+/// default for direct connections.
+fn extract_base_url(headers: &axum::http::HeaderMap) -> String {
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -1311,8 +1384,14 @@ async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::
     let scheme = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("http");
-    let base = format!("{}://{}", scheme, host);
+        .unwrap_or("https");
+    format!("{scheme}://{host}")
+}
+
+/// Serves the self-describing API document with the base URL
+/// interpolated so examples are copy-pasteable.
+async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::IntoResponse {
+    let base = extract_base_url(&headers);
     let body = SKILL_MD_TEMPLATE.replace("{base}", &base);
     (
         [(
@@ -1321,6 +1400,208 @@ async fn serve_skill_md(headers: axum::http::HeaderMap) -> impl axum::response::
         )],
         body,
     )
+}
+
+/// Build a JSON Schema value with a `$id` field.
+fn schema_with_id<T: schemars::JsonSchema>(id: &str) -> Result<serde_json::Value, ApiError> {
+    let schema = schemars::schema_for!(T);
+    let mut value = serde_json::to_value(schema).map_err(|e| ApiError {
+        code: "internal_error".to_string(),
+        message: format!("failed to serialize schema: {e}"),
+        details: None,
+    })?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("$id".into(), serde_json::Value::String(id.into()));
+    }
+    Ok(value)
+}
+
+/// JSON Schema for the `NodePayload` response type.
+async fn serve_schema() -> Result<axum::response::Json<serde_json::Value>, ApiError> {
+    Ok(axum::response::Json(schema_with_id::<
+        crate::introspect::NodePayload,
+    >(
+        "https://monarch.meta.com/schemas/v1/node_payload",
+    )?))
+}
+
+/// JSON Schema for the `ApiErrorEnvelope` error response.
+async fn serve_error_schema() -> Result<axum::response::Json<serde_json::Value>, ApiError> {
+    Ok(axum::response::Json(schema_with_id::<ApiErrorEnvelope>(
+        "https://monarch.meta.com/schemas/v1/error",
+    )?))
+}
+
+/// Hoist `$defs` from a schemars-generated schema into a shared
+/// map and rewrite internal `$ref` pointers from `#/$defs/X` to
+/// `#/components/schemas/X` so OpenAPI tools can resolve them.
+fn hoist_defs(
+    schema: &mut serde_json::Value,
+    shared: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(obj) = schema.as_object_mut() {
+        if let Some(defs) = obj.remove("$defs") {
+            if let Some(defs_map) = defs.as_object() {
+                for (k, v) in defs_map {
+                    shared.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // Also remove $schema from embedded schemas — it's
+        // only valid at the root of a JSON Schema document,
+        // not inside an OpenAPI components/schemas entry.
+        obj.remove("$schema");
+    }
+    rewrite_refs(schema);
+}
+
+/// Recursively rewrite `$ref: "#/$defs/X"` →
+/// `$ref: "#/components/schemas/X"`.
+fn rewrite_refs(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(r)) = map.get_mut("$ref") {
+                if r.starts_with("#/$defs/") {
+                    *r = r.replace("#/$defs/", "#/components/schemas/");
+                }
+            }
+            for v in map.values_mut() {
+                rewrite_refs(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                rewrite_refs(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build the OpenAPI 3.1 spec, embedding schemars-derived JSON
+/// Schemas into `components/schemas`.
+pub fn build_openapi_spec() -> serde_json::Value {
+    let mut node_schema =
+        serde_json::to_value(schemars::schema_for!(crate::introspect::NodePayload))
+            .expect("NodePayload schema must be serializable");
+    let mut error_schema = serde_json::to_value(schemars::schema_for!(ApiErrorEnvelope))
+        .expect("ApiErrorEnvelope schema must be serializable");
+
+    // Hoist $defs into a shared components/schemas map so
+    // OpenAPI tools can resolve references.
+    let mut shared_schemas = serde_json::Map::new();
+    hoist_defs(&mut node_schema, &mut shared_schemas);
+    hoist_defs(&mut error_schema, &mut shared_schemas);
+    shared_schemas.insert("NodePayload".into(), node_schema);
+    shared_schemas.insert("ApiErrorEnvelope".into(), error_schema);
+
+    let error_response = |desc: &str| -> serde_json::Value {
+        serde_json::json!({
+            "description": desc,
+            "content": {
+                "application/json": {
+                    "schema": { "$ref": "#/components/schemas/ApiErrorEnvelope" }
+                }
+            }
+        })
+    };
+
+    let success_payload = serde_json::json!({
+        "description": "Resolved NodePayload",
+        "content": {
+            "application/json": {
+                "schema": { "$ref": "#/components/schemas/NodePayload" }
+            }
+        }
+    });
+
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Monarch Mesh Admin API",
+            "version": "1.0.0",
+            "description": "Reference-walking introspection API for a Monarch actor mesh. See the Admin Gateway Pattern RFC."
+        },
+        "paths": {
+            "/v1/root": {
+                "get": {
+                    "summary": "Fetch root node",
+                    "operationId": "getRoot",
+                    "responses": {
+                        "200": success_payload,
+                        "500": error_response("Internal error"),
+                        "503": error_response("Service unavailable (at capacity, retry with backoff)"),
+                        "504": error_response("Gateway timeout (downstream host unresponsive)")
+                    }
+                }
+            },
+            "/v1/{reference}": {
+                "get": {
+                    "summary": "Resolve a reference to a NodePayload",
+                    "operationId": "resolveReference",
+                    "parameters": [{
+                        "name": "reference",
+                        "in": "path",
+                        "required": true,
+                        "description": "URL-encoded opaque reference string",
+                        "schema": { "type": "string" }
+                    }],
+                    "responses": {
+                        "200": success_payload,
+                        "400": error_response("Bad request (malformed reference)"),
+                        "404": error_response("Reference not found"),
+                        "500": error_response("Internal error"),
+                        "503": error_response("Service unavailable (at capacity, retry with backoff)"),
+                        "504": error_response("Gateway timeout (downstream host unresponsive)")
+                    }
+                }
+            },
+            "/v1/schema": {
+                "get": {
+                    "summary": "JSON Schema for NodePayload (Draft 2020-12)",
+                    "operationId": "getSchema",
+                    "responses": {
+                        "200": {
+                            "description": "JSON Schema document",
+                            "content": { "application/json": {} }
+                        }
+                    }
+                }
+            },
+            "/v1/schema/error": {
+                "get": {
+                    "summary": "JSON Schema for ApiErrorEnvelope (Draft 2020-12)",
+                    "operationId": "getErrorSchema",
+                    "responses": {
+                        "200": {
+                            "description": "JSON Schema document",
+                            "content": { "application/json": {} }
+                        }
+                    }
+                }
+            },
+            "/v1/tree": {
+                "get": {
+                    "summary": "ASCII topology dump (debug)",
+                    "operationId": "getTree",
+                    "responses": {
+                        "200": {
+                            "description": "Human-readable topology tree",
+                            "content": { "text/plain": {} }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "schemas": serde_json::Value::Object(shared_schemas)
+        }
+    })
+}
+
+/// OpenAPI 3.1 spec for the mesh admin API.
+async fn serve_openapi() -> Result<axum::response::Json<serde_json::Value>, ApiError> {
+    Ok(axum::response::Json(build_openapi_spec()))
 }
 
 /// Resolve an opaque reference string to a `NodePayload` via the
