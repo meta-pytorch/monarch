@@ -84,6 +84,7 @@ cache-keys = [
     { file = "Cargo.lock" },
     { file = "*/src/**/*.{cc,cpp,c,h}" },
     { file = "*/src/**/*.{cu,cuh}" },
+    { file = "python/monarch/**/*.{cpp,c,h}" },
 ]
 
 [project.optional-dependencies]
