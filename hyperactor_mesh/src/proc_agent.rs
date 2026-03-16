@@ -35,7 +35,6 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -80,14 +79,6 @@ pub enum GspawnResult {
     Error(String),
 }
 wirevalue::register_type!(GspawnResult);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named)]
-pub enum StopActorResult {
-    Success,
-    Timeout,
-    NotFound,
-}
-wirevalue::register_type!(StopActorResult);
 
 /// Deferred republish of introspect properties.
 ///
@@ -173,19 +164,6 @@ pub(crate) enum MeshAgentMessage {
         params_data: Data,
         /// reply port; the proc should send its rank to indicated a spawned actor
         status_port: hyperactor_reference::PortRef<GspawnResult>,
-    },
-
-    /// Stop actors of a specific mesh name
-    StopActor {
-        /// The actor to stop
-        actor_id: hyperactor_reference::ActorId,
-        /// The timeout for waiting for the actor to stop
-        timeout_ms: u64,
-        /// The reason for stopping the actor
-        reason: String,
-        /// The result when trying to stop the actor
-        #[reply]
-        stopped: hyperactor_reference::OncePortRef<StopActorResult>,
     },
 }
 
@@ -373,6 +351,18 @@ impl ProcAgent {
         self.proc
             .destroy_and_wait_except_current::<Self>(timeout, Some(cx), true, reason)
             .await
+    }
+
+    /// Send a stop signal to an actor on this proc. This is fire-and-forget;
+    /// it does not wait for the actor to reach terminal status.
+    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorId, reason: &str) {
+        tracing::info!(
+            name = "StopActor",
+            %actor_id,
+            actor_name = actor_id.name(),
+            %reason,
+        );
+        self.proc.stop_actor(actor_id, reason.to_string());
     }
 
     /// Publish the current proc properties and children list for
@@ -640,37 +630,6 @@ impl MeshAgentMessageHandler for ProcAgent {
         Ok(())
     }
 
-    async fn stop_actor(
-        &mut self,
-        cx: &Context<Self>,
-        actor_id: hyperactor_reference::ActorId,
-        timeout_ms: u64,
-        reason: String,
-    ) -> Result<StopActorResult, anyhow::Error> {
-        tracing::info!(
-            name = "StopActor",
-            %actor_id,
-            actor_name = actor_id.name(),
-            %reason,
-        );
-
-        let result = if let Some(mut status) = self.proc.stop_actor(&actor_id, reason) {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_millis(timeout_ms),
-                status.wait_for(|state: &ActorStatus| state.is_terminal()),
-            )
-            .await
-            {
-                Ok(_) => Ok(StopActorResult::Success),
-                Err(_) => Ok(StopActorResult::Timeout),
-            }
-        } else {
-            Ok(StopActorResult::NotFound)
-        };
-        self.publish_introspect_properties(cx);
-        result
-    }
-
     async fn status(
         &mut self,
         cx: &Context<Self>,
@@ -854,7 +813,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 
 #[async_trait]
 impl Handler<resource::Stop> for ProcAgent {
-    async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
+    async fn handle(&mut self, _cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         // We don't remove the actor from the state map, instead we just store
         // its state as Stopped.
         let actor = self.actor_states.get_mut(&message.name);
@@ -879,15 +838,8 @@ impl Handler<resource::Stop> for ProcAgent {
             // TODO: represent unknown rank
             None => None,
         };
-        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         if let Some(actor_id) = actor_id {
-            // The orphaned actor SelfCheck will consult the stopped field before
-            // trying to stop any actor again.
-            // While this function returns a Result, it never returns an Err
-            // value so we can simply expect without any failure handling.
-            self.stop_actor(cx, actor_id, timeout.as_millis() as u64, message.reason)
-                .await
-                .expect("stop_actor cannot fail");
+            self.stop_actor_by_id(&actor_id, &message.reason);
         }
 
         Ok(())
@@ -1183,19 +1135,11 @@ impl Handler<SelfCheck> for ProcAgent {
             );
         }
 
-        let timeout = hyperactor_config::global::get(hyperactor::config::STOP_ACTOR_TIMEOUT);
         for (name, actor_id) in expired {
             if let Some(state) = self.actor_states.get_mut(&name) {
                 state.stopped = true;
             }
-            self.stop_actor(
-                cx,
-                actor_id,
-                timeout.as_millis() as u64,
-                "orphaned".to_string(),
-            )
-            .await
-            .expect("stop_actor cannot fail");
+            self.stop_actor_by_id(&actor_id, "orphaned");
         }
 
         // Reschedule.
