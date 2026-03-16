@@ -40,6 +40,7 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch._src.job.process import ProcessJob
+from scoped_state import scoped_state
 
 
 _proc_rank = -1
@@ -90,7 +91,7 @@ class TestActor(Actor):
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_proc_mesh_initialization() -> None:
-    with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
         host = state.hosts
         proc_mesh = host.spawn_procs(name="test_proc")
         # Test that initialization completes successfully
@@ -100,7 +101,7 @@ async def test_proc_mesh_initialization() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_proc_mesh_spawn_single_actor() -> None:
-    with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
         host = state.hosts
         proc_mesh = host.spawn_procs(name="test_proc")
         actor = proc_mesh.spawn("test_actor", TestActor, 42)
@@ -112,7 +113,7 @@ def test_proc_mesh_spawn_single_actor() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_proc_mesh_multi_actor() -> None:
-    with ProcessJob({"hosts": 4}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 4}), cached_path=None) as state:
         host = state.hosts
         proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
         actor = proc_mesh.spawn("test_actor", TestActor, 42)
@@ -128,7 +129,7 @@ def test_proc_mesh_multi_actor() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_proc_mesh_sliced() -> None:
-    with ProcessJob({"hosts": 4}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 4}), cached_path=None) as state:
         host = state.hosts
         proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
         # Initialize _proc_rank on each actor process
@@ -155,7 +156,7 @@ def test_proc_mesh_sliced() -> None:
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_nested_meshes() -> None:
-    with ProcessJob({"hosts": 2}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
         host = state.hosts
         proc = host.spawn_procs(name="proc")
         actor = proc.spawn("actor", TestActor)
@@ -180,7 +181,7 @@ def test_nested_meshes() -> None:
 @isolate_in_subprocess
 async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
-    with ProcessJob({"hosts": 2}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
         host = state.hosts
         proc = host.spawn_procs(per_host={"gpus": 2})
 
@@ -380,7 +381,7 @@ def test_proc_mesh_spawn_callback() -> None:
 
     register_proc_mesh_spawn_callback(callback)
     try:
-        with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
             host = state.hosts
             proc_mesh = host.spawn_procs(name="test_proc")
 
@@ -405,7 +406,7 @@ def test_proc_mesh_spawn_callback_multiple() -> None:
     register_proc_mesh_spawn_callback(callback1)
     register_proc_mesh_spawn_callback(callback2)
     try:
-        with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
             host = state.hosts
             proc_mesh = host.spawn_procs(name="test_proc")
 
@@ -429,7 +430,7 @@ def test_proc_mesh_spawn_callback_unregister() -> None:
     register_proc_mesh_spawn_callback(callback)
     unregister_proc_mesh_spawn_callback(callback)
 
-    with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
         host = state.hosts
         host.spawn_procs(name="test_proc")
 

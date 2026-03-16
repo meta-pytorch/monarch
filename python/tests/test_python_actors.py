@@ -60,6 +60,7 @@ from monarch.actor import (
 )
 from monarch.config import configure, configured, parametrize_config
 from monarch.tools.config import defaults
+from scoped_state import scoped_state
 from typing_extensions import assert_type
 
 
@@ -1114,8 +1115,9 @@ async def test_sync_workspace() -> None:
     with (
         tempfile.TemporaryDirectory() as workspace_src,
         tempfile.TemporaryDirectory() as workspace_dst,
-        ProcessJob({"hosts": 1}, env={"WORKSPACE_DIR": workspace_dst}).scoped_state(
-            cached_path=None
+        scoped_state(
+            ProcessJob({"hosts": 1}, env={"WORKSPACE_DIR": workspace_dst}),
+            cached_path=None,
         ) as state,
     ):
         host = state.hosts
@@ -1505,7 +1507,7 @@ class HostMeshActor(Actor):
 @pytest.mark.timeout(60)
 @parametrize_config(actor_queue_dispatch={True, False})
 def test_this_host() -> None:
-    with ProcessJob({"hosts": 6}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 6}), cached_path=None) as state:
         host = state.hosts
         hosts_by_rank = [host.slice(hosts=i) for i in range(6)]
         for r, h in enumerate(hosts_by_rank):

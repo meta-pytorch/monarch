@@ -21,11 +21,12 @@ from monarch._src.actor.host_mesh import HostMesh, this_host
 from monarch._src.actor.pickle import flatten, unflatten
 from monarch._src.actor.proc_mesh import get_or_spawn_controller
 from monarch._src.job.process import ProcessJob
+from scoped_state import scoped_state
 
 
 @pytest.mark.timeout(60)
 def test_process_job_host_mesh() -> None:
-    with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
         host = state.hosts
         assert host.extent.labels == ["hosts"]
         assert host.extent.sizes == [1]
@@ -37,7 +38,7 @@ def test_process_job_host_mesh() -> None:
 
 @pytest.mark.timeout(60)
 def test_multi_host_mesh() -> None:
-    with ProcessJob({"hosts": 8}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 8}), cached_path=None) as state:
         host = state.hosts
         assert host.extent.labels == ["hosts"]
         assert host.extent.sizes == [8]
@@ -65,7 +66,7 @@ def test_multi_host_mesh() -> None:
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_spawn_proc_mesh() -> None:
-    with ProcessJob({"hosts": 8}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 8}), cached_path=None) as state:
         host = state.hosts
         proc_mesh = host.spawn_procs(name="proc")
         assert proc_mesh._host_mesh is host
@@ -94,7 +95,7 @@ def test_spawn_proc_mesh() -> None:
 
 @pytest.mark.timeout(60)
 def test_pickle() -> None:
-    with ProcessJob({"hosts": 8}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 8}), cached_path=None) as state:
         host = state.hosts
         host.initialized.get()
         _unused, pickled = flatten(host, lambda _: False)
@@ -119,7 +120,7 @@ class RankActor(Actor):
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_shutdown_host_mesh() -> None:
-    with ProcessJob({"hosts": 2}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
         hm = state.hosts
         pm = hm.spawn_procs(per_host={"gpus": 2})
         am = pm.spawn("actor", RankActor)
@@ -129,7 +130,7 @@ def test_shutdown_host_mesh() -> None:
 
 @pytest.mark.timeout(60)
 def test_shutdown_sliced_host_mesh_throws_exception() -> None:
-    with ProcessJob({"hosts": 2}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
         hm = state.hosts
         hm_sliced = hm.slice(hosts=1)
         with pytest.raises(RuntimeError):
@@ -139,7 +140,7 @@ def test_shutdown_sliced_host_mesh_throws_exception() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
-    with ProcessJob({"hosts": 2}).scoped_state(cached_path=None) as state:
+    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
         hm = state.hosts
         hm.initialized.get()
         hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
