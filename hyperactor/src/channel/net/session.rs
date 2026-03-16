@@ -18,33 +18,28 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::io::IoSlice;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 
-use async_trait::async_trait;
-use backoff::ExponentialBackoffBuilder;
-use backoff::backoff::Backoff;
 use bytes::Buf;
 use bytes::Bytes;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt;
+use tokio::io::ReadHalf;
+use tokio::io::WriteHalf;
 use tokio::sync::OwnedMutexGuard;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tokio::sync::watch;
-use tokio::time::Duration;
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
-use tracing::Span;
 
-use super::ClientError;
 use super::Frame;
+use super::Link;
 use super::NetRxResponse;
+use super::Stream;
 use super::deserialize_response;
 use super::framed::FrameReader;
 use super::framed::FrameWrite;
@@ -53,7 +48,6 @@ use crate::RemoteMessage;
 use crate::channel::ChannelAddr;
 use crate::channel::ChannelError;
 use crate::channel::SendError;
-use crate::channel::TxStatus;
 use crate::config;
 use crate::metrics;
 
@@ -287,7 +281,8 @@ impl<R: AsyncRead + Unpin + Send, W: AsyncWrite + Unpin + Send> TaggedStream<R, 
 /// [`TaggedStream`] for a specific tag byte.
 ///
 /// For simplex, use `mux.stream(0)`.
-/// For duplex, use `mux.stream(Side::A)` and `mux.stream(Side::B)`.
+/// For duplex, use `mux.stream(INITIATOR_TO_ACCEPTOR)` and
+/// `mux.stream(ACCEPTOR_TO_INITIATOR)`.
 pub(super) struct Mux<R, W> {
     demux: Arc<DemuxFrameReader<R>>,
     writer: Arc<tokio::sync::Mutex<W>>,
@@ -315,14 +310,6 @@ impl<R: AsyncRead + Unpin + Send, W> Mux<R, W> {
             tag,
             max_frame_len: self.max_frame_len,
         }
-    }
-}
-
-impl<R, W: AsyncWrite + Unpin> Mux<R, W> {
-    /// Shutdown the underlying writer. Best-effort.
-    pub async fn shutdown(self) {
-        let mut w = self.writer.lock().await;
-        let _ = w.shutdown().await;
     }
 }
 
@@ -381,10 +368,6 @@ impl<M: RemoteMessage> QueuedMessage<M> {
 pub(super) struct MessageDeque<M: RemoteMessage>(VecDeque<QueuedMessage<M>>);
 
 impl<M: RemoteMessage> MessageDeque<M> {
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
     fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -395,10 +378,6 @@ impl<M: RemoteMessage> MessageDeque<M> {
 
     fn back(&self) -> Option<&QueuedMessage<M>> {
         self.0.back()
-    }
-
-    fn num_bytes_queued(&self) -> usize {
-        self.0.iter().map(|m| m.message.len()).sum()
     }
 }
 
@@ -478,14 +457,10 @@ impl<M: RemoteMessage> Outbox<M> {
         }
     }
 
-    pub(super) fn is_expired(&self) -> bool {
-        match self.deque.front() {
-            None => false,
-            Some(msg) => {
-                msg.received_at.elapsed()
-                    > hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
-            }
-        }
+    pub(super) fn is_expired(&self, timeout: tokio::time::Duration) -> bool {
+        self.deque
+            .front()
+            .is_some_and(|msg| msg.received_at.elapsed() > timeout)
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -657,13 +632,6 @@ impl<M: RemoteMessage> Unacked<M> {
         }
     }
 
-    pub(super) fn is_expired(&self) -> bool {
-        matches!(
-            self.deque.front(),
-            Some(msg) if msg.received_at.elapsed() > hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
-        )
-    }
-
     /// Return when the oldest message has not been acked within the
     /// timeout limit.
     pub(super) async fn wait_for_timeout(&self) {
@@ -709,6 +677,30 @@ impl<M: RemoteMessage> Deliveries<M> {
         let old_deque = std::mem::replace(&mut self.unacked.deque, MessageDeque(VecDeque::new()));
         self.outbox.requeue_unacked(old_deque);
     }
+
+    /// Return the instant at which the earliest queued message (outbox or
+    /// unacked) would expire, or `None` if no messages are queued.
+    pub(super) fn expiry_time(&self) -> Option<Instant> {
+        let timeout = hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT);
+        self.outbox
+            .deque
+            .front()
+            .map(|m| m.received_at)
+            .into_iter()
+            .chain(self.unacked.deque.front().map(|m| m.received_at))
+            .min()
+            .map(|t| t + timeout)
+    }
+
+    /// Resolves when the oldest queued message (outbox or unacked)
+    /// exceeds the delivery timeout. Pends forever if no messages.
+    #[allow(dead_code)] // used in later commit
+    pub(super) async fn expired(&self) {
+        match self.expiry_time() {
+            Some(t) => tokio::time::sleep_until(t).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
 }
 
 impl<M: RemoteMessage> fmt::Display for Deliveries<M> {
@@ -717,19 +709,31 @@ impl<M: RemoteMessage> fmt::Display for Deliveries<M> {
     }
 }
 
-/// Outcome of the receive protocol loop.
-pub(super) enum RecvResult {
-    Eof,
+/// Error from the receive protocol loop. An `Ok(())` from
+/// [`recv_connected`] indicates normal connection close (EOF).
+pub(super) enum RecvLoopError {
+    /// I/O error on the underlying connection.
+    Io(anyhow::Error),
+    /// Cancellation was requested.
     Cancelled,
+    /// Out-of-sequence message received.
     SequenceError(String),
 }
 
-/// Receive protocol loop: read message frames, validate sequence
-/// numbers, deliver to the application, and periodically send acks.
-///
-/// This is the shared implementation used by both simplex (`server.rs`)
-/// and duplex (`duplex.rs`).
-pub(super) async fn recv_loop<
+impl fmt::Display for RecvLoopError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Cancelled => write!(f, "cancelled"),
+            Self::SequenceError(e) => write!(f, "sequence error: {e}"),
+        }
+    }
+}
+
+/// Inner receive protocol loop: read message frames, validate
+/// sequence numbers, deliver to the application, and periodically
+/// send acks. Runs on a single physical connection.
+pub(super) async fn recv_connected<
     M: RemoteMessage,
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
@@ -737,8 +741,7 @@ pub(super) async fn recv_loop<
     stream: &TaggedStream<R, W>,
     deliver_tx: &mpsc::Sender<M>,
     next: &mut Next,
-    cancel: CancellationToken,
-) -> Result<RecvResult, anyhow::Error> {
+) -> Result<(), RecvLoopError> {
     let ack_time_interval = hyperactor_config::global::get(config::MESSAGE_ACK_TIME_INTERVAL);
     let ack_msg_interval: u64 =
         hyperactor_config::global::get(config::MESSAGE_ACK_EVERY_N_MESSAGES);
@@ -752,7 +755,8 @@ pub(super) async fn recv_loop<
 
         // Begin ack write if idle and behind.
         if pending_ack.is_none() && ack_behind {
-            let ack = serialize_response(NetRxResponse::Ack(next.seq - 1))?;
+            let ack = serialize_response(NetRxResponse::Ack(next.seq - 1))
+                .map_err(|e| RecvLoopError::Io(e.into()))?;
             pending_ack = Some((stream.write(ack), next.seq));
         }
 
@@ -768,7 +772,7 @@ pub(super) async fn recv_loop<
                         last_ack_time = tokio::time::Instant::now();
                         next.ack = acked_seq;
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(RecvLoopError::Io(e.into())),
                 }
             }
 
@@ -776,18 +780,15 @@ pub(super) async fn recv_loop<
             _ = tokio::time::sleep_until(last_ack_time + ack_time_interval),
                 if next.ack < next.seq => {}
 
-            _ = cancel.cancelled() => {
-                return Ok(RecvResult::Cancelled);
-            }
-
             bytes_result = stream.next() => {
                 let bytes = match bytes_result {
                     Ok(Some(bytes)) => bytes,
-                    Ok(None) => return Ok(RecvResult::Eof),
-                    Err(e) => return Err(e.into()),
+                    Ok(None) => return Ok(()),
+                    Err(e) => return Err(RecvLoopError::Io(e.into())),
                 };
 
-                let message = serde_multipart::Message::from_framed(bytes)?;
+                let message = serde_multipart::Message::from_framed(bytes)
+                    .map_err(|e| RecvLoopError::Io(e.into()))?;
                 match serde_multipart::deserialize_bincode::<Frame<M>>(message) {
                     Ok(Frame::Message(seq, _)) if seq < next.seq => {
                         // Retransmit — ignore.
@@ -800,19 +801,19 @@ pub(super) async fn recv_loop<
                                 next.seq, seq
                             );
                             tracing::error!(seq, next_seq = next.seq, "{}", error_msg);
-                            return Ok(RecvResult::SequenceError(error_msg));
+                            return Err(RecvLoopError::SequenceError(error_msg));
                         }
                         deliver_tx
                             .send(msg)
                             .await
-                            .map_err(|_| anyhow::anyhow!("deliver channel closed"))?;
+                            .map_err(|_| RecvLoopError::Io(anyhow::anyhow!("deliver channel closed")))?;
                         next.seq = seq + 1;
                     }
                     Err(e) => {
-                        return Err(anyhow::Error::from(e).context(format!(
+                        return Err(RecvLoopError::Io(anyhow::Error::from(e).context(format!(
                             "deserialize message with M = {}",
                             type_name::<M>(),
-                        )));
+                        ))));
                     }
                 }
             }
@@ -820,16 +821,34 @@ pub(super) async fn recv_loop<
     }
 }
 
-/// Outcome of the send protocol loop.
-pub(super) enum SendLoopResult {
-    Eof,
-    Cancelled,
+/// Error from the send protocol loop. An `Ok(())` from
+/// [`send_connected`] indicates normal connection close (EOF).
+pub(super) enum SendLoopError {
+    /// I/O error on the underlying connection.
+    Io(anyhow::Error),
+    /// Application closed the send channel.
     AppClosed,
+    /// Server rejected the connection.
     Rejected(String),
+    /// Server closed the channel.
     ServerClosed,
+    /// Delivery timeout on oldest unacked message.
     DeliveryTimeout,
+    /// Frame exceeds maximum allowed size.
     OversizedFrame(String),
-    Error(anyhow::Error),
+}
+
+impl fmt::Display for SendLoopError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::AppClosed => write!(f, "application closed"),
+            Self::Rejected(r) => write!(f, "rejected: {r}"),
+            Self::ServerClosed => write!(f, "server closed"),
+            Self::DeliveryTimeout => write!(f, "delivery timeout"),
+            Self::OversizedFrame(r) => write!(f, "oversized frame: {r}"),
+        }
+    }
 }
 
 /// Used to bookkeep message processing states.
@@ -847,18 +866,16 @@ impl fmt::Display for Next {
     }
 }
 
-/// Send protocol loop: accept messages from the application,
+/// Inner send protocol loop: accept messages from the application,
 /// serialize, write via [`Completion`], read ack responses, and
-/// manage the outbox/unacked buffers.
-///
-/// This is the shared implementation used by both simplex (`client.rs`)
-/// and duplex (`duplex.rs`).
-pub(super) async fn send_loop<M, R, W>(
+/// manage the outbox/unacked buffers. Runs on a single physical
+/// connection. Cancel-safe: the caller may wrap the returned future
+/// in a `select!` branch.
+pub(super) async fn send_connected<M, R, W>(
     stream: &TaggedStream<R, W>,
     deliveries: &mut Deliveries<M>,
     receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
-    cancel: CancellationToken,
-) -> SendLoopResult
+) -> Result<(), SendLoopError>
 where
     M: RemoteMessage,
     R: AsyncRead + Unpin + Send,
@@ -882,7 +899,7 @@ where
                     .pop_front()
                     .expect("not empty")
                     .try_return(Some(reason.clone()));
-                return SendLoopResult::OversizedFrame(reason);
+                return Err(SendLoopError::OversizedFrame(reason));
             }
             let message = deliveries.outbox.front_message().expect("not empty");
             pending = Some(stream.write(message.framed()));
@@ -897,7 +914,7 @@ where
                     Ok(Some(buffer)) => {
                         let response = match deserialize_response(buffer) {
                             Ok(r) => r,
-                            Err(e) => return SendLoopResult::Error(e.into()),
+                            Err(e) => return Err(SendLoopError::Io(e.into())),
                         };
                         match response {
                             NetRxResponse::Ack(ack) => {
@@ -909,21 +926,21 @@ where
                                 );
                             }
                             NetRxResponse::Reject(reason) => {
-                                return SendLoopResult::Rejected(reason);
+                                return Err(SendLoopError::Rejected(reason));
                             }
                             NetRxResponse::Closed => {
-                                return SendLoopResult::ServerClosed;
+                                return Err(SendLoopError::ServerClosed);
                             }
                         }
                     }
-                    Ok(None) => return SendLoopResult::Eof,
-                    Err(e) => return SendLoopResult::Error(e.into()),
+                    Ok(None) => return Ok(()),
+                    Err(e) => return Err(SendLoopError::Io(e.into())),
                 }
             }
 
             // Delivery timeout on oldest unacked message.
             _ = deliveries.unacked.wait_for_timeout(), if !deliveries.unacked.is_empty() => {
-                return SendLoopResult::DeliveryTimeout;
+                return Err(SendLoopError::DeliveryTimeout);
             }
 
             // Drive frame write to completion.
@@ -937,7 +954,7 @@ where
                         message.sent_at = Some(tokio::time::Instant::now());
                         deliveries.unacked.push_back(message);
                     }
-                    Err(e) => return SendLoopResult::Error(e.into()),
+                    Err(e) => return Err(SendLoopError::Io(e.into())),
                 }
             }
 
@@ -947,630 +964,177 @@ where
                 match msg {
                     Some(item) => {
                         if let Err(e) = deliveries.outbox.push_back(item) {
-                            return SendLoopResult::Error(anyhow::anyhow!(e));
+                            return Err(SendLoopError::Io(anyhow::anyhow!(e)));
                         }
                     }
-                    None => return SendLoopResult::AppClosed,
+                    None => return Err(SendLoopError::AppClosed),
                 }
-            }
-
-            _ = cancel.cancelled() => {
-                return SendLoopResult::Cancelled;
             }
         }
     }
 }
 
-/// Captures the two things that differ between simplex and duplex
-/// client sessions: how to connect and what to run when connected.
-#[async_trait]
-pub(super) trait SessionConnector<M: RemoteMessage>: Send {
-    /// Opaque connected state (holds framing).
-    type Connected: Send;
+// ── Session typestates ──────────────────────────────────────────
 
-    fn dest(&self) -> ChannelAddr;
-    fn session_id(&self) -> u64;
+/// Disconnected state: the session has no active connection.
+pub(super) struct Disconnected;
 
-    /// Whether to connect on demand (after the first outbound message
-    /// arrives). Simplex returns true; duplex returns false so it can
-    /// start receiving immediately.
-    fn on_demand(&self) -> bool {
-        true
-    }
-
-    /// Establish connection + set up framing.
-    async fn connect(&mut self) -> Result<Self::Connected, ClientError>;
-
-    /// Run the protocol. Simplex: send_loop. Duplex: select!{send_loop, recv_loop}.
-    async fn run_connected(
-        &mut self,
-        connected: &Self::Connected,
-        deliveries: &mut Deliveries<M>,
-        receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
-        cancel: CancellationToken,
-    ) -> SendLoopResult;
-
-    /// Shut down the connection (best-effort writer flush + close).
-    async fn shutdown(connected: Self::Connected);
+/// Connected state: the session holds an active mux.
+pub(super) struct Connected<S: Stream> {
+    mux: Mux<ReadHalf<S>, WriteHalf<S>>,
 }
 
-enum State<M: RemoteMessage> {
-    /// Channel is running.
-    Running(Deliveries<M>),
-    /// Message delivery not possible.
-    Closing {
-        deliveries: Deliveries<M>,
-        reason: String,
-    },
+/// Connection-managed session with typestate-enforced lifecycle.
+///
+/// A session starts [`Disconnected`]. Call [`connect`](Session::connect)
+/// to transition to [`Connected`]. Call [`release`](Session::release)
+/// to transition back. Streams borrow the connected session,
+/// preventing release while they exist.
+///
+/// The session owns the [`Link`] and calls `link.next()` inline
+/// in `connect()` — no background driver task.
+pub(super) struct Session<L: Link, State = Disconnected> {
+    link: L,
+    state: State,
 }
 
-impl<M: RemoteMessage> State<M> {
-    fn is_closing(&self) -> bool {
-        matches!(self, Self::Closing { .. })
+impl<L: Link> Session<L, Disconnected> {
+    /// Create a new disconnected session that will acquire connections
+    /// from the given link.
+    pub(super) fn new(link: L) -> Self {
+        Self {
+            link,
+            state: Disconnected,
+        }
     }
 
-    fn init(log_id: String, dest_addr: ChannelAddr, session_id: u64) -> Self {
-        Self::Running(Deliveries {
-            outbox: Outbox::new(log_id.clone(), dest_addr, session_id),
-            unacked: Unacked::new(None, log_id),
+    /// Acquire a connection from the link. Consumes `self` and
+    /// returns `Ok(Session<Connected>)` on success, or `Err(self)`
+    /// if the link fails.
+    ///
+    /// Returns a boxed future so the self-referential borrow from
+    /// `link.next()` is hidden behind the box, keeping the outer
+    /// generator's Send analysis clean.
+    pub(super) fn connect(
+        self,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Session<L, Connected<L::Stream>>, Self>> + Send,
+        >,
+    > {
+        Box::pin(async move {
+            let Session { link, state: _ } = self;
+            match link.next().await {
+                Ok(stream) => {
+                    let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+                    let (reader, writer) = tokio::io::split(stream);
+                    let mux = Mux::new(reader, writer, max);
+                    Ok(Session {
+                        link,
+                        state: Connected { mux },
+                    })
+                }
+                Err(_) => Err(Session {
+                    link,
+                    state: Disconnected,
+                }),
+            }
         })
     }
 
-    fn deliveries(&self) -> &Deliveries<M> {
-        match self {
-            Self::Running(deliveries) => deliveries,
-            Self::Closing { deliveries, .. } => deliveries,
-        }
-    }
-}
-
-impl<M: RemoteMessage> fmt::Display for State<M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            State::Running(deliveries) => {
-                write!(f, "Running(deliveries: {})", deliveries)
-            }
-            State::Closing { deliveries, reason } => {
-                write!(f, "Closing(deliveries: {}, reason: {})", deliveries, reason)
-            }
-        }
-    }
-}
-
-enum Conn<C: Send> {
-    /// Disconnected.
-    Disconnected {
-        backoff: Box<dyn Backoff + Send>,
-        first_failure_at: Instant,
-    },
-    /// Connected and ready to go.
-    Connected(C),
-}
-
-impl<C: Send> Conn<C> {
-    fn is_connected(&self) -> bool {
-        matches!(self, Self::Connected(_))
-    }
-
-    fn reconnect_with_default() -> Self {
-        Self::Disconnected {
-            backoff: Box::new(
-                ExponentialBackoffBuilder::new()
-                    .with_initial_interval(Duration::from_millis(1))
-                    .with_multiplier(2.0)
-                    .with_randomization_factor(0.1)
-                    .with_max_interval(Duration::from_millis(1000))
-                    .with_max_elapsed_time(None)
-                    .build(),
-            ),
-            first_failure_at: tokio::time::Instant::now(),
-        }
-    }
-
-    fn reconnect(backoff: impl Backoff + Send + 'static, first_failure_at: Instant) -> Self {
-        Self::Disconnected {
-            backoff: Box::new(backoff),
-            first_failure_at,
-        }
-    }
-}
-
-/// Main client loop. Drives the state machine through connect/send/reconnect
-/// cycles until the channel closes.
-pub(super) async fn client_run<M: RemoteMessage, D: SessionConnector<M>>(
-    mut connector: D,
-    mut receiver: mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
-    notify: Option<watch::Sender<TxStatus>>,
-) {
-    let session_id = connector.session_id();
-    let log_id = format!("session {}.{:016x}", connector.dest(), session_id);
-    let dest = connector.dest();
-    let mut state: State<M> = State::init(log_id.clone(), dest.clone(), session_id);
-    let mut conn: Conn<D::Connected> = Conn::reconnect_with_default();
-
-    let (state, conn) = loop {
-        let span = state_span(&state, &conn, session_id, &connector);
-
-        (state, conn) = step(state, conn, &log_id, &mut connector, &mut receiver)
-            .instrument(span)
-            .await;
-
-        if state.is_closing() {
-            break (state, conn);
-        }
-
-        if let Conn::Disconnected {
-            ref mut backoff, ..
-        } = conn
-        {
-            tokio::time::sleep(backoff.next_backoff().unwrap()).await;
-        }
-    };
-
-    let span = state_span(&state, &conn, session_id, &connector);
-
-    tracing::info!(
-        parent: &span,
-        dest = %dest,
-        session_id = session_id,
-        "NetTx exited its loop with state: {}", state
-    );
-
-    match state {
-        State::Closing {
-            deliveries:
-                Deliveries {
-                    mut outbox,
-                    mut unacked,
-                },
-            reason,
-        } => {
-            receiver.close();
-            unacked
-                .deque
-                .drain(..)
-                .chain(outbox.deque.drain(..))
-                .for_each(|queued| queued.try_return(Some(reason.clone())));
-            while let Ok((msg, return_channel, _)) = receiver.try_recv() {
-                let _ = return_channel.send(SendError {
-                    error: ChannelError::Closed,
-                    message: msg,
-                    reason: Some(reason.clone()),
-                });
-            }
-        }
-        _ => (),
-    }
-
-    if let Some(notify) = notify {
-        let _ = notify.send(TxStatus::Closed);
-    }
-
-    match conn {
-        Conn::Connected(c) => D::shutdown(c).await,
-        Conn::Disconnected { .. } => (),
-    };
-
-    tracing::info!(
-        parent: &span,
-        dest = %dest,
-        session_id = session_id,
-        "client_run exits"
-    );
-}
-
-fn state_span<M, C, D>(state: &State<M>, conn: &Conn<C>, session_id: u64, connector: &D) -> Span
-where
-    M: RemoteMessage,
-    C: Send,
-    D: SessionConnector<M>,
-{
-    if !tracing::enabled!(tracing::Level::DEBUG) {
-        return Span::none();
-    }
-
-    let deliveries = state.deliveries();
-    if !tracing::enabled!(tracing::Level::TRACE) {
-        return hyperactor_telemetry::context_span!(
-            "net i/o loop",
-            dest = %connector.dest(),
-            session_id = session_id,
-            next_seq = deliveries.outbox.next_seq,
-        );
-    }
-
-    use valuable::NamedField;
-    use valuable::Structable;
-    use valuable::Tuplable;
-    use valuable::Valuable;
-    use valuable::Value;
-
-    struct TimestampValue(Instant);
-
-    impl From<Instant> for TimestampValue {
-        fn from(timestamp: Instant) -> TimestampValue {
-            TimestampValue(timestamp)
-        }
-    }
-
-    impl Valuable for TimestampValue {
-        fn as_value(&self) -> Value<'_> {
-            Value::Tuplable(self)
-        }
-
-        fn visit(&self, visit: &mut dyn valuable::Visit) {
-            let elapsed = humantime::format_duration(self.0.elapsed()).to_string();
-            visit.visit_unnamed_fields(&[Value::String(&elapsed)]);
-        }
-    }
-
-    impl Tuplable for TimestampValue {
-        fn definition(&self) -> valuable::TupleDef {
-            valuable::TupleDef::new_static(1)
-        }
-    }
-
-    #[derive(Valuable)]
-    struct QueueEntryValue {
-        seq: u64,
-        since_received: TimestampValue,
-        since_sent: Option<TimestampValue>,
-    }
-
-    impl<M: RemoteMessage> From<&QueuedMessage<M>> for QueueEntryValue {
-        fn from(m: &QueuedMessage<M>) -> QueueEntryValue {
-            QueueEntryValue {
-                seq: m.seq,
-                since_received: m.received_at.into(),
-                since_sent: m.sent_at.map(TimestampValue::from),
-            }
-        }
-    }
-
-    #[derive(Valuable)]
-    enum QueueValue {
-        Empty,
-        NonEmpty {
-            len: usize,
-            num_bytes_queued: usize,
-            front: QueueEntryValue,
-            back: QueueEntryValue,
-        },
-    }
-
-    impl<M: RemoteMessage> From<&MessageDeque<M>> for QueueValue {
-        fn from(q: &MessageDeque<M>) -> QueueValue {
-            if q.is_empty() {
-                return QueueValue::Empty;
-            }
-
-            QueueValue::NonEmpty {
-                len: q.len(),
-                num_bytes_queued: q.num_bytes_queued(),
-                front: q.front().unwrap().into(),
-                back: q.back().unwrap().into(),
-            }
-        }
-    }
-
-    struct AckedSeqValue(AckedSeq);
-
-    static ACKED_SEQ_FIELDS: &[NamedField<'static>] =
-        &[NamedField::new("seq"), NamedField::new("timestamp")];
-
-    impl Valuable for AckedSeqValue {
-        fn as_value(&self) -> Value<'_> {
-            Value::Structable(self)
-        }
-
-        fn visit(&self, visit: &mut dyn valuable::Visit) {
-            let AckedSeq(seq, timestamp) = &self.0;
-            visit.visit_named_fields(&valuable::NamedValues::new(
-                ACKED_SEQ_FIELDS,
-                &[
-                    seq.as_value(),
-                    Value::String(&humantime::format_duration(timestamp.elapsed()).to_string()),
-                ],
-            ));
-        }
-    }
-
-    impl Structable for AckedSeqValue {
-        fn definition(&self) -> valuable::StructDef<'_> {
-            valuable::StructDef::new_static("AckedSeq", valuable::Fields::Named(ACKED_SEQ_FIELDS))
-        }
-    }
-
-    let largest_acked = deliveries
-        .unacked
-        .largest_acked
-        .as_ref()
-        .map(|acked_seq| AckedSeqValue(acked_seq.clone()));
-
-    hyperactor_telemetry::context_span!(
-        "net i/o loop",
-        dest = %connector.dest(),
-        session_id = session_id,
-        connected = conn.is_connected(),
-        next_seq = deliveries.outbox.next_seq,
-        largest_acked = largest_acked.as_value(),
-        outbox = QueueValue::from(&deliveries.outbox.deque).as_value(),
-        unacked = QueueValue::from(&deliveries.unacked.deque).as_value(),
-    )
-}
-
-async fn step<M, D>(
-    state: State<M>,
-    conn: Conn<D::Connected>,
-    log_id: &str,
-    connector: &mut D,
-    receiver: &mut mpsc::UnboundedReceiver<(M, oneshot::Sender<SendError<M>>, Instant)>,
-) -> (State<M>, Conn<D::Connected>)
-where
-    M: RemoteMessage,
-    D: SessionConnector<M>,
-{
-    let session_id = connector.session_id();
-
-    match (state, conn) {
-        // Lazy connection: wait for the first message before connecting.
-        // Only applies when the connector opts in (simplex). Duplex skips
-        // this to start receiving immediately.
-        (
-            State::Running(Deliveries {
-                mut outbox,
-                unacked,
-            }),
-            conn,
-        ) if connector.on_demand() && outbox.is_empty() && unacked.is_empty() => {
-            match receiver.recv().await {
-                Some(msg) => match outbox.push_back(msg) {
-                    Ok(()) => {
-                        let running = State::Running(Deliveries { outbox, unacked });
-                        (running, conn)
+    /// Like [`connect`](Self::connect), but returns `Err(self)` if
+    /// `deadline` is reached before a connection is available. Retries
+    /// on transient `link.next()` failures until the deadline fires.
+    pub(super) fn connect_by(
+        self,
+        deadline: Instant,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Session<L, Connected<L::Stream>>, Self>> + Send,
+        >,
+    > {
+        Box::pin(async move {
+            let Session { link, state: _ } = self;
+            let sleep = tokio::time::sleep_until(deadline);
+            tokio::pin!(sleep);
+            loop {
+                let result = tokio::select! {
+                    biased;
+                    _ = &mut sleep => None,
+                    r = link.next() => Some(r),
+                };
+                match result {
+                    Some(Ok(stream)) => {
+                        let max = hyperactor_config::global::get(config::CODEC_MAX_FRAME_LENGTH);
+                        let (reader, writer) = tokio::io::split(stream);
+                        let mux = Mux::new(reader, writer, max);
+                        return Ok(Session {
+                            link,
+                            state: Connected { mux },
+                        });
                     }
-                    Err(err) => {
-                        let error_msg = "failed to push message to outbox";
-                        tracing::error!(
-                            dest = %connector.dest(),
-                            session_id = session_id,
-                            error = %err,
-                            "{}", error_msg
-                        );
-                        (
-                            State::Closing {
-                                deliveries: Deliveries { outbox, unacked },
-                                reason: format!("{log_id}: {error_msg}: {err}"),
-                            },
-                            conn,
-                        )
+                    Some(Err(_)) => {
+                        // Brief pause so the timer driver can process
+                        // the deadline on current-thread runtimes.
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        continue;
                     }
-                },
-                None => (
-                    State::Closing {
-                        deliveries: Deliveries { outbox, unacked },
-                        reason: "NetTx is dropped".to_string(),
-                    },
-                    conn,
-                ),
-            }
-        }
-
-        // Connected: delegate to connector.run_connected().
-        (State::Running(mut deliveries), Conn::Connected(connected)) => {
-            let ct = CancellationToken::new();
-            let result = connector
-                .run_connected(&connected, &mut deliveries, receiver, ct)
-                .await;
-
-            match result {
-                SendLoopResult::Eof => (State::Running(deliveries), Conn::reconnect_with_default()),
-                SendLoopResult::AppClosed => (
-                    State::Closing {
-                        deliveries,
-                        reason: "NetTx is dropped".to_string(),
-                    },
-                    Conn::Connected(connected),
-                ),
-                SendLoopResult::Rejected(reason) => {
-                    let error_msg = format!("server rejected connection due to: {reason}");
-                    tracing::error!(
-                        dest = %connector.dest(),
-                        session_id = session_id,
-                        "{}", error_msg
-                    );
-                    (
-                        State::Closing {
-                            deliveries,
-                            reason: error_msg,
-                        },
-                        Conn::reconnect_with_default(),
-                    )
-                }
-                SendLoopResult::ServerClosed => {
-                    let msg = "server closed the channel".to_string();
-                    tracing::info!(
-                        dest = %connector.dest(),
-                        session_id = session_id,
-                        "{}", msg
-                    );
-                    (
-                        State::Closing {
-                            deliveries,
-                            reason: msg,
-                        },
-                        Conn::reconnect_with_default(),
-                    )
-                }
-                SendLoopResult::DeliveryTimeout => {
-                    let error_msg = format!(
-                        "failed to receive ack within timeout {:?}; link is currently connected",
-                        hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
-                    );
-                    tracing::error!(
-                        dest = %connector.dest(),
-                        session_id = session_id,
-                        "{}", error_msg,
-                    );
-                    (
-                        State::Closing {
-                            deliveries,
-                            reason: format!("{log_id}: {error_msg}"),
-                        },
-                        Conn::Connected(connected),
-                    )
-                }
-                SendLoopResult::OversizedFrame(reason) => {
-                    tracing::error!(
-                        dest = %connector.dest(),
-                        session_id = session_id,
-                        "oversized frame was rejected. closing channel",
-                    );
-                    (
-                        State::Closing { deliveries, reason },
-                        Conn::Connected(connected),
-                    )
-                }
-                SendLoopResult::Cancelled => (
-                    State::Closing {
-                        deliveries,
-                        reason: "cancelled".to_string(),
-                    },
-                    Conn::Connected(connected),
-                ),
-                SendLoopResult::Error(err) => {
-                    tracing::info!(
-                        dest = %connector.dest(),
-                        session_id,
-                        error = %err,
-                        "send loop error"
-                    );
-                    metrics::CHANNEL_ERRORS.add(
-                        1,
-                        hyperactor_telemetry::kv_pairs!(
-                            "dest" => connector.dest().to_string(),
-                            "session_id" => session_id.to_string(),
-                            "error_type" => metrics::ChannelErrorType::SendError.as_str(),
-                        ),
-                    );
-                    (State::Running(deliveries), Conn::reconnect_with_default())
-                }
-            }
-        }
-
-        // Disconnected with messages to send.
-        (
-            State::Running(mut deliveries),
-            Conn::Disconnected {
-                mut backoff,
-                first_failure_at,
-            },
-        ) => {
-            if deliveries.outbox.is_expired() {
-                let error_msg = format!(
-                    "failed to deliver message within timeout {:?}",
-                    hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT)
-                );
-                tracing::error!(
-                    dest = %connector.dest(),
-                    session_id,
-                    "{}", error_msg
-                );
-                (
-                    State::Closing {
-                        deliveries,
-                        reason: format!("{log_id}: {error_msg}"),
-                    },
-                    Conn::reconnect_with_default(),
-                )
-            } else if deliveries.unacked.is_expired() {
-                let error_msg = format!(
-                    "failed to receive ack within timeout {:?}; link is currently broken",
-                    hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT),
-                );
-                tracing::error!(
-                    dest = %connector.dest(),
-                    session_id = session_id,
-                    "{}", error_msg
-                );
-                (
-                    State::Closing {
-                        deliveries,
-                        reason: format!("{log_id}: {error_msg}"),
-                    },
-                    Conn::reconnect_with_default(),
-                )
-            } else {
-                match connector.connect().await {
-                    Ok(connected) => {
-                        metrics::CHANNEL_CONNECTIONS.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!(
-                                "transport" => connector.dest().transport().to_string(),
-                                "reason" => "link connected",
-                            ),
-                        );
-
-                        let num_retries = deliveries.unacked.deque.len();
-                        if num_retries > 0 {
-                            metrics::CHANNEL_RECONNECTIONS.add(
-                                1,
-                                hyperactor_telemetry::kv_pairs!(
-                                    "dest" => connector.dest().to_string(),
-                                    "transport" => connector.dest().transport().to_string(),
-                                    "reason" => "reconnect_with_unacked",
-                                ),
-                            );
-                        }
-                        deliveries.requeue_unacked();
-                        backoff.reset();
-                        (State::Running(deliveries), Conn::Connected(connected))
-                    }
-                    Err(err) => {
-                        let elapsed = first_failure_at.elapsed();
-                        let timeout =
-                            hyperactor_config::global::get(config::MESSAGE_DELIVERY_TIMEOUT);
-
-                        if elapsed > Duration::from_secs(20) || elapsed > timeout * 2 / 3 {
-                            tracing::error!(
-                                dest = %connector.dest(),
-                                error = %err,
-                                session_id = session_id,
-                                elapsed_secs = elapsed.as_secs_f64(),
-                                "failed to reconnect after {:.1}s; check {} metric to verify server is alive",
-                                elapsed.as_secs_f64(),
-                                metrics::SERVER_HEARTBEAT_METRIC_NAME
-                            );
-                        } else {
-                            tracing::debug!(
-                                dest = %connector.dest(),
-                                error = %err,
-                                session_id = session_id,
-                                elapsed_secs = elapsed.as_secs_f64(),
-                                "failed to reconnect after {:.1}s", elapsed.as_secs_f64()
-                            );
-                        }
-
-                        metrics::CHANNEL_ERRORS.add(
-                            1,
-                            hyperactor_telemetry::kv_pairs!(
-                                "dest" => connector.dest().to_string(),
-                                "session_id" => session_id.to_string(),
-                                "error_type" => metrics::ChannelErrorType::ConnectionError.as_str(),
-                            ),
-                        );
-                        (
-                            State::Running(deliveries),
-                            Conn::reconnect(backoff, first_failure_at),
-                        )
+                    None => {
+                        return Err(Session {
+                            link,
+                            state: Disconnected,
+                        });
                     }
                 }
             }
-        }
+        })
+    }
+}
 
-        // The link is no longer viable.
-        (State::Closing { deliveries, reason }, stream) => {
-            (State::Closing { deliveries, reason }, stream)
+impl<L: Link> Session<L, Connected<L::Stream>> {
+    /// Obtain a [`ConnectionStream`] for the given tag, borrowing this
+    /// session so it cannot be released while the stream exists.
+    pub(super) fn stream(&self, tag: u8) -> ConnectionStream<'_, L::Stream> {
+        ConnectionStream {
+            inner: self.state.mux.stream(tag),
+            _session: PhantomData,
         }
+    }
+
+    /// Release the connection and return to the disconnected state.
+    pub(super) fn release(self) -> Session<L, Disconnected> {
+        Session {
+            link: self.link,
+            state: Disconnected,
+        }
+    }
+}
+
+/// A tagged stream bound to a connected [`Session`]'s lifetime.
+/// Prevents release while the stream exists. Derefs to
+/// [`TaggedStream`] so protocol functions work unchanged.
+pub(super) struct ConnectionStream<'a, S: Stream> {
+    inner: TaggedStream<ReadHalf<S>, WriteHalf<S>>,
+    _session: PhantomData<&'a ()>,
+}
+
+impl<S: Stream> Deref for ConnectionStream<'_, S> {
+    type Target = TaggedStream<ReadHalf<S>, WriteHalf<S>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+/// Wait for the next task in a `JoinSet` to complete. If the set is
+/// empty, pend forever (so it can be used in a `select!` branch
+/// without busy-spinning).
+#[allow(dead_code)] // used in later commit
+pub(super) async fn join_nonempty<T: 'static>(
+    set: &mut tokio::task::JoinSet<T>,
+) -> Result<T, tokio::task::JoinError> {
+    match set.join_next().await {
+        None => std::future::pending().await,
+        Some(result) => result,
     }
 }
