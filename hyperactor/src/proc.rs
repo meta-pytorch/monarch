@@ -842,6 +842,17 @@ impl Proc {
             }
         }
 
+        // Flush the forwarder so that any messages posted during
+        // teardown (e.g. supervision events) are wire-delivered
+        // before we tear down the proc's networking.
+        if let Err(err) = self.state().forwarder.flush().await {
+            tracing::warn!(
+                "{}: forwarder flush failed during proc exit: {:?}",
+                self.proc_id(),
+                err
+            );
+        }
+
         if let Some(this_handle) = this_handle
             && let Some(this_actor_id) = this_actor_id
             && !except_current
