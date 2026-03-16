@@ -35,7 +35,6 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::RefClient;
 use hyperactor::Unbind;
-use hyperactor::actor::ActorStatus;
 use hyperactor::actor::remote::Remote;
 use hyperactor::channel;
 use hyperactor::channel::ChannelAddr;
@@ -356,11 +355,7 @@ impl ProcAgent {
 
     /// Send a stop signal to an actor on this proc. This is fire-and-forget;
     /// it does not wait for the actor to reach terminal status.
-    fn stop_actor_by_id(
-        &self,
-        actor_id: &hyperactor_reference::ActorId,
-        reason: &str,
-    ) {
+    fn stop_actor_by_id(&self, actor_id: &hyperactor_reference::ActorId, reason: &str) {
         tracing::info!(
             name = "StopActor",
             %actor_id,
@@ -818,7 +813,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 
 #[async_trait]
 impl Handler<resource::Stop> for ProcAgent {
-    async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
+    async fn handle(&mut self, _cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         // We don't remove the actor from the state map, instead we just store
         // its state as Stopped.
         let actor = self.actor_states.get_mut(&message.name);
