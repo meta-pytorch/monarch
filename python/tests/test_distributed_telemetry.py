@@ -12,6 +12,7 @@ import json
 import os
 
 from isolate_in_subprocess import isolate_in_subprocess
+from scoped_state import scoped_state
 
 # Enable the unified telemetry layer BEFORE importing monarch
 # This is required for the TraceEventDispatcher to be created, which processes sinks
@@ -30,7 +31,6 @@ from monarch._src.actor.proc_mesh import (
 )
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob
-from scoped_state import scoped_state
 
 
 class WorkerActor(Actor):
