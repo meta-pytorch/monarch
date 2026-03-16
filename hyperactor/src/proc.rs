@@ -3805,6 +3805,29 @@ mod tests {
         assert!(!event.is_error());
     }
 
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_supervision_coordinator_receives_clean_stop() {
+        let proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+        let (mut reported_event, _coordinator_handle) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        let handle = proc.spawn::<TestActor>("stop_actor", TestActor).unwrap();
+        let actor_id = handle.actor_id().clone();
+
+        handle.drain_and_stop("test").unwrap();
+        handle.await;
+
+        let event = reported_event.recv().await;
+        assert_eq!(event.actor_id, actor_id);
+        assert!(
+            matches!(event.actor_status, ActorStatus::Stopped(_)),
+            "expected Stopped status, got {:?}",
+            event.actor_status
+        );
+        assert!(!event.is_error());
+    }
+
     // Exercises FI-4 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
     async fn test_supervision_event_on_propagated_failure() {
