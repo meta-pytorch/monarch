@@ -741,9 +741,9 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
         }
         if let Some(supervisor) = self.state.supervisor() {
             supervisor.send(cx, event)?;
-        } else if !self.record_supervision_events {
+        } else if !self.record_supervision_events && event.is_error() {
             // If there is no supervisor, and nothing is recording these, crash
-            // the whole process.
+            // the whole process on error events.
             tracing::error!(
                 name = "supervision_event_transmit_failed",
                 proc_id = %cx.self_id().proc_id(),

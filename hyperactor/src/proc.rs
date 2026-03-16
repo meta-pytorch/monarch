@@ -267,12 +267,30 @@ impl Proc {
     ) {
         let result = match self.state().supervision_coordinator_port.get() {
             Some(port) => port.send(cx, event.clone()).map_err(anyhow::Error::from),
-            None => Err(anyhow::anyhow!(
-                "coordinator port is not set for proc {}",
-                self.proc_id(),
-            )),
+            None => {
+                if !event.is_error() {
+                    // Normal lifecycle events (e.g. clean stop) without a coordinator
+                    // are silently dropped.
+                    return;
+                }
+                Err(anyhow::anyhow!(
+                    "coordinator port is not set for proc {}",
+                    self.proc_id(),
+                ))
+            }
         };
         if let Err(err) = result {
+            if !event.is_error() {
+                // Normal lifecycle events that fail to send (e.g. coordinator
+                // mailbox already closed during shutdown) are silently dropped.
+                tracing::debug!(
+                    "proc {}: dropping non-error supervision event {}: {:?}",
+                    self.proc_id(),
+                    event,
+                    err
+                );
+                return;
+            }
             tracing::error!(
                 "proc {}: could not propagate supervision event {} due to error: {:?}: crashing",
                 self.proc_id(),
@@ -1477,17 +1495,21 @@ impl<A: Actor> Instance<A> {
             Ok(stop_reason) => {
                 let status = ActorStatus::Stopped(stop_reason);
                 self.mailbox().close(status.clone());
-                // success exit case
+                let event = ActorSupervisionEvent::new(
+                    self.inner.cell.actor_id().clone(),
+                    actor.display_name(),
+                    status.clone(),
+                    None,
+                );
+                // FI-1: store supervision_event BEFORE change_status.
+                *self.inner.cell.inner.supervision_event.lock().unwrap() = Some(event.clone());
                 self.change_status(status);
-                None
+                Some(event)
             }
             Err(err) => {
                 match *err.kind {
                     ActorErrorKind::UnhandledSupervisionEvent(box event) => {
-                        // Currently only terminated actors are allowed to raise supervision events.
-                        // If we want to change that in the future, we need to modify the exit
-                        // status here too, because we use event's actor_status as this actor's
-                        // terminal status.
+                        // We use the event's actor_status as this actor's terminal status.
                         assert!(event.actor_status.is_terminal());
                         self.mailbox().close(event.actor_status.clone());
                         // FI-1: store supervision_event BEFORE change_status.
@@ -3761,7 +3783,7 @@ mod tests {
 
     // Exercises FI-2 (see introspect.rs module-scope comment).
     #[async_timed_test(timeout_secs = 30)]
-    async fn test_supervision_event_none_on_clean_stop() {
+    async fn test_supervision_event_on_clean_stop() {
         let proc = Proc::local();
         let (_client, _client_handle) = proc.instance("client").unwrap();
 
@@ -3771,10 +3793,15 @@ mod tests {
         handle.drain_and_stop("test").unwrap();
         handle.await;
 
+        let event = cell
+            .supervision_event()
+            .expect("cleanly stopped actor must have a supervision_event");
         assert!(
-            cell.supervision_event().is_none(),
-            "cleanly stopped actor must have no supervision_event"
+            matches!(event.actor_status, ActorStatus::Stopped(_)),
+            "expected Stopped status, got {:?}",
+            event.actor_status
         );
+        assert!(!event.is_error());
     }
 
     // Exercises FI-4 (see introspect.rs module-scope comment).
