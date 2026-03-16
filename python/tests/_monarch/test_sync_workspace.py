@@ -13,6 +13,7 @@ from pathlib import Path
 
 from monarch._src.job.process import ProcessJob
 from monarch.tools.config.workspace import Workspace
+from scoped_state import scoped_state
 
 
 class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
@@ -30,10 +31,13 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
         remote_workspace_dir = remote_workspace_root / "torch"
         workspace = Workspace(dirs=[local_workspace_dir])
 
-        with ProcessJob(
-            {"hosts": 1},
-            env={"WORKSPACE_DIR": str(remote_workspace_root)},
-        ).scoped_state(cached_path=None) as state:
+        with scoped_state(
+            ProcessJob(
+                {"hosts": 1},
+                env={"WORKSPACE_DIR": str(remote_workspace_root)},
+            ),
+            cached_path=None,
+        ) as state:
             host = state.hosts
 
             # local workspace dir is empty & remote workspace dir hasn't been primed yet

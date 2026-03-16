@@ -11,24 +11,29 @@ initialises the database layer pointing at the fake data SQLite file,
 and serves the React frontend build as static files.
 """
 
+import logging
 import os
+import socket
+import threading
 
 from flask import Flask, send_from_directory
+from monarch.monarch_dashboard import _PKG
 
 from . import db
+from .db import DBAdapter
 from .routes import api
 
+logger = logging.getLogger(__name__)
 
-def create_app(db_path: str | None = None) -> Flask:
+
+def create_app(adapter: DBAdapter) -> Flask:
     """Build a configured Flask application.
 
     Args:
-        db_path: Path to the SQLite database.  Defaults to the
-            ``MONARCH_DB_PATH`` environment variable, or
-            ``fake_data/fake_data.db`` relative to the package root.
+        adapter: A DBAdapter instance for data access (e.g. SQLiteAdapter
+            for local dev, QueryEngineAdapter for production).
     """
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    build_dir = os.path.join(base, "frontend", "build")
+    build_dir = str(_PKG / "frontend" / "build")
 
     app = Flask(
         __name__,
@@ -37,24 +42,15 @@ def create_app(db_path: str | None = None) -> Flask:
         else None,
     )
 
-    if db_path is None:
-        db_path = os.environ.get(
-            "MONARCH_DB_PATH",
-            os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..",
-                "fake_data",
-                "fake_data.db",
-            ),
-        )
-
-    db.init(db_path)
+    db.set_adapter(adapter)
     app.register_blueprint(api)
 
     # Serve the React frontend at / (catch-all for client-side routing).
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")
     def serve_frontend(path):
+        if not os.path.isdir(build_dir):
+            return {"error": "Frontend not built. API available at /api/"}, 404
         if path and os.path.isfile(os.path.join(build_dir, path)):
             return send_from_directory(build_dir, path)
         return send_from_directory(build_dir, "index.html")
@@ -62,5 +58,51 @@ def create_app(db_path: str | None = None) -> Flask:
     return app
 
 
-# Allow ``flask --app server.app run`` to pick up the app.
-app = create_app()
+def start_dashboard(
+    adapter: DBAdapter,
+    port: int = 8265,
+    host: str = "0.0.0.0",
+) -> dict:
+    """Start the dashboard server in a daemon thread.
+
+    The dashboard runs in-process because telemetry data lives entirely
+    in-memory as DataFusion MemTables. There is no on-disk database, so
+    the dashboard must share the process to access the QueryEngine.
+
+    Args:
+        adapter: A DBAdapter instance for data access.
+        port: HTTP port to listen on.
+        host: Bind address.
+
+    Returns:
+        A dict with keys: ``url``, ``port``, ``pid`` (always None),
+        ``handle`` (Thread).
+
+    Raises:
+        OSError: If the port is already in use.
+    """
+    # Check port availability before starting the thread so failures
+    # are raised to the caller instead of silently killing the thread.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError:
+            logger.error("Dashboard failed to start: port %d is unavailable", port)
+            raise
+
+    display_host = "localhost" if host == "0.0.0.0" else host
+    url = f"http://{display_host}:{port}"
+
+    app = create_app(adapter)
+    # Suppress per-request werkzeug logs (they are noisy in production).
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+    thread = threading.Thread(
+        target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False),
+        daemon=True,
+        name="monarch-dashboard",
+    )
+    thread.start()
+    logger.info("Monarch Dashboard running at %s", url)
+
+    return {"url": url, "port": port, "pid": None, "handle": thread}

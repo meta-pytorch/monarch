@@ -80,9 +80,10 @@ declare_static_counter!(
 
 #[derive(Debug)]
 struct HealthState {
-    /// The status of each actor in the controlled mesh.
-    /// TODO: replace with ValueMesh?
-    statuses: HashMap<Point, resource::Status>,
+    /// The status of each actor in the controlled mesh, paired with the
+    /// generation counter from the most recent update. The generation is
+    /// used for last-writer-wins ordering between streamed and polled updates.
+    statuses: HashMap<Point, (resource::Status, u64)>,
     unhealthy_event: Option<Unhealthy>,
     crashed_ranks: HashMap<usize, ActorSupervisionEvent>,
     // The unique owner of this actor.
@@ -97,11 +98,36 @@ impl HealthState {
         owner: Option<hyperactor_reference::PortRef<MeshFailure>>,
     ) -> Self {
         Self {
-            statuses,
+            statuses: statuses
+                .into_iter()
+                .map(|(point, status)| (point, (status, 0)))
+                .collect(),
             unhealthy_event: None,
             crashed_ranks: HashMap::new(),
             owner,
             subscribers: HashSet::new(),
+        }
+    }
+
+    /// Try to update the status at `point`. Returns `true` if the status
+    /// was newly inserted or changed; `false` if dominated by a higher
+    /// generation or unchanged.
+    fn maybe_update(&mut self, point: Point, status: resource::Status, generation: u64) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.statuses.entry(point) {
+            Entry::Occupied(mut entry) => {
+                let (old_status, old_gen) = entry.get();
+                if old_status.is_terminating() || *old_gen > generation {
+                    return false;
+                }
+                let changed = *old_status != status;
+                *entry.get_mut() = (status, generation);
+                changed
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((status, generation));
+                true
+            }
         }
     }
 }
@@ -141,6 +167,7 @@ pub struct CheckState(pub std::time::SystemTime);
     Subscribe,
     Unsubscribe,
     GetSubscriberCount,
+    resource::State<ActorState>,
     resource::CreateOrUpdate<resource::mesh::Spec<()>> { cast = true },
     resource::GetState<resource::mesh::State<()>> { cast = true },
     resource::Stop { cast = true },
@@ -252,6 +279,21 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         // of a mesh will still return any failed state.
         self.monitor = Some(());
         self.self_check_state_message(this)?;
+
+        // Subscribe to streaming state updates from all ProcAgents so the
+        // controller receives state changes in real time, complementing the
+        // existing polling loop.
+        self.mesh.proc_mesh().agent_mesh().cast(
+            this,
+            resource::StreamState::<ActorState> {
+                name: self.mesh.name().clone(),
+                // All ProcAgents send updates directly to this port
+                // so that failures along the comm tree path does not
+                // affect clean shutdowns.
+                subscriber: this.port().bind().unsplit(),
+            },
+        )?;
+
         let owner = if let Some(owner) = &self.health_state.owner {
             owner.to_string()
         } else {
@@ -385,8 +427,12 @@ impl<A: Referable> Handler<resource::GetState<resource::mesh::State<()>>>
         } else {
             resource::Status::Running
         };
-        let statuses = &self.health_state.statuses;
-        let mut statuses = statuses.clone().into_iter().collect::<Vec<_>>();
+        let mut statuses = self
+            .health_state
+            .statuses
+            .iter()
+            .map(|(p, (s, _))| (p.clone(), s.clone()))
+            .collect::<Vec<_>>();
         statuses.sort_by_key(|(p, _)| p.rank());
         let statuses: ValueMesh<resource::Status> =
             statuses
@@ -403,6 +449,8 @@ impl<A: Referable> Handler<resource::GetState<resource::mesh::State<()>>>
                 name: message.name,
                 status,
                 state: Some(state),
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
         )?;
         Ok(())
@@ -475,7 +523,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
                     self.health_state
                         .statuses
                         .entry(rank)
-                        .and_modify(move |s| *s = status);
+                        .and_modify(move |s| *s = (status, u64::MAX));
                 }
             }
             // An ActorStopError means some actors didn't reach the stopped state.
@@ -488,7 +536,7 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
                             .health_state
                             .statuses
                             .get_mut(&extent.point_of_rank(rank).expect("illegal rank"))
-                            .unwrap() = status.clone();
+                            .unwrap() = (status.clone(), u64::MAX);
                     }
                 }
             }
@@ -664,6 +712,43 @@ fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
     }
 }
 
+#[async_trait]
+impl<A: Referable> Handler<resource::State<ActorState>> for ActorMeshController<A> {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        state: resource::State<ActorState>,
+    ) -> anyhow::Result<()> {
+        let (rank, events) = actor_state_to_supervision_events(state.clone());
+        let point = self.mesh.region().extent().point_of_rank(rank)?;
+
+        let changed = self
+            .health_state
+            .maybe_update(point, state.status, state.generation);
+
+        if changed && !events.is_empty() {
+            send_state_change(
+                cx,
+                rank,
+                events[0].clone(),
+                self.mesh.name(),
+                false,
+                &mut self.health_state,
+            );
+        }
+
+        if self
+            .health_state
+            .statuses
+            .values()
+            .all(|(s, _)| s.is_terminating())
+        {
+            self.monitor.take();
+        }
+        Ok(())
+    }
+}
+
 fn format_system_time(time: std::time::SystemTime) -> String {
     let datetime: chrono::DateTime<chrono::Local> = time.into();
     datetime.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -803,54 +888,36 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         // This returned point is the created rank, *not* the rank of
         // the possibly sliced input mesh.
         for (point, state) in events.unwrap().iter() {
-            let mut is_new = false;
-            let entry = self
-                .health_state
-                .statuses
-                .entry(point.clone())
-                .or_insert_with(|| {
-                    tracing::debug!(
-                        "PythonActorMeshImpl: received initial state: point={:?}, state={:?}",
-                        point,
-                        state
-                    );
-                    let (_rank, events) = actor_state_to_supervision_events(state.clone());
-                    // Wait for next event if the change in state produced no supervision events.
-                    if !events.is_empty() {
-                        is_new = true;
-                    }
-                    state.status.clone()
-                });
+            let changed = self.health_state.maybe_update(
+                point.clone(),
+                state.status.clone(),
+                state.generation,
+            );
             // If the status of any rank is terminal, we don't want to send
             // a heartbeat message.
-            if !is_terminal && entry.is_terminating() {
-                is_terminal = true;
+            if !is_terminal {
+                if let Some((s, _)) = self.health_state.statuses.get(&point) {
+                    if s.is_terminating() {
+                        is_terminal = true;
+                    }
+                }
             }
-            // If this actor is new, or the state changed, send a message to the owner.
-            let (rank, event) = if is_new {
-                let (rank, events) = actor_state_to_supervision_events(state.clone());
-                if events.is_empty() {
-                    continue;
-                }
-                (rank, events[0].clone())
-            } else if *entry != state.status {
-                tracing::debug!(
-                    "PythonActorMeshImpl: received state change event: point={:?}, old_state={:?}, new_state={:?}",
-                    point,
-                    entry,
-                    state
-                );
-                let (rank, events) = actor_state_to_supervision_events(state.clone());
-                if events.is_empty() {
-                    continue;
-                }
-                *entry = state.status;
-                (rank, events[0].clone())
-            } else {
+            if !changed {
                 continue;
-            };
+            }
+            let (rank, events) = actor_state_to_supervision_events(state.clone());
+            if events.is_empty() {
+                continue;
+            }
             did_send_state_change = true;
-            send_state_change(cx, rank, event, mesh.name(), false, &mut self.health_state);
+            send_state_change(
+                cx,
+                rank,
+                events[0].clone(),
+                mesh.name(),
+                false,
+                &mut self.health_state,
+            );
         }
         if !did_send_state_change && !is_terminal {
             // No state change, but subscribers need to be sent a message
@@ -867,7 +934,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             .health_state
             .statuses
             .values()
-            .all(|s| s.is_terminating());
+            .all(|(s, _)| s.is_terminating());
         if !all_ranks_terminal {
             // Schedule a self send after a waiting period.
             self.self_check_state_message(cx)?;

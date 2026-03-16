@@ -13,6 +13,7 @@ from monarch._src.actor.actor_mesh import Actor
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.mock import _actor_registry, get_actor_class, patch_actor
 from monarch._src.job.process import ProcessJob
+from scoped_state import scoped_state
 
 
 class OriginalActor(Actor):
@@ -352,7 +353,7 @@ class TestMockPropagationEndToEnd(unittest.TestCase):
         """
         with patch_actor(InnerActor, MockInnerActor):
             # Create a host mesh and spawn processes
-            with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+            with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
                 host = state.hosts
                 proc_mesh = host.spawn_procs(name="test_proc")
 

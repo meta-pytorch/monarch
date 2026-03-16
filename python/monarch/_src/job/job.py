@@ -15,8 +15,7 @@ import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
-from typing import Dict, Generator, List, Literal, NamedTuple, Optional, Sequence
+from typing import Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._src.actor.bootstrap import attach_to_workers
 
@@ -220,39 +219,6 @@ class JobTrait(ABC):
         if running is not None:
             running._kill()
         self._status = "not_running"
-
-    @contextmanager
-    def scoped_state(
-        self, cached_path: Optional[str] = ".monarch/job_state.pkl"
-    ) -> Generator[JobState, None, None]:
-        """Context manager that yields the job state and kills the job on exit.
-
-        On a clean exit, gracefully shuts down all host meshes before killing
-        the job. On an abnormal exit (exception), skips shutdown and goes
-        straight to kill. Failures to kill are silently ignored, as the job
-        may already be in a broken state.
-
-        Example::
-
-            with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
-                host = state.hosts
-                proc = host.spawn_procs(...)
-        """
-        state = self.state(cached_path=cached_path)
-        success = False
-        try:
-            yield state
-            success = True
-        finally:
-            try:
-                if success:
-                    for host_mesh in state._hosts.values():
-                        host_mesh.shutdown().get(timeout=10.0)
-            finally:
-                try:
-                    self.kill()
-                except Exception:
-                    pass
 
     @abstractmethod
     def _state(self) -> JobState: ...

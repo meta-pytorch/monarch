@@ -33,6 +33,7 @@ dependencies = [
     "tabulate",
     "opentelemetry-api",
     "clusterscope",
+    "flask>=2.0",
 ]
 
 # PyTorch nightly build indices for different platforms
@@ -76,11 +77,14 @@ python-downloads = "automatic"  # Automatically download Python if needed
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "setup.py" },
-    { file = "**/*.rs" },
-    { file = "**/Cargo.toml" },
+    # Note: we intentionally avoid "**/*.rs" because it matches generated
+    # .rs files in target/release/build/, causing a full rebuild every time.
+    { file = "*/src/**/*.rs" },
+    { file = "*/Cargo.toml" },
     { file = "Cargo.lock" },
-    { file = "**/*.{cc, cpp, c, h}" },
-    { file = "**/*.{cu, cuh}" },
+    { file = "*/src/**/*.{cc,cpp,c,h}" },
+    { file = "*/src/**/*.{cu,cuh}" },
+    { file = "python/monarch/**/*.{cpp,c,h}" },
 ]
 
 [project.optional-dependencies]
@@ -108,19 +112,25 @@ dev = [
     "pytest-timeout>=2.0",
     "pytest-asyncio>=0.21",
     "pytest-xdist>=3.0",
+    "pytest-split",
     "pyright>=1.1",
     "torch>=2.9.1",
+    "setuptools-rust",
 ]
 
 [project.scripts]
 monarch = "monarch.tools.cli:main"
 monarch_bootstrap = "monarch._src.actor.bootstrap_main:invoke_main"
+monarch-dashboard = "monarch.monarch_dashboard.__main__:main"
 
 [tool.setuptools]
 packages = {find = {where = ["python"]}}
 
 [tool.setuptools.package-dir]
 "" = "python"
+
+[tool.setuptools.package-data]
+"monarch.monarch_dashboard" = ["frontend/build/**/*"]
 
 [tool.pytest.ini_options]
 markers = [

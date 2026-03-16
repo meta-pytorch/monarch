@@ -17,6 +17,7 @@ import torch.distributed as dist
 from monarch._src.actor.actor_mesh import ActorMesh
 from monarch._src.job.process import ProcessJob
 from monarch.actor import Actor, current_rank, current_size, endpoint, this_host
+from scoped_state import scoped_state
 
 
 class CudaInitTestActor(Actor):
@@ -141,7 +142,7 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             for name, value in cuda_env_vars.items():
                 os.environ[name] = value
 
-        with ProcessJob({"hosts": 1}).scoped_state(cached_path=None) as state:
+        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
             proc_mesh_instance = state.hosts.spawn_procs(bootstrap=setup_cuda_env)
 
             async with proc_mesh_instance:
@@ -165,8 +166,8 @@ class TestEnvBeforeCuda(unittest.IsolatedAsyncioTestCase):
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         }
 
-        with ProcessJob({"hosts": 1}, env=cuda_env_vars).scoped_state(
-            cached_path=None
+        with scoped_state(
+            ProcessJob({"hosts": 1}, env=cuda_env_vars), cached_path=None
         ) as state:
             proc_mesh_instance = state.hosts.spawn_procs()
 

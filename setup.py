@@ -13,7 +13,8 @@ import sysconfig
 from typing import Dict, List, Optional
 
 from setuptools import Command, setup
-from setuptools.command.build_ext import build_ext
+from setuptools.command.build_ext import build_ext as _build_ext
+from setuptools.command.build_py import build_py
 from setuptools.extension import Extension
 from setuptools_rust import Binding, RustExtension
 
@@ -95,7 +96,7 @@ def get_cuda_home() -> Optional[str]:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # Check common locations
+    # Check common CUDA locations
     for path in ["/usr/local/cuda", "/usr/cuda"]:
         if os.path.exists(path):
             return path
@@ -103,9 +104,29 @@ def get_cuda_home() -> Optional[str]:
     return None
 
 
+def get_rocm_home() -> Optional[str]:
+    """
+    Find ROCm installation.
+
+    Returns:
+        Path to ROCm installation or None if not found
+    """
+    # Check environment variable first
+    rocm_home = os.environ.get("ROCM_PATH") or os.environ.get("ROCM_HOME")
+    if rocm_home and os.path.exists(rocm_home):
+        return rocm_home
+
+    # Check default ROCm location
+    if os.path.exists("/opt/rocm"):
+        return "/opt/rocm"
+
+    return None
+
+
 # Build config detection
 torch_config = get_torch_config()
 cuda_home = get_cuda_home()
+rocm_home = get_rocm_home()
 use_tensor_engine = os.environ.get("USE_TENSOR_ENGINE", "1") == "1"
 
 if use_tensor_engine and not torch_config:
@@ -122,16 +143,38 @@ if use_tensor_engine and not torch_config:
     sys.exit(1)
 
 build_tensor_engine = use_tensor_engine and torch_config is not None
-build_cuda = build_tensor_engine and cuda_home is not None
+
+# GPU platform selection: use MONARCH_RDMA_GPU_PLATFORM env var or auto-detect
+gpu_platform = os.environ.get("MONARCH_RDMA_GPU_PLATFORM", "").lower()
+if gpu_platform and gpu_platform not in ("cuda", "rocm"):
+    sys.exit(f"Invalid MONARCH_RDMA_GPU_PLATFORM={gpu_platform}. Use 'cuda' or 'rocm'")
+if gpu_platform == "rocm" and not rocm_home:
+    sys.exit("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm not found")
+if gpu_platform == "cuda" and not cuda_home:
+    sys.exit("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA not found")
+if not gpu_platform and build_tensor_engine and cuda_home and rocm_home:
+    sys.exit("Both CUDA and ROCm detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or =rocm")
+
+build_cuda = build_tensor_engine and (
+    gpu_platform == "cuda" or (not gpu_platform and cuda_home)
+)
+build_rocm = build_tensor_engine and (
+    gpu_platform == "rocm" or (not gpu_platform and rocm_home)
+)
 
 print("=" * 80)
 if build_tensor_engine:
-    print("✓ Building WITH tensor_engine (CUDA/GPU support)")
+    print("✓ Building WITH tensor_engine (GPU support)")
     print(f"  - PyTorch: {torch_config['lib_path']}")
-    print(f"  - CUDA: {cuda_home if build_cuda else 'Not found (CPU-only)'}")
+    if build_cuda:
+        print(f"  - CUDA: {cuda_home}")
+    elif build_rocm:
+        print(f"  - ROCm: {rocm_home}")
+    else:
+        print("  - GPU: Not found (CPU-only)")
     print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
 else:
-    print("Building WITHOUT tensor_engine (CPU-only, no CUDA support)")
+    print("Building WITHOUT tensor_engine (CPU-only, no GPU support)")
 print("=" * 80)
 
 # Set PYO3_PYTHON for Rust binaries
@@ -161,10 +204,19 @@ else:
 
 if build_cuda:
     env_vars["CUDA_HOME"] = cuda_home
+elif build_rocm:
+    env_vars["ROCM_PATH"] = rocm_home
 
 os.environ.update(env_vars)
 
 # RPATH configuration for Linux
+# These flags are passed via RustExtension.rustc_flags (applied only to the final
+# cdylib link) rather than RUSTFLAGS (which would apply to every crate in the
+# workspace). Putting environment-specific paths in RUSTFLAGS invalidates cargo's
+# fingerprint cache for all 800+ dependency crates, causing a full rebuild every
+# time the build environment path changes (e.g. uv's PEP 517 build isolation
+# creates a new temp venv per invocation).
+rust_link_flags: List[str] = []
 if sys.platform.startswith("linux"):
     conda_lib = os.path.join(sys.prefix, "lib")
     ldlib = sysconfig.get_config_var("LDLIBRARY") or ""
@@ -178,7 +230,7 @@ if sys.platform.startswith("linux"):
         ):
             py_lib = libdir
 
-    rpath_flags = [
+    rust_link_flags = [
         "-C",
         "link-arg=-Wl,--enable-new-dtags",
         "-C",
@@ -195,10 +247,42 @@ if sys.platform.startswith("linux"):
         conda_lib,
     ]
     if py_lib:
-        rpath_flags += ["-C", f"link-arg=-Wl,-rpath,{py_lib}"]
+        rust_link_flags += ["-C", f"link-arg=-Wl,-rpath,{py_lib}"]
 
-    cur_rustflags = os.environ.get("RUSTFLAGS", "")
-    os.environ["RUSTFLAGS"] = (cur_rustflags + " " + " ".join(rpath_flags)).strip()
+
+# Custom build_ext that skips C++ extensions when .so files are already fresh.
+# uv's PEP 517 build isolation rebuilds the entire package whenever any cache-key
+# file changes (e.g. a .rs file). Cargo handles its own caching, but setuptools
+# always recompiles C++ into fresh temp dirs. This skips that when unnecessary.
+class build_ext(_build_ext):
+    def build_extension(self, ext):
+        # Only apply caching to C/C++ extensions (those with .sources)
+        if not hasattr(ext, "sources") or not ext.sources:
+            return super().build_extension(ext)
+
+        # In PEP 517 builds, get_ext_fullpath points to a temp build dir.
+        # Look for the .so in the source tree instead (editable install puts
+        # the .so alongside the Python package).
+        ext_filename = self.get_ext_filename(ext.name)
+        # ext_filename is e.g. "monarch/common/_C.cpython-312-x86_64-linux-gnu.so"
+        # source tree location is python/<ext_filename>
+        src_root = os.path.dirname(os.path.abspath(__file__))
+        so_path = os.path.join(src_root, "python", ext_filename)
+        if not os.path.exists(so_path):
+            return super().build_extension(ext)
+
+        so_mtime = os.path.getmtime(so_path)
+
+        # Rebuild if any source file is newer than the .so
+        for src in ext.sources:
+            if os.path.exists(src) and os.path.getmtime(src) > so_mtime:
+                return super().build_extension(ext)
+
+        # .so is up to date — copy it to the build dir instead of recompiling
+        dest = self.get_ext_fullpath(ext.name)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(so_path, dest)
+        print(f"skipping {ext.name} (up to date, copied existing .so)")
 
 
 # Extension Creation
@@ -235,6 +319,7 @@ ext_modules = []
 if build_tensor_engine:
     cpp_sources = ["python/monarch/common/init.cpp"]
     if build_cuda:
+        # mock_cuda.cpp is not compatible with ROCm (relies on CUDA-specific assembly)
         cpp_sources.append("python/monarch/common/mock_cuda.cpp")
 
     ext_modules = [
@@ -261,8 +346,59 @@ rust_extensions.append(
         debug=False,
         features=rust_features,
         args=[] if build_tensor_engine else ["--no-default-features"],
+        rustc_flags=rust_link_flags,
     )
 )
+
+
+# BuildFrontend command
+class BuildFrontend(Command):
+    """Build the React frontend for monarch_dashboard"""
+
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        frontend_dir = os.path.join(
+            os.path.dirname(__file__),
+            "python",
+            "monarch",
+            "monarch_dashboard",
+            "frontend",
+        )
+        build_dir = os.path.join(frontend_dir, "build")
+        build_index = os.path.join(build_dir, "index.html")
+
+        # Skip npm if pre-built assets already exist (e.g. from CI).
+        if os.path.isfile(build_index):
+            print(">> Pre-built frontend found, skipping npm build")
+            return
+
+        if not os.path.exists(frontend_dir):
+            print(f"Frontend directory not found: {frontend_dir}")
+            return
+
+        # Use real npm, bypassing any system wrappers
+        npm_cmd = "/usr/bin/npm" if os.path.exists("/usr/bin/npm") else "npm"
+
+        print("Building dashboard frontend...")
+        try:
+            subprocess.check_call([npm_cmd, "install"], cwd=frontend_dir)
+            subprocess.check_call([npm_cmd, "run", "build"], cwd=frontend_dir)
+            print("Frontend build completed successfully")
+        except FileNotFoundError:
+            print("WARNING: npm not found. Skipping frontend build.")
+            print(
+                "Install Node.js to build the dashboard frontend, "
+                "or use pre-built assets."
+            )
+        except subprocess.CalledProcessError as e:
+            print("Frontend build failed with error:", e)
 
 
 # Clean command
@@ -298,6 +434,14 @@ class Clean(Command):
         subprocess.run(["cargo", "clean"])
 
 
+class BuildPyWithFrontend(build_py):
+    """Build the frontend before collecting package data."""
+
+    def run(self):
+        self.run_command("build_frontend")
+        build_py.run(self)
+
+
 # Actual Setup
 package_name = os.environ.get("MONARCH_PACKAGE_NAME", "torchmonarch")
 package_version = os.environ.get("MONARCH_VERSION", "0.4.0.dev0")
@@ -308,7 +452,9 @@ setup(
     ext_modules=ext_modules,
     rust_extensions=rust_extensions,
     cmdclass={
+        "build_py": BuildPyWithFrontend,
         "build_ext": build_ext,
         "clean": Clean,
+        "build_frontend": BuildFrontend,
     },
 )

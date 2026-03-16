@@ -272,9 +272,12 @@ impl Actor for CudaRdmaActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        tracing::error!("CudaRdmaActor supervision event: {:?}", _event);
+        if !event.is_error() {
+            return Ok(true);
+        }
+        tracing::error!("CudaRdmaActor supervision event: {:?}", event);
         tracing::error!("CudaRdmaActor error occurred, stop the worker process, exit code: 1");
         std::process::exit(1);
     }
@@ -500,8 +503,14 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
         }
 
         // Resolve IbvManagerActor refs and IbvBuffers from backends
-        let (local_ibv_manager, local_ibv) = local_buffer.resolve_ibv(cx).await?;
-        let (remote_ibv_manager, remote_ibv) = remote_buffer.resolve_ibv(cx).await?;
+        let (local_ibv_manager, local_ibv) = local_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for local buffer"))??;
+        let (remote_ibv_manager, remote_ibv) = remote_buffer
+            .resolve_ibv(cx)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for remote buffer"))??;
 
         let qp = local_ibv_manager
             .request_queue_pair(
