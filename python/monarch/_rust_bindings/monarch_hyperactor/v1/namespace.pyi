@@ -73,28 +73,13 @@ class Namespace:
 
     def __repr__(self) -> str: ...
 
-def create_in_memory_namespace(name: str) -> Namespace:
-    """
-    Create an in-memory namespace for testing.
-
-    Args:
-        name: The namespace name (e.g., "my.namespace")
-
-    Returns:
-        A Namespace instance backed by in-memory storage
-    """
-    ...
-
 def configure_in_memory_namespace(name: str) -> None:
     """
     Configure the global namespace with an in-memory backend.
     This is primarily used for testing.
 
-    This function creates an in-memory namespace and sets it as the global
-    namespace, enabling automatic registration of actor meshes when they spawn.
-
     Args:
-        name: The namespace name (e.g., "monarch")
+        name: The namespace name
 
     Raises:
         RuntimeError: If the global namespace has already been configured
