@@ -13,8 +13,8 @@ import sysconfig
 from typing import Dict, List, Optional
 
 from setuptools import Command, setup
-from setuptools.command.build_py import build_py
 from setuptools.command.build_ext import build_ext as _build_ext
+from setuptools.command.build_py import build_py
 from setuptools.extension import Extension
 from setuptools_rust import Binding, RustExtension
 
