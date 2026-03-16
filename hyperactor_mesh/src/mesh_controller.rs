@@ -48,6 +48,8 @@ use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
 use crate::casting::update_undeliverable_envelope_for_casting;
 use crate::host_mesh::HostMeshRef;
+use crate::namespace::Namespace;
+use crate::namespace::global_namespace;
 use crate::proc_agent::ActorState;
 use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
 use crate::proc_mesh::ProcMeshRef;
@@ -246,6 +248,24 @@ impl<A: Referable> Debug for ActorMeshController<A> {
 impl<A: Referable> Actor for ActorMeshController<A> {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
+        // Set the controller reference on self.mesh. This breaks the circular
+        // dependency: the controller needs the mesh ref, and the mesh ref needs
+        // the controller.
+        self.mesh.set_controller(Some(this.bind()));
+
+        // Register the actor mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the actor mesh name (without UUID suffix) for registration.
+            let name = self.mesh.name().name();
+            namespace.register(name, &self.mesh).await.map_err(|e| {
+                anyhow::anyhow!("failed to register actor mesh ref to namespace: {}", e)
+            })?;
+            tracing::info!(
+                name = %name,
+                "registered actor mesh to global namespace"
+            );
+        }
+
         // Start the monitor task.
         // There's a shared monitor for all whole mesh ref. Note that slices do
         // not share the health state. This is fine because requerying a slice
@@ -266,6 +286,24 @@ impl<A: Referable> Actor for ActorMeshController<A> {
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
+        // Unregister the actor mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the actor mesh name (without UUID suffix) for unregistration.
+            let name = self.mesh.name().name();
+            if let Err(e) = namespace.unregister::<ActorMeshRef<A>>(name).await {
+                tracing::warn!(
+                    name = %name,
+                    error = %e,
+                    "failed to unregister actor mesh from namespace"
+                );
+            } else {
+                tracing::info!(
+                    name = %name,
+                    "unregistered actor mesh from global namespace"
+                );
+            }
+        }
+
         // If the monitor hasn't been dropped yet, send a stop message to the
         // proc mesh.
         if self.monitor.take().is_some() {
@@ -897,6 +935,18 @@ impl ProcMeshController {
 impl Actor for ProcMeshController {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
+        // Register the proc mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the proc mesh name (without UUID suffix) for registration.
+            let name = self.mesh.name().name();
+            namespace.register(name, &self.mesh).await.map_err(|e| {
+                anyhow::anyhow!("failed to register proc mesh ref to namespace: {}", e)
+            })?;
+            tracing::info!(
+                name = %name,
+                "registered proc mesh to global namespace"
+            );
+        }
         Ok(())
     }
 
@@ -905,6 +955,23 @@ impl Actor for ProcMeshController {
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
+        // Unregister the proc mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            let name = self.mesh.name().name();
+            if let Err(e) = namespace.unregister::<ProcMeshRef>(name).await {
+                tracing::warn!(
+                    name = %name,
+                    error = %e,
+                    "failed to unregister proc mesh from namespace"
+                );
+            } else {
+                tracing::info!(
+                    name = %name,
+                    "unregistered proc mesh from global namespace"
+                );
+            }
+        }
+
         // Cannot use "ProcMesh::stop" as it's only defined on ProcMesh, not ProcMeshRef.
         let names = self
             .mesh
@@ -944,6 +1011,18 @@ impl HostMeshController {
 impl Actor for HostMeshController {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
+        // Register the host mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            // Use the host mesh name (without UUID suffix) for registration.
+            let name = self.mesh.name().name();
+            namespace.register(name, &self.mesh).await.map_err(|e| {
+                anyhow::anyhow!("failed to register host mesh ref to namespace: {}", e)
+            })?;
+            tracing::info!(
+                name = %name,
+                "registered host mesh to global namespace"
+            );
+        }
         Ok(())
     }
 
@@ -952,7 +1031,24 @@ impl Actor for HostMeshController {
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
-        // Cannot use "HostMesh::shutdown" as it's only defined on HostMesh, not HostMeshRef.
+        // Unregister the host mesh if a global namespace is configured.
+        if let Some(namespace) = global_namespace() {
+            let name = self.mesh.name().name();
+            if let Err(e) = namespace.unregister::<HostMeshRef>(name).await {
+                tracing::warn!(
+                    name = %name,
+                    error = %e,
+                    "failed to unregister host mesh from namespace"
+                );
+            } else {
+                tracing::info!(
+                    name = %name,
+                    "unregistered host mesh from global namespace"
+                );
+            }
+        }
+
+        // Shutdown all hosts in the mesh.
         for host in self.mesh.values() {
             if let Err(e) = host.shutdown(this).await {
                 tracing::warn!(host = %host, error = %e, "host shutdown failed");

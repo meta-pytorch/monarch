@@ -51,6 +51,20 @@ class ProcMesh:
         """
         ...
 
+    @property
+    def display_name(self) -> str:
+        """
+        The display name of the mesh (without UUID suffix).
+        """
+        ...
+
+    @property
+    def host_mesh_name(self) -> str | None:
+        """
+        Get the name of the parent host mesh, if this proc mesh was spawned from one.
+        """
+        ...
+
     def stop_nonblocking(self, instance: Instance, reason: str) -> PythonTask[None]:
         """
         Stop the proc mesh.
