@@ -52,9 +52,16 @@ class ProcMesh:
         ...
 
     @property
-    def name(self) -> str:
+    def display_name(self) -> str:
         """
-        The name of the mesh.
+        The display name of the mesh (without UUID suffix).
+        """
+        ...
+
+    @property
+    def host_mesh_name(self) -> str | None:
+        """
+        Get the name of the parent host mesh, if this proc mesh was spawned from one.
         """
         ...
 

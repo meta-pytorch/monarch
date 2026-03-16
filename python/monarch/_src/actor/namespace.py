@@ -14,7 +14,7 @@ load meshes (actor, proc, host) that have been registered by name.
 """
 
 from enum import Enum
-from typing import Any, cast, overload, Type, TypeVar, Union
+from typing import Any, cast, overload, Type, TYPE_CHECKING, TypeVar, Union
 
 from monarch._rust_bindings.monarch_hyperactor.actor_mesh import PythonActorMesh
 from monarch._rust_bindings.monarch_hyperactor.namespace import (
@@ -24,6 +24,10 @@ from monarch._rust_bindings.monarch_hyperactor.namespace import (
     MeshKind,
     Namespace,
 )
+
+if TYPE_CHECKING:
+    from monarch._src.actor.host_mesh import HostMesh
+    from monarch._src.actor.proc_mesh import ProcMesh
 
 # SMC namespace is only available in fbcode builds
 try:
@@ -131,7 +135,7 @@ def load(
 def load(
     kind: MeshKind,
     name: str,
-) -> "Future[object]": ...
+) -> "Future[Union[HostMesh, ProcMesh]]": ...
 
 
 def load(
@@ -196,9 +200,47 @@ def load(
             region = actor_mesh.region
             shape = region.as_shape()
             return ActorMesh(actor_class, name, actor_mesh, shape, None)
+        elif kind == MeshKind.Host:
+            # Wrap HyHostMesh in HostMesh for Python API access
+            from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+                HostMesh as HyHostMesh,
+            )
+            from monarch._src.actor.host_mesh import HostMesh
+
+            hy_host_mesh = cast(HyHostMesh, inner)
+            return HostMesh.from_ref(hy_host_mesh)
+        elif kind == MeshKind.Proc:
+            # Wrap HyProcMesh in ProcMesh for Python API access
+            # First, load the parent host mesh if available
+            from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
+                HostMesh as HyHostMesh,
+            )
+            from monarch._rust_bindings.monarch_hyperactor.proc_mesh import (
+                ProcMesh as HyProcMesh,
+            )
+            from monarch._src.actor.host_mesh import HostMesh
+            from monarch._src.actor.proc_mesh import ProcMesh
+
+            hy_proc_mesh = cast(HyProcMesh, inner)
+
+            # Get the parent host mesh name and load it
+            host_mesh_name = hy_proc_mesh.host_mesh_name
+            if host_mesh_name is not None:
+                # Load the parent host mesh from namespace
+                host_task = ns.get(MeshKind.Host, host_mesh_name)
+                hy_host_mesh = cast(HyHostMesh, await host_task)
+                host_mesh = HostMesh.from_ref(hy_host_mesh)
+            else:
+                # No parent host mesh - this shouldn't happen for normal proc meshes
+                # but we handle it gracefully by raising an error
+                raise RuntimeError(
+                    f"ProcMesh '{name}' has no associated HostMesh. "
+                    "Cannot create a fully functional ProcMesh wrapper."
+                )
+
+            return ProcMesh.from_ref(hy_proc_mesh, host_mesh)
         else:
-            # For Proc and Host meshes, return the Rust type directly
-            # These are already usable without additional wrapping
+            # Unknown kind - return as-is
             return inner
 
     return Future(coro=_load())

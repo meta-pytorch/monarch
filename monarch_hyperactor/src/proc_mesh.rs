@@ -177,9 +177,19 @@ impl PyProcMesh {
         Ok(self.mesh_ref()?.region().into())
     }
 
+    /// Get the display name of this proc mesh (without UUID suffix).
     #[getter]
-    fn name(&self) -> PyResult<String> {
-        Ok(self.mesh_ref()?.name().to_string())
+    fn display_name(&self) -> PyResult<String> {
+        Ok(self.mesh_ref()?.name().name().to_string())
+    }
+
+    /// Get the name of the parent host mesh, if this proc mesh was spawned from one.
+    #[getter]
+    fn host_mesh_name(&self) -> PyResult<Option<String>> {
+        Ok(self
+            .mesh_ref()?
+            .hosts()
+            .map(|h| h.name().name().to_string()))
     }
 
     fn stop_nonblocking(&self, instance: &PyInstance, reason: String) -> PyResult<PyPythonTask> {

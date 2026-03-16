@@ -84,6 +84,13 @@ class HostMesh:
         ...
 
     @property
+    def display_name(self) -> str:
+        """
+        The display name of the mesh (without UUID suffix).
+        """
+        ...
+
+    @property
     def region(self) -> Region:
         """
         The region of the mesh.
