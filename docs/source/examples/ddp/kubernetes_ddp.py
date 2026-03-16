@@ -37,12 +37,14 @@ No YAML manifests for worker pods are needed -- only a controller pod with
 RBAC permissions to create CRDs and watch pods::
 
     # Deploy the controller with CRD permissions
-    kubectl apply -f manifests/ddp_provision.yaml
+    kubectl apply -f https://raw.githubusercontent.com/meta-pytorch/monarch/refs/heads/main/docs/source/examples/ddp/manifests/ddp_provision.yaml
 
     # Copy scripts and run
-    kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
-    kubectl cp train.py monarch-tests/ddp-controller:/tmp/train.py
-    kubectl exec -it ddp-controller -n monarch-tests -- \\
+    curl -LO https://raw.githubusercontent.com/meta-pytorch/monarch/refs/heads/main/docs/source/examples/ddp/kubernetes_ddp.py
+    kubectl cp kubernetes_ddp.py ddp-controller:/tmp/kubernetes_ddp.py
+    curl -LO https://raw.githubusercontent.com/meta-pytorch/monarch/refs/heads/main/docs/source/examples/ddp/train.py
+    kubectl cp train.py ddp-controller:/tmp/train.py
+    kubectl exec -it ddp-controller -- \\
         python /tmp/kubernetes_ddp.py --provision --num_hosts 2 --gpus_per_host 4
 
 YAML Manifest Provisioning
@@ -54,7 +56,6 @@ Alternatively, you can pre-provision workers with YAML manifests::
     kind: MonarchMesh
     metadata:
       name: ddpmesh # Name of MonarchMesh
-      namespace: monarch-tests
     spec:
       replicas: 2  # Number of worker pods (hosts)
       port: 26600
@@ -79,7 +80,19 @@ Alternatively, you can pre-provision workers with YAML manifests::
 
 Deploy with::
 
-    kubectl apply -f manifests/ddp_mesh.yaml
+    kubectl apply -f https://raw.githubusercontent.com/meta-pytorch/monarch/refs/heads/main/docs/source/examples/ddp/manifests/ddp_mesh.yaml
+
+    # Copy scripts and run
+    curl -LO https://raw.githubusercontent.com/meta-pytorch/monarch/refs/heads/main/docs/source/examples/ddp/kubernetes_ddp.py
+    kubectl cp kubernetes_ddp.py ddp-controller:/tmp/kubernetes_ddp.py
+
+    curl -LO https://raw.githubusercontent.com/meta-pytorch/monarch/refs/heads/main/docs/source/examples/ddp/train.py
+    for pod in $(kubectl get pods -l app.kubernetes.io/name=monarch-worker -o name); do
+        kubectl cp train.py ${pod#pod/}:/tmp/train.py
+    done
+
+    kubectl exec -it ddp-controller -- \\
+        python /tmp/kubernetes_ddp.py --num_hosts 2 --gpus_per_host 4
 
 See the `complete manifest on GitHub <https://github.com/meta-pytorch/monarch/tree/main/docs/source/examples/ddp/manifests>`_
 including RBAC configuration and controller pod.
@@ -261,13 +274,13 @@ async def main(
     # %%
     # Connect to Kubernetes
     # ~~~~~~~~~~~~~~~~~~~~~
-    # Create a ``KubernetesJob`` in the ``monarch-tests`` namespace.
+    # Create a ``KubernetesJob`` in the ``default`` namespace.
     # With ``--provision``, the job creates MonarchMesh CRDs via the K8s API
     # using ``pod_spec`` for full control over the pod template (needed for
     # the shared memory volume that NCCL requires). Without ``--provision``,
     # it attaches to pre-provisioned pods.
 
-    k8s_job = KubernetesJob(namespace="monarch-tests")
+    k8s_job = KubernetesJob(namespace="default")
     if provision:
         k8s_job.add_mesh(
             mesh_name,
@@ -336,8 +349,8 @@ async def main(
 #
 # 2. Run from the controller::
 #
-#        kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
-#        kubectl exec -it ddp-controller -n monarch-tests -- \
+#        kubectl cp kubernetes_ddp.py ddp-controller:/tmp/kubernetes_ddp.py
+#        kubectl exec -it ddp-controller -- \
 #            python /tmp/kubernetes_ddp.py --provision --num_hosts 2 --gpus_per_host 4
 #
 # 3. Clean up::
@@ -352,19 +365,19 @@ async def main(
 #
 # 2. Wait for pods to be ready::
 #
-#        kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker
-#        kubectl get pods -n monarch-tests ddp-controller
+#        kubectl get pods -l app.kubernetes.io/name=monarch-worker
+#        kubectl get pods ddp-controller
 #
 # 3. Copy train.py to each worker pod::
 #
-#        for pod in $(kubectl get pods -n monarch-tests -l app.kubernetes.io/name=monarch-worker -o name); do
-#            kubectl cp train.py monarch-tests/${pod#pod/}:/tmp/train.py
+#        for pod in $(kubectl get pods -l app.kubernetes.io/name=monarch-worker -o name); do
+#            kubectl cp train.py ${pod#pod/}:/tmp/train.py
 #        done
 #
 # 4. Run from the controller pod::
 #
-#        kubectl cp kubernetes_ddp.py monarch-tests/ddp-controller:/tmp/kubernetes_ddp.py
-#        kubectl exec -it ddp-controller -n monarch-tests -- \
+#        kubectl cp kubernetes_ddp.py ddp-controller:/tmp/kubernetes_ddp.py
+#        kubectl exec -it ddp-controller -- \
 #            python /tmp/kubernetes_ddp.py --num_hosts 2 --gpus_per_host 4
 #
 # 5. Clean up::
