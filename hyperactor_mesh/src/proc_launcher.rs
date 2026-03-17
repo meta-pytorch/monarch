@@ -41,16 +41,21 @@
 //! launcher (`ManagedByLauncher`).
 #![allow(dead_code, unused_imports)] // Temporary
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::reference as hyperactor_reference;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::process::ChildStderr;
 use tokio::process::ChildStdout;
 use tokio::sync::oneshot;
+use typeuri::Named;
 
+use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 
 mod native;
@@ -158,6 +163,34 @@ pub enum ProcLauncherError {
     Other(String),
 }
 
+/// Per-process CPU/NUMA binding configuration.
+///
+/// When attached to a proc spec, the bootstrap command is wrapped with
+/// `numactl` (on NUMA systems) or `taskset` (Linux fallback) before launch.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Named)]
+pub struct ProcBind {
+    /// NUMA node for CPU binding (`numactl --cpunodebind`).
+    pub cpunodebind: Option<String>,
+    /// NUMA node for memory binding (`numactl --membind`).
+    pub membind: Option<String>,
+    /// Physical CPU list (`numactl --physcpubind`).
+    pub physcpubind: Option<String>,
+    /// CPU set for taskset fallback (`taskset -c`).
+    pub cpus: Option<String>,
+}
+wirevalue::register_type!(ProcBind);
+
+impl From<HashMap<String, String>> for ProcBind {
+    fn from(map: HashMap<String, String>) -> Self {
+        Self {
+            cpunodebind: map.get("cpunodebind").cloned(),
+            membind: map.get("membind").cloned(),
+            physcpubind: map.get("physcpubind").cloned(),
+            cpus: map.get("cpus").cloned(),
+        }
+    }
+}
+
 /// Per-launch policy computed by the manager and handed to the
 /// launcher.
 ///
@@ -224,6 +257,14 @@ pub struct LaunchOptions {
     /// env when `Some`. Other backends may ignore it or use it to
     /// wire their own forwarding mechanism.
     pub log_channel: Option<ChannelAddr>,
+
+    /// Optional CPU/NUMA binding for this proc.
+    ///
+    /// Launchers that support binding should apply it using
+    /// backend-appropriate mechanisms (e.g., `numactl` for native,
+    /// unit properties for systemd). Launchers that do not support
+    /// it may ignore this field.
+    pub proc_bind: Option<ProcBind>,
 }
 
 /// Format a human-readable process name for diagnostics and logs.
@@ -236,22 +277,22 @@ pub struct LaunchOptions {
 /// include a friendly identifier in logs, crash reports, etc.
 ///
 /// Format:
-/// - `ProcId(_, name)` → `proc <name> @ <hostname>`
+/// - `ProcId(_, name)` → `<name> @ <host_process_name>`
 ///
-/// Notes:
-/// - We best-effort resolve the local hostname; on failure or
-///   non-UTF8 we fall back to `"unknown_host"`.
-/// - This is **not** guaranteed to be unique and should not be parsed
-///   for program logic.
+/// The host identity is taken from the current process's
+/// `HYPERACTOR_PROCESS_NAME`, falling back to the machine hostname.
+/// This groups procs under their host process in traces and logs.
 pub fn format_process_name(proc_id: &hyperactor_reference::ProcId) -> String {
     let who = proc_id.name();
 
-    let host = hostname::get()
-        .unwrap_or_else(|_| "unknown_host".into())
-        .into_string()
-        .unwrap_or("unknown_host".to_string());
+    let host = std::env::var(bootstrap::PROCESS_NAME_ENV).unwrap_or_else(|_| {
+        hostname::get()
+            .unwrap_or_else(|_| "unknown_host".into())
+            .into_string()
+            .unwrap_or("unknown_host".to_string())
+    });
 
-    format!("proc {} @ {}", who, host)
+    format!("{} @ {}", who, host)
 }
 
 /// Strategy interface for launching and stopping a proc.
