@@ -999,7 +999,7 @@ mod tests {
         let instance = testing::instance();
         let host_mesh = local_host_mesh(2).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity())
+            .spawn(instance, "test", Extent::unity(), None)
             .await
             .unwrap();
 
@@ -1113,14 +1113,14 @@ mod tests {
         // MESH_ORPHAN_TIMEOUT=2s and start the SelfCheck loop.
         let mut actor_hm = host_mesh_with_config(num_replicas).await;
         let actor_proc_mesh = actor_hm
-            .spawn(instance, "actors", Extent::unity())
+            .spawn(instance, "actors", Extent::unity(), None)
             .await
             .unwrap();
 
         // Host mesh for the wrapper + controller (will be killed).
         let mut controller_hm = host_mesh_with_config(1).await;
         let controller_proc_mesh = controller_hm
-            .spawn(instance, "controller", Extent::unity())
+            .spawn(instance, "controller", Extent::unity(), None)
             .await
             .unwrap();
 
