@@ -803,7 +803,7 @@ pub enum LocalProcStatus {
 ///   No OS signals are sent or required.
 pub struct LocalProcManager<S> {
     procs: Arc<Mutex<HashMap<reference::ProcId, Proc>>>,
-    stopping: Arc<Mutex<HashMap<reference::ProcId, LocalProcStatus>>>,
+    stopping: Arc<Mutex<HashMap<reference::ProcId, tokio::sync::watch::Sender<LocalProcStatus>>>>,
     spawn: S,
 }
 
@@ -822,8 +822,8 @@ impl<S> LocalProcManager<S> {
     /// that tears it down.
     ///
     /// Status transitions through `Stopping` -> `Stopped` and is
-    /// observable via [`local_proc_status`]. Idempotent: no-ops if
-    /// the proc is already stopping or stopped.
+    /// observable via [`local_proc_status`] and [`watch`]. Idempotent:
+    /// no-ops if the proc is already stopping or stopped.
     pub async fn request_stop(&self, proc: &reference::ProcId, timeout: Duration, reason: &str) {
         {
             let guard = self.stopping.lock().await;
@@ -841,10 +841,11 @@ impl<S> LocalProcManager<S> {
         };
 
         let proc_id = proc_handle.proc_id().clone();
+        let (tx, _) = tokio::sync::watch::channel(LocalProcStatus::Stopping);
         self.stopping
             .lock()
             .await
-            .insert(proc_id.clone(), LocalProcStatus::Stopping);
+            .insert(proc_id.clone(), tx);
 
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
@@ -855,10 +856,9 @@ impl<S> LocalProcManager<S> {
             {
                 tracing::warn!(error = %e, "request_stop(local): destroy_and_wait failed");
             }
-            stopping
-                .lock()
-                .await
-                .insert(proc_id, LocalProcStatus::Stopped);
+            if let Some(tx) = stopping.lock().await.get(&proc_id) {
+                let _ = tx.send(LocalProcStatus::Stopped);
+            }
         });
     }
 
@@ -867,7 +867,26 @@ impl<S> LocalProcManager<S> {
     ///
     /// Returns `None` if the proc was never stopped through this path.
     pub async fn local_proc_status(&self, proc: &reference::ProcId) -> Option<LocalProcStatus> {
-        self.stopping.lock().await.get(proc).copied()
+        self.stopping
+            .lock()
+            .await
+            .get(proc)
+            .map(|tx| *tx.borrow())
+    }
+
+    /// Subscribe to lifecycle status changes for a proc that was
+    /// stopped via [`request_stop`].
+    ///
+    /// Returns `None` if the proc was never stopped through this path.
+    pub async fn watch(
+        &self,
+        proc: &reference::ProcId,
+    ) -> Option<tokio::sync::watch::Receiver<LocalProcStatus>> {
+        self.stopping
+            .lock()
+            .await
+            .get(proc)
+            .map(|tx| tx.subscribe())
     }
 }
 
