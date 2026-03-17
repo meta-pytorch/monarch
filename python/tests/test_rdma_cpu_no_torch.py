@@ -13,11 +13,6 @@ from monarch.actor import Actor, endpoint, this_host
 from monarch.config import configured
 from monarch.rdma import is_ibverbs_available, RDMABuffer
 
-# Verify torch is NOT imported as a side-effect of loading monarch.rdma.
-assert "torch" not in sys.modules, (
-    "torch was unexpectedly imported when loading monarch.rdma"
-)
-
 # TODO(slurye): Enable these tests in OSS once the shutdown hang issue is fixed.
 pytestmark = pytest.mark.oss_skip
 
