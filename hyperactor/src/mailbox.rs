@@ -1082,7 +1082,7 @@ impl MailboxClient {
                     {
                         message.undeliverable(
                             DeliveryError::BrokenLink(format!(
-                                "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
+                                "failed to enqueue in MailboxClient: {error} with reason {reason:?}"
                             )),
                             return_handle_0,
                         );
@@ -1144,7 +1144,7 @@ impl MailboxSender for MailboxClient {
             self.queue.send((envelope, return_handle))
         {
             let err = DeliveryError::BrokenLink(
-                "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
+                "failed to enqueue in MailboxClient; queue is closed".to_string(),
             );
 
             // Failed to enqueue.
