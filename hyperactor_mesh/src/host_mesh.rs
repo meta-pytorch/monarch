@@ -69,6 +69,7 @@ use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
 use crate::resource::ProcSpec;
+use crate::resource::WaitRankStatusClient;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::transport::DEFAULT_TRANSPORT;
@@ -1366,7 +1367,7 @@ impl HostMeshRef {
                 },
             )?;
             host.mesh_agent()
-                .get_rank_status(cx, proc_name, port.bind())
+                .wait_rank_status(cx, proc_name, Status::Stopped, port.bind())
                 .await?;
 
             tracing::info!(
@@ -1398,7 +1399,7 @@ impl HostMeshRef {
         .await
         {
             Ok(statuses) => {
-                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                let all_stopped = statuses.values().all(|s| s.is_terminated());
                 if !all_stopped {
                     tracing::error!(
                         name = "ProcMeshStatus",
