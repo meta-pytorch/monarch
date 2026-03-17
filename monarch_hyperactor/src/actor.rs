@@ -850,7 +850,7 @@ impl Actor for PythonActor {
             envelope.0.sender(),
             ins.self_id(),
             "undeliverable message was returned to the wrong actor. \
-            Return address = {}, src actor = {}, dest actor port = {}, message type = {} envelope headers = {}",
+            Return address = {}, src actor = {}, dest actor port = {}, message type = {}, envelope headers = {}",
             envelope.0.sender(),
             ins.self_id(),
             envelope.0.dest(),
