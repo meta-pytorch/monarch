@@ -646,6 +646,23 @@ impl ProcLauncher for ActorProcLauncher {
                     .map_err(|e| ProcLauncherError::Other(format!("set env item: {e}")))?;
             }
 
+            let py_proc_bind = opts.proc_bind.as_ref().map(|bind| {
+                let d = pyo3::types::PyDict::new(py);
+                if let Some(v) = &bind.cpunodebind {
+                    d.set_item("cpunodebind", v).unwrap();
+                }
+                if let Some(v) = &bind.membind {
+                    d.set_item("membind", v).unwrap();
+                }
+                if let Some(v) = &bind.physcpubind {
+                    d.set_item("physcpubind", v).unwrap();
+                }
+                if let Some(v) = &bind.cpus {
+                    d.set_item("cpus", v).unwrap();
+                }
+                d
+            });
+
             let py_opts = launch_opts_cls
                 .call1((
                     &opts.bootstrap_payload,
@@ -657,6 +674,7 @@ impl ProcLauncher for ActorProcLauncher {
                     opts.want_stdio,
                     opts.tail_lines,
                     opts.log_channel.as_ref().map(|a| a.to_string()),
+                    py_proc_bind,
                 ))
                 .map_err(|e| ProcLauncherError::Other(format!("construct LaunchOptions: {e}")))?;
 
