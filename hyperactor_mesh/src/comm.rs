@@ -1407,7 +1407,7 @@ mod tests {
         let instance = crate::testing::instance();
         let mut host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(gpu = 8))
+            .spawn(instance, "test", extent!(gpu = 8), None)
             .await
             .unwrap();
 
