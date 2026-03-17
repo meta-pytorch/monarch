@@ -2046,3 +2046,23 @@ async def test_del_runs_on_proc_mesh_stop() -> None:
             f"file {marker_path} should have contents 'finalized' if the finalizers were run"
         )
     os.unlink(marker_path)
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+async def test_broadcast_not_dropped():
+    """Messages broadcast immediately after spawning are never dropped."""
+    proc = this_host().spawn_procs(per_host={"gpus": 4})
+    counter = proc.spawn("counter", Counter, 0)
+
+    # Immediately broadcast multiple increments before awaiting any results.
+    n_increments = 10
+    for _ in range(n_increments):
+        counter.incr.broadcast()
+
+    # Verify all increments were applied on every rank.
+    results = await counter.value.call()
+    for rank, value in results:
+        assert value == n_increments, (
+            f"rank {rank}: expected {n_increments} increments, got {value}"
+        )
