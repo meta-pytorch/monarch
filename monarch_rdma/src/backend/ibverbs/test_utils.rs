@@ -143,8 +143,17 @@ impl Handler<CudaActorMessage> for CudaActor {
                     prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
                     prop.location.id = device;
                     prop.allocFlags.gpuDirectRDMACapable = 1;
-                    prop.requestedHandleTypes =
-                        rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                    // ROCm bindgen generates a different struct layout with anonymous union
+                    #[cfg(feature = "rocm")]
+                    {
+                        prop.__bindgen_anon_1.requestedHandleTypes =
+                            rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                    }
+                    #[cfg(not(feature = "rocm"))]
+                    {
+                        prop.requestedHandleTypes =
+                            rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+                    }
 
                     cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
                         &mut granularity as *mut usize,
@@ -188,7 +197,7 @@ impl Handler<CudaActorMessage> for CudaActor {
                         1
                     ));
 
-                    (dptr, padded_size)
+                    (dptr as usize, padded_size)
                 };
 
                 // Register via RdmaManagerActor request_buffer; the ibverbs MR
@@ -631,8 +640,14 @@ impl IbvTestEnv {
         }
 
         // Resolve ibverbs details lazily via resolve_ibv
-        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1.resolve_ibv(&instance_1).await?;
-        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2.resolve_ibv(&instance_2).await?;
+        let (ibv_actor_1, ibv_buffer_1) = rdma_handle_1
+            .resolve_ibv(&instance_1)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 1"))??;
+        let (ibv_actor_2, ibv_buffer_2) = rdma_handle_2
+            .resolve_ibv(&instance_2)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("ibverbs backend not found for buffer 2"))??;
 
         // Fill buffer1 with test data
         if parsed_accel1.0 == "cuda" {

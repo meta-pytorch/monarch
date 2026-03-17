@@ -19,6 +19,7 @@ use serde::Serialize;
 mod macros;
 
 pub mod backend;
+pub mod config;
 pub mod device_selection;
 pub mod efa;
 pub mod local_memory;
@@ -26,6 +27,14 @@ mod rdma_components;
 mod rdma_manager_actor;
 
 pub use backend::ibverbs::primitives::*;
+
+/// Whether any RDMA backend is available on this system.
+///
+/// Returns true if ibverbs hardware is present, or if TCP fallback
+/// is enabled via [`config::RDMA_ALLOW_TCP_FALLBACK`].
+pub fn rdma_supported() -> bool {
+    ibverbs_supported() || hyperactor_config::global::get(config::RDMA_ALLOW_TCP_FALLBACK)
+}
 pub use rdma_components::RdmaRemoteBuffer;
 pub use rdma_components::SegmentScannerFn;
 // Re-export segment scanner types for extension crate

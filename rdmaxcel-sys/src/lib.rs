@@ -23,10 +23,50 @@ mod inner {
     #[cfg(cargo)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    // In ROCm builds, bindgen generates hipDeviceptr_t instead of CUdeviceptr.
-    // Alias CUdeviceptr to hipDeviceptr_t so Rust code can use CUdeviceptr consistently.
+    // ROCm/HIP compatibility layer
+    //
+    // In ROCm builds, bindgen generates HIP types and constants instead of CUDA equivalents.
+    // These type aliases and const aliases allow Rust code to use CUDA names consistently
+    // across both CUDA and ROCm backends, avoiding the need for conditional compilation
+    // throughout the codebase.
     #[cfg(use_rocm)]
-    pub type CUdeviceptr = hipDeviceptr_t;
+    pub use self::rocm_compat::*;
+
+    #[cfg(use_rocm)]
+    mod rocm_compat {
+        use super::*;
+
+        // Basic types
+        pub type CUdevice = hipDevice_t;
+        pub type CUdeviceptr = hipDeviceptr_t;
+        pub type CUcontext = hipCtx_t;
+
+        // Memory management types
+        pub type CUmemGenericAllocationHandle = hipMemGenericAllocationHandle_t;
+        pub type CUmemAllocationProp = hipMemAllocationProp;
+        pub type CUmemAccessDesc = hipMemAccessDesc;
+
+        // Error codes
+        pub const CUDA_SUCCESS: hipError_t = hipSuccess;
+
+        // Pointer attributes
+        pub const CU_POINTER_ATTRIBUTE_MEMORY_TYPE: hipPointer_attribute =
+            HIP_POINTER_ATTRIBUTE_MEMORY_TYPE;
+
+        // Memory handle types
+        pub const CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD: hipMemRangeHandleType =
+            hipMemRangeHandleTypeDmaBufFd;
+        pub const CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR: hipMemAllocationHandleType =
+            hipMemHandleTypePosixFileDescriptor;
+
+        // Memory allocation flags
+        pub const CU_MEM_ALLOCATION_TYPE_PINNED: hipMemAllocationType = hipMemAllocationTypePinned;
+        pub const CU_MEM_LOCATION_TYPE_DEVICE: hipMemLocationType = hipMemLocationTypeDevice;
+        pub const CU_MEM_ALLOC_GRANULARITY_MINIMUM: hipMemAllocationGranularity_flags =
+            hipMemAllocationGranularityMinimum;
+        pub const CU_MEM_ACCESS_FLAGS_PROT_READWRITE: hipMemAccessFlags =
+            hipMemAccessFlagsProtReadWrite;
+    }
 
     #[repr(C, packed(1))]
     #[derive(Debug, Default, Clone, Copy)]
@@ -250,10 +290,6 @@ pub type RdmaxcelSegmentScannerFn = rdmaxcel_segment_scanner_fn;
 // These provide a place for doc comments and explicit signatures.
 unsafe extern "C" {
     pub fn rdmaxcel_error_string(error_code: std::os::raw::c_int) -> *const std::os::raw::c_char;
-
-    /// Returns the error message from CUDA driver initialization failure,
-    /// or null if initialization succeeded.
-    pub fn rdmaxcel_driver_init_error() -> *const std::os::raw::c_char;
 
     /// Get PCI address from a CUDA/HIP device pointer
     ///
