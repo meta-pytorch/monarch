@@ -45,6 +45,7 @@ use typeuri::Named;
 use crate::Name;
 use crate::StatusOverlay;
 use crate::bootstrap;
+use crate::bootstrap::ProcBind;
 use crate::host_mesh::host_agent::ProcState;
 use crate::proc_agent::ActorSpec;
 use crate::proc_agent::ActorState;
@@ -742,13 +743,16 @@ pub(crate) struct ProcSpec {
     /// Config values to set on the spawned proc's global config,
     /// at the `ClientOverride` layer.
     pub(crate) client_config_override: Attrs,
+    /// Optional per-process CPU/NUMA binding configuration.
+    pub(crate) proc_bind: Option<ProcBind>,
 }
 wirevalue::register_type!(ProcSpec);
 
 impl ProcSpec {
-    pub(crate) fn new(client_config_override: Attrs) -> Self {
+    pub(crate) fn new(client_config_override: Attrs, proc_bind: Option<ProcBind>) -> Self {
         Self {
             client_config_override,
+            proc_bind,
         }
     }
 }
