@@ -8,3 +8,4 @@ The following pages explore the key aspects of channels, from basic usage to tra
 - [Channel Addresses](addresses.md)
 - [Transports](transports.md)
 - [Frames](frames.md)
+- [Network Internals](net_internals.md)
