@@ -9,7 +9,8 @@
 6. [ActorMesh](#actormesh)
 7. [Error Handling in Meshes](#error-handling-in-meshes)
 8. [Advanced Patterns](#advanced-patterns)
-9. [Best Practices](#best-practices)
+9. [CPU/NUMA Binding](#cpunuma-binding)
+10. [Best Practices](#best-practices)
 
 ---
 
@@ -863,6 +864,76 @@ config_mesh = ValueMesh.from_list(configs, extent={"gpus": 8})
 # Spawn actors with value mesh
 actors = procs.spawn("actors", ConfigActor, config_mesh)
 ```
+
+---
+
+## CPU/NUMA Binding
+
+On multi-socket machines, pinning each process to a specific NUMA node
+or CPU set can significantly improve memory bandwidth and reduce
+cross-socket traffic. Monarch exposes this through the `proc_bind`
+parameter on `HostMesh.spawn_procs()`.
+
+### How it works
+
+Each entry in the `proc_bind` list is a dict of binding keys that map
+to the corresponding process in the mesh. On NUMA-capable Linux hosts,
+Monarch wraps the process command with `numactl`; on other Linux hosts
+it falls back to `taskset`. Non-Linux platforms ignore binding.
+
+### Binding keys
+
+| Key | Tool | Effect |
+|---|---|---|
+| `cpunodebind` | `numactl --cpunodebind` | Pin CPUs to a NUMA node |
+| `membind` | `numactl --membind` | Pin memory allocation to a NUMA node |
+| `physcpubind` | `numactl --physcpubind` | Pin to specific physical CPU cores |
+| `cpus` | `taskset -c` | Fallback CPU set (used when NUMA is unavailable) |
+
+The `numactl` keys (`cpunodebind`, `membind`, `physcpubind`) take
+precedence when the host is NUMA-capable. If none of them are set,
+`cpus` is used with `taskset` as a fallback.
+
+### Example: pin each GPU process to its NUMA node
+
+```python
+from monarch.actor import this_host
+
+host = this_host()
+
+# 8 GPUs, 2 NUMA nodes. Pin GPUs 0-3 to node 0, GPUs 4-7 to node 1.
+bindings = [
+    {"cpunodebind": "0", "membind": "0"} for _ in range(4)
+] + [
+    {"cpunodebind": "1", "membind": "1"} for _ in range(4)
+]
+
+procs = host.spawn_procs(per_host={"gpus": 8}, proc_bind=bindings)
+trainers = procs.spawn("trainers", Trainer)
+```
+
+### Example: pin to specific CPU cores with taskset
+
+```python
+# 4 processes, each pinned to a disjoint set of cores.
+bindings = [
+    {"cpus": "0-15"},
+    {"cpus": "16-31"},
+    {"cpus": "32-47"},
+    {"cpus": "48-63"},
+]
+
+procs = host.spawn_procs(per_host={"gpus": 4}, proc_bind=bindings)
+```
+
+### Notes
+
+- The length of `proc_bind` must equal the total number of processes
+  per host (i.e. `math.prod(per_host.values())`).
+- Passing `None` (the default) disables binding entirely.
+- Custom proc launchers receive the binding configuration in
+  `LaunchOptions.proc_bind` and may apply it using backend-appropriate
+  mechanisms (e.g., systemd unit properties, Docker `--cpuset-cpus`).
 
 ---
 
