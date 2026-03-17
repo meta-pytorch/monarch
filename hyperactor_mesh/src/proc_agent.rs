@@ -234,7 +234,10 @@ struct ActorInstanceState {
     /// Pending `WaitRankStatus` callers: each entry is the minimum
     /// status threshold and the reply port to send once the threshold
     /// is met.
-    pending_wait_status: Vec<(resource::Status, hyperactor_reference::PortRef<crate::StatusOverlay>)>,
+    pending_wait_status: Vec<(
+        resource::Status,
+        hyperactor_reference::PortRef<crate::StatusOverlay>,
+    )>,
 }
 
 impl ActorInstanceState {

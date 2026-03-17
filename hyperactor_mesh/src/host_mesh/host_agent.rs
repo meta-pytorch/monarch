@@ -242,8 +242,14 @@ pub struct HostAgent {
     /// Pending `WaitRankStatus` waiters, keyed by resource name.
     /// Each entry is `(min_status, rank, reply_port)`. Only touched
     /// from `&mut self` handlers.
-    pending_proc_waiters:
-        HashMap<Name, Vec<(resource::Status, usize, hyperactor_reference::PortRef<crate::StatusOverlay>)>>,
+    pending_proc_waiters: HashMap<
+        Name,
+        Vec<(
+            resource::Status,
+            usize,
+            hyperactor_reference::PortRef<crate::StatusOverlay>,
+        )>,
+    >,
     /// Procs that already have an active bridge task watching their status.
     watching: HashSet<Name>,
     /// Port handle for sending `ProcStatusChanged` to self. Set in `init()`.
@@ -483,10 +489,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         }
         self.created.insert(
             create_or_update.name.clone(),
-            ProcCreationState {
-                rank,
-                created,
-            },
+            ProcCreationState { rank, created },
         );
 
         // If any WaitRankStatus messages arrived before this proc
@@ -509,9 +512,13 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         }
 
         // Start a bridge and send ourselves an initial check.
-        if self.pending_proc_waiters.contains_key(&create_or_update.name) {
+        if self
+            .pending_proc_waiters
+            .contains_key(&create_or_update.name)
+        {
             if let Some(proc_id) = &proc_id {
-                self.start_watch_bridge(&create_or_update.name, proc_id).await;
+                self.start_watch_bridge(&create_or_update.name, proc_id)
+                    .await;
             }
             self.notify_proc_status_changed(&create_or_update.name);
         }
@@ -627,9 +634,8 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
 
                 // If already at or past the requested threshold, reply immediately.
                 if status >= msg.min_status {
-                    let overlay =
-                        StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
-                            .expect("valid single-run overlay");
+                    let overlay = StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                        .expect("valid single-run overlay");
                     let _ = msg.reply.send(cx, overlay);
                     return Ok(());
                 }
@@ -649,9 +655,11 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
                 ..
             }) => {
                 // Creation failed — reply immediately with Failed status.
-                let overlay =
-                    StatusOverlay::try_from_runs(vec![(*rank..(*rank + 1), Status::Failed(e.to_string()))])
-                        .expect("valid single-run overlay");
+                let overlay = StatusOverlay::try_from_runs(vec![(
+                    *rank..(*rank + 1),
+                    Status::Failed(e.to_string()),
+                )])
+                .expect("valid single-run overlay");
                 let _ = msg.reply.send(cx, overlay);
             }
             None => {
@@ -671,11 +679,7 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
 
 #[async_trait]
 impl Handler<ProcStatusChanged> for HostAgent {
-    async fn handle(
-        &mut self,
-        cx: &Context<Self>,
-        msg: ProcStatusChanged,
-    ) -> anyhow::Result<()> {
+    async fn handle(&mut self, cx: &Context<Self>, msg: ProcStatusChanged) -> anyhow::Result<()> {
         use crate::StatusOverlay;
         use crate::resource::Status;
 
@@ -734,11 +738,7 @@ impl HostAgent {
 
     /// Start a bridge task that watches a proc's status channel and sends
     /// `ProcStatusChanged` to self on each change. At most one bridge per proc.
-    async fn start_watch_bridge(
-        &mut self,
-        name: &Name,
-        proc_id: &hyperactor_reference::ProcId,
-    ) {
+    async fn start_watch_bridge(&mut self, name: &Name, proc_id: &hyperactor_reference::ProcId) {
         if self.watching.contains(name) {
             return;
         }
@@ -1264,8 +1264,7 @@ mod tests {
             )
             .unwrap();
 
-        let client_proc =
-            Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let name = Name::new("proc1").unwrap();
@@ -1282,12 +1281,7 @@ mod tests {
         // Proc is Running; wait for Running should reply immediately.
         let (port, mut rx) = client.open_port::<crate::StatusOverlay>();
         host_agent
-            .wait_rank_status(
-                &client,
-                name,
-                resource::Status::Running,
-                port.bind(),
-            )
+            .wait_rank_status(&client, name, resource::Status::Running, port.bind())
             .await
             .unwrap();
 
@@ -1321,8 +1315,7 @@ mod tests {
             )
             .unwrap();
 
-        let client_proc =
-            Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let name = Name::new("proc1").unwrap();
@@ -1385,8 +1378,7 @@ mod tests {
             )
             .unwrap();
 
-        let client_proc =
-            Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
+        let client_proc = Proc::direct(ChannelTransport::Unix.any(), "client".to_string()).unwrap();
         let (client, _client_handle) = client_proc.instance("client").unwrap();
 
         let name = Name::new("proc1").unwrap();
@@ -1406,12 +1398,7 @@ mod tests {
         // Now create the proc — the stashed waiter should get its
         // sentinel rank fixed and be flushed once the proc is Running.
         host_agent
-            .create_or_update(
-                &client,
-                name,
-                resource::Rank::new(0),
-                ProcSpec::default(),
-            )
+            .create_or_update(&client, name, resource::Rank::new(0), ProcSpec::default())
             .await
             .unwrap();
 

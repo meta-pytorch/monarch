@@ -69,9 +69,9 @@ use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
 use crate::resource::ProcSpec;
-use crate::resource::WaitRankStatusClient;
 use crate::resource::RankedValues;
 use crate::resource::Status;
+use crate::resource::WaitRankStatusClient;
 use crate::transport::DEFAULT_TRANSPORT;
 
 /// Actor name for `HostMeshController` when spawned as a named child.

@@ -842,10 +842,7 @@ impl<S> LocalProcManager<S> {
 
         let proc_id = proc_handle.proc_id().clone();
         let (tx, _) = tokio::sync::watch::channel(LocalProcStatus::Stopping);
-        self.stopping
-            .lock()
-            .await
-            .insert(proc_id.clone(), tx);
+        self.stopping.lock().await.insert(proc_id.clone(), tx);
 
         let stopping = Arc::clone(&self.stopping);
         let reason = reason.to_string();
@@ -867,11 +864,7 @@ impl<S> LocalProcManager<S> {
     ///
     /// Returns `None` if the proc was never stopped through this path.
     pub async fn local_proc_status(&self, proc: &reference::ProcId) -> Option<LocalProcStatus> {
-        self.stopping
-            .lock()
-            .await
-            .get(proc)
-            .map(|tx| *tx.borrow())
+        self.stopping.lock().await.get(proc).map(|tx| *tx.borrow())
     }
 
     /// Subscribe to lifecycle status changes for a proc that was
