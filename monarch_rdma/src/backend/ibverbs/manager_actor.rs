@@ -78,11 +78,11 @@ pub enum IbvManagerMessage {
         reply: reference::OncePortRef<Option<IbvBuffer>>,
     },
     /// Release a buffer registration by `remote_buf_id`.
-    ReleaseBuffer {
-        remote_buf_id: usize,
-        #[reply]
-        reply: reference::OncePortRef<()>,
-    },
+    /// IMPORTANT: This needs to be fire-and-forget (no reply port)
+    /// to avoid a circular deadlock where RdmaManagerActor waits for
+    /// IbvManagerMessage::ReleaseBuffer while IbvManagerActor waits for
+    /// RdmaManagerMessage::RequestLocalMemory.
+    ReleaseBuffer { remote_buf_id: usize },
     RequestQueuePair {
         other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
