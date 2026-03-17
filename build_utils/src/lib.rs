@@ -416,6 +416,64 @@ pub fn setup_cpp_static_libs() -> CppStaticLibsConfig {
     config
 }
 
+/// Detect GPU compute platform (CUDA or ROCm)
+///
+/// Returns (is_rocm, compute_home_path)
+///
+/// Detection order:
+/// 1. MONARCH_RDMA_GPU_PLATFORM environment variable ("cuda" or "rocm")
+/// 2. Auto-detect: try CUDA first, fall back to ROCm
+/// 3. If both found, prefer CUDA (user can override with env var)
+pub fn detect_gpu_platform() -> (bool, String) {
+    // Check for explicit platform selection via env var
+    if let Ok(platform) = env::var("MONARCH_RDMA_GPU_PLATFORM") {
+        match platform.to_lowercase().as_str() {
+            "rocm" => {
+                let rocm_home = rocm::validate_rocm_installation()
+                    .expect("MONARCH_RDMA_GPU_PLATFORM=rocm but ROCm installation not found");
+                println!("cargo:warning=Using ROCm from {} (explicit)", rocm_home);
+                return (true, rocm_home);
+            }
+            "cuda" => {
+                let cuda_home = validate_cuda_installation()
+                    .expect("MONARCH_RDMA_GPU_PLATFORM=cuda but CUDA installation not found");
+                println!("cargo:warning=Using CUDA from {} (explicit)", cuda_home);
+                return (false, cuda_home);
+            }
+            _ => panic!(
+                "Invalid MONARCH_RDMA_GPU_PLATFORM value: {}. Must be 'rocm' or 'cuda'",
+                platform
+            ),
+        }
+    }
+
+    // Auto-detect: try CUDA first, fall back to ROCm
+    let cuda_result = validate_cuda_installation();
+    let rocm_result = rocm::validate_rocm_installation();
+
+    match (rocm_result.is_ok(), cuda_result.is_ok()) {
+        (true, false) => {
+            let rocm_home = rocm_result.unwrap();
+            println!("cargo:warning=Using ROCm from {}", rocm_home);
+            (true, rocm_home)
+        }
+        (false, true) => {
+            let cuda_home = cuda_result.unwrap();
+            println!("cargo:warning=Using CUDA from {}", cuda_home);
+            (false, cuda_home)
+        }
+        (true, true) => {
+            panic!(
+                "Both ROCm and CUDA detected. Set MONARCH_RDMA_GPU_PLATFORM=cuda or \
+                 MONARCH_RDMA_GPU_PLATFORM=rocm to select the platform."
+            );
+        }
+        (false, false) => {
+            panic!("Neither CUDA nor ROCm installation found");
+        }
+    }
+}
+
 /// Set rpath for Python library directory
 ///
 /// This emits cargo directives to add the Python library directory to the rpath,

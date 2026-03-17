@@ -430,7 +430,7 @@ impl IbvManagerActor {
                 // Use rdmaxcel utility to get PCI address from CUDA pointer
                 let mut pci_addr_buf: [std::os::raw::c_char; 16] = [0; 16]; // Enough space for "ffff:ff:ff.0\0"
                 let err = rdmaxcel_sys::get_cuda_pci_address_from_ptr(
-                    addr as u64,
+                    addr as rdmaxcel_sys::CUdeviceptr,
                     pci_addr_buf.as_mut_ptr(),
                     pci_addr_buf.len(),
                 );
@@ -1111,7 +1111,10 @@ impl RdmaBackend for ActorHandle<IbvManagerActor> {
     ) -> Result<(), anyhow::Error> {
         let mut ibv_ops = Vec::with_capacity(ops.len());
         for op in ops {
-            let (remote_ibv_mgr, remote_ibv_buffer) = op.remote.resolve_ibv(cx).await?;
+            let (remote_ibv_mgr, remote_ibv_buffer) =
+                op.remote.resolve_ibv(cx).await.ok_or_else(|| {
+                    anyhow::anyhow!("ibverbs backend not found for buffer: {:?}", op.remote)
+                })??;
 
             ibv_ops.push(IbvOp {
                 op_type: op.op_type,

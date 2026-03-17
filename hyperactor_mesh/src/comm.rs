@@ -114,11 +114,8 @@ pub struct CommActor {
     /// Each sender is a unique stream.
     recv_state: HashMap<(ActorMeshId, hyperactor_reference::ActorId), ReceiveState>,
 
-    /// The comm actor's mesh configuration.
-    mesh_config: Option<CommMeshConfig>,
-
-    /// Messages that arrived before `CommMeshConfig`. Replayed once config is set.
-    pending: Vec<PendingMessage>,
+    /// The comm actor's mesh configuration, or buffered messages if not yet configured.
+    mesh_config: MeshConfigState,
 }
 
 #[derive(Debug)]
@@ -126,6 +123,31 @@ enum PendingMessage {
     Cast(CastMessage),
     Forward(ForwardMessage),
     ForwardV1(ForwardMessageV1),
+}
+
+#[derive(Debug)]
+enum MeshConfigState {
+    /// Config not yet received; buffer incoming messages until it arrives.
+    NotConfigured(Vec<PendingMessage>),
+    /// Config received; ready to route messages.
+    Configured(CommMeshConfig),
+}
+
+impl Default for MeshConfigState {
+    fn default() -> Self {
+        MeshConfigState::NotConfigured(Vec::new())
+    }
+}
+
+impl MeshConfigState {
+    fn config(&self) -> &CommMeshConfig {
+        match self {
+            MeshConfigState::Configured(c) => c,
+            MeshConfigState::NotConfigured(_) => {
+                panic!("mesh_config accessed before CommMeshConfig was received")
+            }
+        }
+    }
 }
 
 /// Configuration for how a `CommActor` determines its own rank and locates peers.
@@ -397,8 +419,11 @@ fn replace_with_self_ranks(cast_point: &Point, data: &mut ErasedUnbound) -> anyh
 #[async_trait]
 impl Handler<CommMeshConfig> for CommActor {
     async fn handle(&mut self, cx: &Context<Self>, config: CommMeshConfig) -> Result<()> {
-        self.mesh_config = Some(config);
-        let pending = std::mem::take(&mut self.pending);
+        let pending =
+            match std::mem::replace(&mut self.mesh_config, MeshConfigState::Configured(config)) {
+                MeshConfigState::NotConfigured(pending) => pending,
+                MeshConfigState::Configured(_) => Vec::new(),
+            };
         if !pending.is_empty() {
             tracing::info!(
                 count = pending.len(),
@@ -421,8 +446,8 @@ impl Handler<CommMeshConfig> for CommActor {
 impl Handler<CastMessage> for CommActor {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessage) -> Result<()> {
-        if self.mesh_config.is_none() {
-            self.pending.push(PendingMessage::Cast(cast_message));
+        if let MeshConfigState::NotConfigured(pending) = &mut self.mesh_config {
+            pending.push(PendingMessage::Cast(cast_message));
             return Ok(());
         }
         // Always forward the message to the root rank of the slice, casting starts from there.
@@ -445,10 +470,7 @@ impl Handler<CastMessage> for CommActor {
             last_seq,
         };
 
-        let config = self
-            .mesh_config
-            .as_ref()
-            .expect("mesh_config checked above");
+        let config = self.mesh_config.config();
 
         // Optimization: if forwarding to ourselves, handle inline instead of
         // going through the message queue
@@ -465,8 +487,8 @@ impl Handler<CastMessage> for CommActor {
 impl Handler<ForwardMessage> for CommActor {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
-        if self.mesh_config.is_none() {
-            self.pending.push(PendingMessage::Forward(fwd_message));
+        if let MeshConfigState::NotConfigured(pending) = &mut self.mesh_config {
+            pending.push(PendingMessage::Forward(fwd_message));
             return Ok(());
         }
 
@@ -478,10 +500,7 @@ impl Handler<ForwardMessage> for CommActor {
             last_seq,
         } = fwd_message;
 
-        let config = self
-            .mesh_config
-            .as_ref()
-            .expect("mesh_config checked above");
+        let config = self.mesh_config.config();
 
         // Resolve/dedup routing frames.
         let rank = config.self_rank();
@@ -575,16 +594,13 @@ impl Handler<CastMessageV1> for CommActor {
 #[async_trait]
 impl Handler<ForwardMessageV1> for CommActor {
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessageV1) -> Result<()> {
-        if self.mesh_config.is_none() {
-            self.pending.push(PendingMessage::ForwardV1(fwd_message));
+        if let MeshConfigState::NotConfigured(pending) = &mut self.mesh_config {
+            pending.push(PendingMessage::ForwardV1(fwd_message));
             return Ok(());
         }
 
         let ForwardMessageV1 { dests, mut message } = fwd_message;
-        let config = self
-            .mesh_config
-            .as_ref()
-            .expect("mesh_config checked above");
+        let config = self.mesh_config.config();
         // Resolve/dedup routing frames.
         let rank_on_root_mesh = config.self_rank();
         let (deliver_here, next_steps) =
@@ -721,70 +737,122 @@ mod tests {
 
     // -- Pre-config message buffering tests --
 
+    #[test]
+    fn mesh_config_state_defaults_to_not_configured() {
+        let actor = CommActor::default();
+        assert!(matches!(actor.mesh_config, MeshConfigState::NotConfigured(ref v) if v.is_empty()));
+    }
+
+    #[test]
+    fn mesh_config_state_transition_returns_pending() {
+        let mut state = MeshConfigState::NotConfigured(Vec::new());
+        let config = CommMeshConfig::new(0, HashMap::new());
+        let pending = match std::mem::replace(&mut state, MeshConfigState::Configured(config)) {
+            MeshConfigState::NotConfigured(pending) => pending,
+            MeshConfigState::Configured(_) => panic!("expected NotConfigured"),
+        };
+        assert!(pending.is_empty());
+        assert!(matches!(state, MeshConfigState::Configured(_)));
+    }
+
+    #[test]
+    fn mesh_config_state_config_returns_configured() {
+        let config = CommMeshConfig::new(42, HashMap::new());
+        let state = MeshConfigState::Configured(config);
+        assert_eq!(state.config().self_rank(), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "mesh_config accessed before CommMeshConfig was received")]
+    fn mesh_config_state_config_panics_when_not_configured() {
+        let state = MeshConfigState::NotConfigured(Vec::new());
+        let _ = state.config();
+    }
+
     /// Verify that a CastMessage arriving before CommMeshConfig is buffered
-    /// instead of crashing the actor.
-    ///
-    /// Before the fix, the CastMessage handler would immediately call
-    /// `mesh_config.ok_or_else(|| anyhow!("CommMeshConfig has not been set yet"))`
-    /// and return an error, which killed the actor. After the fix, the
-    /// handler checks `mesh_config.is_none()` and pushes to `pending`,
-    /// returning `Ok(())`.
+    /// and replayed upon config receipt, delivering the message to the dest actor.
     #[async_timed_test(timeout_secs = 10)]
-    async fn cast_before_config_is_buffered_not_dropped() {
+    async fn cast_before_config_is_buffered_and_replayed() {
         use hyperactor::Proc;
+        use hyperactor::RemoteSpawn;
+        use hyperactor::channel::ChannelTransport;
         use ndslice::Slice;
 
-        let proc = Proc::local();
+        let proc =
+            Proc::direct(ChannelTransport::Unix.any(), "test_buffering".to_string()).unwrap();
         let (client, _client_handle) = proc.instance("client").unwrap();
-        let handle = proc.spawn("comm", CommActor::default()).unwrap();
-        let comm_ref: ActorRef<CommActor> = ActorRef::attest(handle.actor_id().clone());
 
-        // Construct a minimal CastMessage.
-        let slice = Slice::new_row_major(vec![1]);
-        let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
-        let dest_port = multicast::DestinationPort::new::<
-            test_utils::TestActor,
-            test_utils::TestMessage,
-        >("test".to_string());
-        let envelope = multicast::CastMessageEnvelope::from_serialized(
-            crate::reference::ActorMeshId(crate::Name::new("test").unwrap()),
-            client.self_id().clone(),
-            dest_port,
-            shape,
-            Default::default(),
-            wirevalue::Any::serialize(&0u64).unwrap(),
-        );
-        let cast_msg = multicast::CastMessage {
-            dest: multicast::Uslice {
-                slice: slice.clone(),
-                selection: sel!(*),
-            },
-            message: envelope,
+        // The actor mesh name determines the actor name used in routing.
+        // deliver_to_dest constructs port_id with this name, so the spawned
+        // actor must use the same name.
+        let actor_mesh_name = crate::Name::new("test").unwrap();
+        let actor_name = actor_mesh_name.to_string();
+
+        // Spawn TestActor with a forwarding port so we can observe delivery.
+        let (tx, mut rx) = open_port(&client);
+        let forward_port = tx.bind();
+        let test_actor = TestActor::new(TestActorParams { forward_port }, Default::default())
+            .await
+            .unwrap();
+        let test_handle = proc.spawn(&actor_name, test_actor).unwrap();
+        // Bind registers handler ports in the mailbox dispatch table,
+        // required for serialized delivery via CommActor's deliver_to_dest.
+        let _test_ref: hyperactor_reference::ActorRef<TestActor> = test_handle.bind::<TestActor>();
+
+        // Spawn CommActor (no config yet).
+        let comm_handle = proc.spawn("comm", CommActor::default()).unwrap();
+
+        // Helper to build a CastMessage targeting the TestActor.
+        let actor_mesh_id = crate::reference::ActorMeshId(actor_mesh_name.clone());
+        let make_cast = |payload: &str| -> multicast::CastMessage {
+            let slice = Slice::new_row_major(vec![1]);
+            let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
+            let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
+                actor_mesh_id.clone(),
+                client.self_id().clone(),
+                shape,
+                hyperactor_config::Flattrs::new(),
+                TestMessage::Forward(payload.to_string()),
+            )
+            .unwrap();
+            multicast::CastMessage {
+                dest: multicast::Uslice {
+                    slice,
+                    selection: sel!(*),
+                },
+                message: envelope,
+            }
         };
 
-        // Send CastMessage BEFORE CommMeshConfig.
-        // Old code: handler returns Err → actor crashes.
-        // New code: handler buffers message → actor stays alive.
-        comm_ref.send(&client, cast_msg).unwrap();
+        // Send CastMessage via handle (direct local channel) BEFORE config.
+        comm_handle.send(&client, make_cast("buffered")).unwrap();
 
-        // Give the actor time to process the message.
-        RealClock.sleep(Duration::from_millis(100)).await;
-
-        // Verify the actor is still alive by sending CommMeshConfig.
-        // If the CastMessage had crashed it, this would fail.
+        // Now send CommMeshConfig to trigger replay.
+        let comm_ref = comm_handle.bind::<CommActor>();
         let mut peers = HashMap::new();
-        peers.insert(0, comm_ref.clone());
-        comm_ref
+        peers.insert(0, comm_ref);
+        comm_handle
             .send(&client, CommMeshConfig::new(0, peers))
             .unwrap();
 
-        // Give the actor time to process config and replay.
-        // The replay will fail (minimal test message, no real routing),
-        // but the key assertion is that the actor survived the pre-config
-        // CastMessage — it was buffered, not rejected.
-        RealClock.sleep(Duration::from_millis(100)).await;
+        // Also send a second CastMessage after config (non-buffered).
+        comm_handle.send(&client, make_cast("direct")).unwrap();
 
-        handle.drain_and_stop("test done").ok();
+        // Verify the buffered message was replayed and delivered to TestActor,
+        // followed by the non-buffered message.
+        let msg1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for replayed message")
+            .expect("port closed without receiving message");
+        assert_eq!(msg1, TestMessage::Forward("buffered".to_string()));
+
+        let msg2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for direct message")
+            .expect("port closed without receiving message");
+        assert_eq!(msg2, TestMessage::Forward("direct".to_string()));
+
+        comm_handle.drain_and_stop("test done").ok();
     }
 
     use hyperactor::accum::Accumulator;
@@ -1202,7 +1270,7 @@ mod tests {
         // can collect paths from the same process.
         let host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(gpu = 8))
+            .spawn(instance, "test", extent!(gpu = 8), None)
             .await
             .unwrap();
 
@@ -1384,7 +1452,7 @@ mod tests {
         // can collect paths from the same process.
         let host_mesh = local_host_mesh(8).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", extent!(gpu = 8))
+            .spawn(instance, "test", extent!(gpu = 8), None)
             .await
             .unwrap();
 
