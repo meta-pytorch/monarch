@@ -51,6 +51,7 @@ use crate::ValueMesh;
 use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
+use crate::bootstrap::ProcBind;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::HostMeshAgentProcMeshTrampoline;
@@ -992,6 +993,12 @@ impl HostMeshRef {
     /// Spawn a ProcMesh onto this host mesh. The per_host extent specifies the shape
     /// of the procs to spawn on each host.
     ///
+    /// `proc_bind`, when provided, is a per-process CPU/NUMA binding
+    /// configuration. Its length must equal the number of ranks in
+    /// `per_host`. Each entry maps binding keys (`cpunodebind`,
+    /// `membind`, `physcpubind`, `cpus`) to their values.
+    /// Only takes effect when running on Linux.
+    ///
     /// Currently, spawn issues direct calls to each host agent. This will be fixed by
     /// maintaining a comm actor on the host service procs themselves.
     #[allow(clippy::result_large_err)]
@@ -1000,11 +1007,13 @@ impl HostMeshRef {
         cx: &C,
         name: &str,
         per_host: Extent,
+        proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
-        self.spawn_inner(cx, Name::new(name)?, per_host).await
+        self.spawn_inner(cx, Name::new(name)?, per_host, proc_bind)
+            .await
     }
 
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string(), proc_mesh=proc_mesh_name.to_string()))]
@@ -1013,13 +1022,16 @@ impl HostMeshRef {
         cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
+        proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
     {
         tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Attempt");
         tracing::info!(name = "ProcMeshStatus", status = "Spawn::Attempt",);
-        let result = self.spawn_inner_inner(cx, proc_mesh_name, per_host).await;
+        let result = self
+            .spawn_inner_inner(cx, proc_mesh_name, per_host, proc_bind)
+            .await;
         match &result {
             Ok(_) => {
                 tracing::info!(name = "HostMeshStatus", status = "ProcMesh::Spawn::Success");
@@ -1038,6 +1050,7 @@ impl HostMeshRef {
         cx: &C,
         proc_mesh_name: Name,
         per_host: Extent,
+        proc_bind: Option<Vec<ProcBind>>,
     ) -> crate::Result<ProcMesh>
     where
         C::A: Handler<MeshFailure>,
@@ -1052,6 +1065,13 @@ impl HostMeshRef {
             return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
                 "per_host dims overlap with existing dims when spawning proc mesh"
             )));
+        }
+        if let Some(proc_bind) = proc_bind.as_ref() {
+            if proc_bind.len() != per_host.num_ranks() {
+                return Err(crate::Error::ConfigurationError(anyhow::anyhow!(
+                    "proc_bind length does not match per_host extent"
+                )));
+            }
         }
 
         let extent = self
@@ -1094,12 +1114,13 @@ impl HostMeshRef {
                 let create_rank = per_host.num_ranks() * host_rank + per_host_rank;
                 let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank))?;
                 proc_names.push(proc_name.clone());
+                let bind = proc_bind.as_ref().map(|v| v[per_host_rank].clone());
                 host.mesh_agent()
                     .create_or_update(
                         cx,
                         proc_name.clone(),
                         resource::Rank::new(create_rank),
-                        ProcSpec::new(client_config_override.clone()),
+                        ProcSpec::new(client_config_override.clone(), bind),
                     )
                     .await
                     .map_err(|e| {
@@ -1693,7 +1714,7 @@ mod tests {
                 .unwrap();
 
             let proc_mesh1 = host_mesh
-                .spawn(instance, "test_1", Extent::unity())
+                .spawn(instance, "test_1", Extent::unity(), None)
                 .await
                 .unwrap();
 
@@ -1701,7 +1722,7 @@ mod tests {
                 proc_mesh1.spawn(instance, "test", &()).await.unwrap();
 
             let proc_mesh2 = host_mesh
-                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2))
+                .spawn(instance, "test_2", extent!(gpus = 3, extra = 2), None)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1833,7 +1854,7 @@ mod tests {
         let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), hosts);
 
         let proc_mesh = host_mesh
-            .spawn(&testing::instance(), "test", Extent::unity())
+            .spawn(&testing::instance(), "test", Extent::unity(), None)
             .await
             .unwrap();
 
@@ -1896,7 +1917,7 @@ mod tests {
         let instance = testing::instance();
 
         let err = host_mesh
-            .spawn(&instance, "test", Extent::unity())
+            .spawn(&instance, "test", Extent::unity(), None)
             .await
             .unwrap_err();
         assert_matches!(
@@ -1942,7 +1963,7 @@ mod tests {
         let instance = testing::instance();
 
         let err = host_mesh
-            .spawn(&instance, "test", Extent::unity())
+            .spawn(&instance, "test", Extent::unity(), None)
             .await
             .unwrap_err();
         let statuses = err.into_proc_spawn_error().unwrap();
@@ -1978,7 +1999,10 @@ mod tests {
         let instance = testing::instance();
 
         let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
 
         let actor_mesh: ActorMesh<testactor::TestActor> =
             proc_mesh.spawn(instance, "test", &()).await.unwrap();

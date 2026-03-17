@@ -1229,6 +1229,20 @@ class ErrorActorWithSupervise(ErrorActor):
         return self.should_handle
 
 
+def assert_supervision_failures(messages: list, expected_ranks: range) -> None:
+    """Assert that messages contains exactly one failure per expected rank, in any order."""
+    assert len(messages) == len(expected_ranks), (
+        f"Expected {len(expected_ranks)} failure messages, got {len(messages)}: {messages}"
+    )
+    for rank in expected_ranks:
+        matching = [m for m in messages if f"rank={rank}" in m]
+        assert len(matching) == 1, (
+            f"Expected exactly 1 message for rank={rank}, got {len(matching)}: {messages}"
+        )
+        assert "MeshFailure" in matching[0]
+        assert "error_actor" in matching[0]
+
+
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True})
 @isolate_in_subprocess
@@ -1244,18 +1258,8 @@ async def test_supervise_callback_handled():
     result = [f for _, f in result]
     assert len(result) == 4
     # We only need to check one of the 4 supervisor actors.
-    r = result[0]
     # The nested mesh of actors also has 4 dimensions.
-    assert len(r) == 4
-
-    def check_message(rank):
-        # Ensure that the error message has the actor id and the rank.
-        assert "MeshFailure" in r[rank]
-        assert f"rank={rank}" in r[rank]
-        assert "error_actor" in r[rank]
-
-    for i in range(len(r)):
-        check_message(i)
+    assert_supervision_failures(result[0], range(4))
 
     await pm.stop()
     await second_mesh.stop()
@@ -1276,18 +1280,8 @@ async def test_supervise_callback_without_await_handled():
     result = [f for _, f in result]
     assert len(result) == 4
     # We only need to check one of the 4 supervisor actors.
-    r = result[0]
     # The nested mesh of actors also has 4 dimensions.
-    assert len(r) == 4
-
-    def check_message(rank):
-        # Ensure that the error message has the actor id and the rank.
-        assert "MeshFailure" in r[rank]
-        assert f"rank={rank}" in r[rank]
-        assert "error_actor" in r[rank]
-
-    for i in range(len(r)):
-        check_message(i)
+    assert_supervision_failures(result[0], range(4))
 
     await pm.stop()
     await second_mesh.stop()
@@ -1321,18 +1315,8 @@ async def test_supervise_callback_with_mesh_ref():
     results2 = [f for _, f in results2]
     assert len(results2) == 1
     # We only need to check one of the supervisor actors.
-    r = results2[0]
     # The nested mesh of actors also has 4 dimensions.
-    assert len(r) == 4
-
-    def check_message(rank):
-        # Ensure that the error message has the actor id and the rank.
-        assert "MeshFailure" in r[rank]
-        assert f"rank={rank}" in r[rank]
-        assert "error_actor" in r[rank]
-
-    for i in range(len(r)):
-        check_message(i)
+    assert_supervision_failures(results2[0], range(4))
 
     await pm.stop()
     await second_mesh.stop()
@@ -1350,18 +1334,8 @@ async def test_supervise_callback_when_procs_killed():
     result = await supervisor.get_failures.call()
     result = [f for _, f in result]
     assert len(result) == 1
-    result = result[0]
     # The nested mesh of actors also has 4 dimensions.
-    assert len(result) == 4
-
-    def check_message(rank):
-        # Ensure that the error message has the actor id and the rank.
-        assert "MeshFailure" in result[rank]
-        assert f"rank={rank}" in result[rank]
-        assert "error_actor" in result[rank]
-
-    for i in range(len(result)):
-        check_message(i)
+    assert_supervision_failures(result[0], range(4))
 
     await pm.stop()
     await second_mesh.stop()

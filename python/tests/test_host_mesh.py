@@ -7,8 +7,11 @@
 # pyre-unsafe
 
 import os
+import pathlib
+import shutil
 import threading
 import time
+from typing import List, Set
 from unittest.mock import patch
 
 import cloudpickle
@@ -155,6 +158,24 @@ class PidActor(Actor):
         return os.getpid()
 
 
+class CpuAffinityActor(Actor):
+    @endpoint
+    def get_affinity(self) -> List[int]:
+        return sorted(os.sched_getaffinity(0))
+
+
+def _parse_cpu_list(s: str) -> Set[int]:
+    """Parse kernel CPU-list format (e.g. "0-3,8-11") into a set of ints."""
+    cpus = set()
+    for part in s.strip().split(","):
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            cpus.update(range(int(lo), int(hi) + 1))
+        else:
+            cpus.add(int(part))
+    return cpus
+
+
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_this_host_on_client_can_spawn_actual_os_processes() -> None:
@@ -219,3 +240,68 @@ def test_root_client_does_not_leak_host_meshes() -> None:
             t.join()
 
         assert mock_get_client_context.call_count == 100
+
+
+@pytest.mark.timeout(60)
+def test_spawn_procs_proc_bind_length_mismatch() -> None:
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    with pytest.raises(
+        ValueError, match=r"proc_bind length \(1\) must equal procs_per_host \(4\)"
+    ):
+        host.spawn_procs(
+            per_host={"gpus": 4},
+            proc_bind=[{"cpunodebind": "0"}],
+        )
+
+
+@pytest.mark.timeout(120)
+def test_spawn_procs_with_numactl_bind() -> None:
+    numa_node0 = pathlib.Path("/sys/devices/system/node/node0")
+    if not numa_node0.exists():
+        # pyre-fixme[29]: skip is a function
+        pytest.skip("NUMA node0 not available")
+    if shutil.which("numactl") is None:
+        # pyre-fixme[29]: skip is a function
+        pytest.skip("numactl binary not found")
+
+    node0_cpus = _parse_cpu_list((numa_node0 / "cpulist").read_text())
+    assert node0_cpus, "node0 has no CPUs"
+
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(
+        name="numa_bound",
+        per_host={"gpus": 2},
+        proc_bind=[{"cpunodebind": "0"}, {"cpunodebind": "0"}],
+    )
+    am = proc_mesh.spawn("affinity", CpuAffinityActor)
+    affinities = am.get_affinity.call().get()
+    for rank, cpus in affinities.items():
+        cpu_set = set(cpus)
+        assert cpu_set, f"rank {rank} has empty affinity"
+        assert cpu_set <= node0_cpus, (
+            f"rank {rank} affinity {cpu_set} is not a subset of node0 CPUs {node0_cpus}"
+        )
+
+
+@pytest.mark.timeout(120)
+def test_spawn_procs_with_taskset_bind() -> None:
+    available = sorted(os.sched_getaffinity(0))
+    if len(available) < 2:
+        # pyre-fixme[29]: skip is a function
+        pytest.skip("fewer than 2 CPUs available")
+
+    cpu_a = available[0]
+    cpu_b = available[1]
+
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(
+        name="taskset_bound",
+        per_host={"gpus": 2},
+        proc_bind=[{"cpus": str(cpu_a)}, {"cpus": str(cpu_b)}],
+    )
+    am = proc_mesh.spawn("affinity", CpuAffinityActor)
+    affinities = am.get_affinity.call().get()
+    observed = {frozenset(cpus) for cpus in affinities.values()}
+    assert observed == {frozenset({cpu_a}), frozenset({cpu_b})}, (
+        f"expected affinities {{{cpu_a}}} and {{{cpu_b}}}, got {affinities}"
+    )
