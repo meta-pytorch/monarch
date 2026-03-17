@@ -40,6 +40,7 @@ class HostMesh:
         instance: Instance,
         name: str,
         per_host: Extent,
+        proc_bind: list[dict[str, str]] | None = None,
     ) -> PythonTask[ProcMesh]:
         """
         Spawn a new actor on this mesh.
