@@ -1062,8 +1062,10 @@ impl MailboxClient {
         let tx = Arc::new(tx);
         let tx_status = tx.status().clone();
         let tx_monitoring = CancellationToken::new();
-        let (queue, mut next) =
-            mpsc::unbounded_channel::<(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>)>();
+        let (queue, mut next) = mpsc::unbounded_channel::<(
+            MessageEnvelope,
+            PortHandle<Undeliverable<MessageEnvelope>>,
+        )>();
         crate::init::get_runtime().spawn(async move {
             while let Some((envelope, return_handle)) = next.recv().await {
                 let tx = Arc::clone(&tx);
