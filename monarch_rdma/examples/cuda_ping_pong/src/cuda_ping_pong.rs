@@ -760,10 +760,10 @@ pub async fn run() -> Result<(), anyhow::Error> {
 
     // Create proc meshes (one proc per host mesh)
     let device_1_proc_mesh: ProcMesh = host_mesh_1
-        .spawn(&instance, "procs", Extent::unity())
+        .spawn(&instance, "procs", Extent::unity(), None)
         .await?;
     let device_2_proc_mesh: ProcMesh = host_mesh_2
-        .spawn(&instance, "procs", Extent::unity())
+        .spawn(&instance, "procs", Extent::unity(), None)
         .await?;
 
     // Create RDMA manager for the first device
