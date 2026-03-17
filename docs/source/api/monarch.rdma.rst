@@ -26,4 +26,4 @@ RDMA Actions
 Utility Functions
 =================
 
-.. autofunction:: is_rdma_available
+.. autofunction:: is_ibverbs_available

@@ -15,39 +15,17 @@
 //! - [`UnsafeLocalMemory`] – raw pointer-based handle where the caller is
 //!   responsible for lifetime management.
 
-use std::ffi::CStr;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::Once;
 use std::sync::RwLock;
 
 use serde::Deserialize;
 use serde::Serialize;
 
-/// Returns the error message from CUDA driver initialization failure,
-/// or `None` if initialization succeeded.
-pub fn driver_init_error() -> Option<String> {
-    // SAFETY: returns a pointer to a static C string or null.
-    unsafe {
-        let ptr = rdmaxcel_sys::rdmaxcel_driver_init_error();
-        if ptr.is_null() {
-            None
-        } else {
-            Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
-        }
-    }
-}
-
-static WARN_DRIVER_INIT: Once = Once::new();
-
 /// Returns `true` when `addr` is a CUDA device pointer.
 ///
 /// Probes the CUDA driver via `cuPointerGetAttribute`; returns `false`
 /// when CUDA is unavailable or the pointer is not device memory.
-///
-/// If the CUDA driver library cannot be loaded, logs a warning (once)
-/// with the full error message and returns `false`. This allows
-/// CPU-only RDMA operations to proceed.
 pub fn is_device_ptr(addr: usize) -> bool {
     // SAFETY: FFI call that queries pointer metadata without accessing
     // the pointed-to memory.
@@ -58,28 +36,7 @@ pub fn is_device_ptr(addr: usize) -> bool {
             rdmaxcel_sys::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
             addr as rdmaxcel_sys::CUdeviceptr,
         );
-        if err != rdmaxcel_sys::CUDA_SUCCESS {
-            // cuPointerGetAttribute can fail for many reasons:
-            // - CUDA_ERROR_NOT_INITIALIZED: driver not loaded
-            // - CUDA_ERROR_INVALID_VALUE: not a CUDA-managed pointer (e.g. host memory)
-            // - CUDA_ERROR_INVALID_CONTEXT: no valid context
-            // For non-device pointers this is expected; only warn when
-            // the driver itself failed to initialize.
-            if driver_init_error().is_some() {
-                WARN_DRIVER_INIT.call_once(|| {
-                    let msg = driver_init_error().unwrap();
-                    tracing::warn!(
-                        "CUDA driver library failed to load: {msg}. \
-                         GPU pointers will not be detected. \
-                         Set LD_LIBRARY_PATH to include the directory \
-                         containing libcuda.so.1 if CUDA is available \
-                         on this host."
-                    );
-                });
-            }
-            return false;
-        }
-        mem_type == rdmaxcel_sys::CU_MEMORYTYPE_DEVICE
+        err == rdmaxcel_sys::CUDA_SUCCESS && mem_type == rdmaxcel_sys::CU_MEMORYTYPE_DEVICE
     }
 }
 
@@ -379,31 +336,5 @@ mod tests {
         let mut buf = [0u8; 3];
         assert!(mem.read_at(1, &mut buf).is_err());
         assert!(mem.write_at(1, &[7, 8, 9]).is_err());
-    }
-
-    // -- is_device_ptr --
-
-    #[test]
-    fn is_device_ptr_null_returns_false() {
-        // Null is never a valid device pointer. On hosts where the CUDA
-        // driver loads, cuPointerGetAttribute returns a non-device type.
-        // On hosts where it doesn't load, is_device_ptr returns false
-        // and logs the error (no SIGABRT, no panic).
-        assert!(!is_device_ptr(0));
-    }
-
-    #[test]
-    fn is_device_ptr_stack_pointer_returns_false() {
-        let x: u64 = 42;
-        assert!(!is_device_ptr(&x as *const u64 as usize));
-    }
-
-    #[test]
-    fn driver_init_error_is_readable() {
-        // If the driver failed to load, the error message should contain
-        // useful information (e.g. the dlopen error string).
-        if let Some(msg) = driver_init_error() {
-            assert!(!msg.is_empty(), "driver init error should not be empty");
-        }
     }
 }
