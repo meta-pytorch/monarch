@@ -1914,6 +1914,8 @@ impl BootstrapProcManager {
     }
 }
 
+pub use crate::proc_launcher::ProcBind;
+
 /// The configuration used for bootstrapped procs.
 pub struct BootstrapProcConfig {
     /// The proc's create rank.
@@ -1922,6 +1924,11 @@ pub struct BootstrapProcConfig {
     /// Config values to set on the spawned proc's global config,
     /// at the `ClientOverride` layer.
     pub client_config_override: Attrs,
+
+    /// Optional per-process CPU/NUMA binding configuration.
+    /// When set, the bootstrap command is wrapped with `numactl`
+    /// (on NUMA systems) or `taskset` (Linux fallback) before launch.
+    pub proc_bind: Option<ProcBind>,
 }
 
 #[async_trait]
@@ -2009,6 +2016,7 @@ impl ProcManager for BootstrapProcManager {
             } else {
                 None
             },
+            proc_bind: config.proc_bind.clone(),
         };
 
         // Launch via the configured launcher backend.
@@ -3236,6 +3244,7 @@ mod tests {
                 BootstrapProcConfig {
                     create_rank: 0,
                     client_config_override: Attrs::new(),
+                    proc_bind: None,
                 },
             )
             .await
@@ -3305,6 +3314,7 @@ mod tests {
                 BootstrapProcConfig {
                     create_rank: 0,
                     client_config_override: Attrs::new(),
+                    proc_bind: None,
                 },
             )
             .await
@@ -3405,7 +3415,7 @@ mod tests {
         // (4) We collect the per-host procs into a `ProcMesh` and
         // return it.
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
+            .spawn(&instance, "p0", Extent::unity(), None)
             .await
             .unwrap();
 
@@ -3486,7 +3496,7 @@ mod tests {
 
         // Spawn a ProcMesh named "p0" on the host mesh.
         let proc_mesh = host_mesh
-            .spawn(&instance, "p0", Extent::unity())
+            .spawn(&instance, "p0", Extent::unity(), None)
             .await
             .unwrap();
 
