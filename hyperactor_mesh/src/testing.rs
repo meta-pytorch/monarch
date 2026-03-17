@@ -232,7 +232,7 @@ pub async fn local_proc_mesh(
 /// // spawn a process mesh on this host mesh with the name "test", abd per_host
 /// // extent gpu = 8.
 /// let proc_mesh = host_mesh
-///     .spawn(instance, "test", extent!(gpu = 8))
+///     .spawn(instance, "test", extent!(gpu = 8), None)
 ///     .await
 ///     .unwrap();
 /// // ... do something with the proc mesh ...

@@ -54,7 +54,7 @@ fn bench_actor_scaling(c: &mut Criterion) {
                 let instance = cx.actor_instance;
                 let mut host_mesh = test_utils::local_host_mesh(host_count).await;
                 let mut proc_mesh = host_mesh
-                    .spawn(instance, "bench", extent!(gpus = gpus))
+                    .spawn(instance, "bench", extent!(gpus = gpus), None)
                     .await
                     .unwrap();
                 let actor_mesh: ActorMesh<BenchActor> = proc_mesh
@@ -144,7 +144,7 @@ fn bench_actor_mesh_message_sizes(c: &mut Criterion) {
                         let instance = cx.actor_instance;
                         let mut host_mesh = test_utils::local_host_mesh(1).await;
                         let mut proc_mesh = host_mesh
-                            .spawn(instance, "bench", extent!(gpus = actor_count))
+                            .spawn(instance, "bench", extent!(gpus = actor_count), None)
                             .await
                             .unwrap();
                         let actor_mesh: ActorMesh<BenchActor> = proc_mesh
