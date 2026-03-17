@@ -1782,6 +1782,15 @@ impl BootstrapProcManager {
         self.children.lock().await.get(proc_id).map(|h| h.status())
     }
 
+    /// Return a watch receiver for the given proc's status stream,
+    /// if the proc is known to this manager.
+    pub async fn watch(
+        &self,
+        proc_id: &hyperactor_reference::ProcId,
+    ) -> Option<tokio::sync::watch::Receiver<ProcStatus>> {
+        self.children.lock().await.get(proc_id).map(|h| h.watch())
+    }
+
     /// Non-blocking stop: send `StopAll`, then spawn a background task
     /// that waits for exit and escalates if needed.
     ///

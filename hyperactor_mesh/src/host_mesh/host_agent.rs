@@ -15,6 +15,7 @@
 #![allow(unused_assignments)]
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -214,21 +215,39 @@ pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "host_agent";
 
 /// A mesh agent is responsible for managing a host in a [`HostMesh`],
 /// through the resource behaviors defined in [`crate::resource`].
+/// Self-notification sent by bridge tasks when a proc's status changes.
+/// Not exported or registered — only used internally via `PortHandle`.
+#[derive(Debug, Serialize, Deserialize, Named)]
+struct ProcStatusChanged {
+    name: Name,
+}
+
 #[hyperactor::export(
     handlers=[
         resource::CreateOrUpdate<ProcSpec>,
         resource::Stop,
         resource::GetState<ProcState>,
         resource::GetRankStatus { cast = true },
+        resource::WaitRankStatus { cast = true },
         resource::List,
         ShutdownHost,
         SpawnMeshAdmin,
         SetClientConfig,
+        ProcStatusChanged,
     ]
 )]
 pub struct HostAgent {
     pub(crate) host: Option<HostAgentMode>,
     pub(crate) created: HashMap<Name, ProcCreationState>,
+    /// Pending `WaitRankStatus` waiters, keyed by resource name.
+    /// Each entry is `(min_status, rank, reply_port)`. Only touched
+    /// from `&mut self` handlers.
+    pending_proc_waiters:
+        HashMap<Name, Vec<(resource::Status, usize, hyperactor_reference::PortRef<crate::StatusOverlay>)>>,
+    /// Procs that already have an active bridge task watching their status.
+    watching: HashSet<Name>,
+    /// Port handle for sending `ProcStatusChanged` to self. Set in `init()`.
+    proc_status_port: Option<PortHandle<ProcStatusChanged>>,
     /// Lazily initialized ProcAgent on the host's local proc.
     /// Boots on first [`GetLocalProc`] (LP-1 — see
     /// `hyperactor::host::LOCAL_PROC_NAME`).
@@ -246,6 +265,9 @@ impl HostAgent {
         Self {
             host: Some(host),
             created: HashMap::new(),
+            pending_proc_waiters: HashMap::new(),
+            watching: HashSet::new(),
+            proc_status_port: None,
             local_mesh_agent: OnceLock::new(),
             mailbox_handle: None,
         }
@@ -404,6 +426,8 @@ impl Actor for HostAgent {
             }
         });
 
+        self.proc_status_port = Some(this.port::<ProcStatusChanged>());
+
         Ok(())
     }
 }
@@ -451,16 +475,45 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             }
         };
 
+        let rank = create_or_update.rank.unwrap();
+
         if let Err(e) = &created {
             tracing::error!("failed to spawn proc {}: {}", create_or_update.name, e);
         }
         self.created.insert(
             create_or_update.name.clone(),
             ProcCreationState {
-                rank: create_or_update.rank.unwrap(),
+                rank,
                 created,
             },
         );
+
+        // If any WaitRankStatus messages arrived before this proc
+        // existed, their waiters were stashed with a sentinel rank.
+        // Now that we know the real rank, fix them up and start a
+        // watch bridge.
+        // Extract the proc_id before mutably borrowing pending_proc_waiters.
+        let proc_id = self
+            .created
+            .get(&create_or_update.name)
+            .and_then(|s| s.created.as_ref().ok())
+            .map(|(pid, _)| pid.clone());
+
+        if let Some(waiters) = self.pending_proc_waiters.get_mut(&create_or_update.name) {
+            for (_, waiter_rank, _) in waiters.iter_mut() {
+                if *waiter_rank == usize::MAX {
+                    *waiter_rank = rank;
+                }
+            }
+        }
+
+        // Start a bridge and send ourselves an initial check.
+        if self.pending_proc_waiters.contains_key(&create_or_update.name) {
+            if let Some(proc_id) = &proc_id {
+                self.start_watch_bridge(&create_or_update.name, proc_id).await;
+            }
+            self.notify_proc_status_changed(&create_or_update.name);
+        }
 
         self.publish_introspect_properties(cx);
         Ok(())
@@ -490,6 +543,9 @@ impl Handler<resource::Stop> for HostAgent {
             host.request_stop(cx, proc_id, timeout, &message.reason)
                 .await;
         }
+
+        // Status may have changed to Stopping; notify pending waiters.
+        self.notify_proc_status_changed(&message.name);
 
         self.publish_introspect_properties(cx);
         Ok(())
@@ -545,6 +601,200 @@ impl Handler<resource::GetRankStatus> for HostAgent {
         }
         Ok(())
     }
+}
+
+#[async_trait]
+impl Handler<resource::WaitRankStatus> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: resource::WaitRankStatus,
+    ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
+        use crate::resource::Status;
+
+        match self.created.get(&msg.name) {
+            Some(ProcCreationState {
+                rank,
+                created: Ok((proc_id, _)),
+            }) => {
+                let rank = *rank;
+                let status = match self.host.as_ref() {
+                    Some(host) => host.proc_status(proc_id).await.0,
+                    None => Status::Stopped,
+                };
+
+                // If already at or past the requested threshold, reply immediately.
+                if status >= msg.min_status {
+                    let overlay =
+                        StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                            .expect("valid single-run overlay");
+                    let _ = msg.reply.send(cx, overlay);
+                    return Ok(());
+                }
+
+                // Stash the waiter and start a bridge if we don't have one yet.
+                self.pending_proc_waiters
+                    .entry(msg.name.clone())
+                    .or_default()
+                    .push((msg.min_status, rank, msg.reply));
+
+                let proc_id = proc_id.clone();
+                self.start_watch_bridge(&msg.name, &proc_id).await;
+            }
+            Some(ProcCreationState {
+                rank,
+                created: Err(e),
+                ..
+            }) => {
+                // Creation failed — reply immediately with Failed status.
+                let overlay =
+                    StatusOverlay::try_from_runs(vec![(*rank..(*rank + 1), Status::Failed(e.to_string()))])
+                        .expect("valid single-run overlay");
+                let _ = msg.reply.send(cx, overlay);
+            }
+            None => {
+                // Proc doesn't exist yet. Stash the waiter with a
+                // sentinel rank; CreateOrUpdate will fill it in and
+                // start the watch bridge.
+                self.pending_proc_waiters
+                    .entry(msg.name.clone())
+                    .or_default()
+                    .push((msg.min_status, usize::MAX, msg.reply));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<ProcStatusChanged> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: ProcStatusChanged,
+    ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
+        use crate::resource::Status;
+
+        let status = match self.created.get(&msg.name) {
+            Some(ProcCreationState {
+                created: Ok((proc_id, _)),
+                ..
+            }) => match self.host.as_ref() {
+                Some(host) => host.proc_status(proc_id).await.0,
+                None => Status::Stopped,
+            },
+            Some(ProcCreationState {
+                created: Err(_), ..
+            }) => {
+                // Already replied with Failed when they were stashed.
+                return Ok(());
+            }
+            None => {
+                // Proc not created yet, nothing to flush.
+                return Ok(());
+            }
+        };
+
+        let Some(waiters) = self.pending_proc_waiters.get_mut(&msg.name) else {
+            return Ok(());
+        };
+
+        let remaining = std::mem::take(waiters);
+        for (min_status, rank, reply) in remaining {
+            if status >= min_status {
+                let overlay =
+                    StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
+                        .expect("valid single-run overlay");
+                let _ = reply.send(cx, overlay);
+            } else {
+                waiters.push((min_status, rank, reply));
+            }
+        }
+
+        if waiters.is_empty() {
+            self.pending_proc_waiters.remove(&msg.name);
+        }
+
+        Ok(())
+    }
+}
+
+impl HostAgent {
+    /// Send a `ProcStatusChanged` self-notification for the given proc name.
+    fn notify_proc_status_changed(&self, name: &Name) {
+        if let Some(port) = &self.proc_status_port {
+            let client = Instance::<()>::self_client();
+            let _ = port.send(client, ProcStatusChanged { name: name.clone() });
+        }
+    }
+
+    /// Start a bridge task that watches a proc's status channel and sends
+    /// `ProcStatusChanged` to self on each change. At most one bridge per proc.
+    async fn start_watch_bridge(
+        &mut self,
+        name: &Name,
+        proc_id: &hyperactor_reference::ProcId,
+    ) {
+        if self.watching.contains(name) {
+            return;
+        }
+        self.watching.insert(name.clone());
+
+        let port = match &self.proc_status_port {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        match self.host.as_ref() {
+            Some(HostAgentMode::Process { host, .. }) => {
+                if let Some(rx) = host.manager().watch(proc_id).await {
+                    start_proc_watch(port, rx, name.clone(), |s| s.clone().into());
+                }
+            }
+            Some(HostAgentMode::Local(host)) => {
+                if let Some(rx) = host.manager().watch(proc_id).await {
+                    start_proc_watch(port, rx, name.clone(), |s| (*s).into());
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// Spawn a bridge task that watches a proc's status channel and sends
+/// `ProcStatusChanged` to the actor via the given `PortHandle`.
+fn start_proc_watch<S>(
+    port: PortHandle<ProcStatusChanged>,
+    mut rx: tokio::sync::watch::Receiver<S>,
+    name: Name,
+    to_status: impl Fn(&S) -> resource::Status + Send + 'static,
+) where
+    S: Send + Sync + 'static,
+{
+    // TODO: replace Instance::self_client() with a proper mechanism
+    // for sending to port handles without an actor context.
+    let client = Instance::<()>::self_client();
+    tokio::spawn(async move {
+        loop {
+            match rx.changed().await {
+                Ok(()) => {
+                    let status = to_status(&*rx.borrow());
+                    let terminated = status.is_terminated();
+                    let _ = port.send(client, ProcStatusChanged { name: name.clone() });
+                    if terminated {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    let _ = port.send(client, ProcStatusChanged { name: name.clone() });
+                    return;
+                }
+            }
+        }
+    });
 }
 
 #[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]

@@ -231,6 +231,10 @@ struct ActorInstanceState {
     /// operation (spawn, stop, supervision event). Used for last-writer-wins
     /// ordering in the mesh controller.
     generation: u64,
+    /// Pending `WaitRankStatus` callers: each entry is the minimum
+    /// status threshold and the reply port to send once the threshold
+    /// is met.
+    pending_wait_status: Vec<(resource::Status, hyperactor_reference::PortRef<crate::StatusOverlay>)>,
 }
 
 impl ActorInstanceState {
@@ -280,6 +284,24 @@ impl ActorInstanceState {
             generation: self.generation,
             timestamp: std::time::SystemTime::now(),
         }
+    }
+
+    /// Drain any pending `WaitRankStatus` waiters whose threshold is
+    /// now met by the current status.
+    fn flush_wait_status(&mut self, cx: &impl hyperactor::context::Actor) {
+        let status = self.status();
+        self.pending_wait_status.retain(|(min_status, reply)| {
+            if status >= *min_status {
+                let rank = self.create_rank;
+                let overlay =
+                    crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
+                        .expect("valid single-run overlay");
+                let _ = reply.send(cx, overlay);
+                false // remove from pending
+            } else {
+                true // keep waiting
+            }
+        });
     }
 
     /// Send the current state to all streaming subscribers.
@@ -343,6 +365,7 @@ struct SelfCheck {}
         resource::StreamState<ActorState> { cast = true },
         resource::KeepaliveGetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
+        resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
     ]
 )]
@@ -815,6 +838,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                 instance.generation += 1;
                 let name = name.clone();
                 instance.notify_subscribers(cx, &name);
+                instance.flush_wait_status(cx);
             }
             // Defer republish so introspection picks up is_poisoned /
             // failed_actor_count without blocking the message loop.
@@ -916,6 +940,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                     subscribers: Vec::new(),
                     expiry_time: None,
                     generation: 1,
+                    pending_wait_status: Vec::new(),
                 },
             );
             return Ok(());
@@ -944,6 +969,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                 subscribers: Vec::new(),
                 expiry_time: None,
                 generation: 1,
+                pending_wait_status: Vec::new(),
             },
         );
 
@@ -956,19 +982,18 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 impl Handler<resource::Stop> for ProcAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         let actor_id = match self.actor_states.get_mut(&message.name) {
-            Some(actor_state) => match &actor_state.spawn {
-                Ok(actor_id) => {
-                    if actor_state.stop_initiated {
-                        None
-                    } else {
-                        actor_state.stop_initiated = true;
-                        actor_state.generation += 1;
-                        actor_state.notify_subscribers(cx, &message.name);
-                        Some(actor_id.clone())
-                    }
+            Some(actor_state) => {
+                let id = actor_state.spawn.as_ref().ok().cloned();
+                if id.is_some() && !actor_state.stop_initiated {
+                    actor_state.stop_initiated = true;
+                    actor_state.generation += 1;
+                    actor_state.notify_subscribers(cx, &message.name);
+                    actor_state.flush_wait_status(cx);
+                    id
+                } else {
+                    None
                 }
-                Err(_) => None,
-            },
+            }
             None => None,
         };
         if let Some(actor_id) = actor_id {
@@ -1051,6 +1076,42 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
                 get_rank_status.reply.port_id().actor_id(),
                 e
             );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::WaitRankStatus> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: resource::WaitRankStatus,
+    ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
+        use crate::resource::Status;
+
+        let (rank, status) = match self.actor_states.get(&msg.name) {
+            Some(state) => (state.create_rank, state.status()),
+            None => (usize::MAX, Status::NotExist),
+        };
+
+        // If already at or past the requested threshold, reply immediately.
+        if status >= msg.min_status || rank == usize::MAX {
+            let overlay = if rank == usize::MAX {
+                StatusOverlay::new()
+            } else {
+                StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                    .expect("valid single-run overlay")
+            };
+            let _ = msg.reply.send(cx, overlay);
+            return Ok(());
+        }
+
+        // Otherwise, stash the waiter. It will be flushed when the
+        // status changes (supervision event or stop).
+        if let Some(state) = self.actor_states.get_mut(&msg.name) {
+            state.pending_wait_status.push((msg.min_status, msg.reply));
         }
         Ok(())
     }
