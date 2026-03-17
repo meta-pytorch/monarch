@@ -32,7 +32,7 @@ def start_dashboard(db_path, host="0.0.0.0", port=5000):
         )
 
     app = create_app(SQLiteAdapter(db_path))
-    app.run(host=host, port=port)
+    app.run(host=host, port=port, debug=False)
 
 
 def _launch_simulator(db_path, interval, failure_at, host_failure=False):
