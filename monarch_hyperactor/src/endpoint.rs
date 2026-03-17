@@ -303,15 +303,12 @@ async fn collect_valuemesh(
     }
 
     Python::attach(|py| {
-        Ok(PyValueMesh::build_dense_from_extent(
+        Ok(PyValueMesh::build_from_parts(
             &extent,
             results
                 .into_iter()
-                .map(|msg| {
-                    let m = msg.expect("all responses should be filled");
-                    unpickle_from_part(py, m).map(|obj| obj.unbind())
-                })
-                .collect::<PyResult<_>>()?,
+                .map(|msg| msg.expect("all responses should be filled"))
+                .collect(),
         )?
         .into_pyobject(py)?
         .into_any()
