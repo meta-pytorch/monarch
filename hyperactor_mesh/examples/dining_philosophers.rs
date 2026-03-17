@@ -303,7 +303,12 @@ async fn main() -> Result<ExitCode> {
     );
 
     let proc_mesh = host_mesh
-        .spawn(instance, "philosophers", extent!(replica = group_size))
+        .spawn(
+            instance,
+            "philosophers",
+            extent!(replica = group_size),
+            None,
+        )
         .await?;
 
     let params = PhilosopherActorParams { size: group_size };
