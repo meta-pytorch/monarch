@@ -75,7 +75,7 @@ async fn main() {
     let instance = cx.actor_instance;
 
     let proc_mesh = host_mesh
-        .spawn(instance, "test", extent!(procs = 2))
+        .spawn(instance, "test", extent!(procs = 2), None)
         .await
         .unwrap();
 
