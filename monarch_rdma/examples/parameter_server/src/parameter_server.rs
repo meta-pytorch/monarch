@@ -477,7 +477,9 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     let _child = command.spawn().unwrap();
 
     let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), vec![host_addr]);
-    let ps_proc_mesh = host_mesh.spawn(instance, "ps", extent!(gpu = 1)).await?;
+    let ps_proc_mesh = host_mesh
+        .spawn(instance, "ps", extent!(gpu = 1), None)
+        .await?;
 
     tracing::info!(
         "creating parameter server's RDMA manager with config: {}",
@@ -496,7 +498,7 @@ pub async fn run(num_workers: usize, num_steps: usize) -> Result<(), anyhow::Err
     // Create a proc mesh for workers, where each worker is assigned to its own GPU.
     tracing::info!("creating worker proc mesh ({} workers)...", num_workers);
     let worker_proc_mesh = host_mesh
-        .spawn(instance, "workers", extent!(gpu = num_workers))
+        .spawn(instance, "workers", extent!(gpu = num_workers), None)
         .await?;
 
     tracing::info!(
