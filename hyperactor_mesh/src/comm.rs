@@ -139,17 +139,6 @@ impl Default for MeshConfigState {
     }
 }
 
-impl MeshConfigState {
-    fn config(&self) -> &CommMeshConfig {
-        match self {
-            MeshConfigState::Configured(c) => c,
-            MeshConfigState::NotConfigured(_) => {
-                panic!("mesh_config accessed before CommMeshConfig was received")
-            }
-        }
-    }
-}
-
 /// Configuration for how a `CommActor` determines its own rank and locates peers.
 #[derive(Debug, Clone, Serialize, Deserialize, Named)]
 pub struct CommMeshConfig {
@@ -446,10 +435,13 @@ impl Handler<CommMeshConfig> for CommActor {
 impl Handler<CastMessage> for CommActor {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, cast_message: CastMessage) -> Result<()> {
-        if let MeshConfigState::NotConfigured(pending) = &mut self.mesh_config {
-            pending.push(PendingMessage::Cast(cast_message));
-            return Ok(());
-        }
+        let config = match &mut self.mesh_config {
+            MeshConfigState::NotConfigured(pending) => {
+                pending.push(PendingMessage::Cast(cast_message));
+                return Ok(());
+            }
+            MeshConfigState::Configured(config) => config,
+        };
         // Always forward the message to the root rank of the slice, casting starts from there.
         let slice = cast_message.dest.slice.clone();
         let selection = cast_message.dest.selection.clone();
@@ -470,8 +462,6 @@ impl Handler<CastMessage> for CommActor {
             last_seq,
         };
 
-        let config = self.mesh_config.config();
-
         // Optimization: if forwarding to ourselves, handle inline instead of
         // going through the message queue
         if config.self_rank() == rank {
@@ -487,10 +477,13 @@ impl Handler<CastMessage> for CommActor {
 impl Handler<ForwardMessage> for CommActor {
     #[tracing::instrument(level = "debug", skip_all)]
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessage) -> Result<()> {
-        if let MeshConfigState::NotConfigured(pending) = &mut self.mesh_config {
-            pending.push(PendingMessage::Forward(fwd_message));
-            return Ok(());
-        }
+        let config = match &mut self.mesh_config {
+            MeshConfigState::NotConfigured(pending) => {
+                pending.push(PendingMessage::Forward(fwd_message));
+                return Ok(());
+            }
+            MeshConfigState::Configured(config) => config,
+        };
 
         let ForwardMessage {
             sender,
@@ -499,8 +492,6 @@ impl Handler<ForwardMessage> for CommActor {
             seq,
             last_seq,
         } = fwd_message;
-
-        let config = self.mesh_config.config();
 
         // Resolve/dedup routing frames.
         let rank = config.self_rank();
@@ -594,13 +585,15 @@ impl Handler<CastMessageV1> for CommActor {
 #[async_trait]
 impl Handler<ForwardMessageV1> for CommActor {
     async fn handle(&mut self, cx: &Context<Self>, fwd_message: ForwardMessageV1) -> Result<()> {
-        if let MeshConfigState::NotConfigured(pending) = &mut self.mesh_config {
-            pending.push(PendingMessage::ForwardV1(fwd_message));
-            return Ok(());
-        }
+        let config = match &mut self.mesh_config {
+            MeshConfigState::NotConfigured(pending) => {
+                pending.push(PendingMessage::ForwardV1(fwd_message));
+                return Ok(());
+            }
+            MeshConfigState::Configured(config) => config,
+        };
 
         let ForwardMessageV1 { dests, mut message } = fwd_message;
-        let config = self.mesh_config.config();
         // Resolve/dedup routing frames.
         let rank_on_root_mesh = config.self_rank();
         let (deliver_here, next_steps) =
