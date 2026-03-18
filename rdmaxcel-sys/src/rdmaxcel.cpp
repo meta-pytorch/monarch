@@ -44,6 +44,7 @@ struct SegmentInfo {
   size_t mr_size;
   uintptr_t mr_addr;
   struct mlx5dv_mkey* mkey;
+  void* registered_pd; // which PD this segment's MR was created under
 
   // Default constructor - initialize mr as null, keys as 0
   SegmentInfo()
@@ -54,7 +55,8 @@ struct SegmentInfo {
         mrs(),
         mr_size(0),
         mr_addr(0),
-        mkey(nullptr) {}
+        mkey(nullptr),
+        registered_pd(nullptr) {}
 
   // Parameterized constructor
   SegmentInfo(size_t addr, size_t sz, int32_t dev, bool expandable)
@@ -65,10 +67,13 @@ struct SegmentInfo {
         mrs(),
         mr_size(0),
         mr_addr(0),
-        mkey(nullptr) {}
+        mkey(nullptr),
+        registered_pd(nullptr) {}
 };
 
-// Global map to track active CUDA segments by address
+// Global map to track active CUDA segments: address -> SegmentInfo.
+// Each segment is registered to exactly one PD (the one for its device's NIC),
+// tracked by SegmentInfo::registered_pd.
 static std::unordered_map<size_t, SegmentInfo> activeSegments;
 static std::mutex segmentsMutex;
 
@@ -161,27 +166,38 @@ void rdmaxcel_register_segment_scanner(rdmaxcel_segment_scanner_fn scanner) {
   g_segment_scanner = scanner;
 }
 
-// Get count of active segments
-int rdma_get_active_segment_count() {
+// Get count of active segments registered under the given PD
+int rdma_get_active_segment_count(struct ibv_pd* pd) {
   std::lock_guard<std::mutex> lock(segmentsMutex);
-  return static_cast<int>(activeSegments.size());
+  int count = 0;
+  for (const auto& [addr, seg] : activeSegments) {
+    if (seg.registered_pd == static_cast<void*>(pd)) {
+      count++;
+    }
+  }
+  return count;
 }
 
-// Get all segment info into an array
-int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count) {
+// Get all segment info for the given PD into an array
+int rdma_get_all_segment_info(
+    struct ibv_pd* pd,
+    rdma_segment_info_t* info_array,
+    int max_count) {
   if (!info_array || max_count <= 0) {
-    return RDMAXCEL_INVALID_PARAMS; // Invalid parameters
+    return RDMAXCEL_INVALID_PARAMS;
   }
 
   std::lock_guard<std::mutex> lock(segmentsMutex);
 
   int count = 0;
-  for (const auto& pair : activeSegments) {
+  for (const auto& [addr, seg] : activeSegments) {
+    if (seg.registered_pd != static_cast<void*>(pd)) {
+      continue;
+    }
     if (count >= max_count) {
-      break; // Avoid buffer overflow
+      break;
     }
 
-    const SegmentInfo& seg = pair.second;
     info_array[count].phys_address = seg.phys_address;
     info_array[count].phys_size = seg.phys_size;
     info_array[count].device = seg.device;
@@ -193,7 +209,7 @@ int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count) {
     count++;
   }
 
-  return count; // Return number of segments copied
+  return count;
 }
 
 int bind_mrs(
@@ -298,85 +314,112 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
   return 0;
 }
 
-// Register memory region for a specific segment address, assume cuda
-int register_segments(struct ibv_pd* pd, rdmaxcel_qp_t* qp) {
-  if (!pd || !qp) {
-    return RDMAXCEL_INVALID_PARAMS; // Invalid parameter
+// Register CUDA segments to the PD of each device's NIC.
+// pds and qps are parallel arrays indexed by CUDA device ordinal.
+// num_devices is the length of both arrays.
+// A null entry means that device has no mapped NIC; its segments are skipped.
+int register_segments(
+    struct ibv_pd** pds,
+    rdmaxcel_qp_t** qps,
+    int num_devices) {
+  if (!pds || !qps || num_devices <= 0) {
+    return RDMAXCEL_INVALID_PARAMS;
   }
   scan_existing_segments();
   std::lock_guard<std::mutex> lock(segmentsMutex);
 
-  struct ibv_device_attr dev_attr;
-  if (ibv_query_device(pd->context, &dev_attr)) {
-    return RDMAXCEL_QUERY_DEVICE_FAILED;
-  }
-  uint32_t max_sge = dev_attr.max_sge;
-
   int access_flags =
       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
 
-  // Logic, we have active segments but only registered up to mr_size. need to
-  // register the rest in extra MR, and push unto MRS vector.
-  for (auto& pair : activeSegments) {
-    SegmentInfo& seg = pair.second;
-    if (seg.mr_size != seg.phys_size) {
-      auto mr_start = seg.phys_address + seg.mr_size;
-      auto mr_end = seg.phys_address + seg.phys_size;
-      auto remaining_size = mr_end - mr_start;
+  // We cache max_sge per PD context to avoid repeated queries
+  std::unordered_map<void*, uint32_t> max_sge_cache;
 
-      // Register in chunks of MAX_MR_SIZE
-      size_t current_offset = 0;
-      while (current_offset < remaining_size) {
-        size_t chunk_size =
-            std::min(remaining_size - current_offset, MAX_MR_SIZE);
-        auto chunk_start = mr_start + current_offset;
+  for (auto& [addr, seg] : activeSegments) {
+    if (seg.mr_size == seg.phys_size) {
+      continue; // already fully registered
+    }
 
-        // Validate that chunk_size is a multiple of 2MB
-        if (chunk_size % MR_ALIGNMENT != 0) {
-          return RDMAXCEL_MR_REGISTRATION_FAILED;
-        }
+    // Look up the PD for this segment's device
+    if (seg.device < 0 || seg.device >= num_devices) {
+      continue; // device ordinal out of range
+    }
+    auto* pd = pds[seg.device];
+    auto* qp = qps[seg.device];
+    if (!pd || !qp) {
+      continue; // no NIC for this device
+    }
 
-        int fd = -1;
-        CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
-            &fd,
-            deviceptr_cast(chunk_start),
-            chunk_size,
-            CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-            0);
+    // Get max_sge for this PD's device
+    uint32_t max_sge;
+    auto cache_it = max_sge_cache.find(static_cast<void*>(pd));
+    if (cache_it != max_sge_cache.end()) {
+      max_sge = cache_it->second;
+    } else {
+      struct ibv_device_attr dev_attr{};
+      if (ibv_query_device(pd->context, &dev_attr)) {
+        return RDMAXCEL_QUERY_DEVICE_FAILED;
+      }
+      max_sge = dev_attr.max_sge;
+      max_sge_cache[static_cast<void*>(pd)] = max_sge;
+    }
 
-        if (cu_result != CUDA_SUCCESS || fd < 0) {
-          return RDMAXCEL_DMABUF_HANDLE_FAILED; // Failed to get dmabuf handle
-        }
+    auto mr_start = seg.phys_address + seg.mr_size;
+    auto mr_end = seg.phys_address + seg.phys_size;
+    auto remaining_size = mr_end - mr_start;
 
-        // Register the dmabuf with fd, address is always 0.
-        auto mr = ibv_reg_dmabuf_mr(pd, 0, chunk_size, 0, fd, access_flags);
-        close(fd);
+    // Register in chunks of MAX_MR_SIZE
+    size_t current_offset = 0;
+    while (current_offset < remaining_size) {
+      size_t chunk_size =
+          std::min(remaining_size - current_offset, MAX_MR_SIZE);
+      auto chunk_start = mr_start + current_offset;
 
-        if (!mr) {
-          return RDMAXCEL_MR_REG_FAILED; // MR registration failed
-        }
-
-        seg.mrs.push_back(mr);
-        current_offset += chunk_size;
-
-        // If we have too many MRs, compact them into a single MR
-        if (seg.mrs.size() > max_sge) {
-          // TODO: find a safe way to compact with low performance cost.
-          // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
-          // if (err != 0) {
-          //   return err;
-          // }
-          return RDMAXCEL_MKEY_REG_LIMIT;
-        }
+      // Validate that chunk_size is a multiple of 2MB
+      if (chunk_size % MR_ALIGNMENT != 0) {
+        return RDMAXCEL_MR_REGISTRATION_FAILED;
       }
 
-      seg.mr_size = seg.phys_size;
+      int fd = -1;
+      CUresult cu_result = rdmaxcel_cuMemGetHandleForAddressRange(
+          &fd,
+          deviceptr_cast(chunk_start),
+          chunk_size,
+          CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+          0);
 
-      // Create vector of GPU addresses for bind_mrs
-      auto err = bind_mrs(pd, qp->ibv_qp, access_flags, seg);
-      if (err != 0) {
-        return err; // Bind MR's failed
+      if (cu_result != CUDA_SUCCESS || fd < 0) {
+        return RDMAXCEL_DMABUF_HANDLE_FAILED; // Failed to get dmabuf handle
       }
+
+      // Register the dmabuf with fd, address is always 0.
+      auto mr = ibv_reg_dmabuf_mr(pd, 0, chunk_size, 0, fd, access_flags);
+      close(fd);
+
+      if (!mr) {
+        return RDMAXCEL_MR_REG_FAILED; // MR registration failed
+      }
+
+      seg.mrs.push_back(mr);
+      current_offset += chunk_size;
+
+      // If we have too many MRs, compact them into a single MR
+      if (seg.mrs.size() > max_sge) {
+        // TODO: find a safe way to compact with low performance cost.
+        // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
+        // if (err != 0) {
+        //   return err;
+        // }
+        return RDMAXCEL_MKEY_REG_LIMIT;
+      }
+    }
+
+    seg.mr_size = seg.phys_size;
+    seg.registered_pd = static_cast<void*>(pd);
+
+    // Create vector of GPU addresses for bind_mrs
+    auto err = bind_mrs(pd, qp->ibv_qp, access_flags, seg);
+    if (err != 0) {
+      return err; // Bind MR's failed
     }
   }
   return 0; // Success
