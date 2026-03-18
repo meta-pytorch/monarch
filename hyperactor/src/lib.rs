@@ -63,7 +63,6 @@ pub mod accum;
 pub mod actor;
 pub mod actor_local;
 pub mod channel;
-pub mod checkpoint;
 pub mod config;
 pub mod context;
 pub mod host;

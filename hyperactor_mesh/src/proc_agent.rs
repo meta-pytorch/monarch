@@ -89,6 +89,21 @@ pub enum StopActorResult {
 }
 wirevalue::register_type!(StopActorResult);
 
+/// Request a py-spy stack dump from this process.
+///
+/// The ProcAgent runs inside the target OS process (1:1 mapping).
+/// py-spy attaches to `std::process::id()` to capture Python stacks.
+/// See PS-1 in `introspect` module doc.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct PySpyDump {
+    /// Include per-thread stacks.
+    pub threads: bool,
+    /// Reply port for the result.
+    #[reply]
+    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
+}
+wirevalue::register_type!(PySpyDump);
+
 /// Deferred republish of introspect properties.
 ///
 /// Sent as a zero-delay self-message from the supervision event
@@ -281,6 +296,7 @@ struct SelfCheck {}
         resource::KeepaliveGetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
         RepublishIntrospect { cast = true },
+        PySpyDump,
     ]
 )]
 pub struct ProcAgent {
@@ -766,6 +782,20 @@ impl Handler<RepublishIntrospect> for ProcAgent {
             self.introspect_dirty = false;
             self.publish_introspect_properties(cx);
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyDump,
+    ) -> Result<(), anyhow::Error> {
+        let runner = crate::pyspy::PySpyRunner;
+        let result = runner.dump_self(message.threads).await;
+        message.result.send(cx, result)?;
         Ok(())
     }
 }
