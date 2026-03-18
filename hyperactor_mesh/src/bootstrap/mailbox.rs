@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+use async_trait::async_trait;
 use hyperactor::PortHandle;
 use hyperactor::channel::ChannelAddr;
 use hyperactor::channel::ChannelError;
@@ -52,6 +53,7 @@ impl LocalProcDialer {
     }
 }
 
+#[async_trait]
 impl MailboxSender for LocalProcDialer {
     fn post_unchecked(
         &self,
@@ -99,6 +101,14 @@ impl MailboxSender for LocalProcDialer {
         } else {
             self.backend_sender.post_unchecked(envelope, return_handle);
         }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        // We can't hold the RwLockReadGuard across an await, so flush
+        // the backend sender (the primary outbound path) only.
+        // Local senders are unix-socket MailboxClients whose flush
+        // semantics are equivalent.
+        self.backend_sender.flush().await
     }
 }
 
