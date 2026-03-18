@@ -35,7 +35,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use typeuri::Named;
 
-mod rle;
+pub mod rle;
 mod value_overlay;
 pub use value_overlay::BuildError;
 pub use value_overlay::ValueOverlay;
