@@ -298,13 +298,15 @@ pub async fn validate_execution_context() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Get all segments that have been registered with MRs
+/// Get all segments that have been registered with MRs for the given PD.
 ///
-/// # Returns
-/// * `Vec<SegmentInfo>` - Vector containing all registered segment information
-pub fn get_registered_cuda_segments() -> Vec<rdmaxcel_sys::rdma_segment_info_t> {
+/// Each protection domain maintains independent segment registrations, so
+/// callers must pass the PD whose lkeys they intend to use.
+pub fn get_registered_cuda_segments(
+    pd: *mut rdmaxcel_sys::ibv_pd,
+) -> Vec<rdmaxcel_sys::rdma_segment_info_t> {
     unsafe {
-        let segment_count = rdmaxcel_sys::rdma_get_active_segment_count();
+        let segment_count = rdmaxcel_sys::rdma_get_active_segment_count(pd);
         if segment_count <= 0 {
             return Vec::new();
         }
@@ -315,7 +317,7 @@ pub fn get_registered_cuda_segments() -> Vec<rdmaxcel_sys::rdma_segment_info_t> 
             segment_count as usize
         ];
         let actual_count =
-            rdmaxcel_sys::rdma_get_all_segment_info(segments.as_mut_ptr(), segment_count);
+            rdmaxcel_sys::rdma_get_all_segment_info(pd, segments.as_mut_ptr(), segment_count);
 
         if actual_count > 0 {
             segments.truncate(actual_count as usize);
