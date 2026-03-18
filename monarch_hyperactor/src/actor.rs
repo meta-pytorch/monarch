@@ -39,6 +39,7 @@ use hyperactor_mesh::comm::multicast::CAST_POINT;
 use hyperactor_mesh::comm::multicast::CastInfo;
 use hyperactor_mesh::supervision::MeshFailure;
 use hyperactor_mesh::transport::default_bind_spec;
+use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
 use ndslice::Point;
@@ -123,6 +124,29 @@ impl MethodSpecifier {
     }
 }
 
+/// The payload of a single actor response, without rank information.
+///
+/// The rank is captured by the overlay's range key, so it is stripped
+/// from the value to enable RLE dedup: two ranks returning the same
+/// payload will have byte-identical values and can be coalesced into
+/// a single run.
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+pub enum PythonResponseMessage {
+    Result(serde_multipart::Part),
+    Exception(serde_multipart::Part),
+}
+
+wirevalue::register_type!(PythonResponseMessage);
+wirevalue::register_type!(ValueOverlay<PythonResponseMessage>);
+
+/// Newtype wrapper around [`ValueOverlay<PythonResponseMessage>`] needed
+/// because `PythonMessageKind` is a `#[pyclass]` enum, requiring all variant
+/// fields to implement PyO3 traits. `ValueOverlay` is defined in another crate
+/// and does not implement `PyClass`.
+#[pyclass(frozen, module = "monarch._rust_bindings.monarch_hyperactor.actor")]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AccumulatedResponses(ValueOverlay<PythonResponseMessage>);
+
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq)]
 pub enum PythonMessageKind {
@@ -145,6 +169,7 @@ pub enum PythonMessageKind {
         // or the next argument of the local state.
         unflatten_args: Vec<UnflattenArg>,
     },
+    AccumulatedResponses(AccumulatedResponses),
 }
 wirevalue::register_type!(PythonMessageKind);
 
@@ -167,6 +192,48 @@ pub struct PythonMessage {
 }
 
 wirevalue::register_type!(PythonMessage);
+
+impl From<ValueOverlay<PythonResponseMessage>> for PythonMessage {
+    fn from(overlay: ValueOverlay<PythonResponseMessage>) -> Self {
+        PythonMessage {
+            kind: PythonMessageKind::AccumulatedResponses(AccumulatedResponses(overlay)),
+            message: Default::default(),
+        }
+    }
+}
+
+impl PythonMessage {
+    /// Consume this message and extract a `ValueOverlay<PythonResponseMessage>`.
+    ///
+    /// Handles both already-collected responses and leaf `Result`/`Exception`
+    /// messages by wrapping them in a single-run overlay.
+    pub(crate) fn into_overlay(self) -> anyhow::Result<ValueOverlay<PythonResponseMessage>> {
+        match self.kind {
+            PythonMessageKind::AccumulatedResponses(overlay) => Ok(overlay.0),
+            PythonMessageKind::Result { rank, .. } => {
+                let rank = rank.expect("accumulated response should have a rank");
+                let mut overlay = ValueOverlay::new();
+                overlay.push_run(rank..rank + 1, PythonResponseMessage::Result(self.message))?;
+                Ok(overlay)
+            }
+            PythonMessageKind::Exception { rank, .. } => {
+                let rank = rank.expect("accumulated exception should have a rank");
+                let mut overlay = ValueOverlay::new();
+                overlay.push_run(
+                    rank..rank + 1,
+                    PythonResponseMessage::Exception(self.message),
+                )?;
+                Ok(overlay)
+            }
+            other => {
+                anyhow::bail!(
+                    "unexpected message kind {:?} in collected responses reducer",
+                    other
+                );
+            }
+        }
+    }
+}
 
 struct ResolvedCallMethod {
     method: MethodSpecifier,
