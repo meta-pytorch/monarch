@@ -25,6 +25,7 @@ use hyperactor::RemoteHandles;
 use hyperactor::RemoteMessage;
 use hyperactor::actor::ActorStatus;
 use hyperactor::actor::Referable;
+use hyperactor::config;
 use hyperactor::context;
 use hyperactor::mailbox::PortReceiver;
 use hyperactor::message::Castable;
@@ -40,6 +41,7 @@ use hyperactor_mesh_macros::sel;
 use ndslice::Selection;
 use ndslice::ViewExt as _;
 use ndslice::view;
+use ndslice::view::MapIntoExt;
 use ndslice::view::Region;
 use ndslice::view::View;
 use serde::Deserialize;
@@ -54,13 +56,16 @@ use crate::Name;
 use crate::ProcMeshRef;
 use crate::ValueMesh;
 use crate::casting;
+use crate::comm::ENABLE_NATIVE_V1_CASTING;
 use crate::comm::multicast;
+use crate::comm::multicast::CastMessageV1;
 use crate::host_mesh::GET_PROC_STATE_MAX_IDLE;
 use crate::host_mesh::mesh_to_rankedvalues_with_default;
 use crate::mesh_controller::ActorMeshController;
 use crate::mesh_controller::SUPERVISION_POLL_FREQUENCY;
 use crate::mesh_controller::Subscribe;
 use crate::mesh_controller::Unsubscribe;
+use crate::metrics;
 use crate::proc_agent::ActorState;
 use crate::proc_mesh::GET_ACTOR_STATE_MAX_IDLE;
 use crate::reference::ActorMeshId;
@@ -478,36 +483,60 @@ impl<A: Referable> ActorMeshRef<A> {
 
         // Now that we know these ranks are active, send out the actual messages.
         if let Some(root_comm_actor) = self.proc_mesh.root_comm_actor() {
-            self.cast_v0(cx, message, sel, root_comm_actor)
-        } else {
-            for (point, actor) in self.iter() {
-                let create_rank = point.rank();
-                let mut headers = Flattrs::new();
-                multicast::set_cast_info_on_headers(
-                    &mut headers,
-                    point,
-                    cx.instance().self_id().clone(),
-                );
-
-                // Make sure that we re-bind ranks, as these may be used for
-                // bootstrapping comm actors.
-                let mut unbound = Unbound::try_from_message(message.clone())
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                unbound
-                    .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
-                        *rank = Some(create_rank);
-                        Ok(())
-                    })
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                let rebound_message = unbound
-                    .bind()
-                    .map_err(|e| Error::CastingError(self.name.clone(), e))?;
-                actor
-                    .send_with_headers(cx, headers, rebound_message)
-                    .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
+            if hyperactor_config::global::get(ENABLE_NATIVE_V1_CASTING) {
+                if Selection::is_equivalent_to_true(&sel) {
+                    assert!(
+                        hyperactor_config::global::get(config::ENABLE_DEST_ACTOR_REORDERING_BUFFER),
+                        "native V1 casting requires ENABLE_DEST_ACTOR_REORDERING_BUFFER to be enabled",
+                    );
+                    self.cast_v1(cx, message, root_comm_actor);
+                    return Ok(());
+                }
+                // V1 does not support non-* selections yet; fall back to
+                // the iteration path below.
+            } else {
+                return self.cast_v0(cx, message, sel, root_comm_actor);
             }
-            Ok(())
         }
+
+        let selected_ranks: std::collections::HashSet<usize> = sel
+            .eval(
+                &ndslice::selection::EvalOpts::lenient(),
+                view::Ranked::region(self).slice(),
+            )
+            .map_err(|e| Error::CastingError(self.name.clone(), e.into()))?
+            .collect();
+
+        for (point, actor) in self.iter() {
+            if !selected_ranks.contains(&point.rank()) {
+                continue;
+            }
+            let create_rank = point.rank();
+            let mut headers = Flattrs::new();
+            multicast::set_cast_info_on_headers(
+                &mut headers,
+                point,
+                cx.instance().self_id().clone(),
+            );
+
+            // Make sure that we re-bind ranks, as these may be used for
+            // bootstrapping comm actors.
+            let mut unbound = Unbound::try_from_message(message.clone())
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            unbound
+                .visit_mut::<resource::Rank>(|resource::Rank(rank)| {
+                    *rank = Some(create_rank);
+                    Ok(())
+                })
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            let rebound_message = unbound
+                .bind()
+                .map_err(|e| Error::CastingError(self.name.clone(), e))?;
+            actor
+                .send_with_headers(cx, headers, rebound_message)
+                .map_err(|e| Error::SendingError(actor.actor_id().clone(), Box::new(e)))?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
@@ -548,6 +577,62 @@ impl<A: Referable> ActorMeshRef<A> {
                 message,
             )
             .map_err(|e| Error::CastingError(self.name.clone(), e.into())),
+        }
+    }
+
+    fn cast_v1<M>(
+        &self,
+        cx: &impl context::Actor,
+        message: M,
+        root_comm_actor: &hyperactor_reference::ActorRef<CommActor>,
+    ) where
+        A: RemoteHandles<M> + RemoteHandles<IndexedErasedUnbound<M>>,
+        M: Castable + RemoteMessage,
+    {
+        let _ = metrics::ACTOR_MESH_CAST_DURATION.start(hyperactor::kv_pairs!(
+            "message_type" => <M as typeuri::Named>::typename(),
+            "message_variant" => message.arm().unwrap_or_default(),
+        ));
+
+        let actor_ids: ValueMesh<_> = self.proc_mesh.map_into(|proc| proc.actor_id(&self.name));
+        // This block is infallible so is okay to assign the sequence numbers
+        // without worrying about rollback.
+        {
+            let sequencer = cx.instance().sequencer();
+            let seqs = actor_ids.map_into(|actor_id| {
+                let hyperactor::ordering::SeqInfo::Session { seq, .. } =
+                    sequencer.assign_seq(&actor_id.port_id(<M as typeuri::Named>::port()))
+                else {
+                    unreachable!("assign_seq always returns SeqInfo::Session")
+                };
+                seq
+            });
+
+            let mut headers = Flattrs::new();
+            headers.set(
+                multicast::CAST_ORIGINATING_SENDER,
+                cx.instance().self_id().clone(),
+            );
+            // Set CAST_ACTOR_MESH_ID temporarily to support supervision's
+            // v0 transition. Should be removed once supervision is migrated
+            // and ActorMeshId is deleted.
+            let actor_mesh_id = ActorMeshId(self.name.clone());
+            headers.set(casting::CAST_ACTOR_MESH_ID, actor_mesh_id);
+            let cast_message = CastMessageV1::new::<A, M>(
+                cx.instance().self_id().clone(),
+                &self.name,
+                view::Ranked::region(self).clone(),
+                headers.clone(),
+                message,
+                sequencer.session_id(),
+                seqs,
+            )
+            .expect("infallible because CastMessage should not fail for serialization");
+
+            // TODO: load balancing instead of always using the first comm actor
+            root_comm_actor
+                .send_with_headers(cx, headers, cast_message)
+                .expect("infallible because CastMessage should not fail for serialization");
         }
     }
 
@@ -1341,6 +1426,67 @@ mod tests {
             );
             assert_eq!(&sender_actor_id, instance.self_id());
         }
+
+        let _ = host_mesh.shutdown(instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
+    async fn test_cast_with_selection_v1_fallback() {
+        use hyperactor::config::ENABLE_DEST_ACTOR_REORDERING_BUFFER;
+        use hyperactor_mesh_macros::sel;
+        use ndslice::Selection;
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::bootstrap::MESH_BOOTSTRAP_ENABLE_PDEATHSIG, false);
+        let _v1 = config.override_key(crate::comm::ENABLE_NATIVE_V1_CASTING, true);
+        let _reorder = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+
+        let instance = testing::instance();
+        let mut host_mesh = testing::host_mesh(4).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", Extent::unity())
+            .await
+            .unwrap();
+        let actor_mesh: ActorMesh<testactor::TestActor> =
+            proc_mesh.spawn(instance, "test", &()).await.unwrap();
+
+        // Cast with sel!(0:2) — should only reach hosts 0 and 1.
+        let (cast_info, mut cast_info_rx) = instance.mailbox().open_port();
+        actor_mesh
+            .cast_for_tensor_engine_only_do_not_use(
+                instance,
+                sel!(0:2),
+                testactor::GetCastInfo {
+                    cast_info: cast_info.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut received_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..2 {
+            let (point, _actor_ref, _sender) = cast_info_rx.recv().await.unwrap();
+            received_ranks.insert(point.rank());
+        }
+        assert_eq!(received_ranks, HashSet::from([0, 1]));
+
+        // Also cast with sel!(*) — all 4 should be reached via V1.
+        let (cast_info2, mut cast_info_rx2) = instance.mailbox().open_port();
+        actor_mesh
+            .cast(
+                instance,
+                testactor::GetCastInfo {
+                    cast_info: cast_info2.bind(),
+                },
+            )
+            .unwrap();
+
+        let mut all_ranks: HashSet<usize> = HashSet::new();
+        for _ in 0..4 {
+            let (point, _actor_ref, _sender) = cast_info_rx2.recv().await.unwrap();
+            all_ranks.insert(point.rank());
+        }
+        assert_eq!(all_ranks, HashSet::from([0, 1, 2, 3]));
 
         let _ = host_mesh.shutdown(instance).await;
     }
