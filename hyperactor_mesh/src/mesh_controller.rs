@@ -288,7 +288,10 @@ impl<A: Referable> Actor for ActorMeshController<A> {
             this,
             resource::StreamState::<ActorState> {
                 name: self.mesh.name().clone(),
-                subscriber: this.port().bind(),
+                // All ProcAgents send updates directly to this port
+                // so that failures along the comm tree path does not
+                // affect clean shutdowns.
+                subscriber: this.port().bind().unsplit(),
             },
         )?;
 
