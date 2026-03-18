@@ -97,6 +97,18 @@ wirevalue::register_type!(GspawnResult);
 struct RepublishIntrospect;
 wirevalue::register_type!(RepublishIntrospect);
 
+/// py-spy attaches to `std::process::id()` to capture Python stacks.
+/// See PS-1 in `introspect` module doc.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct PySpyDump {
+    /// Include per-thread stacks.
+    pub threads: bool,
+    /// Reply port for the result.
+    #[reply]
+    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
+}
+wirevalue::register_type!(PySpyDump);
+
 /// Collect live actor children and system actor children from the
 /// proc's instance DashMap using `all_instance_keys()` with point
 /// lookups. This avoids the convoy starvation from `all_actor_ids()`
