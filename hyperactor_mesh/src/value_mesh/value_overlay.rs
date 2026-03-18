@@ -97,6 +97,11 @@ impl<T> ValueOverlay<T> {
         self.runs.iter()
     }
 
+    /// Consumes the overlay and returns the internal runs.
+    pub fn into_runs(self) -> Vec<(Range<usize>, T)> {
+        self.runs
+    }
+
     /// Current number of runs.
     pub fn len(&self) -> usize {
         self.runs.len()
