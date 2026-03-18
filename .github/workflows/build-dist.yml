@@ -23,10 +23,18 @@ on:
         description: 'Runner to use for the build'
         type: string
         default: 'linux.g5.4xlarge.nvidia.gpu'
+      docker-image:
+        description: 'Docker image to use (default lets test-infra auto-select based on gpu-arch)'
+        type: string
+        default: 'pytorch/almalinux-builder'
       version:
         description: 'Version string for the wheel (default: $current_version.dev<date>)'
         type: string
         default: ''
+      platform:
+        description: 'Target platform architecture (e.g., x86_64, aarch64)'
+        type: string
+        default: 'x86_64'
       timeout:
         description: 'Job timeout in minutes'
         type: number
@@ -43,10 +51,11 @@ jobs:
     with:
       timeout: ${{ inputs.timeout }}
       runner: ${{ inputs.runner }}
+      docker-image: ${{ inputs.docker-image }}
       gpu-arch-type: ${{ inputs.gpu-arch-type }}
       gpu-arch-version: ${{ inputs.gpu-arch-version }}
       submodules: recursive
-      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}
+      upload-artifact: monarch-py${{ matrix.python-version }}-${{ inputs.gpu-arch-type }}${{ inputs.gpu-arch-version }}-${{ inputs.platform }}
       script: |
         source scripts/common-setup.sh
         setup_build_environment ${{ matrix.python-version }}
@@ -57,6 +66,11 @@ jobs:
 
         # Setup Tensor Engine dependencies
         setup_tensor_engine
+
+        # Install CUDA toolkit if not already present (ARM64 runners lack GPU/CUDA)
+        if ! command -v nvcc &> /dev/null; then
+            setup_cuda_toolkit
+        fi
 
         cargo install --path monarch_hyperactor
 
@@ -84,7 +98,9 @@ jobs:
         echo "=== end sccache stats ==="
 
         # Rename to manylinux2014 for PyPI compatibility
-        find dist -name "*linux_x86_64.whl" -type f -exec bash -c 'mv "$1" "${1/linux_x86_64.whl/manylinux2014_x86_64.whl}"' _ {} \;
+        for f in dist/*linux_*.whl; do
+            mv "$f" "$(echo "$f" | sed 's/linux_/manylinux2014_/')"
+        done
         ls -la dist/
 
         # Verify the wheel can be installed and imported
