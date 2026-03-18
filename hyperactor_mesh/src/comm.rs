@@ -785,30 +785,46 @@ mod tests {
             .unwrap();
     }
 
-    /// Receive a TestMessage with timeout, panicking with `context` on failure.
-    async fn recv_msg(
-        rx: &mut hyperactor::mailbox::PortReceiver<TestMessage>,
-        context: &str,
-    ) -> TestMessage {
-        tokio::time::timeout(Duration::from_secs(5), rx.recv())
-            .await
-            .unwrap_or_else(|_| panic!("timed out: {context}"))
-            .unwrap_or_else(|_e| panic!("port closed: {context}"))
+    /// Send a message before config, send config, send another after config,
+    /// and verify both are delivered in order.
+    async fn assert_buffered_and_replayed<M: hyperactor::Message>(
+        proc_name: &str,
+        mut make_msg: impl FnMut(&Instance<()>, &crate::Name, &str) -> M,
+    ) where
+        CommActor: hyperactor::Handler<M>,
+    {
+        let (client, mut rx, comm_handle, actor_mesh_name, _guards) =
+            buffering_fixture(proc_name).await;
+
+        comm_handle
+            .send(&client, make_msg(&client, &actor_mesh_name, "buffered"))
+            .unwrap();
+        send_config(&client, &comm_handle);
+        comm_handle
+            .send(&client, make_msg(&client, &actor_mesh_name, "direct"))
+            .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            TestMessage::Forward("buffered".to_string()),
+        );
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            TestMessage::Forward("direct".to_string()),
+        );
+        comm_handle.drain_and_stop("test done").ok();
     }
 
-    #[async_timed_test(timeout_secs = 10)]
+    #[async_timed_test(timeout_secs = 1)]
     async fn cast_before_config_is_buffered_and_replayed() {
         use ndslice::Slice;
 
-        let (client, mut rx, comm_handle, actor_mesh_name, _guards) =
-            buffering_fixture("test_cast_buffering").await;
-
-        let actor_mesh_id = crate::reference::ActorMeshId(actor_mesh_name.clone());
-        let make_cast = |payload: &str| -> multicast::CastMessage {
+        assert_buffered_and_replayed("test_cast", |client, name, payload| {
+            let actor_mesh_id = crate::reference::ActorMeshId(name.clone());
             let slice = Slice::new_row_major(vec![1]);
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
-                actor_mesh_id.clone(),
+                actor_mesh_id,
                 client.self_id().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
@@ -822,38 +838,22 @@ mod tests {
                 },
                 message: envelope,
             }
-        };
-
-        comm_handle.send(&client, make_cast("buffered")).unwrap();
-        send_config(&client, &comm_handle);
-        comm_handle.send(&client, make_cast("direct")).unwrap();
-
-        assert_eq!(
-            recv_msg(&mut rx, "replayed cast").await,
-            TestMessage::Forward("buffered".to_string()),
-        );
-        assert_eq!(
-            recv_msg(&mut rx, "direct cast").await,
-            TestMessage::Forward("direct".to_string()),
-        );
-        comm_handle.drain_and_stop("test done").ok();
+        })
+        .await;
     }
 
-    #[async_timed_test(timeout_secs = 10)]
+    #[async_timed_test(timeout_secs = 1)]
     async fn forward_before_config_is_buffered_and_replayed() {
         use ndslice::Slice;
         use ndslice::selection::routing::RoutingFrame;
 
-        let (client, mut rx, comm_handle, actor_mesh_name, _guards) =
-            buffering_fixture("test_fwd_buffering").await;
-
-        let actor_mesh_id = crate::reference::ActorMeshId(actor_mesh_name.clone());
         let mut next_seq: usize = 0;
-        let mut make_forward = |payload: &str| -> multicast::ForwardMessage {
+        assert_buffered_and_replayed("test_fwd", move |client, name, payload| {
+            let actor_mesh_id = crate::reference::ActorMeshId(name.clone());
             let slice = Slice::new_row_major(vec![1]);
             let shape = ndslice::Shape::new(vec!["rank".to_string()], slice.clone()).unwrap();
             let envelope = multicast::CastMessageEnvelope::new::<TestActor, TestMessage>(
-                actor_mesh_id.clone(),
+                actor_mesh_id,
                 client.self_id().clone(),
                 shape,
                 hyperactor_config::Flattrs::new(),
@@ -870,38 +870,22 @@ mod tests {
                 last_seq,
                 message: envelope,
             }
-        };
-
-        comm_handle.send(&client, make_forward("buffered")).unwrap();
-        send_config(&client, &comm_handle);
-        comm_handle.send(&client, make_forward("direct")).unwrap();
-
-        assert_eq!(
-            recv_msg(&mut rx, "replayed forward").await,
-            TestMessage::Forward("buffered".to_string()),
-        );
-        assert_eq!(
-            recv_msg(&mut rx, "direct forward").await,
-            TestMessage::Forward("direct".to_string()),
-        );
-        comm_handle.drain_and_stop("test done").ok();
+        })
+        .await;
     }
 
-    #[async_timed_test(timeout_secs = 10)]
+    #[async_timed_test(timeout_secs = 1)]
     async fn forward_v1_before_config_is_buffered_and_replayed() {
         use ndslice::Region;
         use ndslice::Slice;
         use ndslice::selection::routing::RoutingFrame;
 
-        let (client, mut rx, comm_handle, actor_mesh_name, _guards) =
-            buffering_fixture("test_fwd_v1_buffering").await;
-
-        let make_forward_v1 = |payload: &str| -> multicast::ForwardMessageV1 {
+        assert_buffered_and_replayed("test_fwd_v1", |client, name, payload| {
             let slice = Slice::new_row_major(vec![1]);
             let region = Region::new(vec!["rank".to_string()], slice.clone());
             let cast_msg = multicast::CastMessageV1::new::<TestActor, TestMessage>(
                 client.self_id().clone(),
-                &actor_mesh_name,
+                name,
                 region.clone(),
                 hyperactor_config::Flattrs::new(),
                 TestMessage::Forward(payload.to_string()),
@@ -914,25 +898,8 @@ mod tests {
                 dests: vec![frame],
                 message: cast_msg,
             }
-        };
-
-        comm_handle
-            .send(&client, make_forward_v1("buffered"))
-            .unwrap();
-        send_config(&client, &comm_handle);
-        comm_handle
-            .send(&client, make_forward_v1("direct"))
-            .unwrap();
-
-        assert_eq!(
-            recv_msg(&mut rx, "replayed forward_v1").await,
-            TestMessage::Forward("buffered".to_string()),
-        );
-        assert_eq!(
-            recv_msg(&mut rx, "direct forward_v1").await,
-            TestMessage::Forward("direct".to_string()),
-        );
-        comm_handle.drain_and_stop("test done").ok();
+        })
+        .await;
     }
 
     use hyperactor::accum::Accumulator;
