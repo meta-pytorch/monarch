@@ -1138,7 +1138,7 @@ mod tests {
     /// Create a multi-process host mesh that propagates the current
     /// process's config overrides to child processes via Bootstrap.
     #[cfg(fbcode_build)]
-    async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMesh {
+    async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMeshShutdownGuard {
         use hyperactor::channel::ChannelTransport;
         use tokio::process::Command;
 
@@ -1167,7 +1167,7 @@ mod tests {
         }
 
         let host_mesh = crate::HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
-        crate::host_mesh::HostMesh::take(host_mesh)
+        crate::host_mesh::HostMesh::take(host_mesh).shutdown_guard()
     }
 
     /// Verify that actors are cleaned up via the orphan timeout when the

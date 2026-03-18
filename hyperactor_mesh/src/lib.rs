@@ -41,6 +41,7 @@ pub mod namespace;
 pub mod proc_agent;
 pub mod proc_launcher;
 pub mod proc_mesh;
+pub mod pyspy;
 pub mod reference;
 pub mod resource;
 pub mod shared_cell;

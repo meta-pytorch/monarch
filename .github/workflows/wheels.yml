@@ -24,17 +24,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 jobs:
-  build:
+  build-x86_64:
     uses: ./.github/workflows/build-dist.yml
     with:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: linux.g5.4xlarge.nvidia.gpu
       torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
       gpu-arch-type: cuda
       gpu-arch-version: '12.8'
+      platform: x86_64
+
+  build-arm64:
+    uses: ./.github/workflows/build-dist.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12", "3.13"]'
+      runner: linux.arm64.2xlarge
+      docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      gpu-arch-type: cuda
+      gpu-arch-version: '12.8'
+      platform: aarch64
 
   publish-to-pypi:
     name: Publish to PyPI
-    needs: build
+    needs: [build-x86_64, build-arm64]
     runs-on: ubuntu-latest
     environment: nightly
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -58,7 +71,7 @@ jobs:
 
   publish-to-container-registry:
     name: Publish to Github Container Registry
-    needs: build
+    needs: [build-x86_64, build-arm64]
     runs-on: ubuntu-latest
     environment: nightly
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -78,8 +91,8 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          # Docker container only has python 3.12, so we need to use the 3.12 wheel.
-          name: monarch-py3.12-cuda12.8
+          # Docker container only has python 3.12, so we need to use the x86_64 3.12 wheel.
+          name: monarch-py3.12-cuda12.8-x86_64
           path: dist
           merge-multiple: true
 
