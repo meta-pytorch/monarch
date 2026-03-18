@@ -81,7 +81,7 @@ declare_attrs! {
         Some("USE_UNIFIED_LAYER".to_string()),
         Some("use_unified_layer".to_string()),
     ))
-    pub attr USE_UNIFIED_LAYER: bool = false;
+    pub attr USE_UNIFIED_LAYER: bool = true;
 
     // Suffix to append to log filenames for test isolation
     @meta(CONFIG = ConfigAttr::new(
