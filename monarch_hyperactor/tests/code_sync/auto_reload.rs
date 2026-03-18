@@ -47,7 +47,7 @@ CONSTANT = "initial_constant"
     let instance = cx.actor_instance;
     let mut host_mesh = test_utils::local_host_mesh(1).await;
     let proc_mesh = host_mesh
-        .spawn(instance, "auto_reload_test", ndslice::Extent::unity())
+        .spawn(instance, "auto_reload_test", ndslice::Extent::unity(), None)
         .await
         .unwrap();
     let params = AutoReloadParams {};
