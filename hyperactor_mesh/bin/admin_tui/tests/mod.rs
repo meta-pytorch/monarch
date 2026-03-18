@@ -11,6 +11,9 @@
 //! module's own `#[cfg(test)] mod tests` block.
 
 use super::*;
+use crate::diagnostics::DiagOutcome;
+use crate::diagnostics::DiagPhase;
+use crate::diagnostics::DiagResult;
 
 // Empty tree all operations are noops.
 #[test]
@@ -1457,4 +1460,419 @@ fn test_mast_resolver_explicit_thrift_choice() {
     let fb = unsafe { fbinit::assume_init() };
     let resolver = client::MastResolver::new(Some(fb), Some("thrift"));
     assert!(matches!(resolver, client::MastResolver::Thrift(_)));
+}
+
+// ── Py-spy invariant coverage ──────────────────────────────────────────────
+//
+// PY-1 (fresh-trace): enforced by start_pyspy always constructing a new
+//   oneshot channel; no automated test (requires mock HTTP server).
+// PY-2 (overlay-ownership): TUI-21 now provides structural coverage —
+//   replacing `active_job` atomically drops the old receiver, making
+//   "stale result reaches wrong overlay" structurally impossible.
+// PY-3 (replacement): covered by pyspy_json_to_lines_* tests below.
+// PY-4 (selection-totality): covered by pyspy_proc_ref_* tests below.
+// PY-5 (overlay-isolation): covered by parse_error_envelope_* tests and
+//   the cancellation sites; the cross-overlay race (p then d) is
+//   manual-verification only until an async event-loop test is added.
+//
+
+/// Join all span content in a line into a single string for assertion.
+///
+/// Span-structure details (e.g. how many spans a label/value pair is
+/// split into) are implementation details we do not want to assert on
+/// in tests; this helper lets tests check the full rendered text.
+fn line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+// Helper: build a minimal App with a flat tree whose children are the
+// given nodes, cursor positioned at `cursor_pos`.
+fn make_app_with_cursor(children: Vec<TreeNode>, cursor_pos: usize) -> App {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
+    let len = children.len();
+    app.set_tree(Some(TreeNode {
+        reference: "root".into(),
+        label: "Root".into(),
+        node_type: NodeType::Root,
+        expanded: true,
+        fetched: true,
+        has_children: !children.is_empty(),
+        stopped: false,
+        failed: false,
+        is_system: false,
+        children,
+    }));
+    app.cursor.update_len(len);
+    app.cursor.set_pos(cursor_pos);
+    app
+}
+
+fn proc_node(reference: &str) -> TreeNode {
+    TreeNode {
+        reference: reference.into(),
+        label: reference.into(),
+        node_type: NodeType::Proc,
+        expanded: false,
+        fetched: true,
+        has_children: false,
+        stopped: false,
+        failed: false,
+        is_system: false,
+        children: vec![],
+    }
+}
+
+fn actor_node(reference: &str) -> TreeNode {
+    TreeNode {
+        reference: reference.into(),
+        label: reference.into(),
+        node_type: NodeType::Actor,
+        expanded: false,
+        fetched: true,
+        has_children: false,
+        stopped: false,
+        failed: false,
+        is_system: false,
+        children: vec![],
+    }
+}
+
+// PY-4: Proc selected → own reference returned.
+#[test]
+fn pyspy_proc_ref_proc_node() {
+    let app = make_app_with_cursor(vec![proc_node("proc_ref,worker[0]")], 0);
+    assert_eq!(app.pyspy_proc_ref(), Some("proc_ref,worker[0]".to_string()));
+}
+
+// PY-4: Actor selected with detail.parent → owning proc returned.
+#[test]
+fn pyspy_proc_ref_actor_node_with_parent() {
+    let mut app = make_app_with_cursor(vec![actor_node("actor1")], 0);
+    app.detail = Some(NodePayload {
+        identity: "actor1".into(),
+        properties: NodeProperties::Actor {
+            actor_status: "running".into(),
+            actor_type: "TestActor".into(),
+            messages_processed: 0,
+            created_at: "2024-01-01T00:00:00.000Z".into(),
+            last_message_handler: None,
+            total_processing_time_us: 0,
+            flight_recorder: None,
+            is_system: false,
+            failure_info: None,
+        },
+        children: vec![],
+        parent: Some("proc_ref,worker[0]".into()),
+        as_of: "2024-01-01T00:00:00.000Z".into(),
+    });
+    assert_eq!(app.pyspy_proc_ref(), Some("proc_ref,worker[0]".to_string()));
+}
+
+// PY-4: Root node selected → None.
+#[test]
+fn pyspy_proc_ref_root_node() {
+    let app = make_app_with_cursor(
+        vec![TreeNode {
+            reference: "root_child".into(),
+            label: "root_child".into(),
+            node_type: NodeType::Root,
+            expanded: false,
+            fetched: true,
+            has_children: false,
+            stopped: false,
+            failed: false,
+            is_system: false,
+            children: vec![],
+        }],
+        0,
+    );
+    assert_eq!(app.pyspy_proc_ref(), None);
+}
+
+// PY-4: Host node selected → None.
+#[test]
+fn pyspy_proc_ref_host_node() {
+    let app = make_app_with_cursor(
+        vec![TreeNode {
+            reference: "host1".into(),
+            label: "host1".into(),
+            node_type: NodeType::Host,
+            expanded: false,
+            fetched: true,
+            has_children: false,
+            stopped: false,
+            failed: false,
+            is_system: false,
+            children: vec![],
+        }],
+        0,
+    );
+    assert_eq!(app.pyspy_proc_ref(), None);
+}
+
+// PY-4: Actor selected with detail=None → None (no panic).
+#[test]
+fn pyspy_proc_ref_actor_no_detail() {
+    let app = make_app_with_cursor(vec![actor_node("actor1")], 0);
+    assert_eq!(app.pyspy_proc_ref(), None);
+}
+
+// PY-5: parse_error_envelope renders ApiErrorEnvelope body so py-spy
+// errors surface useful text rather than a bare HTTP status.
+// parse_error_envelope: well-formed ApiErrorEnvelope → "code: message".
+#[test]
+fn parse_error_envelope_well_formed() {
+    let json = serde_json::json!({"error": {"code": "gateway_timeout", "message": "timed out waiting for py-spy dump from worker[0]"}});
+    let lines = parse_error_envelope(&json);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0].spans[0].content,
+        "gateway_timeout: timed out waiting for py-spy dump from worker[0]"
+    );
+}
+
+// PY-5: graceful fallback when envelope shape is unexpected.
+// parse_error_envelope: missing error field → "unknown: ".
+#[test]
+fn parse_error_envelope_missing_error_field() {
+    let json = serde_json::json!({"something_else": "value"});
+    let lines = parse_error_envelope(&json);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].spans[0].content, "unknown: ");
+}
+
+// PY-5: graceful fallback when inner fields are absent.
+// parse_error_envelope: error present but code/message absent → fallback values.
+#[test]
+fn parse_error_envelope_missing_code_and_message() {
+    let json = serde_json::json!({"error": {}});
+    let lines = parse_error_envelope(&json);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].spans[0].content, "unknown: ");
+}
+
+// PY-3: Ok result replaces overlay content with the stack lines.
+// pyspy_json_to_lines: Ok with non-empty stack → metadata header + blank + stack lines.
+#[test]
+fn pyspy_json_to_lines_ok_with_stack() {
+    let json = serde_json::json!({"Ok": {"pid": 1, "binary": "py-spy", "stack": "Thread 0\n  foo.py:1\n"}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    // header + blank separator + 2 stack lines; trailing newline must not produce empty line
+    assert_eq!(lines.len(), 4);
+    assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
+    assert_eq!(line_text(&lines[1]), ""); // blank separator
+    assert_eq!(line_text(&lines[2]), "Thread 0");
+    assert_eq!(line_text(&lines[3]), "  foo.py:1");
+}
+
+// PY-3: empty stack still produces a readable sentinel rather than a blank overlay.
+// pyspy_json_to_lines: Ok with empty stack → metadata header + blank + sentinel line.
+#[test]
+fn pyspy_json_to_lines_ok_empty_stack() {
+    let json = serde_json::json!({"Ok": {"pid": 1, "binary": "py-spy", "stack": ""}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 3); // header + blank + sentinel
+    assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
+    assert_eq!(line_text(&lines[1]), "");
+    assert_eq!(line_text(&lines[2]), "(empty stack)");
+}
+
+// PY-3: BinaryNotFound surfaces the searched paths so the user knows
+// where to install py-spy.
+// pyspy_json_to_lines: BinaryNotFound with searched paths.
+#[test]
+fn pyspy_json_to_lines_binary_not_found() {
+    let json =
+        serde_json::json!({"BinaryNotFound": {"searched": ["PYSPY_BIN=/x", "py-spy on PATH"]}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(line_text(&lines[0]), "py-spy binary not found");
+    assert_eq!(line_text(&lines[1]), "  searched: PYSPY_BIN=/x");
+    assert_eq!(line_text(&lines[2]), "  searched: py-spy on PATH");
+}
+
+// PY-3: Failed result surfaces pid/binary/exit_code/stderr for diagnosis.
+// pyspy_json_to_lines: Failed with null exit_code and non-empty stderr.
+#[test]
+fn pyspy_json_to_lines_failed_null_exit_code() {
+    let json = serde_json::json!({"Failed": {"pid": 1, "binary": "py-spy", "exit_code": null, "stderr": "ptrace denied"}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 4);
+    assert_eq!(line_text(&lines[0]), "pid: 1");
+    assert_eq!(line_text(&lines[1]), "binary: py-spy");
+    assert_eq!(line_text(&lines[2]), "exit_code: (killed/timeout)");
+    assert_eq!(line_text(&lines[3]), "ptrace denied");
+}
+
+// pyspy_json_to_lines: Failed with numeric exit_code and empty stderr.
+// The fallback fires only when lines is empty (no pid, binary, exit_code,
+// or stderr), so with pid/binary/exit_code present the result has 3 lines.
+#[test]
+fn pyspy_json_to_lines_failed_numeric_exit_code_empty_stderr() {
+    let json =
+        serde_json::json!({"Failed": {"pid": 1, "binary": "py-spy", "exit_code": 1, "stderr": ""}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(line_text(&lines[0]), "pid: 1");
+    assert_eq!(line_text(&lines[1]), "binary: py-spy");
+    assert_eq!(line_text(&lines[2]), "exit_code: 1");
+}
+
+// pyspy_json_to_lines: Failed with no pid/binary/exit_code and no stderr → fallback.
+#[test]
+fn pyspy_json_to_lines_failed_no_exit_code_no_stderr() {
+    let json = serde_json::json!({"Failed": {"stderr": ""}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(line_text(&lines[0]), "(py-spy failed, no output)");
+}
+
+// PY-3: unknown variant produces a single fallback line rather than panicking.
+// pyspy_json_to_lines: unknown variant → fallback line.
+#[test]
+fn pyspy_json_to_lines_unknown_variant() {
+    let json = serde_json::json!({"SomeUnknownVariant": {}});
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    assert_eq!(lines.len(), 1);
+    assert!(
+        line_text(&lines[0]).starts_with("unexpected response"),
+        "got: {}",
+        line_text(&lines[0])
+    );
+}
+
+// PY-3: "Process N: /path ..." banner emitted by py-spy is stripped so the
+// pid/binary metadata header (already rendered at the top) doesn't dominate.
+// pyspy_json_to_lines: Ok with Process banner → banner line stripped.
+#[test]
+fn pyspy_json_to_lines_ok_strips_process_banner() {
+    let json = serde_json::json!({
+        "Ok": {
+            "pid": 123,
+            "binary": "/very/long/path/to/pyspy_workload",
+            "stack": "Process 123: /very/long/path/to/pyspy_workload --args\nThread 0\n  foo.py:1\n"
+        }
+    });
+    let scheme = ColorScheme::nord();
+    let lines = pyspy_json_to_lines(&json, &scheme);
+    // header + blank + "Thread 0" + "  foo.py:1" = 4; Process banner stripped
+    assert_eq!(lines.len(), 4);
+    assert_eq!(line_text(&lines[0]), "pid: 123  binary: pyspy_workload");
+    assert_eq!(line_text(&lines[1]), "");
+    assert_eq!(line_text(&lines[2]), "Thread 0");
+    assert_eq!(line_text(&lines[3]), "  foo.py:1");
+}
+
+// ── TUI-21 build_diag_overlay tests ────────────────────────────────────────
+
+// TUI-21: running diagnostics produces a loading overlay with status line.
+#[test]
+fn build_diag_overlay_running() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
+    app.active_job = Some(ActiveJob::Diagnostics {
+        results: Vec::new(),
+        running: true,
+        rx: None,
+        completed_at: None,
+    });
+    let overlay = crate::render::detail_pane::build_diag_overlay(&app);
+    assert!(overlay.loading, "overlay should be loading while running");
+    assert!(
+        overlay.status_line.is_some(),
+        "running overlay needs a status line"
+    );
+    let title_text = line_text(&overlay.title);
+    assert!(
+        title_text.contains("Diagnostics"),
+        "title should contain 'Diagnostics', got: {title_text}"
+    );
+    assert!(
+        title_text.contains("Running"),
+        "title should contain running indicator, got: {title_text}"
+    );
+}
+
+// TUI-21: completed diagnostics with one pass result produces a non-loading
+// overlay whose status line summarises the pass count.
+#[test]
+fn build_diag_overlay_one_result() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
+    app.active_job = Some(ActiveJob::Diagnostics {
+        results: vec![DiagResult {
+            label: "root".into(),
+            reference: "root_ref".into(),
+            note: None,
+            phase: DiagPhase::AdminInfra,
+            outcome: DiagOutcome::Pass { elapsed_ms: 5 },
+        }],
+        running: false,
+        rx: None,
+        completed_at: Some("12:00:00".into()),
+    });
+    let overlay = crate::render::detail_pane::build_diag_overlay(&app);
+    assert!(
+        !overlay.loading,
+        "overlay should not be loading when completed"
+    );
+    assert!(
+        !overlay.lines.is_empty(),
+        "overlay should have result lines"
+    );
+    let status_text = overlay
+        .status_line
+        .as_ref()
+        .map(line_text)
+        .unwrap_or_default();
+    assert!(
+        status_text.contains("All 1 checks passed"),
+        "status line should mention pass count, got: {status_text}"
+    );
+}
+
+// TUI-21: no active job returns a fallback empty overlay without panicking.
+#[test]
+fn build_diag_overlay_no_active_job() {
+    let app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
+    assert!(app.active_job.is_none());
+    let overlay = crate::render::detail_pane::build_diag_overlay(&app);
+    assert!(!overlay.loading, "fallback overlay should not be loading");
+    assert!(
+        overlay.status_line.is_none(),
+        "fallback overlay should have no status line"
+    );
+    assert!(
+        overlay.lines.is_empty(),
+        "fallback overlay should have no lines"
+    );
+    let title_text = line_text(&overlay.title);
+    assert!(
+        title_text.contains("Diagnostics"),
+        "fallback title should contain 'Diagnostics', got: {title_text}"
+    );
 }
