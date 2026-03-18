@@ -17,7 +17,7 @@ name = "timed_test_test"
 path = "tests/basic.rs"
 
 [dependencies]
-quote = "1.0.44"
+quote = "1.0.45"
 syn = { version = "2.0.117", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 
 [dev-dependencies]
