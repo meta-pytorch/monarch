@@ -961,6 +961,13 @@ impl Proc {
     pub fn downgrade(&self) -> WeakProc {
         WeakProc::new(self)
     }
+
+    /// Flush the forwarder so that any buffered outbound messages
+    /// (e.g. supervision events posted during teardown) are
+    /// wire-delivered before the proc's networking is torn down.
+    pub async fn flush(&self) -> Result<(), anyhow::Error> {
+        self.state().forwarder.flush().await
+    }
 }
 
 #[async_trait]
