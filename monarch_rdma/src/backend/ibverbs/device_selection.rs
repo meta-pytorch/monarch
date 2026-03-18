@@ -10,6 +10,7 @@
 //! with the best available RDMA NICs based on PCI topology distance.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use super::primitives::IbvDevice;
 use super::primitives::get_all_devices;
@@ -80,11 +81,22 @@ pub fn select_optimal_ibv_device(device_hint: Option<&str>) -> Option<IbvDevice>
     }
 }
 
+/// Returns a reference to the process-wide lazily-initialized mapping from
+/// CUDA PCI addresses to optimal RDMA devices.
+///
+/// The mapping is computed at most once per process, on the first call that
+/// actually needs it (i.e., the first RDMA operation involving CUDA memory).
+/// CPU-only workloads pay no initialization cost.
+pub fn get_pci_to_device() -> &'static HashMap<String, IbvDevice> {
+    static PCI_TO_DEVICE: OnceLock<HashMap<String, IbvDevice>> = OnceLock::new();
+    PCI_TO_DEVICE.get_or_init(create_cuda_to_ibv_mapping)
+}
+
 /// Creates a mapping from CUDA PCI addresses to optimal RDMA devices.
 ///
 /// Discovers all available CUDA devices and determines the best
 /// RDMA device for each one using the device selection algorithm.
-pub fn create_cuda_to_ibv_mapping() -> HashMap<String, IbvDevice> {
+fn create_cuda_to_ibv_mapping() -> HashMap<String, IbvDevice> {
     let mut mapping = HashMap::new();
 
     // Try to discover CUDA devices (GPU 0-8 should be sufficient for most systems)

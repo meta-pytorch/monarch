@@ -173,10 +173,6 @@ pub struct IbvManagerActor {
     // Id for next mrv created
     mrv_id: usize,
 
-    // Map of PCI addresses to their optimal RDMA devices
-    // This is populated during actor initialization using the device selection algorithm
-    pci_to_device: HashMap<String, IbvDevice>,
-
     // Map from buffer_id to registration details.
     buffer_registrations: HashMap<usize, IbvBuffer>,
 }
@@ -307,13 +303,6 @@ impl IbvManagerActor {
             }
         }
 
-        // Build the CUDA to RDMA device mapping using device selection algorithm
-        let pci_to_device = super::device_selection::create_cuda_to_ibv_mapping();
-        tracing::debug!(
-            "Built CUDA to RDMA device mapping with {} entries",
-            pci_to_device.len()
-        );
-
         Ok(Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
@@ -323,7 +312,6 @@ impl IbvManagerActor {
             mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,
-            pci_to_device,
             buffer_registrations: HashMap::new(),
         })
     }
@@ -448,7 +436,7 @@ impl IbvManagerActor {
                 let pci_addr = std::ffi::CStr::from_ptr(pci_addr_buf.as_ptr())
                     .to_str()
                     .unwrap();
-                selected_rdma_device = self.pci_to_device.get(pci_addr).cloned();
+                selected_rdma_device = super::device_selection::get_pci_to_device().get(pci_addr).cloned();
             }
 
             // Determine the RDMA device to use
@@ -959,21 +947,29 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             }
         }
 
-        // Resolve the RDMA device for the local device
-        let rdma_device = self
-            .pci_to_device
-            .iter()
-            .find(|(_, device)| device.name() == &self_device)
-            .map(|(_, device)| device.clone())
-            .unwrap_or_else(|| {
-                // Fallback to default device from config
-                super::device_selection::resolve_ibv_device(&self.config.device)
-                    .unwrap_or_else(|| self.config.device.clone())
-            });
-
-        // Get or create domain and extract pointers to avoid borrowing issues
-        let (domain_context, domain_pd) = {
-            // Check if we already have a domain for the device
+        // Get or create domain. If the domain already exists (common case: register_mr ran
+        // first), get_or_create_device_domain returns it immediately without needing an
+        // IbvDevice. Only for the cold path (domain not yet created) do we look up the device
+        // — using get_all_devices() (a fast ibv_get_device_list call, no CUDA scan) before
+        // falling back to the PCI topology map.
+        let (domain_context, domain_pd) = if self.device_domains.contains_key(&self_device) {
+            let config_device = self.config.device.clone();
+            let (domain, _) = self.get_or_create_device_domain(&self_device, &config_device)?;
+            (domain.context, domain.pd)
+        } else {
+            let rdma_device = super::primitives::get_all_devices()
+                .into_iter()
+                .find(|device| device.name() == &self_device)
+                .unwrap_or_else(|| {
+                    super::device_selection::get_pci_to_device()
+                        .iter()
+                        .find(|(_, device)| device.name() == &self_device)
+                        .map(|(_, device)| device.clone())
+                        .unwrap_or_else(|| {
+                            super::device_selection::resolve_ibv_device(&self.config.device)
+                                .unwrap_or_else(|| self.config.device.clone())
+                        })
+                });
             let (domain, _) = self.get_or_create_device_domain(&self_device, &rdma_device)?;
             (domain.context, domain.pd)
         };
