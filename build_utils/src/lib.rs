@@ -379,6 +379,7 @@ impl CppStaticLibsConfig {
         let rdma_static_libraries = std::env::var("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_STATIC_LIBRARIES")
             .expect("DEP_MONARCH_CPP_STATIC_LIBS_RDMA_STATIC_LIBRARIES not set - add monarch_cpp_static_libs as build-dependency")
             .split(';')
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
 
