@@ -6,10 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::sync::Arc;
-use std::sync::Mutex;
-
 use async_trait::async_trait;
+use tokio::sync::watch;
 
 use crate::Actor;
 use crate::ActorHandle;
@@ -26,13 +24,13 @@ use crate::supervision::ActorSupervisionEvent;
 ///
 ///   This is because hyperactor's supervision logic requires actor failures in
 ///   a proc to be bubbled up to through the supervision chain:
-///      
+///
 ///   grandchild actor -> child actor -> root actor -> proc supervison coordinator
 ///
 ///   If the the proc supervison coordinator is not set, supervision will crash the
 ///   process because it cannot find the coordinator during the "bubbling up".
 #[derive(Debug)]
-pub struct ProcSupervisionCoordinator(ReportedEvent);
+pub struct ProcSupervisionCoordinator(watch::Sender<Option<ActorSupervisionEvent>>);
 
 impl ProcSupervisionCoordinator {
     /// Spawn a coordinator actor and set it as the coordinator for the given
@@ -42,29 +40,32 @@ impl ProcSupervisionCoordinator {
     pub async fn set(
         proc: &Proc,
     ) -> Result<(ReportedEvent, ActorHandle<ProcSupervisionCoordinator>), anyhow::Error> {
-        let state = ReportedEvent::new();
-        let actor = ProcSupervisionCoordinator(state.clone());
+        let (tx, rx) = watch::channel(None);
+        let actor = ProcSupervisionCoordinator(tx);
         let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
-        Ok((state, coordinator))
+        Ok((ReportedEvent(rx), coordinator))
     }
 }
 
 /// Used to store the last event reported to [ProcSupervisionCoordinator].
 #[derive(Clone, Debug)]
-pub struct ReportedEvent(Arc<Mutex<Option<ActorSupervisionEvent>>>);
-impl ReportedEvent {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(None)))
-    }
+pub struct ReportedEvent(watch::Receiver<Option<ActorSupervisionEvent>>);
 
+impl ReportedEvent {
     /// The last event reported to the coordinator.
     pub fn event(&self) -> Option<ActorSupervisionEvent> {
-        self.0.lock().unwrap().clone()
+        self.0.borrow().clone()
     }
 
-    fn set(&self, event: ActorSupervisionEvent) {
-        *self.0.lock().unwrap() = Some(event);
+    /// Wait until the coordinator receives an event.
+    pub async fn recv(&mut self) -> ActorSupervisionEvent {
+        self.0
+            .wait_for(|v| v.is_some())
+            .await
+            .expect("coordinator sender dropped without sending an event")
+            .clone()
+            .unwrap()
     }
 }
 
@@ -79,7 +80,7 @@ impl Handler<ActorSupervisionEvent> for ProcSupervisionCoordinator {
         msg: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
         tracing::debug!("in handler, handling supervision event");
-        self.0.set(msg);
+        self.0.send_replace(Some(msg));
         Ok(())
     }
 }
