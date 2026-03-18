@@ -1670,6 +1670,8 @@ mod tests {
             name: Name::new("my_proc").unwrap(),
             status: Status::Failed("boom".into()),
             state: None,
+            generation: 0,
+            timestamp: std::time::SystemTime::now(),
         };
 
         // A ProcCreationError

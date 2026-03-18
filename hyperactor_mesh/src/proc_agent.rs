@@ -239,6 +239,10 @@ struct ActorInstanceState {
     /// The time at which the actor should be considered expired if no further
     /// keepalive is received. `None` meaning it will never expire.
     expiry_time: Option<std::time::SystemTime>,
+    /// Monotonic generation counter, incremented on every state-mutating
+    /// operation (spawn, stop, supervision event). Used for last-writer-wins
+    /// ordering in the mesh controller.
+    generation: u64,
 }
 
 impl ActorInstanceState {
@@ -285,6 +289,8 @@ impl ActorInstanceState {
             name: name.clone(),
             status,
             state: actor_state,
+            generation: self.generation,
+            timestamp: std::time::SystemTime::now(),
         }
     }
 
@@ -819,6 +825,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                 .find(|(_, s)| s.spawn.as_ref().ok() == Some(&event.actor_id))
             {
                 instance.supervision_event = Some(event.clone());
+                instance.generation += 1;
                 let name = name.clone();
                 instance.notify_subscribers(cx, &name);
             }
@@ -935,6 +942,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                     supervision_event: None,
                     subscribers: Vec::new(),
                     expiry_time: None,
+                    generation: 1,
                 },
             );
             return Ok(());
@@ -962,6 +970,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                 supervision_event: None,
                 subscribers: Vec::new(),
                 expiry_time: None,
+                generation: 1,
             },
         );
 
@@ -980,6 +989,7 @@ impl Handler<resource::Stop> for ProcAgent {
                         None
                     } else {
                         actor_state.stop_initiated = true;
+                        actor_state.generation += 1;
                         actor_state.notify_subscribers(cx, &message.name);
                         Some(actor_id.clone())
                     }
@@ -1086,6 +1096,8 @@ impl Handler<resource::GetState<ActorState>> for ProcAgent {
                 name: get_state.name.clone(),
                 status: resource::Status::NotExist,
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
         };
 
@@ -1119,6 +1131,8 @@ impl Handler<resource::StreamState<ActorState>> for ProcAgent {
                 name: stream_state.name.clone(),
                 status: resource::Status::NotExist,
                 state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
             },
         };
 
