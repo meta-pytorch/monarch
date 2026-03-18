@@ -124,6 +124,22 @@ def test_shutdown_host_mesh() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_host_mesh_context_manager() -> None:
+    """Tests that the HostMesh can be used as a context manager and that it runs
+    shutdown on exit"""
+    async with ProcessJob({"hosts": 2}).state(cached_path=None).hosts as hm:
+        pm = hm.spawn_procs(per_host={"gpus": 2})
+        am = pm.spawn("actor", RankActor)
+        await am.get_rank.choose()
+    # Ensure that other operations fail after shutdown.
+    with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
+        hm.spawn_procs(per_host={"gpus": 2})
+    with pytest.raises(RuntimeError, match="HostMesh has already been shut down"):
+        await hm.shutdown()
+
+
+@pytest.mark.timeout(60)
 def test_shutdown_sliced_host_mesh_throws_exception() -> None:
     hm = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
     hm_sliced = hm.slice(hosts=1)
