@@ -965,6 +965,17 @@ impl MailboxSender for Proc {
             self.state().forwarder.post(envelope, return_handle)
         }
     }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        let (r1, r2) = futures::future::join(
+            self.state().proc_muxer.flush(),
+            self.state().forwarder.flush(),
+        )
+        .await;
+        r1?;
+        r2?;
+        Ok(())
+    }
 }
 
 /// A weak reference to a Proc that doesn't prevent it from being dropped.
@@ -995,6 +1006,13 @@ impl MailboxSender for WeakProc {
                 DeliveryError::BrokenLink("fail to upgrade WeakProc".to_string()),
                 return_handle,
             ),
+        }
+    }
+
+    async fn flush(&self) -> Result<(), anyhow::Error> {
+        match self.upgrade() {
+            Some(proc) => proc.flush().await,
+            None => Ok(()),
         }
     }
 }
