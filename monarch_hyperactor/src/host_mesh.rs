@@ -186,6 +186,12 @@ impl PyHostMesh {
         PyPythonTask::new(mesh_impl)
     }
 
+    fn with_bootstrap(&self, bootstrap_command: &PyBootstrapCommand) -> PyResult<Self> {
+        Ok(Self::new_ref(
+            self.mesh_ref()?.with_bootstrap(bootstrap_command.to_rust()),
+        ))
+    }
+
     /// Spawn a MeshAdminAgent on the head host's system proc and
     /// return its HTTP address as a string.
     ///

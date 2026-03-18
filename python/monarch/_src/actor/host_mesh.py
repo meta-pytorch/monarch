@@ -68,13 +68,13 @@ class HostMesh(MeshTrait):
         region: Region,
         stream_logs: bool,
         is_fake_in_process: bool,
-        _code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
+        code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"],
     ) -> None:
         self._hy_host_mesh = hy_host_mesh
         self._region = region
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
-        self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = _code_sync_proc_mesh
+        self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
 
     @classmethod
     def _allocate_nonblocking(
@@ -284,6 +284,37 @@ class HostMesh(MeshTrait):
             hy_host_mesh.region,
             stream_logs=False,
             is_fake_in_process=False,
+        )
+
+    def with_python_executable(self, python_executable: str) -> "HostMesh":
+        """
+        Return a new HostMesh that will use the given Python executable when
+        spawning procs. Procs spawned from this mesh will also inherit this
+        Python executable when they call ``this_host().spawn_procs(...)``.
+
+        Args:
+            python_executable: Path to the Python executable to use.
+
+        Returns:
+            A new HostMesh configured to use the specified Python executable.
+        """
+        _, _, bootstrap_env = _get_bootstrap_args()
+        bootstrap_cmd: BootstrapCommand = BootstrapCommand(
+            python_executable,
+            None,
+            ["-m", "monarch._src.actor.bootstrap_main"],
+            bootstrap_env,
+        )
+
+        async def task() -> HyHostMesh:
+            return (await self._hy_host_mesh).with_bootstrap(bootstrap_cmd)
+
+        return HostMesh(
+            PythonTask.from_coroutine(task()).spawn(),
+            self._region,
+            self._stream_logs,
+            self._is_fake_in_process,
+            None,
         )
 
     def __reduce_ex__(self, protocol: ...) -> Tuple[Any, Tuple[Any, ...]]:

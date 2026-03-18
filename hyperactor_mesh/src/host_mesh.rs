@@ -68,7 +68,6 @@ use crate::resource;
 use crate::resource::CreateOrUpdateClient;
 use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
-use crate::resource::ProcSpec;
 use crate::resource::RankedValues;
 use crate::resource::Status;
 use crate::transport::DEFAULT_TRANSPORT;
@@ -860,6 +859,10 @@ pub struct HostMeshRef {
     name: Name,
     region: Region,
     ranks: Arc<Vec<HostRef>>,
+    /// Bootstrap command to use when spawning procs on this mesh.
+    /// When `None`, each host agent uses its own default command.
+    #[serde(default)]
+    pub bootstrap_command: Option<BootstrapCommand>,
 }
 wirevalue::register_type!(HostMeshRef);
 
@@ -878,6 +881,7 @@ impl HostMeshRef {
             name,
             region,
             ranks: Arc::new(ranks),
+            bootstrap_command: None,
         })
     }
 
@@ -888,6 +892,7 @@ impl HostMeshRef {
             name,
             region: extent!(hosts = hosts.len()).into(),
             ranks: Arc::new(hosts.into_iter().map(HostRef).collect()),
+            bootstrap_command: None,
         }
     }
 
@@ -905,6 +910,7 @@ impl HostMeshRef {
                     .map(HostRef::try_from)
                     .collect::<crate::Result<_>>()?,
             ),
+            bootstrap_command: None,
         })
     }
 
@@ -917,7 +923,17 @@ impl HostMeshRef {
             name,
             region: Extent::unity().into(),
             ranks: Arc::new(vec![HostRef::try_from(agent)?]),
+            bootstrap_command: None,
         })
+    }
+
+    /// Return a new `HostMeshRef` that will use `cmd` when spawning procs,
+    /// overriding the host agent's default bootstrap command.
+    pub fn with_bootstrap(self, cmd: BootstrapCommand) -> Self {
+        Self {
+            bootstrap_command: Some(cmd),
+            ..self
+        }
     }
 
     /// Returns the host entries as `(addr_string, ActorRef<HostAgent>)` pairs.
@@ -1115,12 +1131,17 @@ impl HostMeshRef {
                 let proc_name = Name::new(format!("{}_{}", proc_mesh_name.name(), per_host_rank))?;
                 proc_names.push(proc_name.clone());
                 let bind = proc_bind.as_ref().map(|v| v[per_host_rank].clone());
+                let proc_spec = resource::ProcSpec {
+                    client_config_override: client_config_override.clone(),
+                    bootstrap_command: self.bootstrap_command.clone(),
+                    proc_bind: bind,
+                };
                 host.mesh_agent()
                     .create_or_update(
                         cx,
                         proc_name.clone(),
                         resource::Rank::new(create_rank),
-                        ProcSpec::new(client_config_override.clone(), bind),
+                        proc_spec,
                     )
                     .await
                     .map_err(|e| {
@@ -1561,7 +1582,10 @@ impl view::RankedSliceable for HostMeshRef {
             .remap(&region)
             .unwrap()
             .map(|index| self.get(index).unwrap().clone());
-        Self::new(self.name.clone(), region, ranks.collect()).unwrap()
+        Self {
+            bootstrap_command: self.bootstrap_command.clone(),
+            ..Self::new(self.name.clone(), region, ranks.collect()).unwrap()
+        }
     }
 }
 
