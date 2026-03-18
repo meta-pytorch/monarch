@@ -133,10 +133,11 @@ pub trait Actor: Sized + Send + 'static {
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        // By default, the supervision event is not handled, caller is expected to bubble it up.
-        Ok(false)
+        // Error events are not handled by default and bubble up to the parent.
+        // Normal lifecycle events (e.g. clean stop) are absorbed.
+        Ok(!event.is_error())
     }
 
     /// Default undeliverable message handling behavior.
