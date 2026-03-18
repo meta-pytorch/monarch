@@ -315,22 +315,6 @@ impl IbvManagerActor {
             buffer_registrations: HashMap::new(),
         };
 
-        // Eagerly create domains for each unique NIC so PDs/QPs are ready
-        // at segment registration time.
-        if mlx5dv_enabled {
-            let mut seen = HashSet::new();
-            let devices_to_init: Vec<IbvDevice> =
-                super::device_selection::get_cuda_device_to_ibv_device()
-                    .iter()
-                    .flatten()
-                    .filter(|d| seen.insert(d.name().clone()))
-                    .cloned()
-                    .collect();
-            for device in &devices_to_init {
-                actor.get_or_create_device_domain(device.name(), device)?;
-            }
-        }
-
         Ok(actor)
     }
 
