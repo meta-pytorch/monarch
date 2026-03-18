@@ -503,7 +503,7 @@ mod tests {
         let instance = cx.actor_instance;
         let mut host_mesh = test_utils::local_host_mesh(1).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "rsync_test", ndslice::Extent::unity())
+            .spawn(instance, "rsync_test", ndslice::Extent::unity(), None)
             .await
             .unwrap();
         // Spawn actor mesh with RsyncActors

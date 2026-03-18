@@ -1431,7 +1431,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2))
+            .spawn(&instance, "test", extent!(gpus = 2), None)
             .await
             .unwrap();
         let actor_mesh = proc_mesh.spawn(instance, "test", &()).await.unwrap();
@@ -1626,7 +1626,7 @@ mod tests {
 
         let mut hm = testing::host_mesh(4).await;
         let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2))
+            .spawn(&instance, "test", extent!(gpus = 2), None)
             .await
             .unwrap();
         let err = proc_mesh
