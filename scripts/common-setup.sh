@@ -9,10 +9,33 @@
 
 set -ex
 
+# Ensure conda is available. Checks common locations first, then
+# installs Miniconda if conda is not found anywhere.
+initialize_conda() {
+    if command -v conda &> /dev/null; then
+        return
+    fi
+    # Some images have conda installed but not on PATH.
+    if [ -f /opt/conda/etc/profile.d/conda.sh ]; then
+        source /opt/conda/etc/profile.d/conda.sh
+        return
+    fi
+    # Install Miniconda if conda is not present at all.
+    echo "conda not found, installing Miniconda..."
+    local arch
+    arch=$(uname -m)
+    local installer_url="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-${arch}.sh"
+    curl -fsSL -o /tmp/miniconda.sh "$installer_url"
+    bash /tmp/miniconda.sh -b -p /opt/conda
+    rm /tmp/miniconda.sh
+    source /opt/conda/etc/profile.d/conda.sh
+}
+
 # Setup conda environment. Defaults to Python 3.10.
 setup_conda_environment() {
     local python_version=${1:-3.10}
     echo "Setting up conda environment with Python ${python_version}..."
+    initialize_conda
     conda create -n venv python="${python_version}" -y
     conda activate venv
     export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH"
@@ -26,6 +49,12 @@ install_system_dependencies() {
     dnf update -y
     # Protobuf compiler is required for the tracing-perfetto-sdk-schema crate.
     dnf install clang-devel libunwind libunwind-devel protobuf-compiler -y
+    # ninja is needed by monarch_cpp_static_libs to build rdma-core from source
+    # (cmake's Makefile generator cannot build by output file path, but Ninja can).
+    # Try dnf first (package name varies by distro), fall back to pip if unavailable.
+    if ! command -v ninja &> /dev/null; then
+        dnf install -y ninja-build 2>/dev/null || dnf install -y ninja 2>/dev/null || pip install ninja || echo "Warning: ninja not available, rdma-core build may use make instead"
+    fi
 }
 
 # Install Node.js and npm (needed to build the dashboard frontend).
@@ -45,7 +74,13 @@ setup_rust_toolchain() {
     # We use cargo nextest to run tests in individual processes for similarity
     # to buck test.
     # Replace "cargo test" commands with "cargo nextest run".
-    curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+        NEXTEST_URL="https://get.nexte.st/latest/linux-arm"
+    else
+        NEXTEST_URL="https://get.nexte.st/latest/linux"
+    fi
+    curl -LsSf "$NEXTEST_URL" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
     # Setup sccache for distributed Rust compilation caching via S3.
     setup_sccache
@@ -88,7 +123,9 @@ setup_tensor_engine() {
     echo "Installing Tensor Engine dependencies..."
     # Install the fmt library for C++ headers in pytorch.
     conda install -y -c conda-forge fmt
-    dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel
+    # libnl3-devel is needed by rdma-core's cmake to enable mlx5/efa providers
+    # and generate ENABLE_STATIC targets (lib/statics/*.a).
+    dnf install -y libibverbs rdma-core libmlx5 libibverbs-devel rdma-core-devel libefa libnl3-devel
 }
 
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
@@ -131,6 +168,24 @@ setup_pytorch_with_headers() {
 
     echo "LibTorch libraries available at: $LIBTORCH_ROOT/lib"
     ls -la "$LIBTORCH_ROOT/lib/lib"*.so | head -5 || echo "No .so files found"
+}
+
+# Install CUDA toolkit for build-only (no GPU required).
+# Used on ARM64 runners that lack a GPU but need CUDA for compilation.
+setup_cuda_toolkit() {
+    echo "Installing CUDA toolkit for build-only (no GPU required)..."
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "aarch64" ]; then
+        dnf config-manager --add-repo \
+            https://developer.download.nvidia.com/compute/cuda/repos/rhel9/sbsa/cuda-rhel9.repo
+    else
+        dnf config-manager --add-repo \
+            https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+    fi
+    dnf install -y cuda-toolkit-12-8
+    export CUDA_HOME=/usr/local/cuda-12.8
+    export PATH="$CUDA_HOME/bin:$PATH"
+    export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
 }
 
 # Common setup for build workflows (environment + system deps + rust)

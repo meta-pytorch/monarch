@@ -42,6 +42,17 @@ jobs:
     with:
       artifact-name: monarch-cuda-${{ github.sha }}-py3.10
 
+  test-cpu-rust:
+    name: Test CPU Rust
+    uses: ./.github/workflows/test-cpu-rust.yml
+
+  test-cpu-rust-arm64:
+    name: Test CPU Rust (ARM64)
+    uses: ./.github/workflows/test-cpu-rust.yml
+    with:
+      runner: linux.arm64.2xlarge
+      docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
+
   test-gpu-rust:
     name: Test GPU Rust
     needs: build-cuda
@@ -60,13 +71,15 @@ jobs:
   status-check:
     name: Status Check
     runs-on: ubuntu-latest
-    needs: [test-cpu-python, test-gpu-python, test-gpu-rust]
+    needs: [test-cpu-python, test-gpu-python, test-cpu-rust, test-cpu-rust-arm64, test-gpu-rust]
     if: always()
     steps:
       - name: Check all jobs status
         run: |
           if [[ "${{ needs.test-cpu-python.result }}" != "success" ]] ||
              [[ "${{ needs.test-gpu-python.result }}" != "success" ]] ||
+             [[ "${{ needs.test-cpu-rust.result }}" != "success" ]] ||
+             [[ "${{ needs.test-cpu-rust-arm64.result }}" != "success" ]] ||
              [[ "${{ needs.test-gpu-rust.result }}" != "success" ]]; then
             echo "One or more jobs failed"
             exit 1
