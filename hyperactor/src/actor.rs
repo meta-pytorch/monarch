@@ -1465,6 +1465,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl MailboxSender for DelayedMailboxSender {
         fn post_unchecked(
             &self,
