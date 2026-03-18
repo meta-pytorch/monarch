@@ -28,7 +28,6 @@ use crate::IbvConfig;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
-use crate::cu_check;
 use crate::local_memory::RdmaLocalMemory;
 use crate::local_memory::UnsafeLocalMemory;
 use crate::register_segment_scanner;
@@ -315,6 +314,7 @@ async fn test_indirect_mkey_read_at_large_offset() -> Result<(), anyhow::Error> 
             instance,
             "mkey_test_procs",
             hyperactor_mesh::extent!(procs = 2),
+            None,
         )
         .await?;
 
