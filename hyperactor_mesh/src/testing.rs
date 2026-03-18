@@ -44,6 +44,7 @@ use crate::alloc::Allocator;
 use crate::alloc::LocalAllocator;
 use crate::alloc::ProcessAllocator;
 use crate::host_mesh::HostMesh;
+use crate::host_mesh::HostMeshShutdownGuard;
 use crate::supervision::MeshFailure;
 use crate::transport::default_transport;
 
@@ -240,7 +241,7 @@ pub async fn local_proc_mesh(
 /// let _ = host_mesh.shutdown(&instance).await;
 /// ```
 #[cfg(fbcode_build)]
-pub async fn host_mesh(n: usize) -> HostMesh {
+pub async fn host_mesh(n: usize) -> HostMeshShutdownGuard {
     use crate::Name;
 
     let program = crate::testresource::get("monarch/hyperactor_mesh/bootstrap");
@@ -270,5 +271,5 @@ pub async fn host_mesh(n: usize) -> HostMesh {
     }
 
     let host_mesh = HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
-    HostMesh::take(host_mesh)
+    HostMesh::take(host_mesh).shutdown_guard()
 }

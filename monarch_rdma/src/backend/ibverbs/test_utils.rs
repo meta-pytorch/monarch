@@ -6,7 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -780,4 +783,205 @@ impl IbvTestEnv {
         }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// CudaAllocator: reusable CUDA VMM allocator with a segment scanner
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CudaAllocation {
+    pub(crate) ptr: usize,
+    pub(crate) size: usize,
+    pub(crate) device: i32,
+    handle: u64,
+}
+
+pub(crate) struct CudaAllocator {
+    allocations: Mutex<HashMap<usize, CudaAllocation>>,
+}
+
+static CUDA_ALLOCATOR: OnceLock<CudaAllocator> = OnceLock::new();
+
+unsafe fn cuda_err(result: rdmaxcel_sys::CUresult) -> String {
+    unsafe {
+        let mut s: *const std::os::raw::c_char = std::ptr::null();
+        rdmaxcel_sys::rdmaxcel_cuGetErrorString(result, &mut s);
+        if s.is_null() {
+            format!("CUDA error {result}")
+        } else {
+            std::ffi::CStr::from_ptr(s).to_string_lossy().into_owned()
+        }
+    }
+}
+
+impl CudaAllocator {
+    pub(crate) fn get() -> &'static CudaAllocator {
+        CUDA_ALLOCATOR.get_or_init(|| {
+            unsafe {
+                cu_check!(rdmaxcel_sys::rdmaxcel_cuInit(0));
+            }
+            CudaAllocator {
+                allocations: Mutex::new(HashMap::new()),
+            }
+        })
+    }
+
+    /// Allocate GPU memory on `device` of at least `size` bytes via the CUDA
+    /// VMM API. Returns the device pointer. Panics on failure, cleaning up
+    /// any partially-allocated resources.
+    pub(crate) fn allocate(&self, device: i32, size: usize) -> CudaAllocation {
+        unsafe {
+            // Context setup — shared primary context, nothing to roll back.
+            let mut dev: rdmaxcel_sys::CUdevice = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuDeviceGet(&mut dev, device));
+
+            let mut ctx: rdmaxcel_sys::CUcontext = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuDevicePrimaryCtxRetain(
+                &mut ctx, dev
+            ));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuCtxSetCurrent(ctx));
+
+            let mut granularity: usize = 0;
+            let mut prop: rdmaxcel_sys::CUmemAllocationProp = std::mem::zeroed();
+            prop.type_ = rdmaxcel_sys::CU_MEM_ALLOCATION_TYPE_PINNED;
+            prop.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+            prop.location.id = device;
+            prop.allocFlags.gpuDirectRDMACapable = 1;
+            prop.requestedHandleTypes = rdmaxcel_sys::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemGetAllocationGranularity(
+                &mut granularity,
+                &prop,
+                rdmaxcel_sys::CU_MEM_ALLOC_GRANULARITY_MINIMUM,
+            ));
+
+            let padded = ((size - 1) / granularity + 1) * granularity;
+
+            // From here each step acquires a resource; clean up predecessors
+            // before panicking if a later step fails.
+            let mut handle: rdmaxcel_sys::CUmemGenericAllocationHandle = std::mem::zeroed();
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemCreate(
+                &mut handle,
+                padded,
+                &prop,
+                0
+            ));
+
+            let mut dptr: rdmaxcel_sys::CUdeviceptr = std::mem::zeroed();
+            let r = rdmaxcel_sys::rdmaxcel_cuMemAddressReserve(&mut dptr, padded, 0, 0, 0);
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
+                panic!("cuMemAddressReserve: {}", cuda_err(r));
+            }
+
+            let r = rdmaxcel_sys::rdmaxcel_cuMemMap(dptr, padded, 0, handle, 0);
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
+                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded);
+                panic!("cuMemMap: {}", cuda_err(r));
+            }
+
+            let mut access: rdmaxcel_sys::CUmemAccessDesc = std::mem::zeroed();
+            access.location.type_ = rdmaxcel_sys::CU_MEM_LOCATION_TYPE_DEVICE;
+            access.location.id = device;
+            access.flags = rdmaxcel_sys::CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+            let r = rdmaxcel_sys::rdmaxcel_cuMemSetAccess(dptr, padded, &access, 1);
+            if r != rdmaxcel_sys::CUDA_SUCCESS {
+                rdmaxcel_sys::rdmaxcel_cuMemUnmap(dptr, padded);
+                rdmaxcel_sys::rdmaxcel_cuMemRelease(handle);
+                rdmaxcel_sys::rdmaxcel_cuMemAddressFree(dptr, padded);
+                panic!("cuMemSetAccess: {}", cuda_err(r));
+            }
+
+            let ptr = dptr as usize;
+            let alloc = CudaAllocation {
+                ptr,
+                size: padded,
+                device,
+                handle,
+            };
+            self.allocations.lock().unwrap().insert(ptr, alloc);
+            alloc
+        }
+    }
+    pub(crate) fn free(&self, ptr: usize) {
+        let alloc = self
+            .allocations
+            .lock()
+            .unwrap()
+            .remove(&ptr)
+            .unwrap_or_else(|| panic!("unknown allocation 0x{ptr:x}"));
+
+        // Unmap first, then release the backing allocation, then free the VA range.
+        unsafe {
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemUnmap(
+                alloc.ptr as rdmaxcel_sys::CUdeviceptr,
+                alloc.size
+            ));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemRelease(alloc.handle));
+            cu_check!(rdmaxcel_sys::rdmaxcel_cuMemAddressFree(
+                alloc.ptr as rdmaxcel_sys::CUdeviceptr,
+                alloc.size
+            ));
+        }
+    }
+}
+
+impl CudaAllocation {
+    pub(crate) fn free(self) {
+        CudaAllocator::get().free(self.ptr);
+    }
+}
+
+/// Segment scanner callback compatible with `rdmaxcel_segment_scanner_fn`.
+/// Reports all allocations tracked by `CudaAllocator`.
+pub(crate) unsafe extern "C" fn cuda_allocator_scanner(
+    out: *mut rdmaxcel_sys::rdmaxcel_scanned_segment_t,
+    max: usize,
+) -> usize {
+    let Some(allocator) = CUDA_ALLOCATOR.get() else {
+        return 0;
+    };
+    let allocs = allocator.allocations.lock().unwrap();
+    let count = allocs.len();
+    if max == 0 || out.is_null() {
+        return count;
+    }
+    for (i, alloc) in allocs.values().enumerate().take(max.min(count)) {
+        // SAFETY: caller guarantees `out` points to a buffer of at least `max` entries.
+        unsafe {
+            *out.add(i) = rdmaxcel_sys::rdmaxcel_scanned_segment_t {
+                address: alloc.ptr,
+                size: alloc.size,
+                device: alloc.device,
+                is_expandable: 1,
+            };
+        }
+    }
+    count
+}
+
+/// Finds two CUDA devices that map to different RDMA NICs via PCI topology.
+/// Returns `Some((device_a, device_b))` or `None` if all devices share one NIC.
+#[cfg(test_8_gpus)]
+pub(crate) fn find_devices_on_different_nics() -> Option<(i32, i32)> {
+    use super::device_selection::select_optimal_ibv_device;
+
+    let mut gpu_to_nic: Vec<(i32, String)> = Vec::new();
+    for gpu_idx in 0..8 {
+        let hint = format!("cuda:{gpu_idx}");
+        if let Some(device) = select_optimal_ibv_device(Some(&hint)) {
+            gpu_to_nic.push((gpu_idx, device.name().to_string()));
+        }
+    }
+
+    for i in 0..gpu_to_nic.len() {
+        for j in (i + 1)..gpu_to_nic.len() {
+            if gpu_to_nic[i].1 != gpu_to_nic[j].1 {
+                return Some((gpu_to_nic[i].0, gpu_to_nic[j].0));
+            }
+        }
+    }
+    None
 }
