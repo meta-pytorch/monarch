@@ -46,6 +46,7 @@ use crate::Name;
 use crate::ValueMesh;
 use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
+use crate::casting::CAST_ACTOR_MESH_ID;
 use crate::casting::update_undeliverable_envelope_for_casting;
 use crate::host_mesh::HostMeshRef;
 use crate::proc_agent::ActorState;
@@ -338,6 +339,17 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                     port.port_id()
                 );
             }
+            Ok(())
+        } else if envelope.0.headers().get(CAST_ACTOR_MESH_ID).is_some() {
+            // A cast message we sent (e.g. StreamState or KeepaliveGetState)
+            // was returned by the CommActor because it could not be forwarded.
+            // This is expected when the network session is broken. Log and
+            // continue — the supervision polling loop will detect the failure.
+            tracing::warn!(
+                actor_id = %cx.self_id(),
+                dest = %envelope.0.dest(),
+                "ActorMeshController: ignoring undeliverable cast message",
+            );
             Ok(())
         } else {
             handle_undeliverable_message(cx, envelope)
