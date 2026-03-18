@@ -2350,7 +2350,16 @@ impl InstanceCell {
     ) {
         match &self.inner.actor_loop {
             Some((_, supervision_port)) => {
-                if let Err(err) = supervision_port.send(child_cx, event) {
+                if let Err(err) = supervision_port.send(child_cx, event.clone()) {
+                    if !event.is_error() {
+                        tracing::debug!(
+                            "{}: dropping non-error supervision event {}: {:?}",
+                            self.actor_id(),
+                            event,
+                            err
+                        );
+                        return;
+                    }
                     tracing::error!(
                         "{}: failed to send supervision event to actor: {:?}. Crash the process.",
                         self.actor_id(),
@@ -2360,6 +2369,14 @@ impl InstanceCell {
                 }
             }
             None => {
+                if !event.is_error() {
+                    tracing::debug!(
+                        "{}: dropping non-error supervision event to detached actor: {}",
+                        self.actor_id(),
+                        event,
+                    );
+                    return;
+                }
                 tracing::error!(
                     "{}: failed: {}: cannot send supervision event to detached actor: crashing",
                     self.actor_id(),
