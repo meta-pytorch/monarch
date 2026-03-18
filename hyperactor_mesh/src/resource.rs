@@ -402,6 +402,51 @@ where
     }
 }
 
+/// Subscribe to streaming state updates for a named resource.
+/// The subscriber port will receive `State<S>` whenever the resource's
+/// state changes. The current state is sent immediately upon subscription.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct StreamState<S> {
+    /// The name of the resource to subscribe to.
+    pub name: Name,
+    /// A streaming port that will receive state updates.
+    pub subscriber: hyperactor_reference::PortRef<State<S>>,
+}
+wirevalue::register_type!(StreamState<ActorState>);
+
+// Cannot derive Bind and Unbind for this generic, implement manually.
+impl<S> Unbind for StreamState<S>
+where
+    S: RemoteMessage,
+    S: Unbind,
+{
+    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.subscriber.unbind(bindings)
+    }
+}
+
+impl<S> Bind for StreamState<S>
+where
+    S: RemoteMessage,
+    S: Bind,
+{
+    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
+        self.subscriber.bind(bindings)
+    }
+}
+
+impl<S> Clone for StreamState<S>
+where
+    S: RemoteMessage,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            subscriber: self.subscriber.clone(),
+        }
+    }
+}
+
 /// List the set of resources managed by the controller.
 #[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
 pub struct List {
