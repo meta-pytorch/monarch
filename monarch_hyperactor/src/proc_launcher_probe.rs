@@ -146,6 +146,9 @@ pub(crate) fn probe_exit_port_via_mesh(
                 ("CallMethodIndirect".to_string(), None)
             }
             PythonMessageKind::Uninit {} => ("Uninit".to_string(), None),
+            PythonMessageKind::AccumulatedResponses(_) => {
+                ("AccumulatedResponses".to_string(), None)
+            }
         };
 
         let payload = msg.message.to_bytes().to_vec();
