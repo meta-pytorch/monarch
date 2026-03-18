@@ -18,4 +18,6 @@ pub(crate) enum KeyResult {
     ExpandNode(String, usize),
     /// Start the self-diagnostic suite against the attached mesh.
     RunDiagnostics,
+    /// Fetch a py-spy stack dump for the given proc reference.
+    RunPySpy(String),
 }
