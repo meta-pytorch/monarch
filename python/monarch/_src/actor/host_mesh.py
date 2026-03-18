@@ -122,18 +122,40 @@ class HostMesh(MeshTrait):
         per_host: Dict[str, int] | None = None,
         bootstrap: Callable[[], None] | Callable[[], Awaitable[None]] | None = None,
         name: str | None = None,
+        proc_bind: list[dict[str, str]] | None = None,
     ) -> "ProcMesh":
+        """Spawn a ProcMesh onto this host mesh.
+
+        Args:
+            per_host: shape of procs per host, e.g. ``{"gpus": 4}``.
+            bootstrap: optional setup callable run on each proc.
+            name: optional name for the proc mesh.
+            proc_bind: optional per-process CPU/NUMA binding config.
+                Length must equal ``math.prod(per_host.values())``.
+                Each dict maps binding keys (``cpunodebind``,
+                ``membind``, ``physcpubind``, ``cpus``) to values.
+        """
         if not per_host:
             per_host = {}
 
         if not name:
             name = "anon"
 
+        import math
+
+        procs_per_host = math.prod(per_host.values()) if per_host else 1
+        if proc_bind is not None and len(proc_bind) != procs_per_host:
+            raise ValueError(
+                f"proc_bind length ({len(proc_bind)}) must equal "
+                f"procs_per_host ({procs_per_host})"
+            )
+
         return self._spawn_nonblocking(
             name,
             Extent(list(per_host.keys()), list(per_host.values())),
             bootstrap,
             True,
+            proc_bind,
         )
 
     def _spawn_admin(self, admin_addr: Optional[str] = None) -> "Future[str]":
@@ -170,6 +192,7 @@ class HostMesh(MeshTrait):
         per_host: Extent,
         setup: Callable[[], None] | Callable[[], Awaitable[None]] | None,
         _attach_controller_controller: bool,
+        proc_bind: list[dict[str, str]] | None = None,
     ) -> "ProcMesh":
         if set(per_host.labels) & set(self._labels):
             # The rust side will catch this too, but this lets us fail fast
@@ -180,7 +203,7 @@ class HostMesh(MeshTrait):
         async def task() -> HyProcMesh:
             hy_host_mesh = await self._hy_host_mesh
             return await hy_host_mesh.spawn_nonblocking(
-                context().actor_instance._as_rust(), name, per_host
+                context().actor_instance._as_rust(), name, per_host, proc_bind
             )
 
         return ProcMesh.from_host_mesh(
