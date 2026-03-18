@@ -1,12 +1,10 @@
 name: Build ROCm
 
 on:
-  # Temporarily disabled.
-  # To re-enable, uncomment the triggers below and the build-rocm job in ci.yml
-  # workflow_call:
-  # push:
-  #   tags:
-  #     - ciflow/rocm/*
+  workflow_call:
+  push:
+    tags:
+      - ciflow/rocm/*
   workflow_dispatch:
 
 concurrency:
