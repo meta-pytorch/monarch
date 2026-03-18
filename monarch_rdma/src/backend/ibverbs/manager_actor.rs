@@ -173,10 +173,6 @@ pub struct IbvManagerActor {
     // Id for next mrv created
     mrv_id: usize,
 
-    /// Maps CUDA device ordinal to IbvDevice (the optimal RDMA NIC for that GPU).
-    /// `None` if the device has no mapped NIC.
-    cuda_device_to_ibv_device: Vec<Option<IbvDevice>>,
-
     // Map from buffer_id to registration details.
     buffer_registrations: HashMap<usize, IbvBuffer>,
 }
@@ -307,27 +303,6 @@ impl IbvManagerActor {
             }
         }
 
-        // Build per-CUDA-device NIC mapping
-        let cuda_device_count = unsafe {
-            let mut count: i32 = 0;
-            rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count);
-            count.max(0) as usize
-        };
-        let mut cuda_device_to_ibv_device = Vec::with_capacity(cuda_device_count);
-        for ordinal in 0..cuda_device_count {
-            let device = crate::device_selection::get_cuda_pci_address(&ordinal.to_string())
-                .and_then(|pci_addr| {
-                    super::device_selection::get_pci_to_device()
-                        .get(&pci_addr)
-                        .cloned()
-                });
-            cuda_device_to_ibv_device.push(device);
-        }
-        tracing::debug!(
-            "Built per-device NIC mapping for {} CUDA devices",
-            cuda_device_count,
-        );
-
         let mut actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
@@ -337,8 +312,6 @@ impl IbvManagerActor {
             mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,
-            cuda_device_to_ibv_device,
-
             buffer_registrations: HashMap::new(),
         };
 
@@ -346,13 +319,13 @@ impl IbvManagerActor {
         // at segment registration time.
         if mlx5dv_enabled {
             let mut seen = HashSet::new();
-            let devices_to_init: Vec<IbvDevice> = actor
-                .cuda_device_to_ibv_device
-                .iter()
-                .flatten()
-                .filter(|d| seen.insert(d.name().clone()))
-                .cloned()
-                .collect();
+            let devices_to_init: Vec<IbvDevice> =
+                super::device_selection::get_cuda_device_to_ibv_device()
+                    .iter()
+                    .flatten()
+                    .filter(|d| seen.insert(d.name().clone()))
+                    .cloned()
+                    .collect();
             for device in &devices_to_init {
                 actor.get_or_create_device_domain(device.name(), device)?;
             }
@@ -422,9 +395,10 @@ impl IbvManagerActor {
         Vec<*mut rdmaxcel_sys::ibv_pd>,
         Vec<*mut rdmaxcel_sys::rdmaxcel_qp_t>,
     ) {
-        let mut pds = Vec::with_capacity(self.cuda_device_to_ibv_device.len());
-        let mut qps = Vec::with_capacity(self.cuda_device_to_ibv_device.len());
-        for maybe_device in &self.cuda_device_to_ibv_device {
+        let cuda_map = super::device_selection::get_cuda_device_to_ibv_device();
+        let mut pds = Vec::with_capacity(cuda_map.len());
+        let mut qps = Vec::with_capacity(cuda_map.len());
+        for maybe_device in cuda_map {
             if let Some(device) = maybe_device {
                 if let Some((domain, qp)) = self.device_domains.get(device.name()) {
                     pds.push(domain.pd);
@@ -500,8 +474,7 @@ impl IbvManagerActor {
                     ptr,
                 );
                 if err == rdmaxcel_sys::CUDA_SUCCESS && device_ordinal >= 0 {
-                    selected_rdma_device = self
-                        .cuda_device_to_ibv_device
+                    selected_rdma_device = super::device_selection::get_cuda_device_to_ibv_device()
                         .get(device_ordinal as usize)
                         .and_then(|d| d.clone());
                 }
