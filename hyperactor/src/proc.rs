@@ -183,6 +183,10 @@ struct ProcState {
     /// Used by root actors to send events to the actor coordinating
     /// supervision of root actors in this proc.
     supervision_coordinator_port: OnceLock<PortHandle<ActorSupervisionEvent>>,
+
+    /// The actor ID of the supervision coordinator, if it lives on this proc.
+    /// Used to ensure the coordinator is shut down last during proc teardown.
+    supervision_coordinator_actor_id: OnceLock<reference::ActorId>,
 }
 
 impl Drop for ProcState {
@@ -233,6 +237,7 @@ impl Proc {
                 instances: DashMap::new(),
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
+                supervision_coordinator_actor_id: OnceLock::new(),
             }),
         }
     }
@@ -252,10 +257,19 @@ impl Proc {
         &self,
         port: PortHandle<ActorSupervisionEvent>,
     ) -> Result<(), anyhow::Error> {
+        let actor_id = port.location().actor_id().clone();
         self.state()
             .supervision_coordinator_port
             .set(port)
-            .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))
+            .map_err(|existing| anyhow::anyhow!("coordinator port is already set to {existing}"))?;
+        let _ = self.state().supervision_coordinator_actor_id.set(actor_id);
+        Ok(())
+    }
+
+    /// The actor ID of the supervision coordinator, if one is set and
+    /// lives on this proc.
+    pub fn supervision_coordinator_actor_id(&self) -> Option<&reference::ActorId> {
+        self.state().supervision_coordinator_actor_id.get()
     }
 
     /// Handle a supervision event received by the proc. Attempt to forward it to the
@@ -742,6 +756,10 @@ impl Proc {
             )
         });
 
+        let coordinator_id = self.supervision_coordinator_actor_id().cloned();
+
+        // Phase 1: stop all root actors except the supervision coordinator
+        // (which must stay alive to receive stop events from the others).
         let mut statuses = HashMap::new();
         for actor_id in self
             .state()
@@ -751,11 +769,14 @@ impl Proc {
             .map(|entry| entry.key().clone())
             .collect::<Vec<_>>()
         {
+            if coordinator_id.as_ref() == Some(&actor_id) {
+                continue;
+            }
             if let Some(status) = self.stop_actor(&actor_id, reason.to_string()) {
                 statuses.insert(actor_id, status);
             }
         }
-        tracing::debug!("{}: proc stopped", self.proc_id());
+        tracing::debug!("{}: non-coordinator actors stopped", self.proc_id());
 
         let waits: Vec<_> = statuses
             .iter_mut()
@@ -775,7 +796,7 @@ impl Proc {
             .collect();
 
         let results = futures::future::join_all(waits).await;
-        let stopped_actors: Vec<_> = results
+        let mut stopped_actors: Vec<_> = results
             .iter()
             .filter_map(|actor_id| actor_id.as_ref())
             .cloned()
@@ -795,7 +816,31 @@ impl Proc {
                 }
             })
             .collect();
-        let aborted_actors = futures::future::join_all(aborted_actors).await;
+        let mut aborted_actors = futures::future::join_all(aborted_actors).await;
+
+        // Phase 2: now that all other actors have stopped, stop the
+        // supervision coordinator so it had a chance to receive all
+        // supervision events.
+        if let Some(ref coord_id) = coordinator_id
+            && this_actor_id != Some(coord_id)
+        {
+            if let Some(mut status) = self.stop_actor(coord_id, reason.to_string()) {
+                let stopped = tokio::time::timeout(
+                    timeout,
+                    status.wait_for(|s: &ActorStatus| s.is_terminal()),
+                )
+                .await
+                .is_ok();
+                if stopped {
+                    stopped_actors.push(coord_id.clone());
+                } else {
+                    if let Some(f) = self.abort_root_actor(coord_id, this_handle) {
+                        f.await;
+                    }
+                    aborted_actors.push(coord_id.clone());
+                }
+            }
+        }
 
         if let Some(this_handle) = this_handle
             && let Some(this_actor_id) = this_actor_id
@@ -2352,6 +2397,11 @@ impl InstanceCell {
             Some((_, supervision_port)) => {
                 if let Err(err) = supervision_port.send(child_cx, event.clone()) {
                     if !event.is_error() {
+                        // Normal lifecycle events (e.g. clean stop) that fail to
+                        // send are silently dropped. This happens when a child
+                        // stops after the parent's mailbox has been closed or its
+                        // supervision port receiver has been dropped (e.g. client
+                        // instances created via Proc::instance()).
                         tracing::debug!(
                             "{}: dropping non-error supervision event {}: {:?}",
                             self.actor_id(),
@@ -2371,7 +2421,7 @@ impl InstanceCell {
             None => {
                 if !event.is_error() {
                     tracing::debug!(
-                        "{}: dropping non-error supervision event to detached actor: {}",
+                        "{}: dropping non-error supervision event {} to detached actor",
                         self.actor_id(),
                         event,
                     );
@@ -3453,6 +3503,7 @@ mod tests {
         handle.await;
     }
 
+
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {
         if std::env::var("CARGO_TEST").is_ok() {
@@ -3842,6 +3893,46 @@ mod tests {
             event.actor_status
         );
         assert!(!event.is_error());
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    async fn test_coordinator_shuts_down_last_during_destroy() {
+        let mut proc = Proc::local();
+        let (_client, _client_handle) = proc.instance("client").unwrap();
+        let (mut reported_event, _coordinator_handle) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
+
+        // Spawn several actors that will all stop during destroy_and_wait.
+        let mut actor_ids = Vec::new();
+        for i in 0..3 {
+            let handle = proc
+                .spawn::<TestActor>(&format!("actor_{i}"), TestActor)
+                .unwrap();
+            actor_ids.push(handle.actor_id().clone());
+        }
+
+        // destroy_and_wait stops all actors. If the coordinator were stopped
+        // simultaneously, supervision event delivery would fail and crash
+        // the process. The fact that this completes without crashing proves
+        // the coordinator outlived the other actors.
+        proc.destroy_and_wait::<()>(Duration::from_secs(5), None, "test")
+            .await
+            .unwrap();
+
+        // Verify the coordinator received stop events from all three actors.
+        let mut received_ids = Vec::new();
+        for _ in 0..actor_ids.len() {
+            let event = reported_event.recv().await;
+            assert!(
+                matches!(event.actor_status, ActorStatus::Stopped(_)),
+                "expected Stopped, got {:?}",
+                event.actor_status
+            );
+            received_ids.push(event.actor_id);
+        }
+        received_ids.sort();
+        actor_ids.sort();
+        assert_eq!(received_ids, actor_ids);
     }
 
     // Exercises FI-4 (see introspect.rs module-scope comment).
