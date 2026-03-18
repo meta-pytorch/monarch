@@ -272,9 +272,12 @@ impl Actor for CudaRdmaActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        tracing::error!("CudaRdmaActor supervision event: {:?}", _event);
+        if !event.is_error() {
+            return Ok(true);
+        }
+        tracing::error!("CudaRdmaActor supervision event: {:?}", event);
         tracing::error!("CudaRdmaActor error occurred, stop the worker process, exit code: 1");
         std::process::exit(1);
     }
