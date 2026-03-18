@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 anyhow = "1.0.102"
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
-erased-serde = "0.4.9"
+erased-serde = "0.4.10"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 hdrhistogram = "7.5"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
