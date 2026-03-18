@@ -1498,17 +1498,25 @@ impl<A: Actor> Instance<A> {
         )
     }
 
+    /// Return a static client instance that can be used to send
+    /// messages to port handles from outside an actor context
+    /// (e.g. from background tokio tasks).
+    // TODO: replace with a proper mechanism for sending to port
+    // handles without an actor context.
+    pub fn self_client() -> &'static Instance<()> {
+        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
+        &CLIENT
+            .get_or_init(|| Proc::runtime().instance("self_message_client").unwrap())
+            .0
+    }
+
     /// Send a message to the actor itself with a delay usually to trigger some event.
     pub fn self_message_with_delay<M>(&self, message: M, delay: Duration) -> Result<(), ActorError>
     where
         M: Message,
         A: Handler<M>,
     {
-        // A global client to send self message.
-        static CLIENT: OnceLock<(Instance<()>, ActorHandle<()>)> = OnceLock::new();
-        let client = &CLIENT
-            .get_or_init(|| Proc::runtime().instance("self_message_client").unwrap())
-            .0;
+        let client = Self::self_client();
         let port = self.port();
         let self_id = self.self_id().clone();
         tokio::spawn(async move {
