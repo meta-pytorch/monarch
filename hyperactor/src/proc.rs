@@ -2431,7 +2431,21 @@ impl InstanceCell {
     ) {
         match &self.inner.actor_loop {
             Some((_, supervision_port)) => {
-                if let Err(err) = supervision_port.send(child_cx, event) {
+                if let Err(err) = supervision_port.send(child_cx, event.clone()) {
+                    if !event.is_error() {
+                        // Normal lifecycle events (e.g. clean stop) that fail to
+                        // send are silently dropped. This happens when a child
+                        // stops after the parent's mailbox has been closed or its
+                        // supervision port receiver has been dropped (e.g. client
+                        // instances created via Proc::instance()).
+                        tracing::debug!(
+                            "{}: dropping non-error supervision event {}: {:?}",
+                            self.actor_id(),
+                            event,
+                            err
+                        );
+                        return;
+                    }
                     tracing::error!(
                         "{}: failed to send supervision event to actor: {:?}. Crash the process.",
                         self.actor_id(),
@@ -2441,6 +2455,14 @@ impl InstanceCell {
                 }
             }
             None => {
+                if !event.is_error() {
+                    tracing::debug!(
+                        "{}: dropping non-error supervision event {} to detached actor",
+                        self.actor_id(),
+                        event,
+                    );
+                    return;
+                }
                 tracing::error!(
                     "{}: failed: {}: cannot send supervision event to detached actor: crashing",
                     self.actor_id(),
@@ -3516,6 +3538,7 @@ mod tests {
         assert_matches!(*handle.status().borrow(), ActorStatus::Stopped(_));
         handle.await;
     }
+
 
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {
