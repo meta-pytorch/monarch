@@ -26,6 +26,7 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
+use crate::ActiveJob;
 use crate::App;
 use crate::diagnostics::DiagNodeRole;
 use crate::diagnostics::DiagOutcome;
@@ -47,8 +48,8 @@ use crate::theme::Labels;
 /// the last fetch error (`app.detail_error`) or a neutral "select a
 /// node" placeholder message.
 pub(crate) fn render_detail_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    if app.diag_running || !app.diag_results.is_empty() {
-        render_diagnostics_pane(frame, area, app);
+    if let Some(overlay) = &app.overlay {
+        render_overlay(frame, area, overlay, &app.theme.scheme);
         return;
     }
     match &app.detail {
@@ -448,19 +449,67 @@ fn render_actor_detail(
     frame.render_widget(recorder, chunks[1]);
 }
 
-/// Render the live self-diagnostic pane.
+/// Build an `Overlay` from the current diagnostics state.
 ///
-/// Shows phase-separated probe results as they stream in. While the
-/// run is still in progress a "Running…" indicator is shown; once
-/// complete a summary line reports overall health.
-pub(crate) fn render_diagnostics_pane(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
+/// Called after each diagnostic result arrives and when diagnostics
+/// completes, to keep `app.overlay` in sync with `ActiveJob::Diagnostics`.
+pub(crate) fn build_diag_overlay(app: &App) -> crate::overlay::Overlay {
+    let (results, running, completed_at) = match &app.active_job {
+        Some(ActiveJob::Diagnostics {
+            results,
+            running,
+            completed_at,
+            ..
+        }) => (results.as_slice(), *running, completed_at.as_deref()),
+        _ => {
+            // Should not happen (TUI-21), but return an empty overlay as fallback.
+            return crate::overlay::Overlay {
+                title: Line::from("Diagnostics"),
+                status_line: None,
+                lines: vec![],
+                loading: false,
+                scroll: std::cell::Cell::new(0),
+                max_scroll: std::cell::Cell::new(0),
+            };
+        }
+    };
+
     let scheme = &app.theme.scheme;
     let labels = &app.theme.labels;
-    let results = &app.diag_results;
-
-    // Build the summary/status line that is pinned above the scrollable results.
     let sep = labels.separator;
-    let status_line = if app.diag_running {
+
+    // Title line.
+    let title = if running {
+        Line::from(vec![
+            Span::styled(
+                labels.pane_diagnostics,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{}{}", sep, labels.diag_running), scheme.info),
+        ])
+    } else if let Some(t) = completed_at {
+        Line::from(vec![
+            Span::styled(
+                labels.pane_diagnostics,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}{}", sep, labels.diag_completed_at),
+                scheme.detail_label,
+            ),
+            Span::raw(" "),
+            Span::styled(t.to_string(), scheme.stat_timing),
+            Span::styled(
+                format!("{}{}", sep, labels.diag_static_snapshot),
+                scheme.detail_stopped,
+            ),
+        ])
+    } else {
+        Line::from(Span::raw(labels.pane_diagnostics))
+    };
+
+    // Pinned status line.
+    let status_line = if running {
         Line::from(vec![
             Span::styled(labels.diag_running, scheme.info),
             Span::styled(
@@ -538,61 +587,21 @@ pub(crate) fn render_diagnostics_pane(frame: &mut ratatui::Frame<'_>, area: Rect
         lines.push(diag_result_line(r, scheme, labels));
     }
 
-    // Render the outer block, then split the inner area into a pinned
-    // status row and the scrollable results below it.
-    let title_line = if app.diag_running {
-        Line::from(vec![
-            Span::styled(
-                labels.pane_diagnostics,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("{}{}", sep, labels.diag_running), scheme.info),
-        ])
-    } else if let Some(t) = &app.diag_completed_at {
-        Line::from(vec![
-            Span::styled(
-                labels.pane_diagnostics,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}{}", sep, labels.diag_completed_at),
-                scheme.detail_label,
-            ),
-            Span::raw(" "),
-            Span::styled(t.clone(), scheme.stat_timing),
-            Span::styled(
-                format!("{}{}", sep, labels.diag_static_snapshot),
-                scheme.detail_stopped,
-            ),
-        ])
-    } else {
-        Line::from(Span::raw(labels.pane_diagnostics))
+    let overlay = crate::overlay::Overlay {
+        title,
+        status_line: Some(status_line),
+        lines,
+        loading: running,
+        scroll: std::cell::Cell::new(0),
+        max_scroll: std::cell::Cell::new(u16::MAX),
     };
-    let block = Block::default()
-        .title(title_line)
-        .borders(Borders::ALL)
-        .border_style(scheme.border);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
-    // Split inner area: 1 row for pinned status, rest for scrollable results.
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
-        .split(inner);
+    // Preserve scroll position from existing overlay if present.
+    if let Some(existing) = &app.overlay {
+        overlay.scroll.set(existing.scroll.get());
+    }
 
-    frame.render_widget(Paragraph::new(status_line), chunks[0]);
-
-    // Clamp scroll against the scrollable chunk height.
-    let max_scroll = (lines.len() as u16).saturating_sub(chunks[1].height);
-    app.diag_max_scroll.set(max_scroll);
-    let scroll = app.diag_scroll.get().min(max_scroll);
-    app.diag_scroll.set(scroll);
-
-    let results_p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(results_p, chunks[1]);
+    overlay
 }
 
 /// Format one diagnostic probe result as a TUI row.
@@ -630,4 +639,54 @@ fn diag_result_line(r: &DiagResult, scheme: &ColorScheme, labels: &Labels) -> Li
         spans.push(Span::styled(format!("  — {}", note), scheme.stat_url));
     }
     Line::from(spans)
+}
+
+/// Render a generic scrollable overlay in the detail pane area.
+///
+/// Supports an optional pinned status line (used by diagnostics)
+/// above the scrollable content.
+fn render_overlay(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    overlay: &crate::overlay::Overlay,
+    scheme: &ColorScheme,
+) {
+    let block = Block::default()
+        .title(overlay.title.clone())
+        .borders(Borders::ALL)
+        .border_style(scheme.border);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // If there's a pinned status line, split inner into status + scrollable.
+    let content_area = if let Some(status) = &overlay.status_line {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)])
+            .split(inner);
+        frame.render_widget(Paragraph::new(status.clone()), chunks[0]);
+        chunks[1]
+    } else {
+        inner
+    };
+
+    // Show "fetching…" only when loading with no lines AND no status line.
+    // When a status_line is present it already communicates the loading state
+    // (e.g. "Running… • fetching stack trace"), so the placeholder is redundant.
+    let lines: Vec<Line<'static>> =
+        if overlay.loading && overlay.lines.is_empty() && overlay.status_line.is_none() {
+            vec![Line::from("fetching…")]
+        } else {
+            overlay.lines.clone()
+        };
+
+    let max_scroll = (lines.len() as u16).saturating_sub(content_area.height);
+    overlay.max_scroll.set(max_scroll);
+    let scroll = overlay.scroll.get().min(max_scroll);
+    overlay.scroll.set(scroll);
+
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, content_area);
 }
