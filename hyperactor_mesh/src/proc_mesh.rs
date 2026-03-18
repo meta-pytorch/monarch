@@ -1591,34 +1591,15 @@ mod tests {
 
         hyperactor_telemetry::initialize_logging_for_test();
 
-        use hyperactor::Proc;
-        use hyperactor::channel::ChannelTransport;
-
-        let proc = Proc::direct(ChannelTransport::Unix.any(), "test_0".to_string()).unwrap();
-        let instance = proc
-            .actor_instance::<testing::TestRootClient>("test_client")
-            .unwrap()
-            .instance;
-        let first_instance = proc
-            .actor_instance::<testing::TestRootClient>("first_client")
-            .unwrap()
-            .instance;
-        let second_instance = proc
-            .actor_instance::<testing::TestRootClient>("second_client")
-            .unwrap()
-            .instance;
-        let third_instance = proc
-            .actor_instance::<testing::TestRootClient>("third_client")
-            .unwrap()
-            .instance;
+        let instance = testing::instance();
+        let (first_instance, _) = instance.proc().instance("first_client_ds").unwrap();
+        let (second_instance, _) = instance.proc().instance("second_client_ds").unwrap();
+        let (third_instance, _) = instance.proc().instance("third_client_ds").unwrap();
 
         let mut hm = testing::host_mesh(4).await;
-        let proc_mesh = hm
-            .spawn(&instance, "test", extent!(gpus = 2))
-            .await
-            .unwrap();
+        let proc_mesh = hm.spawn(instance, "test", extent!(gpus = 2)).await.unwrap();
 
-        let actor_mesh = spawn_for_seq_test(&instance, &proc_mesh).await;
+        let actor_mesh = spawn_for_seq_test(instance, &proc_mesh).await;
 
         // Sequence numbers are calculated based on the sequencer, i.e. the
         // client name. So three casts would result in seq 1 for all actors.
@@ -1633,7 +1614,7 @@ mod tests {
             .await;
         }
 
-        let _ = hm.shutdown(&instance).await;
+        let _ = hm.shutdown(instance).await;
     }
 
     #[tokio::test]

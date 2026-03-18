@@ -72,7 +72,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
-use std::future;
 use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
@@ -1103,8 +1102,7 @@ impl<T: MailboxSender + Clone + Sized + Sync + Send + 'static> MailboxServer for
 
 /// A mailbox server client that transmits messages on a Tx channel.
 pub struct MailboxClient {
-    // The unbounded sender.
-    buffer: Buffer<MessageEnvelope>,
+    tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync>,
 
     // To cancel monitoring tx health.
     _tx_monitoring: CancellationToken,
@@ -1113,7 +1111,7 @@ pub struct MailboxClient {
 impl fmt::Debug for MailboxClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MailboxClient")
-            .field("buffer", &"<Buffer>")
+            .field("tx", &"<Tx>")
             .finish()
     }
 }
@@ -1123,36 +1121,11 @@ impl MailboxClient {
     /// [`MailboxServer`] on the provided Tx channel.
     pub fn new(tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static) -> Self {
         let addr = tx.addr();
-        let tx = Arc::new(tx);
+        let tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync> = Arc::new(tx);
         let tx_status = tx.status().clone();
         let tx_monitoring = CancellationToken::new();
-        let buffer = Buffer::new(move |envelope, return_handle| {
-            let tx = Arc::clone(&tx);
-            let (return_channel, return_receiver) =
-                oneshot::channel::<SendError<MessageEnvelope>>();
-            // Set up for delivery failure.
-            let return_handle_0 = return_handle.clone();
-            tokio::spawn(async move {
-                if let Ok(SendError {
-                    error,
-                    message,
-                    reason,
-                }) = return_receiver.await
-                {
-                    message.undeliverable(
-                        DeliveryError::BrokenLink(format!(
-                            "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
-                        )),
-                        return_handle_0,
-                    );
-                }
-            });
-            // Send the message for transmission.
-            tx.try_post(envelope, return_channel);
-            future::ready(())
-        });
         let this = Self {
-            buffer,
+            tx,
             _tx_monitoring: tx_monitoring.clone(),
         };
         Self::monitor_tx_health(tx_status, tx_monitoring, addr);
@@ -1199,16 +1172,25 @@ impl MailboxSender for MailboxClient {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
-        if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
-        {
-            let err = DeliveryError::BrokenLink(
-                "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
-            );
-
-            // Failed to enqueue.
-            envelope.undeliverable(err, return_handle);
-        }
+        let (return_channel, return_receiver) = oneshot::channel::<SendError<MessageEnvelope>>();
+        // Set up for delivery failure.
+        let return_handle_0 = return_handle.clone();
+        crate::init::get_runtime().spawn(async move {
+            if let Ok(SendError {
+                error,
+                message,
+                reason,
+            }) = return_receiver.await
+            {
+                message.undeliverable(
+                    DeliveryError::BrokenLink(format!(
+                        "failed to enqueue in MailboxClient: {error} with reason {reason:?}"
+                    )),
+                    return_handle_0,
+                );
+            }
+        });
+        self.tx.try_post(envelope, return_channel);
     }
 }
 
