@@ -6,8 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::Arc;
+use std::sync::Mutex;
+
 use async_trait::async_trait;
-use tokio::sync::watch;
+use tokio::sync::mpsc;
 
 use crate::Actor;
 use crate::ActorHandle;
@@ -30,7 +33,10 @@ use crate::supervision::ActorSupervisionEvent;
 ///   If the the proc supervison coordinator is not set, supervision will crash the
 ///   process because it cannot find the coordinator during the "bubbling up".
 #[derive(Debug)]
-pub struct ProcSupervisionCoordinator(watch::Sender<Option<ActorSupervisionEvent>>);
+pub struct ProcSupervisionCoordinator {
+    tx: mpsc::UnboundedSender<ActorSupervisionEvent>,
+    last: Arc<Mutex<Option<ActorSupervisionEvent>>>,
+}
 
 impl ProcSupervisionCoordinator {
     /// Spawn a coordinator actor and set it as the coordinator for the given
@@ -40,32 +46,37 @@ impl ProcSupervisionCoordinator {
     pub async fn set(
         proc: &Proc,
     ) -> Result<(ReportedEvent, ActorHandle<ProcSupervisionCoordinator>), anyhow::Error> {
-        let (tx, rx) = watch::channel(None);
-        let actor = ProcSupervisionCoordinator(tx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let last = Arc::new(Mutex::new(None));
+        let actor = ProcSupervisionCoordinator {
+            tx,
+            last: last.clone(),
+        };
         let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
-        Ok((ReportedEvent(rx), coordinator))
+        Ok((ReportedEvent { rx, last }, coordinator))
     }
 }
 
-/// Used to store the last event reported to [ProcSupervisionCoordinator].
-#[derive(Clone, Debug)]
-pub struct ReportedEvent(watch::Receiver<Option<ActorSupervisionEvent>>);
+/// Collects supervision events reported to [ProcSupervisionCoordinator].
+#[derive(Debug)]
+pub struct ReportedEvent {
+    rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    last: Arc<Mutex<Option<ActorSupervisionEvent>>>,
+}
 
 impl ReportedEvent {
     /// The last event reported to the coordinator.
     pub fn event(&self) -> Option<ActorSupervisionEvent> {
-        self.0.borrow().clone()
+        self.last.lock().unwrap().clone()
     }
 
     /// Wait until the coordinator receives an event.
     pub async fn recv(&mut self) -> ActorSupervisionEvent {
-        self.0
-            .wait_for(|v| v.is_some())
+        self.rx
+            .recv()
             .await
             .expect("coordinator sender dropped without sending an event")
-            .clone()
-            .unwrap()
     }
 }
 
@@ -80,7 +91,8 @@ impl Handler<ActorSupervisionEvent> for ProcSupervisionCoordinator {
         msg: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
         tracing::debug!("in handler, handling supervision event");
-        self.0.send_replace(Some(msg));
+        *self.last.lock().unwrap() = Some(msg.clone());
+        let _ = self.tx.send(msg);
         Ok(())
     }
 }
