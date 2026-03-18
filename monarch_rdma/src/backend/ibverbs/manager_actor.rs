@@ -436,7 +436,9 @@ impl IbvManagerActor {
                 let pci_addr = std::ffi::CStr::from_ptr(pci_addr_buf.as_ptr())
                     .to_str()
                     .unwrap();
-                selected_rdma_device = super::device_selection::get_pci_to_device().get(pci_addr).cloned();
+                selected_rdma_device = super::device_selection::get_pci_to_device()
+                    .get(pci_addr)
+                    .cloned();
             }
 
             // Determine the RDMA device to use
@@ -947,32 +949,16 @@ impl IbvManagerMessageHandler for IbvManagerActor {
             }
         }
 
-        // Get or create domain. If the domain already exists (common case: register_mr ran
-        // first), get_or_create_device_domain returns it immediately without needing an
-        // IbvDevice. Only for the cold path (domain not yet created) do we look up the device
-        // — using get_all_devices() (a fast ibv_get_device_list call, no CUDA scan) before
-        // falling back to the PCI topology map.
-        let (domain_context, domain_pd) = if self.device_domains.contains_key(&self_device) {
-            let config_device = self.config.device.clone();
-            let (domain, _) = self.get_or_create_device_domain(&self_device, &config_device)?;
-            (domain.context, domain.pd)
-        } else {
-            let rdma_device = super::primitives::get_all_devices()
-                .into_iter()
-                .find(|device| device.name() == &self_device)
-                .unwrap_or_else(|| {
-                    super::device_selection::get_pci_to_device()
-                        .iter()
-                        .find(|(_, device)| device.name() == &self_device)
-                        .map(|(_, device)| device.clone())
-                        .unwrap_or_else(|| {
-                            super::device_selection::resolve_ibv_device(&self.config.device)
-                                .unwrap_or_else(|| self.config.device.clone())
-                        })
-                });
-            let (domain, _) = self.get_or_create_device_domain(&self_device, &rdma_device)?;
-            (domain.context, domain.pd)
-        };
+        // The domain is guaranteed to exist here: register_mr is always called before
+        // initialize_qp, either in execute_op (for the local actor) or via resolve_ibv
+        // (for the remote actor), and register_mr always calls get_or_create_device_domain.
+        let (domain, _) = self.device_domains.get(&self_device).ok_or_else(|| {
+            anyhow::anyhow!(
+                "device domain for '{}' not found; register_mr must be called before initialize_qp",
+                self_device
+            )
+        })?;
+        let (domain_context, domain_pd) = (domain.context, domain.pd);
 
         let qp = IbvQueuePair::new(domain_context, domain_pd, self.config.clone())
             .map_err(|e| anyhow::anyhow!("could not create IbvQueuePair: {}", e))?;
