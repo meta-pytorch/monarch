@@ -1451,6 +1451,16 @@ mod tests {
 
     #[async_timed_test(timeout_secs = 30)]
     #[cfg(fbcode_build)]
+    async fn test_spawn_actor_v1_casting_p2p() {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
+        let _guard2 = config.override_key(ENABLE_DEST_ACTOR_REORDERING_BUFFER, true);
+        let _guard3 = config.override_key(crate::config::V1_CAST_POINT_TO_POINT_THRESHOLD, 1024);
+        execute_spawn_actor().await;
+    }
+
+    #[async_timed_test(timeout_secs = 30)]
+    #[cfg(fbcode_build)]
     async fn test_spawn_actor_v0_casting() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
