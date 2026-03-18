@@ -1052,7 +1052,10 @@ mod tests {
         // Small mesh so the test runs fast, but > page_size so we
         // cross a boundary
         let mut hm = testing::host_mesh(3).await;
-        let pm: ProcMesh = hm.spawn(instance, "test", extent!(gpus = 2)).await.unwrap();
+        let pm: ProcMesh = hm
+            .spawn(instance, "test", extent!(gpus = 2), None)
+            .await
+            .unwrap();
         let am: ActorMesh<testactor::TestActor> = pm.spawn(instance, "test", &()).await.unwrap();
 
         // 2) Build our ActorMeshRef with a tiny page size (2) to
@@ -1151,7 +1154,10 @@ mod tests {
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
         let child_name = Name::new("child").unwrap();
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
@@ -1241,10 +1247,13 @@ mod tests {
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
         let mut second_hm = testing::host_mesh(num_replicas).await;
         let second_proc_mesh = second_hm
-            .spawn(instance, "test2", Extent::unity())
+            .spawn(instance, "test2", Extent::unity(), None)
             .await
             .unwrap();
         let child_name = Name::new("child").unwrap();
@@ -1330,7 +1339,10 @@ mod tests {
         let supervisor = supervision_port.bind();
         let num_replicas = 4;
         let mut hm = testing::host_mesh(num_replicas).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
         let child_name = Name::new("child").unwrap();
 
         // Need to use a wrapper as there's no way to customize the handler for MeshFailure
@@ -1387,7 +1399,7 @@ mod tests {
         let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity())
+            .spawn(instance, "test", Extent::unity(), None)
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> =
@@ -1498,7 +1510,10 @@ mod tests {
 
         // Create a proc mesh with 2 hosts.
         let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
 
         // Set up undeliverable message port for collecting undeliverables
         let (undeliverable_port, mut undeliverable_rx) =
@@ -1620,7 +1635,10 @@ mod tests {
 
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
 
         // Spawn SleepActors across the mesh that will block longer
         // than timeout
@@ -1703,7 +1721,10 @@ mod tests {
 
         // Create proc mesh with 2 procs
         let mut hm = testing::host_mesh(2).await;
-        let proc_mesh = hm.spawn(instance, "test", Extent::unity()).await.unwrap();
+        let proc_mesh = hm
+            .spawn(instance, "test", Extent::unity(), None)
+            .await
+            .unwrap();
 
         // Spawn TestActors - these stop cleanly (no blocking
         // operations)
