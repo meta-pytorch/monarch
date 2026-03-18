@@ -78,11 +78,11 @@ pub enum IbvManagerMessage {
         reply: reference::OncePortRef<Option<IbvBuffer>>,
     },
     /// Release a buffer registration by `remote_buf_id`.
-    ReleaseBuffer {
-        remote_buf_id: usize,
-        #[reply]
-        reply: reference::OncePortRef<()>,
-    },
+    /// IMPORTANT: This needs to be fire-and-forget (no reply port)
+    /// to avoid a circular deadlock where RdmaManagerActor waits for
+    /// IbvManagerMessage::ReleaseBuffer while IbvManagerActor waits for
+    /// RdmaManagerMessage::RequestLocalMemory.
+    ReleaseBuffer { remote_buf_id: usize },
     RequestQueuePair {
         other: reference::ActorRef<IbvManagerActor>,
         self_device: String,
@@ -172,6 +172,10 @@ pub struct IbvManagerActor {
 
     // Id for next mrv created
     mrv_id: usize,
+
+    /// Maps CUDA device ordinal to IbvDevice (the optimal RDMA NIC for that GPU).
+    /// `None` if the device has no mapped NIC.
+    cuda_device_to_ibv_device: Vec<Option<IbvDevice>>,
 
     // Map from buffer_id to registration details.
     buffer_registrations: HashMap<usize, IbvBuffer>,
@@ -303,7 +307,28 @@ impl IbvManagerActor {
             }
         }
 
-        Ok(Self {
+        // Build per-CUDA-device NIC mapping
+        let cuda_device_count = unsafe {
+            let mut count: i32 = 0;
+            rdmaxcel_sys::rdmaxcel_cuDeviceGetCount(&mut count);
+            count.max(0) as usize
+        };
+        let mut cuda_device_to_ibv_device = Vec::with_capacity(cuda_device_count);
+        for ordinal in 0..cuda_device_count {
+            let device = crate::device_selection::get_cuda_pci_address(&ordinal.to_string())
+                .and_then(|pci_addr| {
+                    super::device_selection::get_pci_to_device()
+                        .get(&pci_addr)
+                        .cloned()
+                });
+            cuda_device_to_ibv_device.push(device);
+        }
+        tracing::debug!(
+            "Built per-device NIC mapping for {} CUDA devices",
+            cuda_device_count,
+        );
+
+        let mut actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
@@ -312,8 +337,28 @@ impl IbvManagerActor {
             mlx5dv_enabled,
             mr_map: HashMap::new(),
             mrv_id: 0,
+            cuda_device_to_ibv_device,
+
             buffer_registrations: HashMap::new(),
-        })
+        };
+
+        // Eagerly create domains for each unique NIC so PDs/QPs are ready
+        // at segment registration time.
+        if mlx5dv_enabled {
+            let mut seen = HashSet::new();
+            let devices_to_init: Vec<IbvDevice> = actor
+                .cuda_device_to_ibv_device
+                .iter()
+                .flatten()
+                .filter(|d| seen.insert(d.name().clone()))
+                .cloned()
+                .collect();
+            for device in &devices_to_init {
+                actor.get_or_create_device_domain(device.name(), device)?;
+            }
+        }
+
+        Ok(actor)
     }
 
     /// Get or create a domain and loopback QP for the specified RDMA device
@@ -369,12 +414,44 @@ impl IbvManagerActor {
         Ok((domain, qp))
     }
 
+    /// Build parallel PD/QP arrays indexed by CUDA device ordinal
+    /// for the C++ register_segments call.
+    fn build_per_device_pd_qp_arrays(
+        &self,
+    ) -> (
+        Vec<*mut rdmaxcel_sys::ibv_pd>,
+        Vec<*mut rdmaxcel_sys::rdmaxcel_qp_t>,
+    ) {
+        let mut pds = Vec::with_capacity(self.cuda_device_to_ibv_device.len());
+        let mut qps = Vec::with_capacity(self.cuda_device_to_ibv_device.len());
+        for maybe_device in &self.cuda_device_to_ibv_device {
+            if let Some(device) = maybe_device {
+                if let Some((domain, qp)) = self.device_domains.get(device.name()) {
+                    pds.push(domain.pd);
+                    qps.push(
+                        qp.as_ref()
+                            .map(|q| q.qp as *mut rdmaxcel_sys::rdmaxcel_qp_t)
+                            .unwrap_or(std::ptr::null_mut()),
+                    );
+                } else {
+                    pds.push(std::ptr::null_mut());
+                    qps.push(std::ptr::null_mut());
+                }
+            } else {
+                pds.push(std::ptr::null_mut());
+                qps.push(std::ptr::null_mut());
+            }
+        }
+        (pds, qps)
+    }
+
     fn find_cuda_segment_for_address(
         &mut self,
         addr: usize,
         size: usize,
+        pd: *mut rdmaxcel_sys::ibv_pd,
     ) -> Option<IbvMemoryRegionView> {
-        let registered_segments = get_registered_cuda_segments();
+        let registered_segments = get_registered_cuda_segments(pd);
         for segment in registered_segments {
             let start_addr = segment.phys_address;
             let end_addr = start_addr + segment.phys_size;
@@ -415,30 +492,19 @@ impl IbvManagerActor {
             let mut selected_rdma_device = None;
 
             if is_cuda {
-                // Use rdmaxcel utility to get PCI address from CUDA pointer
-                let mut pci_addr_buf: [std::os::raw::c_char; 16] = [0; 16]; // Enough space for "ffff:ff:ff.0\0"
-                let err = rdmaxcel_sys::get_cuda_pci_address_from_ptr(
-                    addr as rdmaxcel_sys::CUdeviceptr,
-                    pci_addr_buf.as_mut_ptr(),
-                    pci_addr_buf.len(),
+                // Get device ordinal from the CUDA pointer
+                let mut device_ordinal: i32 = -1;
+                let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+                    &mut device_ordinal as *mut _ as *mut std::ffi::c_void,
+                    rdmaxcel_sys::CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                    ptr,
                 );
-                if err != 0 {
-                    let error_msg = get_rdmaxcel_error_message(err);
-                    return Err(anyhow::anyhow!(
-                        "RdmaXcel get_cuda_pci_address_from_ptr failed (addr: 0x{:x}, size: {}): {}",
-                        addr,
-                        size,
-                        error_msg
-                    ));
+                if err == rdmaxcel_sys::CUDA_SUCCESS && device_ordinal >= 0 {
+                    selected_rdma_device = self
+                        .cuda_device_to_ibv_device
+                        .get(device_ordinal as usize)
+                        .and_then(|d| d.clone());
                 }
-
-                // Convert C string to Rust string
-                let pci_addr = std::ffi::CStr::from_ptr(pci_addr_buf.as_ptr())
-                    .to_str()
-                    .unwrap();
-                selected_rdma_device = super::device_selection::get_pci_to_device()
-                    .get(pci_addr)
-                    .cloned();
             }
 
             // Determine the RDMA device to use
@@ -457,7 +523,7 @@ impl IbvManagerActor {
             );
 
             // Get or create domain and loopback QP for this device
-            let (domain, qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
+            let (domain, _qp) = self.get_or_create_device_domain(&device_name, &rdma_device)?;
 
             let access = if crate::efa::is_efa_device() {
                 crate::efa::mr_access_flags()
@@ -476,18 +542,20 @@ impl IbvManagerActor {
                 let mut segment_mrv = None;
                 if self.mlx5dv_enabled {
                     // Try to find in already registered segments
-                    segment_mrv = self.find_cuda_segment_for_address(addr, size);
+                    segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
 
                     // If not found, trigger a re-sync with the allocator and retry
                     if segment_mrv.is_none() {
+                        let (mut pds, mut qps) = self.build_per_device_pd_qp_arrays();
                         let err = rdmaxcel_sys::register_segments(
-                            domain.pd,
-                            qp.unwrap().qp as *mut rdmaxcel_sys::rdmaxcel_qp_t,
+                            pds.as_mut_ptr(),
+                            qps.as_mut_ptr(),
+                            pds.len() as i32,
                         );
                         // Only retry if register_segments succeeded
                         // If it fails (e.g., scanner returns 0 segments), we'll fall back to dmabuf
                         if err == 0 {
-                            segment_mrv = self.find_cuda_segment_for_address(addr, size);
+                            segment_mrv = self.find_cuda_segment_for_address(addr, size, domain.pd);
                         }
                     }
                 }
