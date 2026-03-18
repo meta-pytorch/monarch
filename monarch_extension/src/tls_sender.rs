@@ -134,18 +134,146 @@ struct PackedBuffer {
 
 // SAFETY: the mmap region is process-global memory accessible from any thread.
 unsafe impl Send for PackedBuffer {}
-// SAFETY: the mmap region is immutable after packing; concurrent reads are safe.
 unsafe impl Sync for PackedBuffer {}
 
 impl Drop for PackedBuffer {
     fn drop(&mut self) {
         if self.size > 0 {
-            // SAFETY: self.ptr was allocated via mmap_anonymous(self.size).
             unsafe {
                 libc::munmap(self.ptr, self.size);
             }
         }
     }
+}
+
+/// Send dirty blocks from a buffer over parallel TLS connections.
+///
+/// Each address in `addresses` gets its own TCP+TLS stream. Blocks
+/// are distributed round-robin across streams.
+fn send_blocks_impl(
+    buf_ptr: usize,
+    total_size: usize,
+    dirty_blocks: &[usize],
+    addresses: &[String],
+    cache_path: &str,
+    block_size: usize,
+) -> PyResult<()> {
+    let tls_config = make_tls_config().map_err(|e| PyRuntimeError::new_err(e))?;
+
+    let num_streams = addresses.len();
+
+    // Partition blocks across streams round-robin.
+    let mut per_stream: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_streams];
+    for (i, &bi) in dirty_blocks.iter().enumerate() {
+        let offset = bi * block_size;
+        let size = std::cmp::min(block_size, total_size - offset);
+        per_stream[i % num_streams].push((offset, size));
+    }
+
+    let cache_path_bytes = cache_path.as_bytes();
+
+    thread::scope(|s| {
+        let mut handles = Vec::with_capacity(num_streams);
+
+        for (stream_idx, blocks) in per_stream.into_iter().enumerate() {
+            let addr = &addresses[stream_idx];
+            let config = Arc::clone(&tls_config);
+            let cp_bytes = cache_path_bytes;
+
+            handles.push(s.spawn(move || -> Result<(), String> {
+                let (host, port_str) = addr
+                    .rsplit_once(':')
+                    .ok_or_else(|| format!("invalid address: {addr}"))?;
+                let port: u16 = port_str
+                    .parse()
+                    .map_err(|e| format!("invalid port in {addr}: {e}"))?;
+
+                let tcp =
+                    TcpStream::connect((host, port)).map_err(|e| format!("connect {addr}: {e}"))?;
+                tcp.set_nodelay(true)
+                    .map_err(|e| format!("set_nodelay: {e}"))?;
+
+                let server_name = ServerName::try_from(host.to_string())
+                    .unwrap_or_else(|_| ServerName::try_from("localhost".to_string()).unwrap());
+
+                let conn = rustls::ClientConnection::new(config, server_name)
+                    .map_err(|e| format!("TLS handshake: {e}"))?;
+                let mut tls = rustls::StreamOwned::new(conn, tcp);
+
+                // Protocol header: cache_path_len(u32 BE) + cache_path + total_size(u64 BE)
+                let mut header = Vec::with_capacity(4 + cp_bytes.len() + 8);
+                header.extend_from_slice(&(cp_bytes.len() as u32).to_be_bytes());
+                header.extend_from_slice(cp_bytes);
+                header.extend_from_slice(&(total_size as u64).to_be_bytes());
+                tls.write_all(&header)
+                    .map_err(|e| format!("write header: {e}"))?;
+
+                // Send blocks: offset(u64 BE) + size(u64 BE) + data
+                for (offset, size) in &blocks {
+                    let mut block_header = [0u8; 16];
+                    block_header[..8].copy_from_slice(&(*offset as u64).to_be_bytes());
+                    block_header[8..].copy_from_slice(&(*size as u64).to_be_bytes());
+                    tls.write_all(&block_header)
+                        .map_err(|e| format!("write block header: {e}"))?;
+
+                    // SAFETY: offset + size <= total_size, buffer is valid.
+                    let data = unsafe {
+                        std::slice::from_raw_parts((buf_ptr + offset) as *const u8, *size)
+                    };
+                    tls.write_all(data)
+                        .map_err(|e| format!("write block data: {e}"))?;
+                }
+
+                // Done sentinel: offset=0, size=0
+                tls.write_all(&[0u8; 16])
+                    .map_err(|e| format!("write sentinel: {e}"))?;
+                // Flush all buffered TLS application data before closing.
+                tls.flush().map_err(|e| format!("flush: {e}"))?;
+                tls.conn.send_close_notify();
+                // Drain the close_notify record to TCP.
+                while tls.conn.wants_write() {
+                    tls.conn
+                        .write_tls(&mut tls.sock)
+                        .map_err(|e| format!("close_notify: {e}"))?;
+                }
+                // Shut down the write half of TCP to send FIN cleanly.
+                tls.sock
+                    .shutdown(std::net::Shutdown::Write)
+                    .map_err(|e| format!("tcp shutdown: {e}"))?;
+
+                // Drain the receive buffer (e.g. TLS 1.3 NewSessionTicket
+                // messages the server sent after the handshake). If unread
+                // data remains when close() is called, the kernel sends
+                // TCP RST instead of FIN, which can truncate in-flight
+                // application data at the receiver.
+                tls.sock
+                    .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+                    .ok();
+                let mut drain = [0u8; 4096];
+                loop {
+                    match tls.sock.read(&mut drain) {
+                        Ok(0) => break,
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+
+                Ok(())
+            }));
+        }
+
+        let mut errors = Vec::new();
+        for h in handles {
+            if let Err(e) = h.join().unwrap() {
+                errors.push(e);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(PyRuntimeError::new_err(errors.join("; ")))
+        }
+    })
 }
 
 #[pymethods]
@@ -169,126 +297,46 @@ impl PackedBuffer {
         let total_size = self.size;
 
         py.detach(move || {
-            let tls_config = make_tls_config().map_err(PyRuntimeError::new_err)?;
-
-            let num_streams = addresses.len();
-
-            // Partition blocks across streams round-robin.
-            let mut per_stream: Vec<Vec<(usize, usize)>> = vec![Vec::new(); num_streams];
-            for (i, &bi) in dirty_blocks.iter().enumerate() {
-                let offset = bi * block_size;
-                let size = std::cmp::min(block_size, total_size - offset);
-                per_stream[i % num_streams].push((offset, size));
-            }
-
-            let cache_path_bytes = cache_path.as_bytes();
-
-            thread::scope(|s| {
-                let mut handles = Vec::with_capacity(num_streams);
-
-                for (stream_idx, blocks) in per_stream.into_iter().enumerate() {
-                    let addr = &addresses[stream_idx];
-                    let config = Arc::clone(&tls_config);
-                    let cp_bytes = cache_path_bytes;
-
-                    handles.push(s.spawn(move || -> Result<(), String> {
-                        let (host, port_str) = addr
-                            .rsplit_once(':')
-                            .ok_or_else(|| format!("invalid address: {addr}"))?;
-                        let port: u16 = port_str
-                            .parse()
-                            .map_err(|e| format!("invalid port in {addr}: {e}"))?;
-
-                        let tcp = TcpStream::connect((host, port))
-                            .map_err(|e| format!("connect {addr}: {e}"))?;
-                        tcp.set_nodelay(true)
-                            .map_err(|e| format!("set_nodelay: {e}"))?;
-
-                        let server_name =
-                            ServerName::try_from(host.to_string()).unwrap_or_else(|_| {
-                                ServerName::try_from("localhost".to_string()).unwrap()
-                            });
-
-                        let conn = rustls::ClientConnection::new(config, server_name)
-                            .map_err(|e| format!("TLS handshake: {e}"))?;
-                        let mut tls = rustls::StreamOwned::new(conn, tcp);
-
-                        // Protocol header: cache_path_len(u32 BE) + cache_path + total_size(u64 BE)
-                        let mut header = Vec::with_capacity(4 + cp_bytes.len() + 8);
-                        header.extend_from_slice(&(cp_bytes.len() as u32).to_be_bytes());
-                        header.extend_from_slice(cp_bytes);
-                        header.extend_from_slice(&(total_size as u64).to_be_bytes());
-                        tls.write_all(&header)
-                            .map_err(|e| format!("write header: {e}"))?;
-
-                        // Send blocks: offset(u64 BE) + size(u64 BE) + data
-                        for (offset, size) in &blocks {
-                            let mut block_header = [0u8; 16];
-                            block_header[..8].copy_from_slice(&(*offset as u64).to_be_bytes());
-                            block_header[8..].copy_from_slice(&(*size as u64).to_be_bytes());
-                            tls.write_all(&block_header)
-                                .map_err(|e| format!("write block header: {e}"))?;
-
-                            // SAFETY: offset + size <= total_size, buffer is valid.
-                            let data = unsafe {
-                                std::slice::from_raw_parts((buf_ptr + offset) as *const u8, *size)
-                            };
-                            tls.write_all(data)
-                                .map_err(|e| format!("write block data: {e}"))?;
-                        }
-
-                        // Done sentinel: offset=0, size=0
-                        tls.write_all(&[0u8; 16])
-                            .map_err(|e| format!("write sentinel: {e}"))?;
-                        // Flush all buffered TLS application data before closing.
-                        tls.flush().map_err(|e| format!("flush: {e}"))?;
-                        tls.conn.send_close_notify();
-                        // Drain the close_notify record to TCP.
-                        while tls.conn.wants_write() {
-                            tls.conn
-                                .write_tls(&mut tls.sock)
-                                .map_err(|e| format!("close_notify: {e}"))?;
-                        }
-                        // Shut down the write half of TCP to send FIN cleanly.
-                        tls.sock
-                            .shutdown(std::net::Shutdown::Write)
-                            .map_err(|e| format!("tcp shutdown: {e}"))?;
-
-                        // Drain the receive buffer (e.g. TLS 1.3 NewSessionTicket
-                        // messages the server sent after the handshake). If unread
-                        // data remains when close() is called, the kernel sends
-                        // TCP RST instead of FIN, which can truncate in-flight
-                        // application data at the receiver.
-                        tls.sock
-                            .set_read_timeout(Some(std::time::Duration::from_millis(200)))
-                            .ok();
-                        let mut drain = [0u8; 4096];
-                        loop {
-                            match tls.sock.read(&mut drain) {
-                                Ok(0) => break,
-                                Ok(_) => continue,
-                                Err(_) => break,
-                            }
-                        }
-
-                        Ok(())
-                    }));
-                }
-
-                let mut errors = Vec::new();
-                for h in handles {
-                    if let Err(e) = h.join().unwrap() {
-                        errors.push(e);
-                    }
-                }
-                if errors.is_empty() {
-                    Ok(())
-                } else {
-                    Err(PyRuntimeError::new_err(errors.join("; ")))
-                }
-            })
+            send_blocks_impl(
+                buf_ptr,
+                total_size,
+                &dirty_blocks,
+                &addresses,
+                &cache_path,
+                block_size,
+            )
         })
     }
+}
+
+/// Send dirty blocks from an existing buffer over parallel TLS connections.
+///
+/// Like `PackedBuffer.send_blocks()` but operates on any buffer (e.g. a
+/// memoryview from `pack_directory_chunked`), avoiding a second pack step.
+#[pyfunction]
+#[pyo3(signature = (buffer, total_size, dirty_blocks, addresses, cache_path, hash_block_size=None))]
+fn send_blocks_from_buffer(
+    py: Python<'_>,
+    buffer: pyo3::buffer::PyBuffer<u8>,
+    total_size: usize,
+    dirty_blocks: Vec<usize>,
+    addresses: Vec<String>,
+    cache_path: String,
+    hash_block_size: Option<usize>,
+) -> PyResult<()> {
+    let block_size = hash_block_size.unwrap_or(HASH_BLOCK_SIZE);
+    let buf_ptr = buffer.buf_ptr() as usize;
+
+    py.detach(move || {
+        send_blocks_impl(
+            buf_ptr,
+            total_size,
+            &dirty_blocks,
+            &addresses,
+            &cache_path,
+            block_size,
+        )
+    })
 }
 
 /// Pack files into anonymous mmap and compute block hashes.
@@ -343,5 +391,11 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_extension.tls_sender",
     )?;
     module.add_function(f)?;
+    let f2 = wrap_pyfunction!(send_blocks_from_buffer, module)?;
+    f2.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_extension.tls_sender",
+    )?;
+    module.add_function(f2)?;
     Ok(())
 }

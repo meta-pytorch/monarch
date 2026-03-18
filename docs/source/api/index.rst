@@ -9,6 +9,7 @@ The :doc:`monarch` package contains APIs related to computing with distributed t
 The :doc:`monarch.job` package provides a declarative interface for managing distributed job resources.
 The :doc:`monarch.rdma` package provides RDMA support for high-performance networking.
 The :doc:`monarch.spmd` package provides primitives for running torchrun-style SPMD scripts over Monarch meshes.
+The :doc:`monarch.remotemount` package mounts local directories on remote workers via FUSE.
 
 .. toctree::
    :maxdepth: 2
@@ -18,4 +19,5 @@ The :doc:`monarch.spmd` package provides primitives for running torchrun-style S
    monarch.job
    monarch
    monarch.rdma
+   monarch.remotemount
    monarch.spmd

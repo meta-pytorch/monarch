@@ -7,7 +7,7 @@
 
 """Benchmark persistent chunk cache for remotemount across actor restarts.
 
-Calls run_gb300.sh repeatedly with modifications between runs to
+Calls remoterun.sh repeatedly with modifications between runs to
 exercise cache hit, partial update, and full transfer paths.
 Cache files persist in /tmp/monarch_remotemount_cache/ on worker
 hosts, so subsequent runs on the same hosts skip unchanged data.
@@ -40,7 +40,7 @@ import time
 import fire
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-RUN_GB300 = os.path.join(SCRIPT_DIR, "run_gb300.sh")
+RUN_SCRIPT = os.path.join(SCRIPT_DIR, "remoterun.sh")
 NUM_PY = 1000
 SCENARIOS = [
     "Cold start",
@@ -94,13 +94,13 @@ def _create_test_dir(base_dir, total_gb):
 def _run(
     label, num_hosts, source_dir, script="#!/bin/bash\necho done\n", extra_args=None
 ):
-    """Run remoterun via run_gb300.sh and return elapsed time."""
+    """Run remoterun via run.sh and return elapsed time."""
     sys.stdout.write(f"  {label:.<40s}")
     sys.stdout.flush()
 
     cmd = [
         "bash",
-        RUN_GB300,
+        RUN_SCRIPT,
         source_dir,
         "stdin",
         "--num_hosts",
@@ -133,6 +133,41 @@ def _run(
 
     status = "OK" if result.returncode == 0 else f"FAIL({result.returncode})"
     print(f" {elapsed:7.1f}s  {classification}  {status}")
+
+    # Print timing breakdown lines from logs.
+    for line in output.splitlines():
+        if any(
+            k in line.lower()
+            for k in (
+                "timings:",
+                "pack_directory_chunked:",
+                "persistent block transfer",
+                "fan-out:",
+                "_transfer_group",
+                "open() timings:",
+                "cache_write",
+                "write_cache",
+            )
+        ):
+            # Strip log prefix to show just the timing info.
+            idx = -1
+            for marker in (
+                "pack_directory_chunked:",
+                "Persistent block transfer",
+                "Fan-out:",
+                "Timings:",
+                "timings:",
+                "_transfer_group_direct_tls:",
+                "_transfer_group:",
+                "open() timings:",
+                "open(): cache_write",
+                "[WORKER] write_cache",
+            ):
+                idx = line.find(marker)
+                if idx >= 0:
+                    break
+            if idx >= 0:
+                print(f"    {line[idx:]}")
 
     if result.returncode != 0:
         stderr_lines = result.stderr.strip().splitlines()
@@ -207,17 +242,21 @@ def _kill_job():
     print("  Done.")
 
 
-def _run_scenarios(num_hosts, size_gb, bench_dir):
+def _run_scenarios(num_hosts, size_gb, bench_dir, extra_args=None):
     """Run all 5 scenarios for a given payload size, return dict of times."""
     src_dir = os.path.join(bench_dir, "src")
     data_path = os.path.join(bench_dir, "data.bin")
     results = {}
 
     # 1. Cold start (cache was cleared before this call)
-    results["Cold start"] = _run("Cold start", num_hosts, bench_dir)
+    results["Cold start"] = _run(
+        "Cold start", num_hosts, bench_dir, extra_args=extra_args
+    )
 
     # 2. No change (cache hit from cold start)
-    results["No change"] = _run("No change", num_hosts, bench_dir)
+    results["No change"] = _run(
+        "No change", num_hosts, bench_dir, extra_args=extra_args
+    )
 
     # 3. Rewrite data.bin (same size -> partial update)
     data_size = os.path.getsize(data_path)
@@ -227,7 +266,9 @@ def _run_scenarios(num_hosts, size_gb, bench_dir):
             chunk = min(remaining, 64 * 1024 * 1024)
             f.write(os.urandom(chunk))
             remaining -= chunk
-    results["Rewrite data.bin"] = _run("Rewrite data.bin", num_hosts, bench_dir)
+    results["Rewrite data.bin"] = _run(
+        "Rewrite data.bin", num_hosts, bench_dir, extra_args=extra_args
+    )
 
     # 4. Rewrite all .py files (partial update)
     # Use same-length prefix ("Modify" vs "Module" = 6 chars each) and
@@ -235,11 +276,15 @@ def _run_scenarios(num_hosts, size_gb, bench_dir):
     for i in range(NUM_PY):
         with open(os.path.join(src_dir, f"mod_{i}.py"), "w") as f:
             f.write(f"# Modify {i}\n" * 50 + f"def func_{i}(): return {i}\n")
-    results["Rewrite .py"] = _run("Rewrite .py files", num_hosts, bench_dir)
+    results["Rewrite .py"] = _run(
+        "Rewrite .py files", num_hosts, bench_dir, extra_args=extra_args
+    )
 
     # 5. Delete file (total size changes -> stale -> full transfer)
     os.remove(os.path.join(src_dir, "mod_0.py"))
-    results["Delete file"] = _run("Delete file", num_hosts, bench_dir)
+    results["Delete file"] = _run(
+        "Delete file", num_hosts, bench_dir, extra_args=extra_args
+    )
 
     return results
 
@@ -275,7 +320,7 @@ def _print_table(all_results):
     print()
 
 
-def _run_host_count(num_hosts, size_list, work_dir):
+def _run_host_count(num_hosts, size_list, work_dir, extra_args=None):
     """Run all payload sizes for a single host count.
 
     Uses work_dir for .monarch/job_state.pkl isolation and
@@ -303,7 +348,9 @@ def _run_host_count(num_hosts, size_list, work_dir):
             _create_test_dir(bench_dir, size_gb)
             _clear_worker_cache(num_hosts, warmup_dir)
 
-            results = _run_scenarios(num_hosts, size_gb, bench_dir)
+            results = _run_scenarios(
+                num_hosts, size_gb, bench_dir, extra_args=extra_args
+            )
             host_results[(num_hosts, size_gb)] = results
 
             shutil.rmtree(bench_dir, ignore_errors=True)
@@ -315,29 +362,41 @@ def _run_host_count(num_hosts, size_list, work_dir):
         os.chdir(orig_cwd)
 
 
-def main(sizes="1", hosts="2"):
+def main(host_type="gb200", sizes="1", hosts="2", streams=8):
     """Run persistent cache benchmark across payload sizes and host counts.
 
     Args:
+        host_type: MAST host type (default: gb200). Options: gb200, gb300, grandteton
         sizes: Comma-separated GB values (e.g., "1,2,4,8,16,32,64,128")
         hosts: Comma-separated host counts (e.g., "1,2,4,8,16")
+        streams: Number of parallel TLS streams per host (default: 8)
     """
     size_list = _parse_list(sizes)
     host_list = _parse_list(hosts)
+    streams = int(streams)
+
+    # Set host type for remoterun.sh.
+    os.environ["MONARCH_HOST_TYPE"] = host_type
 
     print("=" * 60)
     print("  Persistent Cache Benchmark")
     print(f"  Sizes: {size_list} GB")
     print(f"  Hosts: {host_list}")
+    print(f"  Streams: {streams}")
+    print(f"  Host type: {host_type}")
     print("=" * 60)
 
     base_work_dir = tempfile.mkdtemp(prefix="bench_incremental_")
+
+    extra_args = ["--num_parallel_streams", str(streams)]
 
     all_results = {}
     for num_hosts in host_list:
         work_dir = os.path.join(base_work_dir, f"h{num_hosts}")
         try:
-            host_results = _run_host_count(num_hosts, size_list, work_dir)
+            host_results = _run_host_count(
+                num_hosts, size_list, work_dir, extra_args=extra_args
+            )
             all_results.update(host_results)
         except Exception as e:
             print(f"\n  ERROR: {num_hosts} hosts failed: {e}")

@@ -14,7 +14,7 @@
 # Usage:
 #   bash examples/setup_conda_env.sh <target> [DEST_DIR]
 #
-#   target:   "gb300" (aarch64) or "grandteton" (x86)
+#   target:   "gb200"/"gb300" (aarch64) or "grandteton"/"h100" (x86)
 #   DEST_DIR: where to create the envs (default: ~/monarch_conda_envs)
 #
 # After setup, run remoterun with:
@@ -25,11 +25,11 @@
 
 set -euo pipefail
 
-TARGET="${1:?Usage: $0 <target> [dest_dir]  (target: gb300 or grandteton)}"
+TARGET="${1:?Usage: $0 <target> [dest_dir]  (target: gb200, gb300, grandteton, or h100)}"
 DEST="${2:-$HOME/monarch_conda_envs}"
 
 case "$TARGET" in
-    gb300)
+    gb200|gb300)
         WORKER_ARCH="aarch64"
         WORKER_BASE_PKG="xlformers_gb200_conda:latest"
         WORKER_WHL_TARGET="fbcode//monarch/python/monarch:monarch_nightly_torch_gb200_py3.12.whl"
@@ -42,7 +42,7 @@ case "$TARGET" in
         WORKER_BUCK_ARGS=""
         ;;
     *)
-        echo "Unknown target: $TARGET (expected: gb300, grandteton, h100)"
+        echo "Unknown target: $TARGET (expected: gb200, gb300, grandteton, h100)"
         exit 1
         ;;
 esac
@@ -125,14 +125,20 @@ set -eEx
 export PYTHONDONTWRITEBYTECODE=1
 export PATH="${CONDA_DIR}/bin:$PATH"
 
-LIBCUDA="/usr/local/fbcode/platform010/lib/libcuda.so"
-if [ -f "$LIBCUDA" ]; then
+LIBCUDA=""
+for p in /usr/local/fbcode/platform010/lib /usr/local/fbcode/platform010-aarch64/lib; do
+    if [ -f "$p/libcuda.so" ]; then
+        LIBCUDA="$p/libcuda.so"
+        break
+    fi
+done
+if [ -n "$LIBCUDA" ]; then
     export LIBCUDA_DIR="${LIBCUDA%/*}"
     export TRITON_LIBCUDA_PATH="$LIBCUDA_DIR"
-    export LD_PRELOAD="$LIBCUDA:/usr/local/fbcode/platform010/lib/libnvidia-ml.so${PRELOAD_PATH:+:$PRELOAD_PATH}"
+    export LD_PRELOAD="$LIBCUDA:$LIBCUDA_DIR/libnvidia-ml.so${PRELOAD_PATH:+:$PRELOAD_PATH}"
 fi
 
-export LD_LIBRARY_PATH="${CONDA_DIR}/lib:${CONDA_DIR}/lib/python3.12/site-packages/torch/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${CONDA_DIR}/lib:${CONDA_DIR}/lib/python3.12/site-packages/torch/lib${LIBCUDA_DIR:+:$LIBCUDA_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$TORCHX_RUN_PYTHONPATH"
 
 if [ -f "${CONDA_DIR}/bin/activate" ]; then
