@@ -25,6 +25,7 @@ pub mod host_agent;
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -191,15 +192,12 @@ impl FromStr for HostRef {
 ///
 /// # Lifecycle
 /// `HostMesh` owns host lifecycles. Callers **must** invoke
-/// [`HostMesh::shutdown`] for deterministic teardown. The `Drop` impl
-/// performs **best-effort** cleanup only (spawned via Tokio if
-/// available); it is a safety net, not a substitute for orderly
-/// shutdown.
+/// [`HostMesh::shutdown`] for deterministic teardown.
 ///
 /// In tests and production, prefer explicit shutdown to guarantee
 /// that host agents drop their `BootstrapProcManager`s and that all
-/// child procs are reaped.
-#[allow(dead_code)]
+/// child procs are reaped. You can use `shutdown_guard` to get a wrapper
+/// which will try to do a best-effort shutdown on Drop.
 pub struct HostMesh {
     name: Name,
     extent: Extent,
@@ -676,6 +674,12 @@ impl HostMesh {
         }
         Ok(())
     }
+
+    /// Consumes and wraps this HostMesh with a HostMeshShutdownGuard, which will
+    /// ensure shutdown is run on Drop.
+    pub fn shutdown_guard(self) -> HostMeshShutdownGuard {
+        HostMeshShutdownGuard(self)
+    }
 }
 
 impl Deref for HostMesh {
@@ -686,7 +690,24 @@ impl Deref for HostMesh {
     }
 }
 
-impl Drop for HostMesh {
+/// Wrapper around HostMesh that runs shutdown on Drop.
+pub struct HostMeshShutdownGuard(pub HostMesh);
+
+impl Deref for HostMeshShutdownGuard {
+    type Target = HostMesh;
+
+    fn deref(&self) -> &HostMesh {
+        &self.0
+    }
+}
+
+impl DerefMut for HostMeshShutdownGuard {
+    fn deref_mut(&mut self) -> &mut HostMesh {
+        &mut self.0
+    }
+}
+
+impl Drop for HostMeshShutdownGuard {
     /// Best-effort cleanup for owned host meshes on drop.
     ///
     /// When a `HostMesh` is dropped, it attempts to shut down all
@@ -707,11 +728,11 @@ impl Drop for HostMesh {
     fn drop(&mut self) {
         tracing::info!(
             name = "HostMeshStatus",
-            host_mesh = %self.name,
+            host_mesh = %self.0.name,
             status = "Dropping",
         );
         // Snapshot the owned hosts we're responsible for.
-        let hosts: Vec<HostRef> = match &self.allocation {
+        let hosts: Vec<HostRef> = match &self.0.allocation {
             HostMeshAllocation::ProcMesh { hosts, .. } | HostMeshAllocation::Owned { hosts } => {
                 hosts.clone()
             }
@@ -719,8 +740,8 @@ impl Drop for HostMesh {
 
         // Best-effort only when a Tokio runtime is available.
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let mesh_name = self.name.clone();
-            let allocation_label = match &self.allocation {
+            let mesh_name = self.0.name.clone();
+            let allocation_label = match &self.0.allocation {
                 HostMeshAllocation::ProcMesh { .. } => "proc_mesh",
                 HostMeshAllocation::Owned { .. } => "owned",
             }
@@ -791,7 +812,7 @@ impl Drop for HostMesh {
             // No runtime here; PDEATHSIG and manager Drop remain the
             // last-resort safety net.
             tracing::warn!(
-                host_mesh = %self.name,
+                host_mesh = %self.0.name,
                 hosts = hosts.len(),
                 "HostMesh dropped without a Tokio runtime; skipping \
                  best-effort shutdown. This indicates that .shutdown() \
@@ -805,7 +826,7 @@ impl Drop for HostMesh {
 
         tracing::info!(
             name = "HostMeshStatus",
-            host_mesh = %self.name,
+            host_mesh = %self.0.name,
             status = "Dropped",
         );
     }

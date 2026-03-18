@@ -371,6 +371,7 @@ struct SelfCheck {}
         resource::GetRankStatus { cast = true },
         resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
+        PySpyDump,
     ]
 )]
 pub struct ProcAgent {
@@ -887,6 +888,20 @@ impl Handler<RepublishIntrospect> for ProcAgent {
             self.introspect_dirty = false;
             self.publish_introspect_properties(cx);
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyDump,
+    ) -> Result<(), anyhow::Error> {
+        let runner = crate::pyspy::PySpyRunner;
+        let result = runner.dump_self(message.threads).await;
+        message.result.send(cx, result)?;
         Ok(())
     }
 }

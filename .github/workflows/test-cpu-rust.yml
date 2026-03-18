@@ -1,0 +1,63 @@
+name: Test CPU Rust
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner to use for the test'
+        type: string
+        default: 'linux.4xlarge'
+      docker-image:
+        description: 'Docker image to use (default lets test-infra auto-select)'
+        type: string
+        default: 'pytorch/almalinux-builder'
+
+concurrency:
+  group: test-cpu-rust-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-cpu-rust:
+    name: Test CPU Rust
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 120
+      runner: ${{ inputs.runner }}
+      docker-image: ${{ inputs.docker-image }}
+      submodules: recursive
+      script: |
+        # Source common setup functions
+        source scripts/common-setup.sh
+
+        # Setup test environment
+        setup_test_environment
+
+        # Install Rust
+        setup_rust_toolchain
+
+        # Install System dependencies
+        install_system_dependencies
+
+        # Install PyTorch (needed for ABI compatibility, no GPU required)
+        pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128
+
+        # Run CPU-safe Rust tests (no GPU hardware available)
+        echo "Running CPU Rust tests..."
+        # Exclude crates that require GPU hardware, CUDA libraries, or
+        # torch C++ headers (libtorch) not available on CPU-only runners.
+        timeout 12m cargo nextest run --workspace --profile ci \
+          --exclude monarch_messages \
+          --exclude monarch_tensor_worker \
+          --exclude torch-sys-cuda \
+          --exclude monarch_rdma \
+          --exclude torch-sys \
+          --exclude nccl-sys \
+          --exclude rdmaxcel-sys \
+          --exclude monarch_cpp_static_libs \
+          --exclude monarch_extension \
+          --exclude monarch_bench \
+          --exclude monarch_conda
+
+        echo "=== sccache stats ==="
+        sccache --show-stats
+        echo "=== end sccache stats ==="
