@@ -156,8 +156,13 @@ void rdmaxcel_print_device_info(struct ibv_context* context);
 const char* rdmaxcel_error_string(int error_code);
 
 // Active segment tracking functions (implemented in C++)
-int rdma_get_active_segment_count();
-int rdma_get_all_segment_info(rdma_segment_info_t* info_array, int max_count);
+// Lookup segment info for segments registered on the provided PD.
+// Only segments that have a completed registration are returned.
+int rdma_get_active_segment_count(struct ibv_pd* pd);
+int rdma_get_all_registered_segment_info(
+    struct ibv_pd* pd,
+    rdma_segment_info_t* info_array,
+    int max_count);
 int deregister_segments();
 
 // Scanned segment information - minimal fields needed from external scanner
@@ -274,8 +279,13 @@ void rdmaxcel_qp_store_rts_timestamp(rdmaxcel_qp_t* qp, uint64_t value);
 completion_cache_t* rdmaxcel_qp_get_send_cache(rdmaxcel_qp_t* qp);
 completion_cache_t* rdmaxcel_qp_get_recv_cache(rdmaxcel_qp_t* qp);
 
-// Segment registration (uses rdmaxcel_qp_t, so must come after type definition)
-int register_segments(struct ibv_pd* pd, rdmaxcel_qp_t* qp);
+// Per-device segment registration.
+// pds and qps are parallel arrays indexed by CUDA device ordinal.
+// num_devices is the length of both arrays.
+int register_segments(
+    struct ibv_pd** pds,
+    rdmaxcel_qp_t** qps,
+    int num_devices);
 
 // Completion Cache Structures and Functions
 #define MAX_CACHED_COMPLETIONS 128

@@ -77,14 +77,11 @@ python-downloads = "automatic"  # Automatically download Python if needed
 cache-keys = [
     { file = "pyproject.toml" },
     { file = "setup.py" },
-    # Note: we intentionally avoid "**/*.rs" because it matches generated
-    # .rs files in target/release/build/, causing a full rebuild every time.
-    { file = "*/src/**/*.rs" },
-    { file = "*/Cargo.toml" },
+    { file = "**/*.rs" },
+    { file = "**/Cargo.toml" },
     { file = "Cargo.lock" },
-    { file = "*/src/**/*.{cc,cpp,c,h}" },
-    { file = "*/src/**/*.{cu,cuh}" },
-    { file = "python/monarch/**/*.{cpp,c,h}" },
+    { file = "**/*.{cc, cpp, c, h}" },
+    { file = "**/*.{cu, cuh}" },
 ]
 
 [project.optional-dependencies]
@@ -112,10 +109,8 @@ dev = [
     "pytest-timeout>=2.0",
     "pytest-asyncio>=0.21",
     "pytest-xdist>=3.0",
-    "pytest-split",
     "pyright>=1.1",
     "torch>=2.9.1",
-    "setuptools-rust",
 ]
 
 [project.scripts]

@@ -135,7 +135,7 @@ rustup toolchain install nightly
 rustup default nightly
 
 # Install non-python dependencies
-sudo dnf install -y cmake ninja-build protobuf-compiler libunwind
+sudo dnf install libunwind -y
 
 # Install the correct cuda and cuda-toolkit versions for your machine
 sudo dnf install cuda-toolkit-12-8 cuda-12-8
@@ -173,7 +173,7 @@ rustup toolchain install nightly
 rustup default nightly
 
 # Install Ubuntu-specific system dependencies
-sudo apt install -y cmake ninja-build protobuf-compiler libunwind-dev clang
+sudo apt install -y ninja-build libunwind-dev clang
 
 # Set clang as the default C/C++ compiler
 export CC=clang

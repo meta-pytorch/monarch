@@ -64,9 +64,7 @@ use crate::proc_agent::ActorState;
     Eq,
     Hash,
     EnumAsInner,
-    strum::Display,
-    Bind,
-    Unbind
+    strum::Display
 )]
 pub enum Status {
     /// The resource does not exist.
@@ -228,18 +226,7 @@ impl GetRankStatus {
 }
 
 /// The state of a resource.
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    Named,
-    PartialEq,
-    Eq,
-    Handler,
-    Bind,
-    Unbind
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
 pub struct State<S> {
     /// The name of the resource.
     pub name: Name,
@@ -247,12 +234,7 @@ pub struct State<S> {
     pub status: Status,
     /// Optionally, a resource-defined state.
     pub state: Option<S>,
-    /// Monotonic generation counter for last-writer-wins ordering.
-    pub generation: u64,
-    /// Wall-clock timestamp for debugging context.
-    pub timestamp: std::time::SystemTime,
 }
-wirevalue::register_type!(State<ActorState>);
 
 impl<S: Serialize> fmt::Display for State<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -417,51 +399,6 @@ where
         Self {
             expires_after: self.expires_after.clone(),
             get_state: self.get_state.clone(),
-        }
-    }
-}
-
-/// Subscribe to streaming state updates for a named resource.
-/// The subscriber port will receive `State<S>` whenever the resource's
-/// state changes. The current state is sent immediately upon subscription.
-#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
-pub struct StreamState<S> {
-    /// The name of the resource to subscribe to.
-    pub name: Name,
-    /// A streaming port that will receive state updates.
-    pub subscriber: hyperactor_reference::PortRef<State<S>>,
-}
-wirevalue::register_type!(StreamState<ActorState>);
-
-// Cannot derive Bind and Unbind for this generic, implement manually.
-impl<S> Unbind for StreamState<S>
-where
-    S: RemoteMessage,
-    S: Unbind,
-{
-    fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.subscriber.unbind(bindings)
-    }
-}
-
-impl<S> Bind for StreamState<S>
-where
-    S: RemoteMessage,
-    S: Bind,
-{
-    fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        self.subscriber.bind(bindings)
-    }
-}
-
-impl<S> Clone for StreamState<S>
-where
-    S: RemoteMessage,
-{
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            subscriber: self.subscriber.clone(),
         }
     }
 }

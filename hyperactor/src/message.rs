@@ -297,8 +297,6 @@ impl_bind_unbind_basic!(u128);
 impl_bind_unbind_basic!(isize);
 impl_bind_unbind_basic!(usize);
 impl_bind_unbind_basic!(String);
-impl_bind_unbind_basic!(std::time::Duration);
-impl_bind_unbind_basic!(std::time::SystemTime);
 
 impl<T: Unbind> Unbind for Option<T> {
     fn unbind(&self, bindings: &mut Bindings) -> anyhow::Result<()> {

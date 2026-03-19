@@ -141,6 +141,24 @@ fn copy_dir(src_dir: &Path, target_dir: &Path) {
     }
 }
 
+/// Detect a working ninja binary. Returns Some(cmd) if found, None otherwise.
+///
+/// Checks both the exit code and that the binary is actually ninja (not a shim
+/// that delegates to make). cmake -GNinja requires a real ninja binary.
+fn detect_ninja() -> Option<&'static str> {
+    for cmd in &["ninja-build", "ninja"] {
+        if let Ok(output) = Command::new(cmd).arg("--version").output() {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                println!("cargo:warning=Found {} version: {}", cmd, version.trim());
+                return Some(cmd);
+            }
+        }
+    }
+    println!("cargo:warning=ninja not found, will use make (cmake Makefile generator)");
+    None
+}
+
 fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
     let build_dir = rdma_core_dir.join("build");
 
@@ -153,6 +171,7 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&build_dir).expect("Failed to create rdma-core build directory");
 
     println!("cargo:warning=Building rdma-core...");
+    println!("cargo:warning=Architecture: {}", std::env::consts::ARCH);
 
     // Detect cmake command
     let cmake = if Command::new("cmake3").arg("--version").status().is_ok() {
@@ -162,21 +181,7 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
     };
 
     // Detect ninja
-    let use_ninja = Command::new("ninja-build")
-        .arg("--version")
-        .status()
-        .is_ok()
-        || Command::new("ninja").arg("--version").status().is_ok();
-
-    let ninja_cmd = if Command::new("ninja-build")
-        .arg("--version")
-        .status()
-        .is_ok()
-    {
-        "ninja-build"
-    } else {
-        "ninja"
-    };
+    let ninja_cmd = detect_ninja();
 
     // CMake configuration
     // IMPORTANT: -DCMAKE_POSITION_INDEPENDENT_CODE=ON is required for static libs
@@ -192,50 +197,123 @@ fn build_rdma_core(rdma_core_dir: &Path) -> PathBuf {
         "-DCMAKE_CXX_FLAGS=-fPIC",
     ];
 
-    if use_ninja {
+    if ninja_cmd.is_some() {
         cmake_args.push("-GNinja");
     }
 
     cmake_args.push("..");
 
-    let status = Command::new(cmake)
+    // Run cmake and capture output for diagnostics
+    let cmake_output = Command::new(cmake)
         .current_dir(&build_dir)
         .args(&cmake_args)
-        .status()
+        .output()
         .expect("Failed to run cmake for rdma-core");
 
-    if !status.success() {
-        panic!("Failed to configure rdma-core with cmake");
+    if !cmake_output.status.success() {
+        let stderr = String::from_utf8_lossy(&cmake_output.stderr);
+        let stdout = String::from_utf8_lossy(&cmake_output.stdout);
+        panic!(
+            "Failed to configure rdma-core with cmake.\nstdout: {}\nstderr: {}",
+            stdout, stderr
+        );
     }
 
-    // Build only the targets we need
-    let targets = [
+    // Log cmake generator info for diagnostics
+    let cmake_stdout = String::from_utf8_lossy(&cmake_output.stdout);
+    for line in cmake_stdout.lines() {
+        if line.contains("STATIC")
+            || line.contains("generator")
+            || line.contains("Ninja")
+            || line.contains("provider")
+            || line.contains("mlx5")
+            || line.contains("efa")
+        {
+            println!("cargo:warning=cmake: {}", line);
+        }
+    }
+
+    // Verify build.ninja or Makefile was generated
+    if ninja_cmd.is_some() {
+        let build_ninja = build_dir.join("build.ninja");
+        if !build_ninja.exists() {
+            panic!(
+                "cmake was invoked with -GNinja but build.ninja was not generated in {}. \
+                 This usually means cmake could not find the ninja binary despite it being \
+                 on PATH. Ensure ninja-build is properly installed.",
+                build_dir.display()
+            );
+        }
+    }
+
+    let expected_outputs = [
         "lib/statics/libibverbs.a",
         "lib/statics/libmlx5.a",
         "lib/statics/libefa.a",
         "util/librdma_util.a",
     ];
 
-    for target in &targets {
-        let status = if use_ninja {
-            Command::new(ninja_cmd)
+    let num_jobs = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+
+    if let Some(ninja) = ninja_cmd {
+        // Ninja supports building by output file path.
+        for target in &expected_outputs {
+            let output = Command::new(ninja)
                 .current_dir(&build_dir)
                 .arg(target)
-                .status()
-                .expect("Failed to run ninja for rdma-core")
-        } else {
-            let num_jobs = std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(4);
-            Command::new("make")
-                .current_dir(&build_dir)
-                .args(["-j", &num_jobs.to_string(), target])
-                .status()
-                .expect("Failed to run make for rdma-core")
-        };
+                .output()
+                .expect("Failed to run ninja for rdma-core");
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                panic!(
+                    "Failed to build rdma-core target: {}\nstderr: {}",
+                    target, stderr
+                );
+            }
+        }
+    } else {
+        // CMake's Makefile generator does not support building by output
+        // file path; only named cmake targets work with make. Build all
+        // targets and verify the expected outputs afterward.
+        let status = Command::new("make")
+            .current_dir(&build_dir)
+            .args(["-j", &num_jobs.to_string()])
+            .status()
+            .expect("Failed to run make for rdma-core");
 
         if !status.success() {
-            panic!("Failed to build rdma-core target: {}", target);
+            panic!("Failed to build rdma-core");
+        }
+    }
+
+    for output in &expected_outputs {
+        let path = build_dir.join(output);
+        if !path.exists() {
+            // List what IS in lib/statics/ for diagnostics
+            let statics_dir = build_dir.join("lib/statics");
+            let contents = if statics_dir.exists() {
+                std::fs::read_dir(&statics_dir)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|e| e.ok())
+                            .map(|e| e.file_name().to_string_lossy().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|_| "error reading directory".to_string())
+            } else {
+                "directory does not exist".to_string()
+            };
+            panic!(
+                "rdma-core build completed but expected output not found: {}\n\
+                 lib/statics/ contains: [{}]\n\
+                 Ensure libnl3-devel is installed (needed by rdma-core cmake to \
+                 enable mlx5/efa providers).",
+                output, contents
+            );
         }
     }
 

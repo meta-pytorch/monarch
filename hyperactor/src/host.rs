@@ -304,7 +304,6 @@ struct ProcOrDial {
     dialer: DialMailboxRouter,
 }
 
-#[async_trait]
 impl MailboxSender for ProcOrDial {
     fn post_unchecked(
         &self,
@@ -318,19 +317,6 @@ impl MailboxSender for ProcOrDial {
         } else {
             self.dialer.post_unchecked(envelope, return_handle)
         }
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let (r1, r2, r3) = futures::future::join3(
-            self.service_proc.flush(),
-            self.local_proc.flush(),
-            self.dialer.flush(),
-        )
-        .await;
-        r1?;
-        r2?;
-        r3?;
-        Ok(())
     }
 }
 

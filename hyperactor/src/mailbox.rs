@@ -72,7 +72,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
-use std::future;
 use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
@@ -87,7 +86,6 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 
-use async_trait::async_trait;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use futures::Sink;
@@ -134,10 +132,6 @@ pub use undeliverable::monitored_return_handle; // TODO: Audit
 pub mod mailbox_admin_message;
 pub use mailbox_admin_message::MailboxAdminMessage;
 pub use mailbox_admin_message::MailboxAdminMessageHandler;
-/// For [`DurableMailboxSender`] a sender with a write-ahead log.
-pub mod durable_mailbox_sender;
-pub use durable_mailbox_sender::log;
-use durable_mailbox_sender::log::*;
 /// For message headers and latency tracking.
 pub mod headers;
 
@@ -658,10 +652,6 @@ pub enum MailboxSenderErrorKind {
     #[error(transparent)]
     Channel(#[from] ChannelError),
 
-    /// An underlying message log error.
-    #[error(transparent)]
-    MessageLog(#[from] MessageLogError),
-
     /// An other, uncategorized error.
     #[error("send error: {0}")]
     Other(#[from] anyhow::Error),
@@ -726,7 +716,6 @@ impl std::error::Error for MailboxSenderError {
 
 /// MailboxSenders can send messages through ports to mailboxes. It
 /// provides a unified interface for message delivery in the system.
-#[async_trait]
 pub trait MailboxSender: Send + Sync + Any {
     /// Apply hop semantics (TTL decrement; undeliverable on 0), then
     /// delegate to transport.
@@ -748,14 +737,6 @@ pub trait MailboxSender: Send + Sync + Any {
         envelope: MessageEnvelope,
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     );
-
-    /// Wait until all messages previously posted through this sender
-    /// have been delivered (wire-acked) or confirmed undeliverable.
-    /// The default implementation is a no-op, appropriate for senders
-    /// whose `post` is synchronous (e.g. local in-process delivery).
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
 }
 
 /// PortSender extends [`MailboxSender`] by providing typed endpoints
@@ -812,7 +793,6 @@ impl<T: ?Sized + MailboxSender> PortSender for T {}
 #[derive(Debug, Clone)]
 pub struct PanickingMailboxSender;
 
-#[async_trait]
 impl MailboxSender for PanickingMailboxSender {
     fn post_unchecked(
         &self,
@@ -828,7 +808,6 @@ impl MailboxSender for PanickingMailboxSender {
 #[derive(Debug)]
 pub struct UndeliverableMailboxSender;
 
-#[async_trait]
 impl MailboxSender for UndeliverableMailboxSender {
     fn post_unchecked(
         &self,
@@ -850,57 +829,6 @@ impl MailboxSender for UndeliverableMailboxSender {
             "message not delivered, {}",
             error_str,
         );
-    }
-}
-
-struct Buffer<T: Message> {
-    queue: mpsc::UnboundedSender<(T, PortHandle<Undeliverable<T>>)>,
-    #[allow(dead_code)]
-    processed: watch::Receiver<usize>,
-    seq: AtomicUsize,
-}
-
-impl<T: Message> Buffer<T> {
-    fn new<Fut>(
-        process: impl Fn(T, PortHandle<Undeliverable<T>>) -> Fut + Send + Sync + 'static,
-    ) -> Self
-    where
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        let (queue, mut next) = mpsc::unbounded_channel();
-        let (last_processed, processed) = watch::channel(0);
-        crate::init::get_runtime().spawn(async move {
-            let mut seq = 0;
-            while let Some((msg, return_handle)) = next.recv().await {
-                process(msg, return_handle).await;
-                seq += 1;
-                let _ = last_processed.send(seq);
-            }
-        });
-        Self {
-            queue,
-            processed,
-            seq: AtomicUsize::new(0),
-        }
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn send(
-        &self,
-        item: (T, PortHandle<Undeliverable<T>>),
-    ) -> Result<(), mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>> {
-        self.seq.fetch_add(1, Ordering::SeqCst);
-        self.queue.send(item)?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    async fn flush(&mut self) -> Result<(), watch::error::RecvError> {
-        let seq = self.seq.load(Ordering::SeqCst);
-        while *self.processed.borrow_and_update() < seq {
-            self.processed.changed().await?;
-        }
-        Ok(())
     }
 }
 
@@ -958,7 +886,6 @@ impl<T: MailboxSender + 'static> IntoBoxedMailboxSender for T {
     }
 }
 
-#[async_trait]
 impl MailboxSender for BoxedMailboxSender {
     fn post_unchecked(
         &self,
@@ -966,10 +893,6 @@ impl MailboxSender for BoxedMailboxSender {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         self.0.post_unchecked(envelope, return_handle);
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        self.0.flush().await
     }
 }
 
@@ -1119,26 +1042,15 @@ impl<T: MailboxSender + Clone + Sized + Sync + Send + 'static> MailboxServer for
 
 /// A mailbox server client that transmits messages on a Tx channel.
 pub struct MailboxClient {
-    // The unbounded sender.
-    buffer: Buffer<MessageEnvelope>,
+    queue: mpsc::UnboundedSender<(MessageEnvelope, PortHandle<Undeliverable<MessageEnvelope>>)>,
 
     // To cancel monitoring tx health.
     _tx_monitoring: CancellationToken,
-
-    // Flush tracking: counts messages successfully submitted to the buffer.
-    submitted: Arc<AtomicUsize>,
-    // Flush tracking: counts messages whose delivery oneshot has resolved
-    // (acked or failed).
-    completed: Arc<AtomicUsize>,
-    // Notifies flush waiters when `completed` changes.
-    completed_notify: Arc<tokio::sync::Notify>,
 }
 
 impl fmt::Debug for MailboxClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MailboxClient")
-            .field("buffer", &"<Buffer>")
-            .finish()
+        f.debug_struct("MailboxClient").finish()
     }
 }
 
@@ -1150,51 +1062,39 @@ impl MailboxClient {
         let tx = Arc::new(tx);
         let tx_status = tx.status().clone();
         let tx_monitoring = CancellationToken::new();
-        let completed = Arc::new(AtomicUsize::new(0));
-        let completed_notify = Arc::new(tokio::sync::Notify::new());
-        let buffer = {
-            let completed = completed.clone();
-            let completed_notify = completed_notify.clone();
-            Buffer::new(move |envelope, return_handle| {
+        let (queue, mut next) = mpsc::unbounded_channel::<(
+            MessageEnvelope,
+            PortHandle<Undeliverable<MessageEnvelope>>,
+        )>();
+        crate::init::get_runtime().spawn(async move {
+            while let Some((envelope, return_handle)) = next.recv().await {
                 let tx = Arc::clone(&tx);
                 let (return_channel, return_receiver) =
                     oneshot::channel::<SendError<MessageEnvelope>>();
                 // Set up for delivery failure.
                 let return_handle_0 = return_handle.clone();
-                let completed = completed.clone();
-                let completed_notify = completed_notify.clone();
                 tokio::spawn(async move {
-                    match return_receiver.await {
-                        Ok(SendError {
-                            error,
-                            message,
-                            reason,
-                        }) => {
-                            message.undeliverable(
-                                DeliveryError::BrokenLink(format!(
-                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
-                                )),
-                                return_handle_0,
-                            );
-                        }
-                        Err(_) => {
-                            // Oneshot sender was dropped — message was acked.
-                        }
+                    if let Ok(SendError {
+                        error,
+                        message,
+                        reason,
+                    }) = return_receiver.await
+                    {
+                        message.undeliverable(
+                            DeliveryError::BrokenLink(format!(
+                                "failed to enqueue in MailboxClient: {error} with reason {reason:?}"
+                            )),
+                            return_handle_0,
+                        );
                     }
-                    completed.fetch_add(1, Ordering::SeqCst);
-                    completed_notify.notify_waiters();
                 });
                 // Send the message for transmission.
                 tx.try_post(envelope, return_channel);
-                future::ready(())
-            })
-        };
+            }
+        });
         let this = Self {
-            buffer,
+            queue,
             _tx_monitoring: tx_monitoring.clone(),
-            submitted: Arc::new(AtomicUsize::new(0)),
-            completed,
-            completed_notify,
         };
         Self::monitor_tx_health(tx_status, tx_monitoring, addr);
         this
@@ -1232,7 +1132,6 @@ impl MailboxClient {
     }
 }
 
-#[async_trait]
 impl MailboxSender for MailboxClient {
     #[tracing::instrument(level = "debug", skip_all)]
     fn post_unchecked(
@@ -1242,26 +1141,14 @@ impl MailboxSender for MailboxClient {
     ) {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
         if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
+            self.queue.send((envelope, return_handle))
         {
             let err = DeliveryError::BrokenLink(
-                "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
+                "failed to enqueue in MailboxClient; queue is closed".to_string(),
             );
 
             // Failed to enqueue.
             envelope.undeliverable(err, return_handle);
-        } else {
-            self.submitted.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let target = self.submitted.load(Ordering::SeqCst);
-        loop {
-            if self.completed.load(Ordering::SeqCst) >= target {
-                return Ok(());
-            }
-            self.completed_notify.notified().await;
         }
     }
 }
@@ -1628,7 +1515,6 @@ pub fn open_once_port<M: Message>(
     cx.mailbox().open_once_port()
 }
 
-#[async_trait]
 impl MailboxSender for Mailbox {
     /// Deliver a serialized message to the provided port ID. This method fails
     /// if the message does not deserialize into the expected type.
@@ -2532,7 +2418,6 @@ impl MailboxMuxer {
     }
 }
 
-#[async_trait]
 impl MailboxSender for MailboxMuxer {
     fn post_unchecked(
         &self,
@@ -2547,20 +2432,6 @@ impl MailboxSender for MailboxMuxer {
             }
             Some(sender) => sender.post(envelope, return_handle),
         }
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let keys: Vec<_> = self
-            .mailboxes
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-        for key in keys {
-            if let Some(sender) = self.mailboxes.get(&key) {
-                sender.value().flush().await?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -2628,7 +2499,6 @@ impl MailboxRouter {
     }
 }
 
-#[async_trait]
 impl MailboxSender for MailboxRouter {
     fn post_unchecked(
         &self,
@@ -2645,13 +2515,6 @@ impl MailboxSender for MailboxRouter {
             Some(sender) => sender.post(envelope, return_handle),
         }
     }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let senders: Vec<_> = self.entries.read().unwrap().values().cloned().collect();
-        let futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
-        futures::future::try_join_all(futs).await?;
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -2660,7 +2523,6 @@ struct FallbackMailboxRouter {
     default: BoxedMailboxSender,
 }
 
-#[async_trait]
 impl MailboxSender for FallbackMailboxRouter {
     fn post_unchecked(
         &self,
@@ -2671,13 +2533,6 @@ impl MailboxSender for FallbackMailboxRouter {
             Some(sender) => sender.post(envelope, return_handle),
             None => self.default.post(envelope, return_handle),
         }
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let (r1, r2) = futures::future::join(self.router.flush(), self.default.flush()).await;
-        r1?;
-        r2?;
-        Ok(())
     }
 }
 
@@ -2701,7 +2556,6 @@ impl WeakMailboxRouter {
     }
 }
 
-#[async_trait]
 impl MailboxSender for WeakMailboxRouter {
     fn post_unchecked(
         &self,
@@ -2714,13 +2568,6 @@ impl MailboxSender for WeakMailboxRouter {
                 DeliveryError::BrokenLink("failed to upgrade WeakMailboxRouter".to_string()),
                 return_handle,
             ),
-        }
-    }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        match self.upgrade() {
-            Some(router) => router.flush().await,
-            None => Ok(()),
         }
     }
 }
@@ -2896,7 +2743,6 @@ impl DialMailboxRouter {
     }
 }
 
-#[async_trait]
 impl MailboxSender for DialMailboxRouter {
     fn post_unchecked(
         &self,
@@ -2916,18 +2762,6 @@ impl MailboxSender for DialMailboxRouter {
             Ok(sender) => sender.post(envelope, return_handle),
         }
     }
-
-    async fn flush(&self) -> Result<(), anyhow::Error> {
-        let senders: Vec<_> = self
-            .sender_cache
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
-        let mut futs: Vec<_> = senders.iter().map(|s| s.flush()).collect();
-        futs.push(self.default.flush());
-        futures::future::try_join_all(futs).await?;
-        Ok(())
-    }
 }
 
 /// A MailboxSender that reports any envelope as undeliverable due to
@@ -2935,7 +2769,6 @@ impl MailboxSender for DialMailboxRouter {
 #[derive(Debug)]
 pub struct UnroutableMailboxSender;
 
-#[async_trait]
 impl MailboxSender for UnroutableMailboxSender {
     fn post_unchecked(
         &self,
@@ -4118,7 +3951,6 @@ mod tests {
     #[derive(Clone, Debug)]
     struct AsyncLoopForwarder;
 
-    #[async_trait]
     impl MailboxSender for AsyncLoopForwarder {
         fn post_unchecked(
             &self,
@@ -4445,48 +4277,5 @@ mod tests {
 
         // Different accumulators should have different reducer typehashes
         assert_ne!(sum_typehash, max_typehash);
-    }
-
-    /// Test that `MailboxClient::flush()` waits until messages are wire-acked
-    /// over a unix domain socket channel. We send messages, flush, and then
-    /// confirm that the messages have already been delivered to the receiving
-    /// mailbox.
-    #[tokio::test]
-    async fn test_flush_over_unix_channel() {
-        let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
-
-        // Serve the mailbox on a unix domain socket channel.
-        let (addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix)).unwrap();
-        let serve_handle = mbox.clone().serve(rx);
-
-        // Dial the unix address to get a MailboxClient.
-        let client = MailboxClient::dial(addr).unwrap();
-
-        // Open a streaming port so we can receive multiple messages.
-        let (port, mut receiver) = mbox.open_port::<u64>();
-        let port = port.bind();
-
-        // Send several messages without awaiting delivery.
-        for i in 0..10u64 {
-            client
-                .serialize_and_send(&port, i, monitored_return_handle())
-                .unwrap();
-        }
-
-        // Flush: this should block until all 10 messages are wire-acked,
-        // meaning they've been enqueued into the receiving mailbox.
-        client.flush().await.unwrap();
-
-        // After flush, all messages should already be available.
-        for i in 0..10u64 {
-            let msg = receiver
-                .try_recv()
-                .expect("message should be available after flush")
-                .expect("receiver should not be empty after flush");
-            assert_eq!(msg, i);
-        }
-
-        serve_handle.stop("test done");
-        serve_handle.await.unwrap().unwrap();
     }
 }

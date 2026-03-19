@@ -114,12 +114,9 @@ impl Actor for ParameterServerActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        event: &ActorSupervisionEvent,
+        _event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        if !event.is_error() {
-            return Ok(true);
-        }
-        tracing::error!("parameterServerActor supervision event: {:?}", event);
+        tracing::error!("parameterServerActor supervision event: {:?}", _event);
         tracing::error!(
             "parameterServerActor error occurred, stop the worker process, exit code: 1"
         );
@@ -269,12 +266,9 @@ impl Actor for WorkerActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        event: &ActorSupervisionEvent,
+        _event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        if !event.is_error() {
-            return Ok(true);
-        }
-        tracing::error!("workerActor supervision event: {:?}", event);
+        tracing::error!("workerActor supervision event: {:?}", _event);
         tracing::error!("workerActor error occurred, stop the worker process, exit code: 1");
         std::process::exit(1);
     }
