@@ -359,7 +359,16 @@ fn split_ports(
     // way, children actors will reply to this comm actor's ports, instead
     // of to the original ports provided by parent.
     data.visit_mut::<hyperactor_reference::UnboundPort>(
-        |hyperactor_reference::UnboundPort(port_id, reducer_spec, return_undeliverable, kind)| {
+        |hyperactor_reference::UnboundPort(
+            port_id,
+            reducer_spec,
+            return_undeliverable,
+            kind,
+            unsplit,
+        )| {
+            if *unsplit {
+                return Ok(());
+            }
             let reducer_mode = match kind {
                 hyperactor_reference::UnboundPortKind::Streaming(opts) => {
                     ReducerMode::Streaming(opts.clone().unwrap_or_default())
@@ -673,6 +682,10 @@ pub mod test_utils {
             #[binding(include)]
             reply_to: hyperactor::reference::OncePortRef<u64>,
         },
+        CastWithUnsplitPort {
+            #[binding(include)]
+            reply_to: hyperactor_reference::PortRef<u64>,
+        },
     }
 
     #[derive(Debug)]
@@ -709,6 +722,11 @@ pub mod test_utils {
     #[async_trait]
     impl Handler<TestMessage> for TestActor {
         async fn handle(&mut self, cx: &Context<Self>, msg: TestMessage) -> anyhow::Result<()> {
+            // For CastWithUnsplitPort, send a reply so the test can
+            // verify that the unsplit port is still directly reachable.
+            if let TestMessage::CastWithUnsplitPort { ref reply_to } = msg {
+                reply_to.send(cx, 42)?;
+            }
             self.forward_port.send(cx, msg)?;
             Ok(())
         }
@@ -923,6 +941,8 @@ mod tests {
     use tokio::time::Duration;
 
     use super::*;
+    use crate::ActorMesh;
+    use crate::Name;
     use crate::host_mesh::HostMesh;
     use crate::test_utils::local_host_mesh;
     use crate::testing;
@@ -1602,5 +1622,58 @@ mod tests {
         assert_eq!(result, expected_sum);
 
         let _ = setup.host_mesh.shutdown(setup.instance).await;
+    }
+
+    #[async_timed_test(timeout_secs = 60)]
+    async fn test_unsplit_port_not_split() {
+        let instance = crate::testing::instance();
+        let mut host_mesh = local_host_mesh(8).await;
+        let proc_mesh = host_mesh
+            .spawn(instance, "test", extent!(gpu = 8), None)
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = hyperactor::mailbox::open_port(instance);
+        let params = TestActorParams {
+            forward_port: tx.bind(),
+        };
+        let actor_name = Name::new("test").expect("valid test name");
+        let actor_mesh: ActorMesh<TestActor> = proc_mesh
+            .spawn_with_name(&instance, actor_name, &params, None, true)
+            .await
+            .unwrap();
+        let (reply_port_handle, mut reply_rx) = open_port::<u64>(instance);
+        let reply_port_ref = reply_port_handle.bind().unsplit();
+
+        let message = TestMessage::CastWithUnsplitPort {
+            reply_to: reply_port_ref.clone(),
+        };
+
+        clear_collected_tree();
+        actor_mesh.cast(instance, message).unwrap();
+
+        // Verify that all destinations received the original port (not split).
+        for _ in proc_mesh.extent().points() {
+            let msg = rx.recv().await.expect("missing");
+            match msg {
+                TestMessage::CastWithUnsplitPort { reply_to } => {
+                    assert_eq!(
+                        reply_to.port_id(),
+                        reply_port_ref.port_id(),
+                        "unsplit port should not be replaced by a comm actor split port"
+                    );
+                }
+                _ => panic!("unexpected message: {:?}", msg),
+            }
+        }
+
+        // All 8 actors sent replies directly to the same port.
+        // Verify we receive all 8 replies.
+        for _ in 0..8 {
+            let val = reply_rx.recv().await.unwrap();
+            assert_eq!(val, 42);
+        }
+
+        let _ = host_mesh.shutdown(instance).await;
     }
 }

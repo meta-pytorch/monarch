@@ -139,6 +139,11 @@ impl std::fmt::Display for UndeliverableMessageError {
                 )?;
                 writeln!(f, "\tsender: {}", envelope.sender())?;
                 writeln!(f, "\tdest: {}", envelope.dest())?;
+                writeln!(
+                    f,
+                    "\tmessage type: {}",
+                    envelope.data().typename().unwrap_or("unknown")
+                )?;
                 writeln!(f, "\theaders: {}", envelope.headers())?;
                 writeln!(f, "\tdata: {}", envelope.data())?;
                 writeln!(
@@ -155,6 +160,11 @@ impl std::fmt::Display for UndeliverableMessageError {
                 )?;
                 writeln!(f, "\toriginal sender: {}", envelope.sender())?;
                 writeln!(f, "\toriginal dest: {}", envelope.dest())?;
+                writeln!(
+                    f,
+                    "\tmessage type: {}",
+                    envelope.data().typename().unwrap_or("unknown")
+                )?;
                 writeln!(f, "\theaders: {}", envelope.headers())?;
                 writeln!(f, "\tdata: {}", envelope.data())?;
                 writeln!(
