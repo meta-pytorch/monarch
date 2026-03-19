@@ -22,7 +22,7 @@ use manager_actor::TcpManagerActor;
 use crate::RdmaLocalMemory;
 use crate::RdmaOpType;
 
-/// A single operation for the [`TcpSubmit`] local message.
+/// A single operation for the [`TcpBackend`](manager_actor::TcpBackend).
 #[derive(Debug)]
 pub struct TcpOp {
     pub op_type: RdmaOpType,

@@ -26,10 +26,8 @@ use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
 use hyperactor::Instance;
-use hyperactor::OncePortHandle;
 use hyperactor::RefClient;
 use hyperactor::context;
-use hyperactor::context::Mailbox;
 use hyperactor::reference::OncePortRef;
 use serde::Deserialize;
 use serde::Serialize;
@@ -79,17 +77,6 @@ pub enum TcpManagerMessage {
 }
 wirevalue::register_type!(TcpManagerMessage);
 
-/// Local-only submit message for the [`TcpManagerActor`].
-///
-/// Not serializable because [`TcpOp`] contains `Arc<dyn RdmaLocalMemory>`.
-#[derive(Handler, HandleClient, Debug)]
-pub struct TcpSubmit {
-    pub ops: Vec<TcpOp>,
-    pub timeout: Duration,
-    #[reply]
-    pub reply: OncePortHandle<Result<(), String>>,
-}
-
 /// TCP fallback RDMA backend actor.
 ///
 /// Spawned as a child of [`RdmaManagerActor`]. Transfers buffer data
@@ -119,122 +106,6 @@ impl TcpManagerActor {
         tcp_ref
             .downcast_handle(client)
             .ok_or_else(|| anyhow::anyhow!("TcpManagerActor is not in the local process"))
-    }
-
-    /// Return true if the remote TCP manager is ourselves.
-    fn is_same_actor(cx: &Context<'_, Self>, op: &TcpOp) -> bool {
-        cx.mailbox().actor_id() == op.remote_tcp_manager.actor_id()
-    }
-
-    /// Execute a write operation: read local memory in chunks and write
-    /// them into the remote buffer.
-    ///
-    /// When the remote buffer is in the same process, calls the
-    /// `write_chunk` handler directly to avoid deadlocking on ourselves.
-    async fn execute_write(
-        &mut self,
-        cx: &Context<'_, Self>,
-        op: &TcpOp,
-        chunk_size: usize,
-        deadline: Instant,
-    ) -> Result<()> {
-        let same_process = Self::is_same_actor(cx, op);
-        let size = op.local_memory.size();
-        let mut offset = 0;
-
-        while offset < size {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                anyhow::bail!("tcp write timed out");
-            }
-
-            let len = std::cmp::min(chunk_size, size - offset);
-
-            let mut buf = vec![0u8; len];
-            op.local_memory.read_at(offset, &mut buf)?;
-            let data = Part::from(Bytes::from(buf));
-
-            if same_process {
-                tokio_timeout(
-                    remaining,
-                    self.write_chunk(cx, op.remote_buf_id, offset, data),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("tcp write chunk timed out"))??
-                .map_err(|e| anyhow::anyhow!(e))?;
-            } else {
-                tokio_timeout(
-                    remaining,
-                    op.remote_tcp_manager
-                        .write_chunk(cx, op.remote_buf_id, offset, data),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("tcp write chunk timed out"))??
-                .map_err(|e| anyhow::anyhow!(e))?;
-            }
-
-            offset += len;
-        }
-
-        Ok(())
-    }
-
-    /// Execute a read operation: request chunks from the remote buffer
-    /// and write them into local memory.
-    ///
-    /// When the remote buffer is in the same process, calls the
-    /// `read_chunk` handler directly to avoid deadlocking on ourselves.
-    async fn execute_read(
-        &mut self,
-        cx: &Context<'_, Self>,
-        op: &TcpOp,
-        chunk_size: usize,
-        deadline: Instant,
-    ) -> Result<()> {
-        let same_process = Self::is_same_actor(cx, op);
-        let size = op.local_memory.size();
-        let mut offset = 0;
-
-        while offset < size {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                anyhow::bail!("tcp read timed out");
-            }
-
-            let len = std::cmp::min(chunk_size, size - offset);
-
-            let chunk = if same_process {
-                tokio_timeout(
-                    remaining,
-                    self.read_chunk(cx, op.remote_buf_id, offset, len),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("tcp read chunk timed out"))??
-                .map_err(|e| anyhow::anyhow!(e))?
-            } else {
-                tokio_timeout(
-                    remaining,
-                    op.remote_tcp_manager
-                        .read_chunk(cx, op.remote_buf_id, offset, len),
-                )
-                .await
-                .map_err(|_| anyhow::anyhow!("tcp read chunk timed out"))??
-                .map_err(|e| anyhow::anyhow!(e))?
-            };
-            let data = chunk.0.into_bytes();
-
-            anyhow::ensure!(
-                data.len() == len,
-                "tcp read chunk size mismatch: expected {len}, got {}",
-                data.len()
-            );
-
-            op.local_memory.write_at(offset, &data)?;
-
-            offset += len;
-        }
-
-        Ok(())
     }
 }
 
@@ -298,74 +169,153 @@ impl TcpManagerMessageHandler for TcpManagerActor {
     }
 }
 
-#[async_trait]
-#[hyperactor::handle(TcpSubmit)]
-impl TcpSubmitHandler for TcpManagerActor {
-    async fn tcp_submit(
-        &mut self,
-        cx: &Context<Self>,
-        ops: Vec<TcpOp>,
-        timeout: Duration,
-    ) -> Result<Result<(), String>, anyhow::Error> {
-        let chunk_size =
-            hyperactor_config::global::get(crate::config::RDMA_MAX_CHUNK_SIZE_MB) * 1024 * 1024;
-        let deadline = Instant::now() + timeout;
-        let mut result = Ok(());
+/// Wrapper around [`ActorHandle<TcpManagerActor>`] that moves the TCP
+/// data-plane (chunked reads/writes) off the actor loop while keeping
+/// buffer resolution serialized through actor messages.
+///
+/// Because submit logic now runs outside the actor loop, same-process
+/// messages no longer deadlock — the actor loop is free to handle
+/// `WriteChunk`/`ReadChunk` messages.
+#[derive(Debug, Clone)]
+pub struct TcpBackend(pub ActorHandle<TcpManagerActor>);
 
-        for op in &ops {
+impl std::ops::Deref for TcpBackend {
+    type Target = ActorHandle<TcpManagerActor>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl TcpBackend {
+    /// Execute a write operation: read local memory in chunks and write
+    /// them into the remote buffer via actor messages.
+    async fn execute_write(
+        &self,
+        cx: &(impl context::Actor + Send + Sync),
+        op: &TcpOp,
+        chunk_size: usize,
+        deadline: Instant,
+    ) -> Result<()> {
+        let size = op.local_memory.size();
+        let mut offset = 0;
+
+        while offset < size {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                result = Err("tcp submit timed out".to_string());
-                break;
+                anyhow::bail!("tcp write timed out");
             }
 
-            let op_result = match op.op_type {
-                RdmaOpType::WriteFromLocal => {
-                    self.execute_write(cx, op, chunk_size, deadline).await
-                }
-                RdmaOpType::ReadIntoLocal => self.execute_read(cx, op, chunk_size, deadline).await,
-            };
+            let len = std::cmp::min(chunk_size, size - offset);
 
-            if let Err(e) = op_result {
-                result = Err(e.to_string());
-                break;
-            }
+            let mut buf = vec![0u8; len];
+            op.local_memory.read_at(offset, &mut buf)?;
+            let data = Part::from(Bytes::from(buf));
+
+            tokio_timeout(
+                remaining,
+                op.remote_tcp_manager
+                    .write_chunk(cx, op.remote_buf_id, offset, data),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("tcp write chunk timed out"))??
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+            offset += len;
         }
 
-        Ok(result)
+        Ok(())
+    }
+
+    /// Execute a read operation: request chunks from the remote buffer
+    /// and write them into local memory via actor messages.
+    async fn execute_read(
+        &self,
+        cx: &(impl context::Actor + Send + Sync),
+        op: &TcpOp,
+        chunk_size: usize,
+        deadline: Instant,
+    ) -> Result<()> {
+        let size = op.local_memory.size();
+        let mut offset = 0;
+
+        while offset < size {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("tcp read timed out");
+            }
+
+            let len = std::cmp::min(chunk_size, size - offset);
+
+            let chunk = tokio_timeout(
+                remaining,
+                op.remote_tcp_manager
+                    .read_chunk(cx, op.remote_buf_id, offset, len),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("tcp read chunk timed out"))??
+            .map_err(|e| anyhow::anyhow!(e))?;
+            let data = chunk.0.into_bytes();
+
+            anyhow::ensure!(
+                data.len() == len,
+                "tcp read chunk size mismatch: expected {len}, got {}",
+                data.len()
+            );
+
+            op.local_memory.write_at(offset, &data)?;
+
+            offset += len;
+        }
+
+        Ok(())
     }
 }
 
 #[async_trait]
-impl RdmaBackend for ActorHandle<TcpManagerActor> {
+impl RdmaBackend for TcpBackend {
     type TransportInfo = ();
 
     /// Submit a batch of RDMA operations over TCP.
     ///
     /// Each operation's remote buffer is resolved to its TCP backend
-    /// context, then the batch is delegated to the local
-    /// [`TcpManagerActor`] via [`TcpSubmit`].
+    /// context, then executed directly — sending chunked write/read
+    /// messages to the remote [`TcpManagerActor`].
     async fn submit(
         &mut self,
         cx: &(impl context::Actor + Send + Sync),
         ops: Vec<RdmaOp>,
         timeout: Duration,
     ) -> Result<()> {
-        let mut tcp_ops = Vec::with_capacity(ops.len());
+        let chunk_size =
+            hyperactor_config::global::get(crate::config::RDMA_MAX_CHUNK_SIZE_MB) * 1024 * 1024;
+        let deadline = Instant::now() + timeout;
 
         for op in ops {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("tcp submit timed out");
+            }
+
             let (remote_tcp_mgr, remote_buf_id) = op.remote.resolve_tcp()?;
-            tcp_ops.push(TcpOp {
-                op_type: op.op_type,
+            let tcp_op = TcpOp {
+                op_type: op.op_type.clone(),
                 local_memory: op.local,
                 remote_tcp_manager: remote_tcp_mgr,
                 remote_buf_id,
-            });
+            };
+
+            match tcp_op.op_type {
+                RdmaOpType::WriteFromLocal => {
+                    self.execute_write(cx, &tcp_op, chunk_size, deadline)
+                        .await?;
+                }
+                RdmaOpType::ReadIntoLocal => {
+                    self.execute_read(cx, &tcp_op, chunk_size, deadline).await?;
+                }
+            }
         }
 
-        <Self as TcpSubmitClient>::tcp_submit(self, cx, tcp_ops, timeout)
-            .await?
-            .map_err(|e| anyhow::anyhow!(e))
+        Ok(())
     }
 
     fn transport_level(&self) -> RdmaTransportLevel {
@@ -383,12 +333,12 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
-    use hyperactor::ActorHandle;
     use hyperactor::Proc;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelAddr;
     use hyperactor_config::Flattrs;
 
+    use super::TcpBackend;
     use super::TcpManagerActor;
     use crate::RdmaManagerMessageClient;
     use crate::RdmaOp;
@@ -406,8 +356,8 @@ mod tests {
         _proc_2: Proc,
         instance_1: hyperactor::Instance<()>,
         _instance_2: hyperactor::Instance<()>,
-        tcp_handle_1: ActorHandle<TcpManagerActor>,
-        tcp_handle_2: ActorHandle<TcpManagerActor>,
+        tcp_handle_1: TcpBackend,
+        tcp_handle_2: TcpBackend,
         rdma_buf_1: crate::RdmaRemoteBuffer,
         rdma_buf_2: crate::RdmaRemoteBuffer,
         local_mem_1: Arc<dyn RdmaLocalMemory>,
@@ -444,14 +394,18 @@ mod tests {
 
         // Resolve local TcpManagerActor handles for direct backend access.
         let tcp_ref_1 = rdma_handle_1.get_tcp_actor_ref(&instance_1).await?;
-        let tcp_handle_1 = tcp_ref_1
-            .downcast_handle(&instance_1)
-            .ok_or_else(|| anyhow::anyhow!("tcp actor 1 not local"))?;
+        let tcp_handle_1 = TcpBackend(
+            tcp_ref_1
+                .downcast_handle(&instance_1)
+                .ok_or_else(|| anyhow::anyhow!("tcp actor 1 not local"))?,
+        );
 
         let tcp_ref_2 = rdma_handle_2.get_tcp_actor_ref(&instance_2).await?;
-        let tcp_handle_2 = tcp_ref_2
-            .downcast_handle(&instance_2)
-            .ok_or_else(|| anyhow::anyhow!("tcp actor 2 not local"))?;
+        let tcp_handle_2 = TcpBackend(
+            tcp_ref_2
+                .downcast_handle(&instance_2)
+                .ok_or_else(|| anyhow::anyhow!("tcp actor 2 not local"))?,
+        );
 
         // Allocate CPU buffers.
         let mut cpu_buf_1 = vec![0u8; buffer_size].into_boxed_slice();
@@ -892,7 +846,7 @@ mod tests {
     struct SameProcTcpTestEnv {
         _proc: Proc,
         instance: hyperactor::Instance<()>,
-        tcp_handle: ActorHandle<TcpManagerActor>,
+        tcp_handle: TcpBackend,
         _rdma_buf_1: crate::RdmaRemoteBuffer,
         rdma_buf_2: crate::RdmaRemoteBuffer,
         local_mem_1: Arc<dyn RdmaLocalMemory>,
@@ -914,9 +868,11 @@ mod tests {
         let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
 
         let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
-        let tcp_handle = tcp_ref
-            .downcast_handle(&instance)
-            .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?;
+        let tcp_handle = TcpBackend(
+            tcp_ref
+                .downcast_handle(&instance)
+                .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
+        );
 
         let mut cpu_buf_1 = vec![0u8; buffer_size].into_boxed_slice();
         let ptr_1 = cpu_buf_1.as_mut_ptr() as usize;
