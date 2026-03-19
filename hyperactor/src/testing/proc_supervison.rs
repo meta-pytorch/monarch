@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use crate::Actor;
 use crate::ActorHandle;
@@ -26,13 +27,16 @@ use crate::supervision::ActorSupervisionEvent;
 ///
 ///   This is because hyperactor's supervision logic requires actor failures in
 ///   a proc to be bubbled up to through the supervision chain:
-///      
+///
 ///   grandchild actor -> child actor -> root actor -> proc supervison coordinator
 ///
 ///   If the the proc supervison coordinator is not set, supervision will crash the
 ///   process because it cannot find the coordinator during the "bubbling up".
 #[derive(Debug)]
-pub struct ProcSupervisionCoordinator(ReportedEvent);
+pub struct ProcSupervisionCoordinator {
+    tx: mpsc::UnboundedSender<ActorSupervisionEvent>,
+    last: Arc<Mutex<Option<ActorSupervisionEvent>>>,
+}
 
 impl ProcSupervisionCoordinator {
     /// Spawn a coordinator actor and set it as the coordinator for the given
@@ -42,29 +46,37 @@ impl ProcSupervisionCoordinator {
     pub async fn set(
         proc: &Proc,
     ) -> Result<(ReportedEvent, ActorHandle<ProcSupervisionCoordinator>), anyhow::Error> {
-        let state = ReportedEvent::new();
-        let actor = ProcSupervisionCoordinator(state.clone());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let last = Arc::new(Mutex::new(None));
+        let actor = ProcSupervisionCoordinator {
+            tx,
+            last: last.clone(),
+        };
         let coordinator = proc.spawn::<ProcSupervisionCoordinator>("coordinator", actor)?;
         proc.set_supervision_coordinator(coordinator.port())?;
-        Ok((state, coordinator))
+        Ok((ReportedEvent { rx, last }, coordinator))
     }
 }
 
-/// Used to store the last event reported to [ProcSupervisionCoordinator].
-#[derive(Clone, Debug)]
-pub struct ReportedEvent(Arc<Mutex<Option<ActorSupervisionEvent>>>);
-impl ReportedEvent {
-    fn new() -> Self {
-        Self(Arc::new(Mutex::new(None)))
-    }
+/// Collects supervision events reported to [ProcSupervisionCoordinator].
+#[derive(Debug)]
+pub struct ReportedEvent {
+    rx: mpsc::UnboundedReceiver<ActorSupervisionEvent>,
+    last: Arc<Mutex<Option<ActorSupervisionEvent>>>,
+}
 
+impl ReportedEvent {
     /// The last event reported to the coordinator.
     pub fn event(&self) -> Option<ActorSupervisionEvent> {
-        self.0.lock().unwrap().clone()
+        self.last.lock().unwrap().clone()
     }
 
-    fn set(&self, event: ActorSupervisionEvent) {
-        *self.0.lock().unwrap() = Some(event);
+    /// Wait until the coordinator receives an event.
+    pub async fn recv(&mut self) -> ActorSupervisionEvent {
+        self.rx
+            .recv()
+            .await
+            .expect("coordinator sender dropped without sending an event")
     }
 }
 
@@ -79,7 +91,8 @@ impl Handler<ActorSupervisionEvent> for ProcSupervisionCoordinator {
         msg: ActorSupervisionEvent,
     ) -> anyhow::Result<()> {
         tracing::debug!("in handler, handling supervision event");
-        self.0.set(msg);
+        *self.last.lock().unwrap() = Some(msg.clone());
+        let _ = self.tx.send(msg);
         Ok(())
     }
 }
