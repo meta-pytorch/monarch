@@ -71,6 +71,7 @@ use crate::resource::GetRankStatus;
 use crate::resource::GetRankStatusClient;
 use crate::resource::RankedValues;
 use crate::resource::Status;
+use crate::resource::WaitRankStatusClient;
 use crate::transport::DEFAULT_TRANSPORT;
 
 /// Actor name for `HostMeshController` when spawned as a named child.
@@ -1253,6 +1254,8 @@ impl HostMeshRef {
                             name: proc_name.clone(),
                             status,
                             state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                         },
                     };
 
@@ -1406,7 +1409,7 @@ impl HostMeshRef {
                 },
             )?;
             host.mesh_agent()
-                .get_rank_status(cx, proc_name, port.bind())
+                .wait_rank_status(cx, proc_name, Status::Stopped, port.bind())
                 .await?;
 
             tracing::info!(
@@ -1438,7 +1441,7 @@ impl HostMeshRef {
         .await
         {
             Ok(statuses) => {
-                let all_stopped = statuses.values().all(|s| s.is_terminating());
+                let all_stopped = statuses.values().all(|s| s.is_terminated());
                 if !all_stopped {
                     tracing::error!(
                         name = "ProcMeshStatus",
@@ -1562,6 +1565,8 @@ impl HostMeshRef {
                             name: proc_names[rank].clone(),
                             status: resource::Status::Timeout(timeout),
                             state: None,
+                            generation: 0,
+                            timestamp: std::time::SystemTime::now(),
                         },
                     ));
                 }
