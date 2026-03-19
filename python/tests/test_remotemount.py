@@ -305,7 +305,7 @@ class TestMmapBufferOwnership:
             assert len(hashes) > 0
 
 
-BLOCK_SIZE = 64 * 1024 * 1024  # Must match Rust HASH_BLOCK_SIZE / READ_CHUNK_SIZE
+BLOCK_SIZE: int = 64 * 1024 * 1024  # Must match Rust HASH_BLOCK_SIZE / READ_CHUNK_SIZE
 
 
 class TestBlockBoundary:
@@ -389,6 +389,7 @@ class TestBlockBoundary:
             assert packed == data
             assert len(hashes) == 2
 
+            assert staging_mv is not None
             py_hashes = block_hashes(staging_mv, block_size=BLOCK_SIZE)
             assert hashes == py_hashes
 

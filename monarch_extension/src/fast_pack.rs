@@ -211,15 +211,17 @@ fn mmap_anonymous(total_size: usize) -> Result<*mut libc::c_void, std::io::Error
 /// Python-visible wrapper that owns an mmap region. When dropped, `munmap`
 /// is called. Callers can obtain a zero-copy `memoryview` via
 /// `memoryview(buf)`.
-#[pyclass(name = "MmapBuffer")]
+#[pyclass(name = "MmapBuffer", module = "monarch._rust_bindings.monarch_extension.fast_pack")]
 struct MmapBuffer {
     ptr: *mut libc::c_void,
     size: usize,
 }
 
 // SAFETY: the mmap region is process-wide; the pointer is safe to
-// share across threads for the lifetime of the object.
+// send across threads for the lifetime of the object.
 unsafe impl Send for MmapBuffer {}
+// SAFETY: the mmap region is process-wide; read-only sharing across
+// threads is safe for the lifetime of the object.
 unsafe impl Sync for MmapBuffer {}
 
 impl Drop for MmapBuffer {
