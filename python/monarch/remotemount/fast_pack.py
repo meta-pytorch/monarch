@@ -13,7 +13,8 @@ import os
 from typing import Any
 
 from monarch._rust_bindings.monarch_extension.fast_pack import (
-    pack_files_with_offsets as _c_pack_files,
+    block_hashes_py,
+    pack_files_with_offsets,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -24,13 +25,8 @@ HASH_BLOCK_SIZE: int = 64 * 1024 * 1024  # 64MB blocks for incremental diffing
 
 # pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
 def block_hashes(data_mv: memoryview, block_size: int = HASH_BLOCK_SIZE) -> list[str]:
-    """Compute xxhash per block of a packed memoryview."""
-    import xxhash
-
-    hashes = []
-    for i in range(0, len(data_mv), block_size):
-        hashes.append(xxhash.xxh64(bytes(data_mv[i : i + block_size])).hexdigest())
-    return hashes
+    """Compute xxh64 per block of a packed memoryview."""
+    return list(block_hashes_py(data_mv, block_size))
 
 
 def pack_directory_chunked(
@@ -139,7 +135,7 @@ def pack_directory_chunked(
     if total_size == 0:
         return fs_metadata, None, [], []
 
-    buf, hashes = _c_pack_files(file_list, total_size)
+    buf, hashes = pack_files_with_offsets(file_list, total_size)
     staging_mv = memoryview(buf)
     chunks = [
         staging_mv[i : i + chunk_size] for i in range(0, len(staging_mv), chunk_size)

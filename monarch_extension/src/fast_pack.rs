@@ -20,6 +20,9 @@ use std::thread;
 use pyo3::exceptions::PyOSError;
 use pyo3::ffi;
 use pyo3::prelude::*;
+// TODO: replace xxhash-rust with FFI bindings to Yann Collet's reference
+// C implementation (https://github.com/Cyan4973/xxHash) to avoid depending
+// on a third-party reimplementation.
 use xxhash_rust::xxh64;
 
 const DEFAULT_MAX_THREADS: usize = 16;
@@ -424,6 +427,32 @@ fn load_file_into_buffer(
     Ok(py_hashes)
 }
 
+/// Compute xxh64 block hashes over a Python buffer.
+///
+/// Returns a list of hex digest strings, one per `block_size` block.
+#[pyfunction]
+#[pyo3(signature = (buffer, block_size=None, max_threads=None))]
+fn block_hashes_py(
+    py: Python<'_>,
+    buffer: pyo3::buffer::PyBuffer<u8>,
+    block_size: Option<usize>,
+    max_threads: Option<usize>,
+) -> PyResult<Py<PyAny>> {
+    let bs = block_size.unwrap_or(HASH_BLOCK_SIZE);
+    let nthreads = max_threads.unwrap_or_else(num_threads);
+    let buf_ptr = buffer.buf_ptr() as usize;
+    let buf_len = buffer.len_bytes();
+
+    if buf_len == 0 {
+        let hashes = pyo3::types::PyList::empty(py).into_any().unbind();
+        return Ok(hashes);
+    }
+
+    let hashes = compute_block_hashes(buf_ptr, buf_len, bs, nthreads);
+    let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
+    Ok(py_hashes)
+}
+
 /// Register Python bindings for the fast_pack module.
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<MmapBuffer>()?;
@@ -445,5 +474,11 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "monarch._rust_bindings.monarch_extension.fast_pack",
     )?;
     module.add_function(f4)?;
+    let f5 = wrap_pyfunction!(block_hashes_py, module)?;
+    f5.setattr(
+        "__module__",
+        "monarch._rust_bindings.monarch_extension.fast_pack",
+    )?;
+    module.add_function(f5)?;
     Ok(())
 }

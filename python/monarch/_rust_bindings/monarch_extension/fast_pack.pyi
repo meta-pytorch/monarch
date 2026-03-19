@@ -26,3 +26,8 @@ def load_file_into_buffer(
     hash_block_size: int | None = None,
     max_threads: int | None = None,
 ) -> list[str]: ...
+def block_hashes_py(
+    buffer: Any,
+    block_size: int | None = None,
+    max_threads: int | None = None,
+) -> list[str]: ...
