@@ -17,8 +17,8 @@ See [README](https://github.com/meta-pytorch/monarch?tab=readme-ov-file#installa
 Now that you've got the basics, you can:
 
 1. Read the [getting started](./generated/examples/getting_started) guide to understand the core concepts.
-1. Check out the [Examples](./generated/examples/index) directory for more detailed demonstrations
-2. Explore the [API documentation](python-api) for a complete reference
+2. Check out the [Examples](./generated/examples/index) directory for more detailed demonstrations
+3. Explore the [API documentation](api/index) for a complete reference
 
 ## Troubleshooting
 

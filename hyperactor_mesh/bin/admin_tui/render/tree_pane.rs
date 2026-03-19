@@ -29,9 +29,10 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
     let rows = app.visible_rows();
     let scheme = &app.theme.scheme;
 
-    // When the diagnostics overlay is active the tree is non-interactive.
+    // When any overlay is active the tree is non-interactive.
     // Render it uniformly dim so the user can see it is inactive.
-    let diag_active = app.diag_running || !app.diag_results.is_empty();
+    // This covers both the diagnostics overlay and the py-spy overlay.
+    let pane_inactive = app.overlay.is_some();
 
     let items: Vec<ListItem> = rows
         .as_slice()
@@ -57,10 +58,10 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
                 "  "
             };
 
-            // Style precedence: diag-inactive > selected > failed > stopped >
-            // system > node-type.  When diag_active the entire pane is dimmed
+            // Style precedence: inactive > selected > failed > stopped >
+            // system > node-type.  When pane_inactive the entire pane is dimmed
             // and the selection/failed/system colours must not bleed through.
-            let style = if diag_active {
+            let style = if pane_inactive {
                 scheme.detail_stopped
             } else if vis_idx == app.cursor.pos() {
                 scheme.stat_selection.add_modifier(Modifier::BOLD)
@@ -75,7 +76,7 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
             };
 
             // Hide the selection caret while the pane is inactive.
-            let marker = if !diag_active && vis_idx == app.cursor.pos() {
+            let marker = if !pane_inactive && vis_idx == app.cursor.pos() {
                 app.theme.labels.selection_caret
             } else {
                 "  "
@@ -88,7 +89,7 @@ pub(crate) fn render_topology_tree(frame: &mut ratatui::Frame<'_>, area: Rect, a
         })
         .collect();
 
-    let block = if diag_active {
+    let block = if pane_inactive {
         Block::default()
             .title(Span::styled(
                 app.theme.labels.pane_topology,
