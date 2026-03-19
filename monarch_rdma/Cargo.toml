@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 anyhow = "1.0.102"
 async-trait = "0.1.86"
 bytes = { version = "1.11.1", features = ["serde"] }
-erased-serde = "0.4.9"
+erased-serde = "0.4.10"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
@@ -20,7 +20,7 @@ rdmaxcel-sys = { path = "../rdmaxcel-sys" }
 regex = "1.12.3"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
-tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
 wirevalue = { version = "0.0.0", path = "../wirevalue" }
@@ -33,3 +33,6 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 [features]
 cuda = []
 default = ["cuda"]
+
+[lints]
+rust = { unexpected_cfgs = { check-cfg = ["cfg(test_8_gpus)"], level = "warn" } }

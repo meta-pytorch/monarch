@@ -780,13 +780,6 @@ pub struct PortRef<M> {
     streaming_opts: StreamingReducerOpts,
     phantom: PhantomData<M>,
     return_undeliverable: bool,
-    #[derivative(
-        PartialEq = "ignore",
-        PartialOrd = "ignore",
-        Ord = "ignore",
-        Hash = "ignore"
-    )]
-    unsplit: bool,
 }
 
 impl<M: RemoteMessage> PortRef<M> {
@@ -799,7 +792,6 @@ impl<M: RemoteMessage> PortRef<M> {
             streaming_opts: StreamingReducerOpts::default(),
             phantom: PhantomData,
             return_undeliverable: true,
-            unsplit: false,
         }
     }
 
@@ -816,14 +808,7 @@ impl<M: RemoteMessage> PortRef<M> {
             streaming_opts,
             phantom: PhantomData,
             return_undeliverable: true,
-            unsplit: false,
         }
-    }
-
-    /// Prevents the port from being split.
-    pub fn unsplit(mut self) -> Self {
-        self.unsplit = true;
-        self
     }
 
     /// The caller attests that the provided PortId can be
@@ -852,10 +837,8 @@ impl<M: RemoteMessage> PortRef<M> {
     /// APIs requires OncePortRef.
     pub fn into_once(self) -> OncePortRef<M> {
         let return_undeliverable = self.return_undeliverable;
-        let unsplit = self.unsplit;
         let mut once = OncePortRef::attest(self.into_port_id());
         once.return_undeliverable = return_undeliverable;
-        once.unsplit = unsplit;
         once
     }
 
@@ -929,7 +912,6 @@ impl<M: RemoteMessage> Clone for PortRef<M> {
             streaming_opts: self.streaming_opts.clone(),
             phantom: PhantomData,
             return_undeliverable: self.return_undeliverable,
-            unsplit: self.unsplit,
         }
     }
 }
@@ -956,7 +938,6 @@ pub struct UnboundPort(
     pub Option<ReducerSpec>,
     pub bool, // return_undeliverable
     pub UnboundPortKind,
-    pub bool, // unsplit
 );
 wirevalue::register_type!(UnboundPort);
 
@@ -974,7 +955,6 @@ impl<M: RemoteMessage> From<&PortRef<M>> for UnboundPort {
             port_ref.reducer_spec.clone(),
             port_ref.return_undeliverable,
             UnboundPortKind::Streaming(Some(port_ref.streaming_opts.clone())),
-            port_ref.unsplit,
         )
     }
 }
@@ -987,12 +967,11 @@ impl<M: RemoteMessage> Unbind for PortRef<M> {
 
 impl<M: RemoteMessage> Bind for PortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let UnboundPort(port_id, reducer_spec, return_undeliverable, port_kind, unsplit) =
+        let UnboundPort(port_id, reducer_spec, return_undeliverable, port_kind) =
             bindings.try_pop_front::<UnboundPort>()?;
         self.port_id = port_id;
         self.reducer_spec = reducer_spec;
         self.return_undeliverable = return_undeliverable;
-        self.unsplit = unsplit;
         self.streaming_opts = match port_kind {
             UnboundPortKind::Streaming(opts) => opts.unwrap_or_default(),
             UnboundPortKind::Once => {
@@ -1011,7 +990,6 @@ pub struct OncePortRef<M> {
     port_id: PortId,
     reducer_spec: Option<ReducerSpec>,
     return_undeliverable: bool,
-    unsplit: bool,
     phantom: PhantomData<M>,
 }
 
@@ -1021,7 +999,6 @@ impl<M: RemoteMessage> OncePortRef<M> {
             port_id,
             reducer_spec: None,
             return_undeliverable: true,
-            unsplit: false,
             phantom: PhantomData,
         }
     }
@@ -1033,15 +1010,8 @@ impl<M: RemoteMessage> OncePortRef<M> {
             port_id,
             reducer_spec,
             return_undeliverable: true,
-            unsplit: false,
             phantom: PhantomData,
         }
-    }
-
-    /// Prevents the port from being split.
-    pub fn unsplit(mut self) -> Self {
-        self.unsplit = true;
-        self
     }
 
     /// The typehash of this port's reducer, if any.
@@ -1109,7 +1079,6 @@ impl<M: RemoteMessage> Clone for OncePortRef<M> {
             port_id: self.port_id.clone(),
             reducer_spec: self.reducer_spec.clone(),
             return_undeliverable: self.return_undeliverable,
-            unsplit: self.unsplit,
             phantom: PhantomData,
         }
     }
@@ -1134,7 +1103,6 @@ impl<M: RemoteMessage> From<&OncePortRef<M>> for UnboundPort {
             port_ref.reducer_spec.clone(),
             true, // return_undeliverable
             UnboundPortKind::Once,
-            port_ref.unsplit,
         )
     }
 }
@@ -1147,13 +1115,12 @@ impl<M: RemoteMessage> Unbind for OncePortRef<M> {
 
 impl<M: RemoteMessage> Bind for OncePortRef<M> {
     fn bind(&mut self, bindings: &mut Bindings) -> anyhow::Result<()> {
-        let UnboundPort(port_id, reducer_spec, _return_undeliverable, port_kind, unsplit) =
+        let UnboundPort(port_id, reducer_spec, _return_undeliverable, port_kind) =
             bindings.try_pop_front::<UnboundPort>()?;
         match port_kind {
             UnboundPortKind::Once => {
                 self.port_id = port_id;
                 self.reducer_spec = reducer_spec;
-                self.unsplit = unsplit;
                 Ok(())
             }
             UnboundPortKind::Streaming(_) => {

@@ -141,7 +141,7 @@ fn main() {
         .allowlist_function("launch_send_wqe")
         .allowlist_function("launch_recv_wqe")
         .allowlist_function("rdma_get_active_segment_count")
-        .allowlist_function("rdma_get_all_segment_info")
+        .allowlist_function("rdma_get_all_registered_segment_info")
         .allowlist_function("register_segments")
         .allowlist_function("deregister_segments")
         .allowlist_function("rdmaxcel_cu.*")

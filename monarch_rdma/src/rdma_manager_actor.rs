@@ -228,12 +228,9 @@ impl Actor for RdmaManagerActor {
     async fn handle_supervision_event(
         &mut self,
         _cx: &Instance<Self>,
-        event: &ActorSupervisionEvent,
+        _event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        if !event.is_error() {
-            return Ok(true);
-        }
-        tracing::error!("rdmaManagerActor supervision event: {:?}", event);
+        tracing::error!("rdmaManagerActor supervision event: {:?}", _event);
         tracing::error!("rdmaManagerActor error occurred, stop the worker process, exit code: 1");
         std::process::exit(1);
     }
