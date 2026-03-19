@@ -157,8 +157,9 @@ const char* rdmaxcel_error_string(int error_code);
 
 // Active segment tracking functions (implemented in C++)
 // Lookup segment info for segments registered on the provided PD.
+// Only segments that have a completed registration are returned.
 int rdma_get_active_segment_count(struct ibv_pd* pd);
-int rdma_get_all_segment_info(
+int rdma_get_all_registered_segment_info(
     struct ibv_pd* pd,
     rdma_segment_info_t* info_array,
     int max_count);

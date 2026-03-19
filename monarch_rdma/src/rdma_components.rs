@@ -46,7 +46,6 @@ use std::result::Result;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyperactor::ActorHandle;
 use hyperactor::ActorRef;
 use hyperactor::context;
 use hyperactor::reference;
@@ -61,8 +60,10 @@ use crate::ReleaseBufferClient;
 use crate::backend::RdmaBackend;
 use crate::backend::RdmaRemoteBackendContext;
 use crate::backend::ibverbs::IbvBuffer;
+use crate::backend::ibverbs::manager_actor::IbvBackend;
 use crate::backend::ibverbs::manager_actor::IbvManagerActor;
 use crate::backend::ibverbs::manager_actor::IbvManagerMessageClient;
+use crate::backend::tcp::manager_actor::TcpBackend;
 use crate::backend::tcp::manager_actor::TcpManagerActor;
 use crate::local_memory::RdmaLocalMemory;
 
@@ -86,8 +87,8 @@ wirevalue::register_type!(RdmaRemoteBuffer);
 /// on `submit`), so we use an enum that delegates to the concrete handle.
 #[derive(Debug)]
 pub enum RdmaLocalBackend {
-    Ibv(ActorHandle<IbvManagerActor>),
-    Tcp(ActorHandle<TcpManagerActor>),
+    Ibv(IbvBackend),
+    Tcp(TcpBackend),
 }
 
 impl RdmaLocalBackend {
@@ -116,8 +117,8 @@ impl RdmaRemoteBuffer {
         client: &(impl context::Actor + Send + Sync),
     ) -> Result<RdmaLocalBackend, anyhow::Error> {
         if self.has_ibverbs_backend() {
-            if let Ok(ibv_backend) = IbvManagerActor::local_handle(client).await {
-                return Ok(RdmaLocalBackend::Ibv(ibv_backend));
+            if let Ok(ibv_handle) = IbvManagerActor::local_handle(client).await {
+                return Ok(RdmaLocalBackend::Ibv(IbvBackend(ibv_handle)));
             }
 
             return self
@@ -194,8 +195,8 @@ impl RdmaRemoteBuffer {
 
         tracing::warn!("falling back to TCP transport ({reason})");
 
-        let tcp_backend = TcpManagerActor::local_handle(client).await?;
-        Ok(RdmaLocalBackend::Tcp(tcp_backend))
+        let tcp_handle = TcpManagerActor::local_handle(client).await?;
+        Ok(RdmaLocalBackend::Tcp(TcpBackend(tcp_handle)))
     }
 
     /// Drop the buffer and release remote handles.
@@ -316,8 +317,11 @@ pub fn get_registered_cuda_segments(
                 .assume_init();
             segment_count as usize
         ];
-        let actual_count =
-            rdmaxcel_sys::rdma_get_all_segment_info(pd, segments.as_mut_ptr(), segment_count);
+        let actual_count = rdmaxcel_sys::rdma_get_all_registered_segment_info(
+            pd,
+            segments.as_mut_ptr(),
+            segment_count,
+        );
 
         if actual_count > 0 {
             segments.truncate(actual_count as usize);

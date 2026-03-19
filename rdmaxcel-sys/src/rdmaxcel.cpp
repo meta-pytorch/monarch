@@ -9,6 +9,7 @@
 #include "rdmaxcel.h"
 #include <cuda.h>
 #include <unistd.h>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -32,48 +33,40 @@ const size_t MR_ALIGNMENT = 2ULL * 1024 * 1024;
 // Maximum size for a single MR: 4GB max,  need to be one page under.
 const size_t MAX_MR_SIZE = 4ULL * 1024 * 1024 * 1024 - MR_ALIGNMENT;
 
+// Registration state for a segment that has been registered with RDMA.
+// Only populated once registration succeeds.
+struct SegmentRegistrationInfo {
+  std::vector<struct ibv_mr*> mrs;
+  size_t mr_size;
+  uintptr_t mr_addr;
+  struct mlx5dv_mkey* mkey;
+  void* pd; // which PD this segment's MR was created under
+
+  SegmentRegistrationInfo()
+      : mrs(), mr_size(0), mr_addr(0), mkey(nullptr), pd(nullptr) {}
+};
+
 // Structure to hold segment information
 struct SegmentInfo {
   size_t phys_address;
   size_t phys_size;
   int32_t device;
   bool is_expandable;
-  std::vector<struct ibv_mr*> mrs;
-  uint32_t lkey;
-  uint32_t rkey;
-  size_t mr_size;
-  uintptr_t mr_addr;
-  struct mlx5dv_mkey* mkey;
-  void* registered_pd; // which PD this segment's MR was created under
+  std::unique_ptr<SegmentRegistrationInfo> registration;
 
-  // Default constructor - initialize mr as null, keys as 0
   SegmentInfo()
-      : phys_address(0),
-        phys_size(0),
-        device(-1),
-        is_expandable(false),
-        mrs(),
-        mr_size(0),
-        mr_addr(0),
-        mkey(nullptr),
-        registered_pd(nullptr) {}
+      : phys_address(0), phys_size(0), device(-1), is_expandable(false) {}
 
-  // Parameterized constructor
   SegmentInfo(size_t addr, size_t sz, int32_t dev, bool expandable)
       : phys_address(addr),
         phys_size(sz),
         device(dev),
-        is_expandable(expandable),
-        mrs(),
-        mr_size(0),
-        mr_addr(0),
-        mkey(nullptr),
-        registered_pd(nullptr) {}
+        is_expandable(expandable) {}
 };
 
 // Global map to track active CUDA segments: address -> SegmentInfo.
 // Each segment is registered to exactly one PD (the one for its device's NIC),
-// tracked by SegmentInfo::registered_pd.
+// tracked by SegmentRegistrationInfo::pd.
 static std::unordered_map<size_t, SegmentInfo> activeSegments;
 static std::mutex segmentsMutex;
 
@@ -138,7 +131,7 @@ void scan_existing_segments() {
       SegmentInfo segInfo(
           segment_address, scanned.size, device, scanned.is_expandable != 0);
 
-      activeSegments[segment_address] = segInfo;
+      activeSegments[segment_address] = std::move(segInfo);
     }
   }
 
@@ -146,10 +139,15 @@ void scan_existing_segments() {
   for (auto it = activeSegments.begin(); it != activeSegments.end();) {
     std::pair<size_t, int32_t> key = {it->first, it->second.device};
     if (snapshotSegments.find(key) == snapshotSegments.end()) {
-      // Deregister all MRs before removing segment
-      for (auto* mr : it->second.mrs) {
-        if (mr) {
-          ibv_dereg_mr(mr);
+      if (it->second.registration) {
+        // Deregister all MRs before removing segment
+        for (auto* mr : it->second.registration->mrs) {
+          if (mr) {
+            ibv_dereg_mr(mr);
+          }
+        }
+        if (it->second.registration->mkey) {
+          mlx5dv_destroy_mkey(it->second.registration->mkey);
         }
       }
       it = activeSegments.erase(it);
@@ -171,15 +169,16 @@ int rdma_get_active_segment_count(struct ibv_pd* pd) {
   std::lock_guard<std::mutex> lock(segmentsMutex);
   int count = 0;
   for (const auto& [addr, seg] : activeSegments) {
-    if (seg.registered_pd == static_cast<void*>(pd)) {
+    if (seg.registration && seg.registration->pd == static_cast<void*>(pd)) {
       count++;
     }
   }
   return count;
 }
 
-// Get all segment info for the given PD into an array
-int rdma_get_all_segment_info(
+// Get all segment info for segments registered on the given PD.
+// Only segments that have a completed registration are returned.
+int rdma_get_all_registered_segment_info(
     struct ibv_pd* pd,
     rdma_segment_info_t* info_array,
     int max_count) {
@@ -191,21 +190,22 @@ int rdma_get_all_segment_info(
 
   int count = 0;
   for (const auto& [addr, seg] : activeSegments) {
-    if (seg.registered_pd != static_cast<void*>(pd)) {
+    if (!seg.registration || seg.registration->pd != static_cast<void*>(pd)) {
       continue;
     }
     if (count >= max_count) {
       break;
     }
 
+    const auto& reg = *seg.registration;
     info_array[count].phys_address = seg.phys_address;
     info_array[count].phys_size = seg.phys_size;
     info_array[count].device = seg.device;
     info_array[count].is_expandable = seg.is_expandable ? 1 : 0;
-    info_array[count].lkey = seg.mkey ? seg.mkey->lkey : 0;
-    info_array[count].rkey = seg.mkey ? seg.mkey->rkey : 0;
-    info_array[count].mr_size = seg.mr_size;
-    info_array[count].mr_addr = seg.mr_addr;
+    info_array[count].lkey = reg.mkey ? reg.mkey->lkey : 0;
+    info_array[count].rkey = reg.mkey ? reg.mkey->rkey : 0;
+    info_array[count].mr_size = reg.mr_size;
+    info_array[count].mr_addr = reg.mr_addr;
     count++;
   }
 
@@ -216,8 +216,8 @@ int bind_mrs(
     struct ibv_pd* pd,
     struct ibv_qp* qp,
     int access_flags,
-    struct SegmentInfo& seg) {
-  auto mrs = seg.mrs;
+    const std::vector<ibv_mr*>& mrs,
+    struct mlx5dv_mkey** mkey) {
   auto mrs_cnt = mrs.size();
   ibv_qp_ex* qpx = ibv_qp_to_qp_ex(qp);
   if (!qpx) {
@@ -228,16 +228,16 @@ int bind_mrs(
     return RDMAXCEL_MLX5DV_QP_EX_FAILED;
   }
 
-  if (!seg.mkey) {
+  if (!*mkey) {
     struct mlx5dv_mkey_init_attr mkey_attr = {};
     mkey_attr.pd = pd;
     mkey_attr.create_flags = MLX5DV_MKEY_INIT_ATTR_FLAGS_INDIRECT;
     mkey_attr.max_entries = 32;
-    auto mkey = mlx5dv_create_mkey(&mkey_attr);
-    if (!mkey) {
+    auto new_mkey = mlx5dv_create_mkey(&mkey_attr);
+    if (!new_mkey) {
       return RDMAXCEL_MKEY_CREATE_FAILED;
     }
-    seg.mkey = mkey;
+    *mkey = new_mkey;
   }
 
   std::vector<ibv_sge> sgl(mrs_cnt);
@@ -249,7 +249,7 @@ int bind_mrs(
 
   qpx->wr_flags = IBV_SEND_INLINE | IBV_SEND_SIGNALED;
   ibv_wr_start(qpx);
-  mlx5dv_wr_mr_list(mqpx, seg.mkey, access_flags, mrs_cnt, sgl.data());
+  mlx5dv_wr_mr_list(mqpx, *mkey, access_flags, mrs_cnt, sgl.data());
   int ret = ibv_wr_complete(qpx);
 
   if (ret != 0) {
@@ -271,23 +271,38 @@ int bind_mrs(
   return 0;
 }
 
+// Clean up newly registered MRs and a newly created mkey on failure.
+static void cleanup_new_resources(
+    std::vector<ibv_mr*>& new_mrs,
+    struct mlx5dv_mkey* new_mkey) {
+  for (auto* mr : new_mrs) {
+    if (mr) {
+      ibv_dereg_mr(mr);
+    }
+  }
+  if (new_mkey) {
+    mlx5dv_destroy_mkey(new_mkey);
+  }
+}
+
 // Compact multiple MRs into a single MR for a segment if SGE_MAX hit
 // TODO: setup a global lock, may be needed to safely do this
 int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
-  if (seg.mrs.empty()) {
+  if (!seg.registration || seg.registration->mrs.empty()) {
     return 0; // Nothing to compact
   }
+  auto& reg = *seg.registration;
 
   size_t total_size = seg.phys_size;
   size_t start_addr = seg.phys_address;
 
   // Deregister all existing MRs
-  for (auto* mr : seg.mrs) {
+  for (auto* mr : reg.mrs) {
     if (mr) {
       ibv_dereg_mr(mr);
     }
   }
-  seg.mrs.clear();
+  reg.mrs.clear();
 
   // Get dmabuf handle for the entire segment
   int fd = -1;
@@ -309,7 +324,7 @@ int compact_mrs(struct ibv_pd* pd, SegmentInfo& seg, int access_flags) {
   if (!mr) {
     return RDMAXCEL_MR_REGISTRATION_FAILED;
   }
-  seg.mrs.push_back(mr);
+  reg.mrs.push_back(mr);
 
   return 0;
 }
@@ -334,8 +349,12 @@ int register_segments(
   // We cache max_sge per PD context to avoid repeated queries
   std::unordered_map<void*, uint32_t> max_sge_cache;
 
+  // For each segment, register any newly-allocated physical memory as MRs.
+  // New MRs are accumulated separately and only committed to the segment
+  // registration on success, so a failure never corrupts existing state.
   for (auto& [addr, seg] : activeSegments) {
-    if (seg.mr_size == seg.phys_size) {
+    size_t current_mr_size = seg.registration ? seg.registration->mr_size : 0;
+    if (current_mr_size == seg.phys_size) {
       continue; // already fully registered
     }
 
@@ -363,9 +382,14 @@ int register_segments(
       max_sge_cache[static_cast<void*>(pd)] = max_sge;
     }
 
-    auto mr_start = seg.phys_address + seg.mr_size;
+    std::vector<ibv_mr*> new_mrs;
+
+    auto mr_start = seg.phys_address + current_mr_size;
     auto mr_end = seg.phys_address + seg.phys_size;
     auto remaining_size = mr_end - mr_start;
+
+    size_t existing_mrs_count =
+        seg.registration ? seg.registration->mrs.size() : 0;
 
     // Register in chunks of MAX_MR_SIZE
     size_t current_offset = 0;
@@ -376,6 +400,7 @@ int register_segments(
 
       // Validate that chunk_size is a multiple of 2MB
       if (chunk_size % MR_ALIGNMENT != 0) {
+        cleanup_new_resources(new_mrs, nullptr);
         return RDMAXCEL_MR_REGISTRATION_FAILED;
       }
 
@@ -388,7 +413,8 @@ int register_segments(
           0);
 
       if (cu_result != CUDA_SUCCESS || fd < 0) {
-        return RDMAXCEL_DMABUF_HANDLE_FAILED; // Failed to get dmabuf handle
+        cleanup_new_resources(new_mrs, nullptr);
+        return RDMAXCEL_DMABUF_HANDLE_FAILED;
       }
 
       // Register the dmabuf with fd, address is always 0.
@@ -396,31 +422,51 @@ int register_segments(
       close(fd);
 
       if (!mr) {
-        return RDMAXCEL_MR_REG_FAILED; // MR registration failed
+        cleanup_new_resources(new_mrs, nullptr);
+        return RDMAXCEL_MR_REG_FAILED;
       }
 
-      seg.mrs.push_back(mr);
+      new_mrs.push_back(mr);
       current_offset += chunk_size;
 
-      // If we have too many MRs, compact them into a single MR
-      if (seg.mrs.size() > max_sge) {
+      if (existing_mrs_count + new_mrs.size() > max_sge) {
         // TODO: find a safe way to compact with low performance cost.
         // return MAX_SGE error auto err = compact_mrs(pd, seg, access_flags);
         // if (err != 0) {
         //   return err;
         // }
+        cleanup_new_resources(new_mrs, nullptr);
         return RDMAXCEL_MKEY_REG_LIMIT;
       }
     }
 
-    seg.mr_size = seg.phys_size;
-    seg.registered_pd = static_cast<void*>(pd);
-
-    // Create vector of GPU addresses for bind_mrs
-    auto err = bind_mrs(pd, qp->ibv_qp, access_flags, seg);
-    if (err != 0) {
-      return err; // Bind MR's failed
+    // Build combined MR list for binding
+    std::vector<ibv_mr*> all_mrs;
+    if (seg.registration) {
+      all_mrs = seg.registration->mrs;
     }
+    all_mrs.insert(all_mrs.end(), new_mrs.begin(), new_mrs.end());
+
+    // bind_mrs creates the mkey if null
+    struct mlx5dv_mkey* mkey =
+        seg.registration ? seg.registration->mkey : nullptr;
+    bool had_mkey = mkey != nullptr;
+
+    auto err = bind_mrs(pd, qp->ibv_qp, access_flags, all_mrs, &mkey);
+    if (err != 0) {
+      cleanup_new_resources(new_mrs, had_mkey ? nullptr : mkey);
+      return err;
+    }
+
+    // Everything succeeded: commit to the segment registration
+    if (!seg.registration) {
+      seg.registration.reset(new SegmentRegistrationInfo());
+    }
+    seg.registration->mrs = std::move(all_mrs);
+    seg.registration->mr_size = seg.phys_size;
+    seg.registration->mr_addr = seg.phys_address;
+    seg.registration->mkey = mkey;
+    seg.registration->pd = static_cast<void*>(pd);
   }
   return 0; // Success
 }
@@ -496,21 +542,19 @@ int deregister_segments() {
   for (auto& pair : activeSegments) {
     SegmentInfo& seg = pair.second;
 
-    // Deregister all MRs for this segment
-    for (auto* mr : seg.mrs) {
-      if (mr) {
-        ibv_dereg_mr(mr);
+    if (seg.registration) {
+      for (auto* mr : seg.registration->mrs) {
+        if (mr) {
+          ibv_dereg_mr(mr);
+        }
       }
-    }
-    seg.mrs.clear();
 
-    // Destroy mkey if it exists
-    if (seg.mkey) {
-      mlx5dv_destroy_mkey(seg.mkey);
-      seg.mkey = nullptr;
-    }
+      if (seg.registration->mkey) {
+        mlx5dv_destroy_mkey(seg.registration->mkey);
+      }
 
-    seg.mr_size = 0;
+      seg.registration.reset();
+    }
   }
 
   // Clear all segments
