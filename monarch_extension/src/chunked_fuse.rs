@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::num::NonZeroU32;
-use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -27,43 +26,14 @@ use fuse3::FileType;
 use fuse3::MountOptions;
 use fuse3::Result as FuseResult;
 use fuse3::path::prelude::*;
-use futures_util::stream;
+use futures::stream;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use serde::Deserialize;
+use pyo3::types::PyDict;
 use tokio::sync::oneshot;
 use tracing::warn;
 
 const TTL: Duration = Duration::from_secs(3600);
-
-// --- Metadata deserialization from Python JSON ---
-
-#[derive(Deserialize)]
-struct PyFsEntry {
-    attr: PyAttr,
-    #[serde(default)]
-    children: Option<Vec<String>>,
-    #[serde(default)]
-    link_target: Option<String>,
-    #[serde(default)]
-    global_offset: Option<usize>,
-    #[serde(default)]
-    file_len: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct PyAttr {
-    st_mode: u32,
-    st_nlink: u32,
-    st_uid: u32,
-    st_gid: u32,
-    st_size: u64,
-    st_atime: f64,
-    st_mtime: f64,
-    st_ctime: f64,
-}
-
-// --- Internal filesystem types ---
 
 enum FsEntry {
     Dir {
@@ -99,46 +69,64 @@ fn f64_to_system_time(ts: f64) -> SystemTime {
     }
 }
 
-fn convert_attr(py: &PyAttr, kind: FileType) -> FileAttr {
-    FileAttr {
-        size: py.st_size,
-        blocks: py.st_size.div_ceil(512),
-        atime: f64_to_system_time(py.st_atime),
-        mtime: f64_to_system_time(py.st_mtime),
-        ctime: f64_to_system_time(py.st_ctime),
+fn extract_attr(dict: &Bound<'_, PyDict>, kind: FileType) -> PyResult<FileAttr> {
+    let st_size: u64 = dict.get_item("st_size")?.unwrap().extract()?;
+    Ok(FileAttr {
+        size: st_size,
+        blocks: st_size.div_ceil(512),
+        atime: f64_to_system_time(dict.get_item("st_atime")?.unwrap().extract()?),
+        mtime: f64_to_system_time(dict.get_item("st_mtime")?.unwrap().extract()?),
+        ctime: f64_to_system_time(dict.get_item("st_ctime")?.unwrap().extract()?),
         kind,
-        perm: (py.st_mode & 0o7777) as u16,
-        nlink: py.st_nlink,
-        uid: py.st_uid,
-        gid: py.st_gid,
+        perm: (dict.get_item("st_mode")?.unwrap().extract::<u32>()? & 0o7777) as u16,
+        nlink: dict.get_item("st_nlink")?.unwrap().extract()?,
+        uid: dict.get_item("st_uid")?.unwrap().extract()?,
+        gid: dict.get_item("st_gid")?.unwrap().extract()?,
         rdev: 0,
         blksize: 4096,
-    }
+    })
 }
 
-fn parse_metadata(raw: HashMap<String, PyFsEntry>) -> HashMap<OsString, FsEntry> {
-    let mut entries = HashMap::with_capacity(raw.len());
-    for (path, entry) in raw {
-        let fs_entry = if let Some(link_target) = entry.link_target {
+fn extract_metadata(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<OsString, FsEntry>> {
+    let mut entries = HashMap::with_capacity(dict.len());
+    for (key, value) in dict.iter() {
+        let path: String = key.extract()?;
+        let entry_dict: &Bound<'_, PyDict> = value.downcast()?;
+        let attr_obj = entry_dict.get_item("attr")?.unwrap();
+        let attr_dict: &Bound<'_, PyDict> = attr_obj.downcast()?;
+
+        let fs_entry = if let Some(link_target) = entry_dict.get_item("link_target")? {
+            let target: String = link_target.extract()?;
             FsEntry::Symlink {
-                attr: convert_attr(&entry.attr, FileType::Symlink),
-                link_target: OsString::from(link_target),
+                attr: extract_attr(attr_dict, FileType::Symlink)?,
+                link_target: OsString::from(target),
             }
-        } else if let Some(children) = entry.children {
+        } else if let Some(children_obj) = entry_dict.get_item("children")? {
+            let children: Vec<String> = children_obj.extract()?;
             FsEntry::Dir {
-                attr: convert_attr(&entry.attr, FileType::Directory),
+                attr: extract_attr(attr_dict, FileType::Directory)?,
                 children,
             }
         } else {
+            let global_offset: usize = entry_dict
+                .get_item("global_offset")?
+                .map(|v| v.extract())
+                .transpose()?
+                .unwrap_or(0);
+            let file_len: usize = entry_dict
+                .get_item("file_len")?
+                .map(|v| v.extract())
+                .transpose()?
+                .unwrap_or(0);
             FsEntry::File {
-                attr: convert_attr(&entry.attr, FileType::RegularFile),
-                global_offset: entry.global_offset.unwrap_or(0),
-                file_len: entry.file_len.unwrap_or(0),
+                attr: extract_attr(attr_dict, FileType::RegularFile)?,
+                global_offset,
+                file_len,
             }
         };
         entries.insert(OsString::from(path), fs_entry);
     }
-    entries
+    Ok(entries)
 }
 
 // --- FUSE filesystem ---
@@ -197,6 +185,14 @@ impl ChunkedFuseFs {
             OsString::from(format!("/{name_s}"))
         } else {
             OsString::from(format!("{parent_s}/{name_s}"))
+        }
+    }
+
+    fn parent_path(path: &OsStr) -> OsString {
+        let s = path.to_string_lossy();
+        match s.rfind('/') {
+            Some(0) | None => OsString::from("/"),
+            Some(i) => OsString::from(&s[..i]),
         }
     }
 }
@@ -371,12 +367,15 @@ impl PathFilesystem for ChunkedFuseFs {
 
         // ".." entry
         if offset < idx {
-            // Use parent's own attr for ".." (simplification)
+            let dotdot_attr = self
+                .lookup_entry(&Self::parent_path(parent))
+                .map(|e| *e.attr())
+                .unwrap_or(*entry.attr());
             entries.push(Ok(DirectoryEntryPlus {
                 kind: FileType::Directory,
                 name: OsString::from(".."),
                 offset: idx as i64,
-                attr: *entry.attr(),
+                attr: dotdot_attr,
                 entry_ttl: TTL,
                 attr_ttl: TTL,
             }));
@@ -455,22 +454,47 @@ impl PathFilesystem for ChunkedFuseFs {
 )]
 struct PyMountHandle {
     unmount_tx: Option<oneshot::Sender<()>>,
+    mount_point: String,
 }
 
 #[pymethods]
 impl PyMountHandle {
-    fn unmount(&mut self) -> PyResult<()> {
-        if let Some(tx) = self.unmount_tx.take() {
-            let _ = tx.send(());
+    /// Unmount the FUSE filesystem.
+    ///
+    /// Cleanup of the background FUSE session task is asynchronous: this
+    /// method returns once `fusermount3 -u` completes, but the tokio task
+    /// may still be winding down.
+    fn unmount(&mut self, py: Python<'_>) -> PyResult<()> {
+        if self.unmount_tx.take().is_none() {
+            return Ok(());
         }
-        Ok(())
+        let mount_point = self.mount_point.clone();
+        py.detach(|| {
+            match std::process::Command::new("fusermount3")
+                .arg("-u")
+                .arg(&mount_point)
+                .output()
+            {
+                Ok(o) if !o.status.success() => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    Err(PyRuntimeError::new_err(format!(
+                        "fusermount3 -u {mount_point} failed: {stderr}"
+                    )))
+                }
+                Err(e) => Err(PyRuntimeError::new_err(format!(
+                    "failed to run fusermount3: {e}"
+                ))),
+                _ => Ok(()),
+            }
+        })
     }
 }
 
 /// Mount a read-only FUSE filesystem from packed metadata and chunks.
 ///
 /// Args:
-///     metadata_json: JSON string of the metadata dict (path -> entry).
+///     metadata: dict mapping paths to entry dicts (as produced by
+///         `pack_directory_chunked`).
 ///     chunks: list of memoryview/bytes chunks.
 ///     chunk_size: size of each chunk in bytes.
 ///     mount_point: path to mount the filesystem.
@@ -479,7 +503,7 @@ impl PyMountHandle {
 #[pyfunction]
 fn mount_chunked_fuse(
     py: Python<'_>,
-    metadata_json: String,
+    metadata: &Bound<'_, PyDict>,
     chunks: Vec<pyo3::buffer::PyBuffer<u8>>,
     chunk_size: usize,
     mount_point: String,
@@ -487,33 +511,30 @@ fn mount_chunked_fuse(
     if chunk_size == 0 {
         return Err(PyRuntimeError::new_err("chunk_size must be > 0"));
     }
-
-    let raw_meta: HashMap<String, PyFsEntry> = serde_json::from_str(&metadata_json)
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to parse metadata: {e}")))?;
-    let metadata = parse_metadata(raw_meta);
-    // Zero-copy: wrap each Python buffer in a Bytes that keeps the
-    // Python object alive. The PyBuffer holds a reference to the
-    // underlying Python memoryview/mmap.
-    struct PyBufOwner(pyo3::buffer::PyBuffer<u8>);
-    // SAFETY: PyBuffer is Send — it holds a raw pointer to a Python buffer
-    // object, but we only access it via buf_ptr()/len_bytes() which are safe
-    // after the GIL is released. The buffer lifetime is tied to the Python object.
-    unsafe impl Send for PyBufOwner {}
-    // SAFETY: PyBufOwner is Sync because the underlying buffer data is immutable
-    // (read-only FUSE mount) and PyBuffer's buf_ptr()/len_bytes() are safe to
-    // call from any thread once the GIL is released.
-    unsafe impl Sync for PyBufOwner {}
-    impl AsRef<[u8]> for PyBufOwner {
-        fn as_ref(&self) -> &[u8] {
-            // SAFETY: buf_ptr() returns a valid pointer to the buffer data, and
-            // len_bytes() returns its length. The PyBuffer keeps the Python object
-            // alive, guaranteeing the pointer remains valid for the lifetime of self.
-            unsafe { std::slice::from_raw_parts(self.0.buf_ptr() as *const u8, self.0.len_bytes()) }
-        }
+    if !mount_point.starts_with('/') {
+        return Err(PyRuntimeError::new_err(
+            "mount_point must be an absolute path",
+        ));
     }
+
+    let metadata = extract_metadata(metadata)?;
+    // Copy each Python buffer into owned Bytes. We intentionally avoid
+    // zero-copy (Bytes::from_owner wrapping PyBuffer) because PyBuffer::drop
+    // calls PyBuffer_Release which requires the GIL. If a FUSE task is still
+    // alive when the tokio runtime shuts down via atexit, the PyBuffer would
+    // be dropped on a tokio worker thread during interpreter finalization,
+    // causing a segfault in module_from_spec/Python::attach.
     let chunks: Vec<Bytes> = chunks
         .into_iter()
-        .map(|buf| Bytes::from_owner(PyBufOwner(buf)))
+        .map(|buf| {
+            // SAFETY: buf is a live PyBuffer and we hold the GIL (py:
+            // Python<'_> is in scope). buf_ptr() is valid for len_bytes()
+            // bytes for the lifetime of `buf`. We copy immediately before
+            // `buf` is dropped at the end of this closure iteration.
+            let slice =
+                unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes()) };
+            Bytes::copy_from_slice(slice)
+        })
         .collect();
 
     let fs = ChunkedFuseFs {
@@ -524,6 +545,7 @@ fn mount_chunked_fuse(
 
     let mount_path = mount_point.clone();
     let (unmount_tx, unmount_rx) = oneshot::channel::<()>();
+    let (mount_result_tx, mount_result_rx) = oneshot::channel::<Result<(), String>>();
 
     let runtime = monarch_hyperactor::runtime::get_tokio_runtime();
     runtime.spawn(async move {
@@ -536,47 +558,60 @@ fn mount_chunked_fuse(
 
         match mount_result {
             Ok(mount_handle) => {
-                // Wait for either unmount signal or FUSE session end.
-                tokio::pin!(mount_handle);
-                tokio::select! {
-                    _ = unmount_rx => {
-                        // unmount() consumes mount_handle, but it's pinned.
-                        // Use fusermount3 -u instead.
-                        let _ = tokio::process::Command::new("fusermount3")
-                            .arg("-u")
-                            .arg(&mount_path)
-                            .output()
-                            .await;
-                    }
-                    result = &mut mount_handle => {
-                        if let Err(e) = result {
-                            warn!("fuse session error: {e}");
-                        }
-                    }
+                let _ = mount_result_tx.send(Ok(()));
+                // Run the FUSE session until unmount() calls fusermount3 -u,
+                // which causes the session future to complete.
+                if let Err(e) = mount_handle.await {
+                    warn!("fuse session error: {e}");
                 }
             }
             Err(e) => {
                 warn!("fuse mount failed: {e}");
+                let _ = mount_result_tx.send(Err(format!("{e}")));
             }
         }
+        drop(unmount_rx);
     });
 
-    // Poll until mount appears (release GIL while waiting).
-    // We use blocking std::thread::sleep here because this runs in a
-    // synchronous PyO3 context — the async Clock::sleep is not available.
+    // Poll until mount appears in /proc/mounts or the task signals
+    // failure. Releases the GIL while waiting. We use blocking
+    // std::thread::sleep because this is a synchronous PyO3 context.
     #[allow(clippy::disallowed_methods)]
     py.detach(|| {
         let start = std::time::Instant::now();
-        let mount_path = Path::new(&mount_point);
+        let mut mount_result_rx = Some(mount_result_rx);
         while start.elapsed() < Duration::from_secs(50) {
-            if mount_path.exists() && mount_path.is_dir() {
-                // Check if it's actually a mount point by reading /proc/mounts
-                if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
-                    if mounts.contains(&mount_point) {
-                        return Ok(());
+            // Check if the mount task reported an early failure.
+            if let Some(rx) = mount_result_rx.as_mut() {
+                match rx.try_recv() {
+                    Ok(Err(e)) => {
+                        return Err(PyRuntimeError::new_err(format!("fuse mount failed: {e}")));
+                    }
+                    Ok(Ok(())) => {
+                        // Mount succeeded; stop checking the channel but
+                        // still wait for /proc/mounts visibility.
+                        mount_result_rx = None;
+                    }
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        return Err(PyRuntimeError::new_err(
+                            "fuse mount task exited unexpectedly",
+                        ));
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => {}
+                }
+            }
+
+            // Check /proc/mounts directly (authoritative source).
+            if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
+                for line in mounts.lines() {
+                    if let Some(mp) = line.split_whitespace().nth(1) {
+                        if mp == mount_point {
+                            return Ok(());
+                        }
                     }
                 }
             }
+
             std::thread::sleep(Duration::from_millis(100));
         }
         Err(PyRuntimeError::new_err("timed out waiting for FUSE mount"))
@@ -584,6 +619,7 @@ fn mount_chunked_fuse(
 
     Ok(PyMountHandle {
         unmount_tx: Some(unmount_tx),
+        mount_point,
     })
 }
 
