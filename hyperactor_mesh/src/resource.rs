@@ -45,6 +45,7 @@ use typeuri::Named;
 use crate::Name;
 use crate::StatusOverlay;
 use crate::bootstrap;
+use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::ProcBind;
 use crate::host_mesh::host_agent::ProcState;
 use crate::proc_agent::ActorSpec;
@@ -790,17 +791,11 @@ pub(crate) struct ProcSpec {
     pub(crate) client_config_override: Attrs,
     /// Optional per-process CPU/NUMA binding configuration.
     pub(crate) proc_bind: Option<ProcBind>,
+    /// Optional bootstrap command override. When set, this command is used
+    /// to spawn the proc instead of the host agent's default bootstrap command.
+    pub(crate) bootstrap_command: Option<BootstrapCommand>,
 }
 wirevalue::register_type!(ProcSpec);
-
-impl ProcSpec {
-    pub(crate) fn new(client_config_override: Attrs, proc_bind: Option<ProcBind>) -> Self {
-        Self {
-            client_config_override,
-            proc_bind,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

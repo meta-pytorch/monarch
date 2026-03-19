@@ -472,6 +472,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                             .client_config_override
                             .clone(),
                         proc_bind: create_or_update.spec.proc_bind.clone(),
+                        bootstrap_command: create_or_update.spec.bootstrap_command.clone(),
                     },
                 )
                 .await

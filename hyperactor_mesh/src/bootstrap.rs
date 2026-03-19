@@ -1507,7 +1507,7 @@ impl hyperactor::host::ProcHandle for BootstrapProcHandle {
 }
 
 /// A specification of the command used to bootstrap procs.
-#[derive(Debug, Named, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Named, Serialize, Deserialize, Clone, Default)]
 pub struct BootstrapCommand {
     pub program: PathBuf,
     pub arg0: Option<String>,
@@ -1515,6 +1515,28 @@ pub struct BootstrapCommand {
     pub env: HashMap<String, String>,
 }
 wirevalue::register_type!(BootstrapCommand);
+
+impl std::hash::Hash for BootstrapCommand {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.program.hash(state);
+        self.arg0.hash(state);
+        self.args.hash(state);
+        let mut pairs: Vec<_> = self.env.iter().collect();
+        pairs.sort();
+        pairs.hash(state);
+    }
+}
+
+impl PartialEq for BootstrapCommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.program == other.program
+            && self.arg0 == other.arg0
+            && self.args == other.args
+            && self.env == other.env
+    }
+}
+
+impl Eq for BootstrapCommand {}
 
 impl BootstrapCommand {
     /// Creates a bootstrap command specification to replicate the
@@ -1938,6 +1960,9 @@ pub struct BootstrapProcConfig {
     /// When set, the bootstrap command is wrapped with `numactl`
     /// (on NUMA systems) or `taskset` (Linux fallback) before launch.
     pub proc_bind: Option<ProcBind>,
+    /// Optional bootstrap command override. When set, this command is used
+    /// to spawn the proc instead of the manager's default bootstrap command.
+    pub bootstrap_command: Option<BootstrapCommand>,
 }
 
 #[async_trait]
@@ -2017,7 +2042,11 @@ impl ProcManager for BootstrapProcManager {
         let opts = LaunchOptions {
             bootstrap_payload,
             process_name: format_process_name(&proc_id),
-            command: self.command.clone(),
+            command: config
+                .bootstrap_command
+                .as_ref()
+                .unwrap_or(&self.command)
+                .clone(),
             want_stdio: need_stdio,
             tail_lines: tail_size,
             log_channel: if enable_forwarding {
@@ -3254,6 +3283,7 @@ mod tests {
                     create_rank: 0,
                     client_config_override: Attrs::new(),
                     proc_bind: None,
+                    bootstrap_command: None,
                 },
             )
             .await
@@ -3324,6 +3354,7 @@ mod tests {
                     create_rank: 0,
                     client_config_override: Attrs::new(),
                     proc_bind: None,
+                    bootstrap_command: None,
                 },
             )
             .await
