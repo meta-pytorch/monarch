@@ -689,16 +689,6 @@ pub(crate) struct ProcSpec {
 }
 wirevalue::register_type!(ProcSpec);
 
-impl ProcSpec {
-    pub(crate) fn new(client_config_override: Attrs, proc_bind: Option<ProcBind>) -> Self {
-        Self {
-            client_config_override,
-            proc_bind,
-            bootstrap_command: None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
