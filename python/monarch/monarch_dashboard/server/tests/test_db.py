@@ -243,6 +243,17 @@ class GetActorMessagesTest(_DbTestBase):
                 m["from_actor_id"] == actor_id or m["to_actor_id"] == actor_id
             )
 
+    def test_includes_latest_status(self):
+        """get_actor_messages should JOIN latest message status."""
+        all_msgs = db.list_messages()
+        actor_id = all_msgs[0]["from_actor_id"]
+        msgs = db.get_actor_messages(actor_id)
+        self.assertGreater(len(msgs), 0)
+        for m in msgs:
+            self.assertIn("latest_status", m)
+            # Every message in fake data has status events, so status should be set.
+            self.assertIsNotNone(m["latest_status"])
+
 
 # ---------------------------------------------------------------------------
 # Message status event queries
