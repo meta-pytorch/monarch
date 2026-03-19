@@ -55,6 +55,9 @@ kind: MonarchMesh
 metadata:
   name: ddpmesh
   namespace: monarch-tests
+  # uncomment to use kueue
+  # labels:
+  #   kueue.x-k8s.io/queue-name: user-queue
 spec:
   # Number of worker pods (hosts) in the mesh
   replicas: 2
