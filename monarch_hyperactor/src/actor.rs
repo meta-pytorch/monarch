@@ -989,6 +989,7 @@ impl Actor for PythonActor {
                 actor_mesh_name: None,
                 rank: None,
                 event: event.clone(),
+                crashed_ranks: None,
             },
         )
         .await
