@@ -27,13 +27,39 @@ Then, in another terminal::
     buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr <addr>
 
 where ``<addr>`` is the address printed by the example.
+
+To also launch the Monarch Dashboard for live telemetry::
+
+    buck2 run fbcode//monarch/python/examples:dining_philosophers -- --dashboard
+    # Then SSH-tunnel: ssh -L 8265:localhost:8265 <devserver>
+    # Open http://localhost:8265 in your browser.
+
+Note: ``buck2 run`` does not include the frontend build assets in the
+dashboard (the Buck target does not bundle them).  The dashboard will
+start in API-only mode.  To get the full frontend UI, run via Python
+with a pip-installed wheel that includes the assets::
+
+    # 1. Build the React frontend (requires npm / Node.js):
+    cd fbcode/monarch/python/monarch/monarch_dashboard/frontend
+    npm install && npm run build
+
+    # 2. Build and install the wheel (picks up frontend/build/):
+    cd fbcode/monarch
+    uv build --wheel --no-build-isolation
+    pip install dist/torchmonarch-*.whl --force-reinstall
+
+    # 3. Run with Python directly:
+    python examples/dining_philosophers.py --dashboard
 """
 
+import argparse
 import asyncio
+import os
 from enum import auto, Enum
 from typing import Any
 
-from monarch.actor import Actor, current_rank, endpoint, this_host, this_proc
+from monarch.actor import Actor, current_rank, endpoint, this_host
+from monarch.distributed_telemetry.actor import start_telemetry
 
 
 class ChopstickStatus(Enum):
@@ -140,7 +166,14 @@ class Waiter(Actor):
 NUM_PHILOSOPHERS = 5
 
 
-async def async_main() -> None:
+async def async_main(
+    dashboard: bool = False,
+    dashboard_port: int = 8265,
+    kill_waiter_after: float | None = None,
+) -> None:
+    if dashboard:
+        start_telemetry(include_dashboard=True, dashboard_port=dashboard_port)
+
     host = this_host()
 
     # Spawn the admin agent so the TUI can attach.
@@ -159,31 +192,68 @@ async def async_main() -> None:
     print(
         f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
+    if dashboard:
+        dashboard_url = os.environ.get(
+            "MONARCH_DASHBOARD_URL", f"http://localhost:{dashboard_port}"
+        )
+        print(f"  - Dashboard:     {dashboard_url}")
     print("\nPress Ctrl+C to stop.\n", flush=True)
 
     # Spawn philosopher processes and actors.
     procs = host.spawn_procs(per_host={"replica": NUM_PHILOSOPHERS})
 
-    # Spawn waiter on the local proc (single instance).
+    # Spawn waiter on its own proc mesh so it appears in the dashboard hierarchy.
+    waiter_proc = host.spawn_procs(name="waiter")
     philosophers = procs.spawn("philosopher", Philosopher, NUM_PHILOSOPHERS)
-    waiter = this_proc().spawn("waiter", Waiter, philosophers)
+    waiter = waiter_proc.spawn("waiter", Waiter, philosophers)
 
     # Start all philosophers — each will begin requesting chopsticks.
     philosophers.start.broadcast(waiter)
 
     # Run until interrupted.
     try:
+        if kill_waiter_after is not None:
+            await asyncio.sleep(kill_waiter_after)
+            print("Killing the waiter...")
+            waiter.stop().get()
         await asyncio.sleep(float("inf"))
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         print("\nShutting down...", flush=True)
+        await waiter_proc.stop()
         await procs.stop()
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Dining Philosophers")
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Launch the Monarch Dashboard for live telemetry",
+    )
+    parser.add_argument(
+        "--dashboard-port",
+        type=int,
+        default=8265,
+        help="Dashboard port (default: 8265)",
+    )
+    parser.add_argument(
+        "--kill-waiter-after",
+        type=float,
+        default=None,
+        help="Kill the waiter actor after N seconds (for testing error display)",
+    )
+    args = parser.parse_args()
+
     try:
-        asyncio.run(async_main())
+        asyncio.run(
+            async_main(
+                dashboard=args.dashboard,
+                dashboard_port=args.dashboard_port,
+                kill_waiter_after=args.kill_waiter_after,
+            )
+        )
     except KeyboardInterrupt:
         pass
 
