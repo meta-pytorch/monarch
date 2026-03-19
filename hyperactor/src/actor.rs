@@ -35,8 +35,6 @@ use crate as hyperactor; // for macros
 use crate::Data;
 use crate::Message;
 use crate::RemoteMessage;
-use crate::checkpoint::CheckpointError;
-use crate::checkpoint::Checkpointable;
 use crate::context;
 use crate::mailbox::MailboxError;
 use crate::mailbox::MailboxSenderError;
@@ -44,7 +42,6 @@ use crate::mailbox::MessageEnvelope;
 use crate::mailbox::PortHandle;
 use crate::mailbox::Undeliverable;
 use crate::mailbox::UndeliverableMessageError;
-use crate::mailbox::log::MessageLogError;
 use crate::message::Castable;
 use crate::message::IndexedErasedUnbound;
 use crate::proc::Context;
@@ -136,10 +133,11 @@ pub trait Actor: Sized + Send + 'static {
     async fn handle_supervision_event(
         &mut self,
         _this: &Instance<Self>,
-        _event: &ActorSupervisionEvent,
+        event: &ActorSupervisionEvent,
     ) -> Result<bool, anyhow::Error> {
-        // By default, the supervision event is not handled, caller is expected to bubble it up.
-        Ok(false)
+        // Error events are not handled by default and bubble up to the parent.
+        // Normal lifecycle events (e.g. clean stop) are absorbed.
+        Ok(!event.is_error())
     }
 
     /// Default undeliverable message handling behavior.
@@ -329,21 +327,6 @@ impl<A: Actor + Referable + Binds<Self> + Default> RemoteSpawn for A {
     }
 }
 
-#[async_trait]
-impl<T> Checkpointable for T
-where
-    T: RemoteMessage + Clone,
-{
-    type State = T;
-    async fn save(&self) -> Result<Self::State, CheckpointError> {
-        Ok(self.clone())
-    }
-
-    async fn load(state: Self::State) -> Result<Self, CheckpointError> {
-        Ok(state)
-    }
-}
-
 /// Errors that occur while serving actors. Each error is associated
 /// with the ID of the actor being served.
 #[derive(Debug)]
@@ -409,16 +392,6 @@ impl ActorErrorKind {
     /// An underlying mailbox sender error.
     pub fn mailbox_sender(err: MailboxSenderError) -> Self {
         Self::Generic(err.to_string())
-    }
-
-    /// An underlying checkpoint error.
-    pub fn checkpoint(err: CheckpointError) -> Self {
-        Self::Generic(format!("checkpoint error: {}", err))
-    }
-
-    /// An underlying message log error.
-    pub fn message_log(err: MessageLogError) -> Self {
-        Self::Generic(format!("message log error: {}", err))
     }
 
     /// The actor's state could not be determined.
@@ -839,8 +812,6 @@ mod tests {
     use crate as hyperactor;
     use crate::Actor;
     use crate::OncePortHandle;
-    use crate::checkpoint::CheckpointError;
-    use crate::checkpoint::Checkpointable;
     use crate::config;
     use crate::context::Mailbox as _;
     use crate::introspect::IntrospectMessage;
@@ -983,39 +954,6 @@ mod tests {
 
         handle.drain_and_stop("test").unwrap();
         handle.await;
-    }
-
-    #[derive(Debug)]
-    struct CheckpointActor {
-        // The actor does nothing but sum the values of messages.
-        sum: u64,
-        port: reference::PortRef<u64>,
-    }
-
-    #[async_trait]
-    impl Actor for CheckpointActor {}
-
-    #[async_trait]
-    impl Handler<u64> for CheckpointActor {
-        async fn handle(&mut self, cx: &Context<Self>, value: u64) -> Result<(), anyhow::Error> {
-            self.sum += value;
-            self.port.send(cx, self.sum)?;
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl Checkpointable for CheckpointActor {
-        type State = (u64, reference::PortRef<u64>);
-
-        async fn save(&self) -> Result<Self::State, CheckpointError> {
-            Ok((self.sum, self.port.clone()))
-        }
-
-        async fn load(state: Self::State) -> Result<Self, CheckpointError> {
-            let (sum, port) = state;
-            Ok(CheckpointActor { sum, port })
-        }
     }
 
     type MultiValues = Arc<Mutex<(u64, String)>>;
@@ -1527,6 +1465,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl MailboxSender for DelayedMailboxSender {
         fn post_unchecked(
             &self,
