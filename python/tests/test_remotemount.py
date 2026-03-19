@@ -12,9 +12,12 @@ import gc
 import math
 import mmap
 import os
+import stat
 import tempfile
+import time
 
 import pytest
+from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
 from monarch._rust_bindings.monarch_extension.fast_pack import (
     load_file_and_hash,
     pack_files_with_offsets,
@@ -415,3 +418,58 @@ class TestPreadErrorHandling:
         """Packing a nonexistent file should fail, not silently zero-fill."""
         with pytest.raises(BaseException, match="panicked"):  # noqa: B017
             pack_files_with_offsets([("/nonexistent/path/to/file.bin", 0, 100)], 100)
+
+
+class TestFuseReaddirplusDotdot:
+    """Verify readdirplus returns the parent's attr for "..", not self."""
+
+    def _make_metadata(self) -> tuple[dict[str, object], list[memoryview], int]:
+        now = time.time()
+        root_attr = {
+            "st_atime": now,
+            "st_ctime": now,
+            "st_gid": os.getgid(),
+            "st_mode": 0o40755,
+            "st_mtime": now,
+            "st_nlink": 3,
+            "st_size": 4096,
+            "st_uid": os.getuid(),
+        }
+        sub_attr = {
+            "st_atime": now,
+            "st_ctime": now,
+            "st_gid": os.getgid(),
+            "st_mode": 0o40700,
+            "st_mtime": now,
+            "st_nlink": 2,
+            "st_size": 80,
+            "st_uid": os.getuid(),
+        }
+        metadata: dict[str, object] = {
+            "/": {"attr": root_attr, "children": ["sub"]},
+            "/sub": {"attr": sub_attr, "children": []},
+        }
+        chunks: list[memoryview] = [memoryview(b"\x00" * 64)]
+        return metadata, chunks, 64
+
+    def test_dotdot_has_parent_attrs(self) -> None:
+        """stat('sub/..') should return root's attrs, not sub's."""
+        metadata, chunks, chunk_size = self._make_metadata()
+        with tempfile.TemporaryDirectory() as mnt:
+            handle = mount_chunked_fuse(metadata, chunks, chunk_size, mnt)
+            try:
+                sub_stat = os.stat(os.path.join(mnt, "sub"))
+                dotdot_stat = os.stat(os.path.join(mnt, "sub", ".."))
+                root_stat = os.stat(mnt)
+
+                # ".." from sub should match root, not sub itself.
+                assert dotdot_stat.st_size == root_stat.st_size
+                assert dotdot_stat.st_nlink == root_stat.st_nlink
+                assert stat.S_IMODE(dotdot_stat.st_mode) == stat.S_IMODE(
+                    root_stat.st_mode
+                )
+
+                # And it should differ from sub's own attrs.
+                assert sub_stat.st_size != root_stat.st_size
+            finally:
+                handle.unmount()
