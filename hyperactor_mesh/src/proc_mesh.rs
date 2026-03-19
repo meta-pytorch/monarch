@@ -874,6 +874,10 @@ impl ProcMeshRef {
                             status: resource::Status::Timeout(timeout),
                             // We don't know the ActorId that used to live on this rank.
                             // But we do know the mesh agent id, so we'll use that.
+                            // Use u64::MAX so this synthetic state always wins
+                            // last-writer-wins ordering against real streamed updates.
+                            generation: u64::MAX,
+                            timestamp: std::time::SystemTime::now(),
                             state: Some(ActorState {
                                 actor_id: agent_id.clone(),
                                 create_rank: rank,
