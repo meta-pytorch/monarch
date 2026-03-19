@@ -264,7 +264,7 @@ impl MmapBuffer {
 /// Pack files into a contiguous mmap buffer in parallel, with block hashes.
 ///
 /// Accepts a list of `(path, offset, size)` tuples, a `total_size`, and an
-/// optional `hash_block_size` (defaults to 100 MB).
+/// optional `hash_block_size` (defaults to 64 MB).
 /// Returns `(MmapBuffer, [hash_hex_strings])`. Use `memoryview(buf)` for
 /// zero-copy access; the mmap is freed when the `MmapBuffer` is GC'd.
 #[pyfunction]
@@ -280,10 +280,13 @@ fn pack_files_with_offsets(
     let nthreads = max_threads.unwrap_or_else(num_threads);
 
     if file_list.is_empty() || total_size == 0 {
-        let buf = Py::new(py, MmapBuffer {
-            ptr: std::ptr::null_mut(),
-            size: 0,
-        })?;
+        let buf = Py::new(
+            py,
+            MmapBuffer {
+                ptr: std::ptr::null_mut(),
+                size: 0,
+            },
+        )?;
         let hashes = pyo3::types::PyList::empty(py).into_any().unbind();
         let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), hashes])?;
         return Ok(tuple.into_any().unbind());
@@ -297,14 +300,19 @@ fn pack_files_with_offsets(
     let buffer =
         mmap_anonymous(total_size).map_err(|e| PyOSError::new_err(format!("mmap failed: {e}")))?;
 
+    // Wrap immediately so Drop handles cleanup on any subsequent error.
+    let buf = Py::new(
+        py,
+        MmapBuffer {
+            ptr: buffer,
+            size: total_size,
+        },
+    )?;
+
     let buf_ptr = buffer as usize;
     pack_files_into(buf_ptr, &files, nthreads);
     let hashes = compute_block_hashes(buf_ptr, total_size, block_size, nthreads);
 
-    let buf = Py::new(py, MmapBuffer {
-        ptr: buffer,
-        size: total_size,
-    })?;
     let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
     let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), py_hashes])?;
     Ok(tuple.into_any().unbind())
@@ -338,10 +346,13 @@ fn load_file_and_hash(
         .len() as usize;
 
     if file_size == 0 {
-        let buf = Py::new(py, MmapBuffer {
-            ptr: std::ptr::null_mut(),
-            size: 0,
-        })?;
+        let buf = Py::new(
+            py,
+            MmapBuffer {
+                ptr: std::ptr::null_mut(),
+                size: 0,
+            },
+        )?;
         let hashes = pyo3::types::PyList::empty(py).into_any().unbind();
         let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), hashes])?;
         return Ok(tuple.into_any().unbind());
@@ -354,6 +365,15 @@ fn load_file_and_hash(
     let buffer =
         mmap_anonymous(alloc_size).map_err(|e| PyOSError::new_err(format!("mmap failed: {e}")))?;
 
+    // Wrap immediately so Drop handles cleanup on any subsequent error.
+    let buf = Py::new(
+        py,
+        MmapBuffer {
+            ptr: buffer,
+            size: alloc_size,
+        },
+    )?;
+
     let buf_ptr = buffer as usize;
 
     // Treat the cache file as a single FileInfo entry — pack_files_into
@@ -365,11 +385,6 @@ fn load_file_and_hash(
     }];
     pack_files_into(buf_ptr, &files, nthreads);
     let hashes = compute_block_hashes(buf_ptr, file_size, block_size, nthreads);
-
-    let buf = Py::new(py, MmapBuffer {
-        ptr: buffer,
-        size: alloc_size,
-    })?;
     let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
     let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), py_hashes])?;
     Ok(tuple.into_any().unbind())
