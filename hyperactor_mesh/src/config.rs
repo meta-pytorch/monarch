@@ -169,4 +169,53 @@ declare_attrs! {
         Some("mesh_attach_config_timeout".to_string()),
     ))
     pub attr MESH_ATTACH_CONFIG_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Timeout for targeted introspection queries that hit a single,
+    /// specific host. Kept short so a slow or dying actor cannot block
+    /// the single-threaded MeshAdminAgent message loop.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_SINGLE_HOST_TIMEOUT".to_string()),
+        Some("mesh_admin_single_host_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_SINGLE_HOST_TIMEOUT: Duration = Duration::from_secs(3);
+
+    /// Timeout for QueryChild snapshot lookups in resolve_actor_node.
+    /// QueryChild is handled by a synchronous callback — it either
+    /// returns immediately or returns Error. A short budget ensures
+    /// the total time for resolve_actor_node stays well under
+    /// `MESH_ADMIN_SINGLE_HOST_TIMEOUT`.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_QUERY_CHILD_TIMEOUT".to_string()),
+        Some("mesh_admin_query_child_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_QUERY_CHILD_TIMEOUT: Duration = Duration::from_millis(100);
+
+    /// Timeout for py-spy dump requests. See PS-5 in `introspect`
+    /// module doc. py-spy dump is typically ~100ms, but ptrace attach
+    /// can stall on heavily loaded hosts. Independent of
+    /// `MESH_ADMIN_SINGLE_HOST_TIMEOUT` because py-spy does real I/O
+    /// (subprocess + ptrace) rather than actor messaging.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_PYSPY_TIMEOUT".to_string()),
+        Some("mesh_admin_pyspy_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_PYSPY_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Timeout for the `/v1/tree` fan-out. Kept generous because the
+    /// tree dump walks every host and proc in the mesh.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_TREE_TIMEOUT".to_string()),
+        Some("mesh_admin_tree_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_TREE_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Bridge-side timeout for py-spy dump requests. Must exceed
+    /// `MESH_ADMIN_PYSPY_TIMEOUT` to allow the subprocess kill/reap
+    /// and reply delivery to arrive before declaring `gateway_timeout`.
+    /// See PS-6 in `introspect` module doc.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT".to_string()),
+        Some("mesh_admin_pyspy_bridge_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(7);
 }

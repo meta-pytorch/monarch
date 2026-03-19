@@ -13,16 +13,16 @@ import os
 from typing import Any
 
 from monarch._rust_bindings.monarch_extension.fast_pack import (
-    pack_files_to_shm as _c_pack_files_to_shm,
     pack_files_with_offsets as _c_pack_files,
 )
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = (1024 * 1024 * 1024) * 8
-HASH_BLOCK_SIZE = 100 * 1024 * 1024  # 100MB blocks for incremental diffing
+CHUNK_SIZE: int = (1024 * 1024 * 1024) * 8
+HASH_BLOCK_SIZE: int = 100 * 1024 * 1024  # 100MB blocks for incremental diffing
 
 
+# pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
 def block_hashes(data_mv: memoryview, block_size: int = HASH_BLOCK_SIZE) -> list[str]:
     """Compute xxhash per block of a packed memoryview."""
     import xxhash
@@ -36,15 +36,16 @@ def block_hashes(data_mv: memoryview, block_size: int = HASH_BLOCK_SIZE) -> list
 def pack_directory_chunked(
     source_path: str,
     chunk_size: int | None = None,
-    use_shm: bool = False,
-) -> tuple[dict[str, Any], memoryview | None, list[memoryview], str | None]:
+    # pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
+) -> tuple[dict[str, Any], memoryview | None, list[memoryview], list[str]]:
     """Walk a directory, pack all files into contiguous mmap chunks.
 
-    Returns (fs_metadata, staging_mv, chunks, shm_path) where:
+    Returns (fs_metadata, staging_mv, chunks, block_hashes_list)
+    where:
     - fs_metadata: dict mapping virtual paths to stat/offset metadata
     - staging_mv: memoryview over the packed data
     - chunks: list of chunk-sized memoryview slices
-    - shm_path: path to named pack file if use_shm=True, else None
+    - block_hashes_list: list of xxh64 hex digest strings per block
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -136,15 +137,11 @@ def pack_directory_chunked(
     logger.info(f"Packing {total_size // (1024**2)}MiB, {len(file_list)} files")
 
     if total_size == 0:
-        return fs_metadata, None, [], None
+        return fs_metadata, None, [], []
 
-    if use_shm:
-        staging_mv, shm_path, _hashes = _c_pack_files_to_shm(file_list, total_size)
-    else:
-        staging_mv, _hashes = _c_pack_files(file_list, total_size)
-        shm_path = None
+    staging_mv, hashes = _c_pack_files(file_list, total_size)
     chunks = [
         staging_mv[i : i + chunk_size] for i in range(0, len(staging_mv), chunk_size)
     ]
 
-    return fs_metadata, staging_mv, chunks, shm_path
+    return fs_metadata, staging_mv, chunks, list(hashes)

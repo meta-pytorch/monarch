@@ -19,8 +19,9 @@ from monarch.remotemount.fast_pack import block_hashes, pack_directory_chunked
 class TestPackDirectoryChunked:
     def test_empty_directory(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, hashes = pack_directory_chunked(d)
             assert chunks == []
+            assert hashes == []
             assert "/" in meta
             assert "children" in meta["/"]
             assert meta["/"]["children"] == []
@@ -31,7 +32,7 @@ class TestPackDirectoryChunked:
             with open(os.path.join(d, "a.txt"), "wb") as f:
                 f.write(content)
 
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, hashes = pack_directory_chunked(d)
 
             assert "/a.txt" in meta
             file_meta = meta["/a.txt"]
@@ -40,6 +41,7 @@ class TestPackDirectoryChunked:
 
             packed = b"".join(bytes(c) for c in chunks)
             assert packed == content
+            assert len(hashes) == 1
 
     def test_multiple_files_contiguous_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -48,7 +50,7 @@ class TestPackDirectoryChunked:
                 with open(os.path.join(d, name), "wb") as f:
                     f.write(content)
 
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, _hashes = pack_directory_chunked(d)
             packed = b"".join(bytes(c) for c in chunks)
 
             # Verify each file's content at its offset
@@ -81,7 +83,7 @@ class TestPackDirectoryChunked:
                 f.write("target")
             os.symlink(target, os.path.join(d, "link.txt"))
 
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(d)
+            meta, _staging_mv, chunks, _hashes = pack_directory_chunked(d)
 
             assert "/link.txt" in meta
             link_meta = meta["/link.txt"]
@@ -110,13 +112,36 @@ class TestPackDirectoryChunked:
                 f.write(content)
 
             chunk_size = 300
-            meta, _staging_mv, chunks, _shm_path = pack_directory_chunked(
+            meta, _staging_mv, chunks, _hashes = pack_directory_chunked(
                 d, chunk_size=chunk_size
             )
 
             assert len(chunks) == math.ceil(len(content) / chunk_size)
             packed = b"".join(bytes(c) for c in chunks)
             assert packed == content
+
+    def test_hashes_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "f.bin"), "wb") as f:
+                f.write(os.urandom(500))
+
+            _, _, _, h1 = pack_directory_chunked(d)
+            _, _, _, h2 = pack_directory_chunked(d)
+            assert h1 == h2
+            assert len(h1) > 0
+
+    def test_hashes_change_on_content_change(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.bin")
+            with open(path, "wb") as f:
+                f.write(b"\x00" * 500)
+            _, _, _, h1 = pack_directory_chunked(d)
+
+            with open(path, "wb") as f:
+                f.write(b"\xff" * 500)
+            _, _, _, h2 = pack_directory_chunked(d)
+
+            assert h1 != h2
 
 
 class TestBlockHashes:
