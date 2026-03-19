@@ -211,7 +211,10 @@ fn mmap_anonymous(total_size: usize) -> Result<*mut libc::c_void, std::io::Error
 /// Python-visible wrapper that owns an mmap region. When dropped, `munmap`
 /// is called. Callers can obtain a zero-copy `memoryview` via
 /// `memoryview(buf)`.
-#[pyclass(name = "MmapBuffer", module = "monarch._rust_bindings.monarch_extension.fast_pack")]
+#[pyclass(
+    name = "MmapBuffer",
+    module = "monarch._rust_bindings.monarch_extension.fast_pack"
+)]
 struct MmapBuffer {
     ptr: *mut libc::c_void,
     size: usize,
