@@ -63,7 +63,9 @@ use crate::proc_agent::ActorState;
     Eq,
     Hash,
     EnumAsInner,
-    strum::Display
+    strum::Display,
+    Bind,
+    Unbind
 )]
 pub enum Status {
     /// The resource does not exist.
@@ -225,7 +227,18 @@ impl GetRankStatus {
 }
 
 /// The state of a resource.
-#[derive(Clone, Debug, Serialize, Deserialize, Named, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    PartialEq,
+    Eq,
+    Handler,
+    Bind,
+    Unbind
+)]
 pub struct State<S> {
     /// The name of the resource.
     pub name: Name,
@@ -233,7 +246,12 @@ pub struct State<S> {
     pub status: Status,
     /// Optionally, a resource-defined state.
     pub state: Option<S>,
+    /// Monotonic generation counter for last-writer-wins ordering.
+    pub generation: u64,
+    /// Wall-clock timestamp for debugging context.
+    pub timestamp: std::time::SystemTime,
 }
+wirevalue::register_type!(State<ActorState>);
 
 impl<S: Serialize> fmt::Display for State<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
