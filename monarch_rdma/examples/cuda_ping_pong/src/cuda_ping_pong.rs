@@ -516,7 +516,8 @@ impl Handler<PerformPingPong> for CudaRdmaActor {
                 local_ibv.device_name.clone(),
                 remote_ibv.device_name.clone(),
             )
-            .await?;
+            .await?
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         unsafe {
             let ibv_qp = qp.qp as *mut rdmaxcel_sys::ibv_qp;
