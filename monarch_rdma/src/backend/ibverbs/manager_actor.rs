@@ -579,13 +579,22 @@ impl IbvManagerActor {
                 } else {
                     // Dmabuf path: used when mlx5dv is disabled OR scanner returns no segments
                     let mut fd: i32 = -1;
-                    rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
+                    let cu_err = rdmaxcel_sys::rdmaxcel_cuMemGetHandleForAddressRange(
                         &mut fd,
                         addr as rdmaxcel_sys::CUdeviceptr,
                         size,
                         rdmaxcel_sys::CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                         0,
                     );
+                    if cu_err != rdmaxcel_sys::CUDA_SUCCESS || fd < 0 {
+                        return Err(anyhow::anyhow!(
+                            "failed to get dmabuf handle for CUDA memory (addr: 0x{:x}, size: {}, cu_err: {}, fd: {})",
+                            addr,
+                            size,
+                            cu_err,
+                            fd
+                        ));
+                    }
                     mr =
                         rdmaxcel_sys::ibv_reg_dmabuf_mr(domain.pd, 0, size, 0, fd, access.0 as i32);
                     if mr.is_null() {
