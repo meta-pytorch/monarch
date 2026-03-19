@@ -172,8 +172,9 @@ fn compute_block_hashes(
                     let offset = block_idx * block_size;
                     let size = std::cmp::min(block_size, total_size - offset);
 
+                    debug_assert!(offset + size <= total_size);
                     // SAFETY: buffer was allocated with total_size bytes;
-                    // offset + size <= total_size.
+                    // offset + size <= total_size (checked above).
                     let data = unsafe {
                         std::slice::from_raw_parts((buf_ptr + offset) as *const u8, size)
                     };
@@ -412,6 +413,10 @@ fn load_file_into_buffer(
 ) -> PyResult<Py<PyAny>> {
     let block_size = hash_block_size.unwrap_or(HASH_BLOCK_SIZE);
     let nthreads = max_threads.unwrap_or_else(num_threads);
+
+    if buffer.readonly() {
+        return Err(PyOSError::new_err("buffer is read-only"));
+    }
 
     let file_size = std::fs::metadata(&path)
         .map_err(|e| PyOSError::new_err(format!("stat {path}: {e}")))?
