@@ -93,10 +93,9 @@ pub(crate) fn pack_files_into(buf_ptr: usize, files: &[FileInfo]) {
                     let file = match &cached_fd {
                         Some((idx, f)) if *idx == w.file_idx => f,
                         _ => {
-                            let Ok(f) = File::open(&files[w.file_idx].path) else {
-                                eprintln!("fast_pack: failed to open {}", files[w.file_idx].path);
-                                continue;
-                            };
+                            let f = File::open(&files[w.file_idx].path).unwrap_or_else(|e| {
+                                panic!("fast_pack: failed to open {}: {e}", files[w.file_idx].path)
+                            });
                             cached_fd = Some((w.file_idx, f));
                             &cached_fd.as_ref().expect("cached_fd was just set").1
                         }
@@ -120,8 +119,18 @@ pub(crate) fn pack_files_into(buf_ptr: usize, files: &[FileInfo]) {
                                 (w.file_offset + total_read) as libc::off_t,
                             )
                         };
-                        if n <= 0 {
-                            break;
+                        if n < 0 {
+                            let err = std::io::Error::last_os_error();
+                            panic!(
+                                "fast_pack: pread failed on {}: {err}",
+                                files[w.file_idx].path
+                            );
+                        }
+                        if n == 0 {
+                            panic!(
+                                "fast_pack: unexpected EOF on {} (read {total_read} of {} bytes)",
+                                files[w.file_idx].path, w.size
+                            );
                         }
                         total_read += n as usize;
                     }
@@ -189,11 +198,65 @@ pub(crate) fn mmap_anonymous(total_size: usize) -> Result<*mut libc::c_void, std
     }
 }
 
+/// Python-visible wrapper that owns an mmap region. When dropped, `munmap`
+/// is called. Callers can obtain a zero-copy `memoryview` via
+/// `memoryview(buf)`.
+#[pyclass(name = "MmapBuffer")]
+struct MmapBuffer {
+    ptr: *mut libc::c_void,
+    size: usize,
+}
+
+// SAFETY: the mmap region is process-wide; the pointer is safe to
+// share across threads for the lifetime of the object.
+unsafe impl Send for MmapBuffer {}
+unsafe impl Sync for MmapBuffer {}
+
+impl Drop for MmapBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() && self.size > 0 {
+            // SAFETY: ptr/size were returned by a successful mmap_anonymous call.
+            unsafe {
+                libc::munmap(self.ptr, self.size);
+            }
+        }
+    }
+}
+
+#[pymethods]
+impl MmapBuffer {
+    fn __len__(&self) -> usize {
+        self.size
+    }
+
+    unsafe fn __getbuffer__(
+        slf: PyRef<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: std::ffi::c_int,
+    ) -> PyResult<()> {
+        let ret = ffi::PyBuffer_FillInfo(
+            view,
+            slf.as_ptr(),
+            slf.ptr as *mut _,
+            slf.size as isize,
+            0, // writable
+            flags,
+        );
+        if ret < 0 {
+            return Err(PyErr::fetch(slf.py()));
+        }
+        Ok(())
+    }
+
+    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
+}
+
 /// Pack files into a contiguous mmap buffer in parallel, with block hashes.
 ///
 /// Accepts a list of `(path, offset, size)` tuples, a `total_size`, and an
 /// optional `hash_block_size` (defaults to 100 MB).
-/// Returns `(memoryview, [hash_hex_strings])`.
+/// Returns `(MmapBuffer, [hash_hex_strings])`. Use `memoryview(buf)` for
+/// zero-copy access; the mmap is freed when the `MmapBuffer` is GC'd.
 #[pyfunction]
 #[pyo3(signature = (file_list, total_size, hash_block_size=None))]
 fn pack_files_with_offsets(
@@ -205,9 +268,12 @@ fn pack_files_with_offsets(
     let block_size = hash_block_size.unwrap_or(HASH_BLOCK_SIZE);
 
     if file_list.is_empty() || total_size == 0 {
-        let mv = pyo3::types::PyBytes::new(py, &[]).into_any().unbind();
+        let buf = Py::new(py, MmapBuffer {
+            ptr: std::ptr::null_mut(),
+            size: 0,
+        })?;
         let hashes = pyo3::types::PyList::empty(py).into_any().unbind();
-        let tuple = pyo3::types::PyTuple::new(py, [mv, hashes])?;
+        let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), hashes])?;
         return Ok(tuple.into_any().unbind());
     }
 
@@ -223,29 +289,21 @@ fn pack_files_with_offsets(
     pack_files_into(buf_ptr, &files);
     let hashes = compute_block_hashes(buf_ptr, total_size, block_size);
 
-    // SAFETY: buffer is a valid pointer to total_size bytes. We create a
-    // writable memoryview so RDMA can use it. Python takes ownership of
-    // the view; the mmap region must outlive it.
-    unsafe {
-        let buf_obj =
-            ffi::PyMemoryView_FromMemory(buffer as *mut _, total_size as isize, ffi::PyBUF_WRITE);
-        if buf_obj.is_null() {
-            libc::munmap(buffer, total_size);
-            return Err(PyErr::fetch(py));
-        }
-        let mv = Py::<PyAny>::from_owned_ptr(py, buf_obj);
-        let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
-        let tuple = pyo3::types::PyTuple::new(py, [mv, py_hashes])?;
-        Ok(tuple.into_any().unbind())
-    }
+    let buf = Py::new(py, MmapBuffer {
+        ptr: buffer,
+        size: total_size,
+    })?;
+    let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
+    let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), py_hashes])?;
+    Ok(tuple.into_any().unbind())
 }
 
-/// Pack files into a named file-backed mmap with block hashes.
 /// Load a single file into anonymous mmap and compute block hashes in parallel.
 ///
 /// Reads the file using the same parallel pread strategy as `pack_files_into`
 /// (16 threads, 64 MB chunks) and computes xxh64 hashes over the result.
-/// Returns `(memoryview, [hash_hex_strings])`.
+/// Returns `(MmapBuffer, [hash_hex_strings])`. Use `memoryview(buf)` for
+/// zero-copy access.
 ///
 /// This is ~3-4x faster than the equivalent Python loop (`f.read(64MB)` +
 /// memoryview copy + separate xxhash pass) because it avoids the Python bytes
@@ -266,9 +324,12 @@ fn load_file_and_hash(
         .len() as usize;
 
     if file_size == 0 {
-        let mv = pyo3::types::PyBytes::new(py, &[]).into_any().unbind();
+        let buf = Py::new(py, MmapBuffer {
+            ptr: std::ptr::null_mut(),
+            size: 0,
+        })?;
         let hashes = pyo3::types::PyList::empty(py).into_any().unbind();
-        let tuple = pyo3::types::PyTuple::new(py, [mv, hashes])?;
+        let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), hashes])?;
         return Ok(tuple.into_any().unbind());
     }
 
@@ -291,20 +352,13 @@ fn load_file_and_hash(
     pack_files_into(buf_ptr, &files);
     let hashes = compute_block_hashes(buf_ptr, file_size, block_size);
 
-    // SAFETY: buffer is a valid mmap pointer of alloc_size bytes.
-    // PyMemoryView_FromMemory creates a Python view; null check handles failure.
-    unsafe {
-        let buf_obj =
-            ffi::PyMemoryView_FromMemory(buffer as *mut _, alloc_size as isize, ffi::PyBUF_WRITE);
-        if buf_obj.is_null() {
-            libc::munmap(buffer, alloc_size);
-            return Err(PyErr::fetch(py));
-        }
-        let mv = Py::<PyAny>::from_owned_ptr(py, buf_obj);
-        let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
-        let tuple = pyo3::types::PyTuple::new(py, [mv, py_hashes])?;
-        Ok(tuple.into_any().unbind())
-    }
+    let buf = Py::new(py, MmapBuffer {
+        ptr: buffer,
+        size: alloc_size,
+    })?;
+    let py_hashes = pyo3::types::PyList::new(py, &hashes)?.into_any().unbind();
+    let tuple = pyo3::types::PyTuple::new(py, [buf.into_any(), py_hashes])?;
+    Ok(tuple.into_any().unbind())
 }
 
 /// Load a file into a pre-existing buffer and compute block hashes.
@@ -359,6 +413,7 @@ fn load_file_into_buffer(
 
 /// Register Python bindings for the fast_pack module.
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<MmapBuffer>()?;
     let f = wrap_pyfunction!(pack_files_with_offsets, module)?;
     f.setattr(
         "__module__",

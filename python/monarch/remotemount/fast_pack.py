@@ -19,7 +19,7 @@ from monarch._rust_bindings.monarch_extension.fast_pack import (
 logger: logging.Logger = logging.getLogger(__name__)
 
 CHUNK_SIZE: int = (1024 * 1024 * 1024) * 8
-HASH_BLOCK_SIZE: int = 100 * 1024 * 1024  # 100MB blocks for incremental diffing
+HASH_BLOCK_SIZE: int = 64 * 1024 * 1024  # 64MB blocks for incremental diffing
 
 
 # pyre-fixme[24]: Generic type `memoryview` expects 1 type parameter.
@@ -139,7 +139,8 @@ def pack_directory_chunked(
     if total_size == 0:
         return fs_metadata, None, [], []
 
-    staging_mv, hashes = _c_pack_files(file_list, total_size)
+    buf, hashes = _c_pack_files(file_list, total_size)
+    staging_mv = memoryview(buf)
     chunks = [
         staging_mv[i : i + chunk_size] for i in range(0, len(staging_mv), chunk_size)
     ]
