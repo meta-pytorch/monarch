@@ -55,7 +55,7 @@ This allows the port to be sent across the network or passed into other messages
 pub struct PortRef<M> {
     port_id: PortId,
     reducer_spec: Option<ReducerSpec>,
-    reducer_opts: Option<ReducerOpts>,
+    streaming_opts: StreamingReducerOpts,
     phantom: PhantomData<M>,
     return_undeliverable: bool,
 }

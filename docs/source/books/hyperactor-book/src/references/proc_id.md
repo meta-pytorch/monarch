@@ -17,17 +17,20 @@ Procs are identified by a direct channel address and name:
     Ord,
     Named,
 )]
-pub struct ProcId(pub ChannelAddr, pub String);
+pub struct ProcId(ChannelAddr, String);
 ```
 
 ## Construction
 
-Construct a `ProcId` with a channel address and proc name:
+Construct a `ProcId` with a channel address and proc name. Fields are private; use a named constructor:
 ```rust
 use hyperactor::reference::ProcId;
 
 let addr = "tcp:127.0.0.1:8080".parse()?;
-let proc = ProcId(addr, "service".to_string());
+// `unique` appends an address hash to make the name globally unique:
+let proc = ProcId::unique(addr.clone(), "service");
+// `with_name` uses the name as-is (for deserialization or already-unique names):
+let proc = ProcId::with_name(addr, "service");
 ```
 
 See [Host](../procs/host.md) for how procs are used in the Host architecture.

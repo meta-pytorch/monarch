@@ -13,7 +13,6 @@ async fn bootstrap_canonical_simple() {
 
     // 1) Create a "root" direct-addressed proc.
     let proc = Proc::direct(ChannelTransport::Unix.any(), "root".to_string())
-        .await
         .unwrap();
 
     // 2) Create an actor instance we'll use to send and receive messages.
