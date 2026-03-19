@@ -317,8 +317,11 @@ pub fn get_registered_cuda_segments(
                 .assume_init();
             segment_count as usize
         ];
-        let actual_count =
-            rdmaxcel_sys::rdma_get_all_segment_info(pd, segments.as_mut_ptr(), segment_count);
+        let actual_count = rdmaxcel_sys::rdma_get_all_registered_segment_info(
+            pd,
+            segments.as_mut_ptr(),
+            segment_count,
+        );
 
         if actual_count > 0 {
             segments.truncate(actual_count as usize);
