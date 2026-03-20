@@ -21,6 +21,7 @@ mod mesh_controller;
 mod tensor_worker;
 
 mod blocking;
+mod chunked_fuse;
 mod fast_pack;
 mod panic;
 mod trace;
@@ -229,6 +230,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::fast_pack::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.fast_pack",
+    )?)?;
+
+    crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.chunked_fuse",
     )?)?;
 
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(
