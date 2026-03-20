@@ -111,7 +111,7 @@ def test_actor_failure():
         actor = this_host().spawn_procs().spawn("actor", Lambda)
         actor.run.broadcast(error)
 
-    capture.assert_fault_occurred("This occurred because the actor itself failed\\.")
+    capture.assert_fault_occurred("and all its descendants have failed\\.")
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -127,7 +127,9 @@ def test_proc_failure():
     # Any actors on the proc mesh can report the proc failure, so it might be
     # "nested" or it might be other broken actors such as "logger".
     capture.assert_fault_occurred("(nested|logger-.*)\\{'a_dim': 0/1\\}")
-    capture.assert_fault_occurred("process failure: Killed\\(sig=9\\)")
+    capture.assert_fault_occurred(
+        "the process this actor was running on failed: Killed\\(sig=9\\)"
+    )
 
 
 @parametrize_config(actor_queue_dispatch={True, False})
@@ -143,5 +145,5 @@ def test_nested_mesh_kills_actor_actor_error():
         actor.nested.call_one(error).get()
         print("ERRORED THE ACTOR")
     capture.assert_fault_occurred(
-        "actor <root>\\.<.*(tests\\.)?test_supervision_hierarchy\\.Nest actor>\\.<.*(tests\\.)?test_supervision_hierarchy\\.Lambda nested\\{'a_dim': 0/1\\}> failed"
+        "one of its descendants, <root>\\.<.*(tests\\.)?test_supervision_hierarchy\\.Nest actor>\\.<.*(tests\\.)?test_supervision_hierarchy\\.Lambda nested\\{'a_dim': 0/1\\}>, failed with the error:"
     )

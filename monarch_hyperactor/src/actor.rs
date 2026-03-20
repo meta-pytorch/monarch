@@ -42,6 +42,7 @@ use hyperactor_mesh::transport::default_bind_spec;
 use hyperactor_mesh::value_mesh::ValueOverlay;
 use monarch_types::PickledPyObject;
 use monarch_types::SerializablePyErr;
+use monarch_types::py_global;
 use ndslice::Point;
 use ndslice::extent;
 use pyo3::IntoPyObjectExt;
@@ -81,6 +82,12 @@ use crate::runtime::get_tokio_runtime;
 use crate::runtime::monarch_with_gil;
 use crate::runtime::monarch_with_gil_blocking;
 use crate::supervision::PyMeshFailure;
+
+py_global!(
+    unhandled_fault_hook_exception,
+    "monarch._src.actor.supervision",
+    "UnhandledFaultHookException"
+);
 
 #[pyclass(module = "monarch._rust_bindings.monarch_hyperactor.actor")]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -632,11 +639,32 @@ impl PythonActor {
                     work = work_rx.recv() => {
                         let work = work.expect("inconsistent work queue state");
                         if let Err(err) = work.handle(&mut actor, instance).await {
+                            // Check for UnhandledFaultHookException on the raw
+                            // anyhow::Error before wrapping in ActorErrorKind.
+                            // If __supervise__ already processed the supervision
+                            // event and the hook raised, don't re-handle it via
+                            // handle_supervision_event — that would call
+                            // __supervise__ a second time.
+                            let is_hook_exception = monarch_with_gil(|py| {
+                                err.downcast_ref::<pyo3::PyErr>()
+                                    .is_some_and(|pyerr| {
+                                        pyerr.is_instance(
+                                            py,
+                                            &unhandled_fault_hook_exception(py),
+                                        )
+                                    })
+                            }).await;
+
                             let kind = ActorErrorKind::processing(err);
                             let err = ActorError {
                                 actor_id: Box::new(instance.self_id().clone()),
                                 kind: Box::new(kind),
                             };
+
+                            if is_hook_exception {
+                                break Some(err);
+                            }
+
                             // Give the actor a chance to handle the error produced
                             // in its own message handler. This is important because
                             // we want Undeliverable<MessageEnvelope>, which returns
@@ -1321,6 +1349,17 @@ impl Handler<MeshFailure> for PythonActor {
                     }
                 }
                 Err(err) => {
+                    // If __supervise__ raised UnhandledFaultHookException,
+                    // return the PyErr directly without wrapping in
+                    // ActorErrorKind. The custom run loop detects this by
+                    // downcasting the anyhow::Error to PyErr.
+                    if err.is_instance(
+                        py,
+                        &unhandled_fault_hook_exception(py),
+                    ) {
+                        return Err(err.into());
+                    }
+
                     // Any other exception will supersede in the propagation chain,
                     // and will become its own supervision failure.
                     // Include the event it was handling in the error message.

@@ -732,15 +732,15 @@ pub fn live_actor_payload(cell: &InstanceCell) -> IntrospectResult {
     // FI-3: failure_info is computed from the same status value as
     // actor_status, ensuring they agree on whether the actor failed.
     let failure = if status.is_failed() {
-        cell.supervision_event().map(|event| {
-            let root = event.actually_failing_actor();
-            FailureSnapshot {
+        cell.supervision_event().and_then(|event| {
+            let root = event.actually_failing_actor()?;
+            Some(FailureSnapshot {
                 error_message: event.actor_status.to_string(),
                 root_cause_actor: root.actor_id.to_string(),
                 root_cause_name: root.display_name.clone(),
                 occurred_at: format_timestamp(event.occurred_at),
                 is_propagated: root.actor_id != *actor_id,
-            }
+            })
         })
     } else {
         None
