@@ -1057,47 +1057,6 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
 
 impl<T: MailboxSender + Clone + Sized + Sync + Send + 'static> MailboxServer for T {}
 
-struct Buffer<T: Message> {
-    queue: mpsc::UnboundedSender<(T, PortHandle<Undeliverable<T>>)>,
-    #[allow(dead_code)]
-    processed: watch::Receiver<usize>,
-    seq: AtomicUsize,
-}
-
-impl<T: Message> Buffer<T> {
-    fn new<Fut>(
-        process: impl Fn(T, PortHandle<Undeliverable<T>>) -> Fut + Send + Sync + 'static,
-    ) -> Self
-    where
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        let (queue, mut next) = mpsc::unbounded_channel();
-        let (last_processed, processed) = watch::channel(0);
-        crate::init::get_runtime().spawn(async move {
-            let mut seq = 0;
-            while let Some((msg, return_handle)) = next.recv().await {
-                process(msg, return_handle).await;
-                seq += 1;
-                let _ = last_processed.send(seq);
-            }
-        });
-        Self {
-            queue,
-            processed,
-            seq: AtomicUsize::new(0),
-        }
-    }
-
-    fn send(
-        &self,
-        item: (T, PortHandle<Undeliverable<T>>),
-    ) -> Result<(), mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>> {
-        self.seq.fetch_add(1, Ordering::SeqCst);
-        self.queue.send(item)?;
-        Ok(())
-    }
-}
-
 /// A mailbox server client that transmits messages on a Tx channel.
 pub struct MailboxClient {
     tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync>,
