@@ -1073,7 +1073,12 @@ impl<L: Link> Session<L, Disconnected> {
                             state: Connected { mux },
                         });
                     }
-                    Some(Err(_)) => {
+                    Some(Err(err)) => {
+                        tracing::info!(
+                            dest = %link.dest(),
+                            error = %err,
+                            "connect_by: link.next() failed, retrying"
+                        );
                         // Brief pause so the timer driver can process
                         // the deadline on current-thread runtimes.
                         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
