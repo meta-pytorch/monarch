@@ -21,6 +21,7 @@ mod mesh_controller;
 mod tensor_worker;
 
 mod blocking;
+mod fast_pack;
 mod panic;
 mod trace;
 
@@ -223,6 +224,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::blocking::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.blocking",
+    )?)?;
+
+    crate::fast_pack::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.fast_pack",
     )?)?;
 
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(

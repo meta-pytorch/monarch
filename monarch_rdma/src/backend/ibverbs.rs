@@ -50,7 +50,7 @@ pub struct IbvBuffer {
     pub device_name: String,
 }
 
-/// A single RDMA op for the [`IbvSubmit`] message.
+/// A single RDMA op for the [`IbvBackend`](manager_actor::IbvBackend).
 #[derive(Debug, Clone, Named)]
 pub struct IbvOp {
     pub op_type: RdmaOpType,

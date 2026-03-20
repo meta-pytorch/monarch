@@ -53,7 +53,7 @@ clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "
 crossterm = { version = "0.28", features = ["event-stream", "serde"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
-erased-serde = "0.4.9"
+erased-serde = "0.4.10"
 fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 fbinit-tokio = { version = "0.1.2", git = "https://github.com/facebookexperimental/rust-shed.git", branch = "main" }
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
@@ -64,7 +64,6 @@ hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh_macros = { version = "0.0.0", path = "../hyperactor_mesh_macros" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 indicatif = { version = "0.18.4", features = ["futures", "improved_unicode", "rayon", "tokio"] }
-inventory = "0.3.22"
 libc = "0.2.139"
 mockall = "0.13.1"
 ndslice = { version = "0.0.0", path = "../ndslice" }
@@ -83,7 +82,7 @@ strum = { version = "0.27.1", features = ["derive"] }
 systemd = { version = "0.10.1", optional = true }
 tempfile = "3.26.0"
 thiserror = "2.0.18"
-tokio = { version = "1.47.1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26.4", features = ["logging", "ring", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.18", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tokio-util = { version = "0.7.18", features = ["full"] }
@@ -97,6 +96,7 @@ zbus = { version = "5.14.0", features = ["async-executor", "async-fs", "async-io
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio", "csv_output"] }
+inventory = "0.3.22"
 itertools = "0.14.0"
 jsonschema = "0.17.0"
 maplit = "1.0"

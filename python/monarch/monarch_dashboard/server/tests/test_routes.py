@@ -167,6 +167,7 @@ class ActorRoutesTest(_RouteTestBase):
             "mesh_id",
             "rank",
             "full_name",
+            "display_name",
             "latest_status",
             "status_timestamp_us",
         }
@@ -217,6 +218,14 @@ class ActorMessagesRoutesTest(_RouteTestBase):
                 m["from_actor_id"] == actor_id or m["to_actor_id"] == actor_id
             )
 
+    def test_actor_messages_include_latest_status(self):
+        all_msgs = self.client.get("/api/messages").get_json()
+        actor_id = all_msgs[0]["from_actor_id"]
+        resp = self.client.get(f"/api/actors/{actor_id}/messages")
+        msgs = resp.get_json()
+        for m in msgs:
+            self.assertIn("latest_status", m)
+
     def test_actor_messages_not_found(self):
         resp = self.client.get("/api/actors/9999/messages")
         self.assertEqual(resp.status_code, 404)
@@ -257,7 +266,6 @@ class MessageRoutesTest(_RouteTestBase):
             "timestamp_us",
             "from_actor_id",
             "to_actor_id",
-            "status",
             "endpoint",
             "port_id",
         }
@@ -312,38 +320,11 @@ class SentMessagesRoutesTest(_RouteTestBase):
             "id",
             "timestamp_us",
             "sender_actor_id",
-            "mesh_id",
+            "actor_mesh_id",
             "view_json",
             "shape_json",
         }
         self.assertEqual(set(sm.keys()), expected_keys)
-
-
-# ---------------------------------------------------------------------------
-# Old endpoints removed
-# ---------------------------------------------------------------------------
-
-
-class RemovedEndpointsTest(_RouteTestBase):
-    def test_host_units_removed(self):
-        resp = self.client.get("/api/host_units")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_proc_meshes_removed(self):
-        resp = self.client.get("/api/proc_meshes")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_procs_removed(self):
-        resp = self.client.get("/api/procs")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_actor_meshes_removed(self):
-        resp = self.client.get("/api/actor_meshes")
-        self.assertEqual(resp.status_code, 404)
-
-    def test_mesh_host_units_removed(self):
-        resp = self.client.get("/api/meshes/1/host_units")
-        self.assertEqual(resp.status_code, 404)
 
 
 # ---------------------------------------------------------------------------

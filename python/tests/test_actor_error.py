@@ -1319,7 +1319,9 @@ async def test_supervise_callback_with_mesh_ref():
     # Supervision events may arrive out of order; check that each rank
     # appears somewhere in the list.
     for rank in range(len(r)):
-        assert any(f"rank={rank}" in msg for msg in r), f"rank={rank} not found in any message"
+        assert any(f"rank={rank}" in msg for msg in r), (
+            f"rank={rank} not found in any message"
+        )
     for msg in r:
         assert "MeshFailure" in msg
         assert "error_actor" in msg
@@ -1347,7 +1349,9 @@ async def test_supervise_callback_when_procs_killed():
     # Supervision events may arrive out of order; check that each rank
     # appears somewhere in the list.
     for rank in range(len(result)):
-        assert any(f"rank={rank}" in msg for msg in result), f"rank={rank} not found in any message"
+        assert any(f"rank={rank}" in msg for msg in result), (
+            f"rank={rank} not found in any message"
+        )
     for msg in result:
         assert "MeshFailure" in msg
         assert "error_actor" in msg

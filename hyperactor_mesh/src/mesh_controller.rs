@@ -784,6 +784,12 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         cx: &Context<Self>,
         CheckState(expected_time): CheckState,
     ) -> Result<(), anyhow::Error> {
+        // A delayed CheckState may arrive after Stop has already dropped
+        // the monitor. Discard it — there is nothing left to poll.
+        if self.monitor.is_none() {
+            return Ok(());
+        }
+
         // This implementation polls every "time_between_checks" duration, checking
         // for changes in the actor states. It can be improved in two ways:
         // 1. Use accumulation, to get *any* actor with a change in state, not *all*
@@ -1138,7 +1144,7 @@ mod tests {
     /// Create a multi-process host mesh that propagates the current
     /// process's config overrides to child processes via Bootstrap.
     #[cfg(fbcode_build)]
-    async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMesh {
+    async fn host_mesh_with_config(n: usize) -> crate::host_mesh::HostMeshShutdownGuard {
         use hyperactor::channel::ChannelTransport;
         use tokio::process::Command;
 
@@ -1167,7 +1173,7 @@ mod tests {
         }
 
         let host_mesh = crate::HostMeshRef::from_hosts(Name::new("test").unwrap(), host_addrs);
-        crate::host_mesh::HostMesh::take(host_mesh)
+        crate::host_mesh::HostMesh::take(host_mesh).shutdown_guard()
     }
 
     /// Verify that actors are cleaned up via the orphan timeout when the

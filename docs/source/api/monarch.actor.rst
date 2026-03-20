@@ -9,7 +9,7 @@ The ``monarch.actor`` module provides the actor-based programming model for dist
 Creating Actors
 ===============
 
-Actors are created on multidmensional meshes of processes that
+Actors are created on multidimensional meshes of processes that
 are launch across hosts. HostMesh represents a mesh of hosts. ProcMesh is a mesh of processes.
 
 .. autoclass:: HostMesh

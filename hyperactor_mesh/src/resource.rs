@@ -104,6 +104,15 @@ impl Status {
         matches!(self, Self::Failed(_) | Self::Timeout(_))
     }
 
+    /// Returns whether the status is fully terminal (the resource has
+    /// stopped, failed, or timed out — but NOT merely `Stopping`).
+    pub fn is_terminated(&self) -> bool {
+        matches!(
+            self,
+            Status::Stopped | Status::Failed(_) | Status::Timeout(_)
+        )
+    }
+
     pub fn is_healthy(&self) -> bool {
         matches!(self, Status::Initializing | Status::Running)
     }
@@ -119,6 +128,15 @@ impl From<bootstrap::ProcStatus> for Status {
             ProcStatus::Stopped { .. } => Status::Stopped,
             ProcStatus::Failed { reason } => Status::Failed(reason),
             ProcStatus::Killed { .. } => Status::Failed(format!("{}", status)),
+        }
+    }
+}
+
+impl From<hyperactor::host::LocalProcStatus> for Status {
+    fn from(status: hyperactor::host::LocalProcStatus) -> Self {
+        match status {
+            hyperactor::host::LocalProcStatus::Stopping => Status::Stopping,
+            hyperactor::host::LocalProcStatus::Stopped => Status::Stopped,
         }
     }
 }
@@ -177,6 +195,33 @@ impl Bind for Rank {
 pub struct GetRankStatus {
     /// The name of the resource.
     pub name: Name,
+    /// Sparse status updates (overlays) from a rank.
+    #[binding(include)]
+    pub reply: hyperactor_reference::PortRef<StatusOverlay>,
+}
+
+/// Like [`GetRankStatus`], but the handler defers its reply until the
+/// resource's status is >= `min_status`. This avoids the race where
+/// the caller sees `Stopping` before the process has actually exited.
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Named,
+    Handler,
+    HandleClient,
+    RefClient,
+    Bind,
+    Unbind
+)]
+pub struct WaitRankStatus {
+    /// The name of the resource.
+    pub name: Name,
+    /// The minimum status the caller wants to observe.
+    /// The handler will not reply until the resource's status
+    /// is >= this threshold.
+    pub min_status: Status,
     /// Sparse status updates (overlays) from a rank.
     #[binding(include)]
     pub reply: hyperactor_reference::PortRef<StatusOverlay>,
