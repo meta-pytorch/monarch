@@ -67,14 +67,21 @@ impl ActorSupervisionEvent {
 
     /// Walk the `UnhandledSupervisionEvent` chain to find the root-cause
     /// actor that originally failed.
-    pub fn actually_failing_actor(&self) -> &ActorSupervisionEvent {
+    ///
+    /// Returns `None` if the event is not a failure.
+    pub fn actually_failing_actor(&self) -> Option<&ActorSupervisionEvent> {
+        if !self.is_error() {
+            return None;
+        }
+
         let mut event = self;
         while let ActorStatus::Failed(ActorErrorKind::UnhandledSupervisionEvent(e)) =
             &event.actor_status
         {
             event = e;
         }
-        event
+
+        Some(event)
     }
 
     /// This event is for a a supervision error.
@@ -98,7 +105,7 @@ fn fmt_status<'a>(
         {
             // Host agent stopped - use simplified message from D86984496
             let name = actor_id.proc_id().addr().to_string();
-            write!(
+            writeln!(
                 f,
                 "The process {} owned by this actor became unresponsive and is assumed dead, check the log on the host for details",
                 name
@@ -109,15 +116,15 @@ fn fmt_status<'a>(
             msg,
             during_handling_of,
         )) => {
-            write!(f, "{}", msg)?;
+            writeln!(f, "{}", msg.trim_end())?;
             Ok(Some(during_handling_of))
         }
         ActorStatus::Failed(ActorErrorKind::Generic(msg)) => {
-            write!(f, "{}", msg)?;
+            writeln!(f, "{}", msg.trim_end())?;
             Ok(None)
         }
         status => {
-            write!(f, "{}", status)?;
+            writeln!(f, "{}", status)?;
             Ok(None)
         }
     }
@@ -126,28 +133,38 @@ fn fmt_status<'a>(
 impl fmt::Display for ActorSupervisionEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let actor_name = self.actor_name();
-        writeln!(
-            f,
-            "The actor {} and all its descendants have failed.",
-            actor_name
-        )?;
-        let failing_event = self.actually_failing_actor();
-        let failing_actor = failing_event.actor_name();
-        let its_name = if failing_actor == actor_name {
-            "itself"
+        if let Some(next_event) = self.actually_failing_actor() {
+            let next_name = next_event.actor_name();
+            if next_name == actor_name {
+                // The reporting actor is also the one that failed.
+                writeln!(
+                    f,
+                    "The actor {} and all its descendants have failed. It errored with:",
+                    actor_name
+                )?;
+            } else {
+                // A descendant caused the failure.
+                writeln!(
+                    f,
+                    "The actor {} and all its descendants failed because one of its descendants, {}, failed with the error:",
+                    actor_name, next_name
+                )?;
+            }
+            let during_handling_of = fmt_status(&next_event.actor_id, &next_event.actor_status, f)?;
+            if let Some(event) = during_handling_of {
+                writeln!(
+                    f,
+                    "This error occurred during the handling of another failure:"
+                )?;
+                write!(indented(f).with_str("  "), "{}", event)?;
+            }
         } else {
-            &failing_actor
-        };
-        writeln!(f, "This occurred because the actor {} failed.", its_name)?;
-        writeln!(f, "The error was:")?;
-        let during_handling_of =
-            fmt_status(&failing_event.actor_id, &failing_event.actor_status, f)?;
-        if let Some(event) = during_handling_of {
             writeln!(
                 f,
-                "This error occurred during the handling of another failure:"
+                "Non-failure supervision event from actor {}.",
+                actor_name
             )?;
-            fmt::Display::fmt(event, f)?;
+            fmt_status(&self.actor_id, &self.actor_status, f)?;
         }
         Ok(())
     }

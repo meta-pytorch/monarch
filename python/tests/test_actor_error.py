@@ -849,7 +849,7 @@ async def test_process_exit_handling(error_actor_cls) -> None:
         RuntimeError,
         # Message changes depending on actor_queue_dispatch.
         match="failure on mesh .*error.* at rank 0 with event: "
-        "The actor.*ErrorActor error.*was running on a process which and all its descendants have failed"
+        "The actor.*ErrorActor error.*and all its descendants have failed"
         "|"
         "Actor.*error.*exited because of the following reason",
     ):
@@ -938,7 +938,8 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
         match="Endpoint call healthy.check\\(\\) failed, Actor.*healthy.*is "
         "unhealthy with reason:.*timeout waiting for response from host mesh agent for"
         "|actor mesh is stopped due to proc mesh shutdown"
-        "|The actor .* and all its descendants have failed",
+        "|The actor .* and all its descendants have failed"
+        "|Non-failure supervision event from actor",
     ):
         await actor_mesh.check.call()
 
@@ -1377,7 +1378,7 @@ async def test_supervise_callback_unhandled():
     )
 
     message = re.compile(
-        r"The actor .* and all its descendants have failed\..*error_actor",
+        r"The actor .* and all its descendants failed.*error_actor",
         re.DOTALL,
     )
     # Note that __supervise__ will not get called until the next message

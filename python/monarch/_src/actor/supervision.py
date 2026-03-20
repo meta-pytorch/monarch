@@ -14,6 +14,17 @@ from datetime import datetime
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 
 
+class UnhandledFaultHookException(Exception):
+    """Wraps exceptions raised by the unhandled fault hook.
+
+    When `unhandled_fault_hook` raises (e.g. `sys.exit`), the
+    `RootClientActor` catches the exception, logs it, and re-raises
+    it wrapped in this type. The Rust root-client message loop
+    recognises this wrapper and skips re-dispatching the supervision
+    event, which would otherwise call `__supervise__` a second time.
+    """
+
+
 def unhandled_fault_hook(failure: MeshFailure) -> None:
     """When a supervision event is unhandled and is propagated back to the client,
     this hook is called.
@@ -43,19 +54,4 @@ def unhandled_fault_hook(failure: MeshFailure) -> None:
     "KeyboardInterrupt" happening that you didn't send, it's because there was
     an unhandled fault.
     """
-    from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event
-
-    pid = os.getpid()
-    hostname = socket.gethostname()
-    message = (
-        f"Unhandled monarch error on the root actor, hostname={hostname}, "
-        f"PID={pid} at time {datetime.now()}: {failure.report()}\n"
-        "Delivering KeyboardInterrupt to main thread to exit the program\n"
-    )
-    # use stderr, not a logger because loggers are sometimes set
-    # not print anything (e.g. in pytest)
-    sys.stderr.write(message)
-    sys.stderr.flush()
-    # In addition to writing to stderr, log the event to telemetry.
-    instant_event(message)
     sys.exit(1)
