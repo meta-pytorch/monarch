@@ -11,11 +11,30 @@ actors, status events, messages, and sent messages.  Every handler returns
 JSON and uses standard HTTP status codes (200, 404).
 """
 
+from typing import Any
+
 from flask import Blueprint, jsonify, request
 
 from . import db
 
 api = Blueprint("api", __name__, url_prefix="/api")
+
+# JavaScript cannot safely represent integers > 2^53 - 1.  Monarch uses
+# 64-bit IDs, so we convert them to strings before sending JSON.
+_JS_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _sanitize_for_js(obj: Any) -> Any:
+    """Recursively convert integers exceeding JS MAX_SAFE_INTEGER to strings."""
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, int):
+        return str(obj) if abs(obj) > _JS_MAX_SAFE_INTEGER else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_js(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_js(item) for item in obj]
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -32,13 +51,16 @@ def health():
 @api.route("/summary")
 def summary():
     """Aggregate metrics for the summary dashboard."""
-    return jsonify(db.get_summary())
+    return jsonify(_sanitize_for_js(db.get_summary()))
 
 
 @api.route("/dag")
 def dag():
     """Classified nodes and edges for the DAG visualization."""
-    return jsonify(db.get_dag_data())
+    try:
+        return jsonify(_sanitize_for_js(db.get_dag_data()))
+    except Exception as exc:
+        return jsonify({"error": str(exc), "nodes": [], "edges": []}), 500
 
 
 # ---------------------------------------------------------------------------
@@ -48,11 +70,19 @@ def dag():
 
 @api.route("/meshes")
 def list_meshes():
-    """List meshes.  Optional: ?class=Host&parent_mesh_id=1"""
+    """List meshes.  Optional: ?class=Host&parent_mesh_id=1&exclude_classes=Host,Proc"""
     class_filter = request.args.get("class", type=str)
     parent_mesh_id = request.args.get("parent_mesh_id", type=int)
+    exclude_raw = request.args.get("exclude_classes", type=str)
+    exclude_classes = exclude_raw.split(",") if exclude_raw else None
     return jsonify(
-        db.list_meshes(class_filter=class_filter, parent_mesh_id=parent_mesh_id)
+        _sanitize_for_js(
+            db.list_meshes(
+                class_filter=class_filter,
+                parent_mesh_id=parent_mesh_id,
+                exclude_classes=exclude_classes,
+            )
+        )
     )
 
 
@@ -62,16 +92,25 @@ def get_mesh(mesh_id):
     mesh = db.get_mesh(mesh_id)
     if mesh is None:
         return jsonify({"error": "mesh not found"}), 404
-    return jsonify(mesh)
+    return jsonify(_sanitize_for_js(mesh))
 
 
 @api.route("/meshes/<int:mesh_id>/children")
 def get_mesh_children(mesh_id):
-    """Get child meshes of a given mesh."""
+    """Get child meshes of a given mesh.  Optional: ?mesh_class=Proc&exclude_classes=Host,Proc"""
     parent = db.get_mesh(mesh_id)
     if parent is None:
         return jsonify({"error": "mesh not found"}), 404
-    return jsonify(db.get_mesh_children(mesh_id))
+    mesh_class = request.args.get("mesh_class", type=str)
+    exclude_raw = request.args.get("exclude_classes", type=str)
+    exclude_classes = exclude_raw.split(",") if exclude_raw else None
+    return jsonify(
+        _sanitize_for_js(
+            db.get_mesh_children(
+                mesh_id, mesh_class=mesh_class, exclude_classes=exclude_classes
+            )
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +122,7 @@ def get_mesh_children(mesh_id):
 def list_actors():
     """List all actors.  Optional: ?mesh_id=1"""
     mesh_id = request.args.get("mesh_id", type=int)
-    return jsonify(db.list_actors(mesh_id=mesh_id))
+    return jsonify(_sanitize_for_js(db.list_actors(mesh_id=mesh_id)))
 
 
 @api.route("/actors/<int:actor_id>")
@@ -98,7 +137,7 @@ def get_actor(actor_id):
     else:
         actor["latest_status"] = None
         actor["status_timestamp_us"] = None
-    return jsonify(actor)
+    return jsonify(_sanitize_for_js(actor))
 
 
 @api.route("/actors/<int:actor_id>/status_events")
@@ -107,7 +146,7 @@ def get_actor_status_events(actor_id):
     actor = db.get_actor(actor_id)
     if actor is None:
         return jsonify({"error": "actor not found"}), 404
-    return jsonify(db.list_actor_status_events(actor_id))
+    return jsonify(_sanitize_for_js(db.list_actor_status_events(actor_id)))
 
 
 @api.route("/actors/<int:actor_id>/messages")
@@ -116,7 +155,7 @@ def get_actor_messages(actor_id):
     actor = db.get_actor(actor_id)
     if actor is None:
         return jsonify({"error": "actor not found"}), 404
-    return jsonify(db.get_actor_messages(actor_id))
+    return jsonify(_sanitize_for_js(db.get_actor_messages(actor_id)))
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +168,7 @@ def list_messages():
     """List messages.  Optional: ?from_actor_id=1&to_actor_id=2"""
     from_id = request.args.get("from_actor_id", type=int)
     to_id = request.args.get("to_actor_id", type=int)
-    return jsonify(db.list_messages(from_id, to_id))
+    return jsonify(_sanitize_for_js(db.list_messages(from_id, to_id)))
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +180,7 @@ def list_messages():
 def list_message_status_events():
     """List message status events.  Optional: ?message_id=5"""
     message_id = request.args.get("message_id", type=int)
-    return jsonify(db.list_message_status_events(message_id))
+    return jsonify(_sanitize_for_js(db.list_message_status_events(message_id)))
 
 
 # ---------------------------------------------------------------------------
@@ -153,4 +192,4 @@ def list_message_status_events():
 def list_sent_messages():
     """List sent messages.  Optional: ?sender_actor_id=1"""
     sender_id = request.args.get("sender_actor_id", type=int)
-    return jsonify(db.list_sent_messages(sender_id))
+    return jsonify(_sanitize_for_js(db.list_sent_messages(sender_id)))

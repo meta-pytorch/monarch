@@ -104,6 +104,18 @@ wirevalue::register_type!(GspawnResult);
 struct RepublishIntrospect;
 wirevalue::register_type!(RepublishIntrospect);
 
+/// py-spy attaches to `std::process::id()` to capture Python stacks.
+/// See PS-1 in `introspect` module doc.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct PySpyDump {
+    /// Include per-thread stacks.
+    pub threads: bool,
+    /// Reply port for the result.
+    #[reply]
+    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
+}
+wirevalue::register_type!(PySpyDump);
+
 /// Collect live actor children and system actor children from the
 /// proc's instance DashMap using `all_instance_keys()` with point
 /// lookups. This avoids the convoy starvation from `all_actor_ids()`
@@ -231,6 +243,13 @@ struct ActorInstanceState {
     /// operation (spawn, stop, supervision event). Used for last-writer-wins
     /// ordering in the mesh controller.
     generation: u64,
+    /// Pending `WaitRankStatus` callers: each entry is the minimum
+    /// status threshold and the reply port to send once the threshold
+    /// is met.
+    pending_wait_status: Vec<(
+        resource::Status,
+        hyperactor_reference::PortRef<crate::StatusOverlay>,
+    )>,
 }
 
 impl ActorInstanceState {
@@ -282,8 +301,12 @@ impl ActorInstanceState {
         }
     }
 
-    /// Send the current state to all streaming subscribers.
-    fn notify_subscribers(&self, cx: &impl hyperactor::context::Actor, name: &Name) {
+    /// Notify all observers that this actor's status has changed:
+    /// streaming subscribers get the full state, and one-shot
+    /// `WaitRankStatus` waiters whose threshold is now met get replied
+    /// to and removed.
+    fn notify_status_changed(&mut self, cx: &impl hyperactor::context::Actor, name: &Name) {
+        // Streaming subscribers (persistent).
         let state = self.to_state(name);
         for subscriber in &self.subscribers {
             let mut headers = Flattrs::new();
@@ -296,6 +319,21 @@ impl ActorInstanceState {
                 );
             }
         }
+
+        // One-shot waiters (predicated).
+        let status = self.status();
+        self.pending_wait_status.retain(|(min_status, reply)| {
+            if status >= *min_status {
+                let rank = self.create_rank;
+                let overlay =
+                    crate::StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status.clone())])
+                        .expect("valid single-run overlay");
+                let _ = reply.send(cx, overlay);
+                false
+            } else {
+                true
+            }
+        });
     }
 }
 
@@ -343,7 +381,9 @@ struct SelfCheck {}
         resource::StreamState<ActorState> { cast = true },
         resource::KeepaliveGetState<ActorState> { cast = true },
         resource::GetRankStatus { cast = true },
+        resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
+        PySpyDump,
     ]
 )]
 pub struct ProcAgent {
@@ -814,7 +854,7 @@ impl Handler<ActorSupervisionEvent> for ProcAgent {
                 instance.supervision_event = Some(event.clone());
                 instance.generation += 1;
                 let name = name.clone();
-                instance.notify_subscribers(cx, &name);
+                instance.notify_status_changed(cx, &name);
             }
             // Defer republish so introspection picks up is_poisoned /
             // failed_actor_count without blocking the message loop.
@@ -860,6 +900,20 @@ impl Handler<RepublishIntrospect> for ProcAgent {
             self.introspect_dirty = false;
             self.publish_introspect_properties(cx);
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyDump,
+    ) -> Result<(), anyhow::Error> {
+        let runner = crate::pyspy::PySpyRunner;
+        let result = runner.dump_self(message.threads).await;
+        message.result.send(cx, result)?;
         Ok(())
     }
 }
@@ -916,6 +970,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                     subscribers: Vec::new(),
                     expiry_time: None,
                     generation: 1,
+                    pending_wait_status: Vec::new(),
                 },
             );
             return Ok(());
@@ -944,6 +999,7 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
                 subscribers: Vec::new(),
                 expiry_time: None,
                 generation: 1,
+                pending_wait_status: Vec::new(),
             },
         );
 
@@ -956,19 +1012,17 @@ impl Handler<resource::CreateOrUpdate<ActorSpec>> for ProcAgent {
 impl Handler<resource::Stop> for ProcAgent {
     async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
         let actor_id = match self.actor_states.get_mut(&message.name) {
-            Some(actor_state) => match &actor_state.spawn {
-                Ok(actor_id) => {
-                    if actor_state.stop_initiated {
-                        None
-                    } else {
-                        actor_state.stop_initiated = true;
-                        actor_state.generation += 1;
-                        actor_state.notify_subscribers(cx, &message.name);
-                        Some(actor_id.clone())
-                    }
+            Some(actor_state) => {
+                let id = actor_state.spawn.as_ref().ok().cloned();
+                if id.is_some() && !actor_state.stop_initiated {
+                    actor_state.stop_initiated = true;
+                    actor_state.generation += 1;
+                    actor_state.notify_status_changed(cx, &message.name);
+                    id
+                } else {
+                    None
                 }
-                Err(_) => None,
-            },
+            }
             None => None,
         };
         if let Some(actor_id) = actor_id {
@@ -1051,6 +1105,42 @@ impl Handler<resource::GetRankStatus> for ProcAgent {
                 get_rank_status.reply.port_id().actor_id(),
                 e
             );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::WaitRankStatus> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: resource::WaitRankStatus,
+    ) -> anyhow::Result<()> {
+        use crate::StatusOverlay;
+        use crate::resource::Status;
+
+        let (rank, status) = match self.actor_states.get(&msg.name) {
+            Some(state) => (state.create_rank, state.status()),
+            None => (usize::MAX, Status::NotExist),
+        };
+
+        // If already at or past the requested threshold, reply immediately.
+        if status >= msg.min_status || rank == usize::MAX {
+            let overlay = if rank == usize::MAX {
+                StatusOverlay::new()
+            } else {
+                StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                    .expect("valid single-run overlay")
+            };
+            let _ = msg.reply.send(cx, overlay);
+            return Ok(());
+        }
+
+        // Otherwise, stash the waiter. It will be flushed when the
+        // status changes (supervision event or stop).
+        if let Some(state) = self.actor_states.get_mut(&msg.name) {
+            state.pending_wait_status.push((msg.min_status, msg.reply));
         }
         Ok(())
     }
@@ -1857,7 +1947,7 @@ mod tests {
         // Drop the receiver so the next send bounces as undeliverable.
         drop(sub_rx_2);
 
-        // Stop the second actor — triggers notify_subscribers to the
+        // Stop the second actor — triggers notify_status_changed to the
         // dead subscriber. ProcAgent should handle the undeliverable
         // gracefully.
         agent_ref
