@@ -1445,7 +1445,7 @@ mod tests {
         let instance = testing::instance();
         let mut host_mesh = testing::host_mesh(4).await;
         let proc_mesh = host_mesh
-            .spawn(instance, "test", Extent::unity())
+            .spawn(instance, "test", Extent::unity(), None)
             .await
             .unwrap();
         let actor_mesh: ActorMesh<testactor::TestActor> =
