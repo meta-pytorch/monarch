@@ -256,6 +256,14 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             }
         }
 
+        let mut reconnect_backoff = ExponentialBackoffBuilder::new()
+            .with_initial_interval(Duration::from_millis(10))
+            .with_multiplier(2.0)
+            .with_randomization_factor(0.1)
+            .with_max_interval(Duration::from_secs(5))
+            .with_max_elapsed_time(None)
+            .build();
+
         let reason: String = 'outer: loop {
             let connected = match deliveries.expiry_time() {
                 Some(deadline) => match session.connect_by(deadline).await {
@@ -305,24 +313,46 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             }
             deliveries.requeue_unacked();
 
+            let connected_at = tokio::time::Instant::now();
             let result = {
                 let stream = connected.stream(INITIATOR_TO_ACCEPTOR);
                 session::send_connected(&stream, &mut deliveries, &mut receiver).await
             };
             session = connected.release();
 
+            // Reset backoff if the connection was alive long enough to have
+            // been useful (i.e. not an immediate EOF/error).
+            if connected_at.elapsed() > Duration::from_secs(1) {
+                reconnect_backoff.reset();
+            }
+
             match result {
                 Ok(()) => {
-                    // EOF — connection closed normally, reconnect.
-                    tracing::info!(
-                        dest = %dest,
-                        session_id = session_id.0,
-                        "send_connected returned EOF, reconnecting"
-                    );
+                    // EOF — connection closed normally, reconnect after backoff.
+                    if let Some(delay) = reconnect_backoff.next_backoff() {
+                        tracing::info!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            delay_ms = delay.as_millis() as u64,
+                            "send_connected returned EOF, reconnecting after backoff"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
                 }
                 Err(ref e) => {
                     if log_send_error(e, &dest, session_id.0, "simplex") {
                         break 'outer format!("{log_id}: {e}");
+                    }
+                    // Recoverable error — reconnect after backoff.
+                    if let Some(delay) = reconnect_backoff.next_backoff() {
+                        tracing::info!(
+                            dest = %dest,
+                            session_id = session_id.0,
+                            delay_ms = delay.as_millis() as u64,
+                            error = %e,
+                            "send_connected returned recoverable error, reconnecting after backoff"
+                        );
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }
