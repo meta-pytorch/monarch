@@ -26,7 +26,7 @@ const MOCK_SUMMARY = {
   },
   message_counts: {
     total: 82,
-    by_status: { delivered: 77, failed: 5 },
+    by_status: { complete: 77 },
     by_endpoint: {
       train_step: 18,
       aggregate_gradients: 15,
@@ -55,7 +55,7 @@ const MOCK_SUMMARY = {
         mesh_id: 4,
       },
     ],
-    failed_messages: 5,
+    failed_messages: 0,
   },
   timeline: {
     start_us: 1700000000000000,
@@ -195,11 +195,12 @@ describe("SummaryView", () => {
     });
   });
 
-  it("shows failed messages count", async () => {
+  it("does not show undelivered messages when count is zero", async () => {
     render(<SummaryView />);
     await waitFor(() => {
-      expect(screen.getByText("5 messages failed delivery")).toBeInTheDocument();
+      expect(screen.getByTestId("error-panel")).toBeInTheDocument();
     });
+    expect(screen.queryByText(/messages? not delivered/)).toBeNull();
   });
 
   it("renders message traffic section", async () => {

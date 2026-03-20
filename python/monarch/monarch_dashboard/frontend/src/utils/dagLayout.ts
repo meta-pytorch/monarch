@@ -25,7 +25,7 @@ export type DagTier = "host_mesh" | "host_unit" | "proc_mesh" | "proc_unit" | "a
 /** A node from the /api/dag response (before positioning). */
 export interface ApiDagNode {
   id: string;
-  entity_id: number;
+  entity_id: number | string;
   tier: DagTier;
   label: string;
   subtitle: string;
@@ -56,7 +56,7 @@ export interface DagNode {
   radius: number;
   tier: DagTier;
   status: string;
-  entityId: number;
+  entityId: number | string;
 }
 
 /** An edge connecting two nodes (camelCase for frontend use). */
