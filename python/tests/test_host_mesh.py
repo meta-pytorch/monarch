@@ -9,6 +9,10 @@
 import os
 import pathlib
 import shutil
+import stat
+import sys
+import tempfile
+import textwrap
 import threading
 import time
 from typing import List, Set
@@ -310,4 +314,73 @@ def test_spawn_procs_with_taskset_bind() -> None:
     observed = {frozenset(cpus) for cpus in affinities.values()}
     assert observed == {frozenset({cpu_a}), frozenset({cpu_b})}, (
         f"expected affinities {{{cpu_a}}} and {{{cpu_b}}}, got {affinities}"
+    )
+
+
+class WrapperMarkerActor(Actor):
+    """Returns the PID stamped by the wrapper executable."""
+
+    @endpoint
+    def get_wrapper_pid(self) -> str:
+        return os.environ.get("PYTHON_WRAPPER_PID", "")
+
+    @endpoint
+    def spawn_inner(self) -> "WrapperMarkerActor":
+        """Spawns a new proc via this_host() to test recursive propagation."""
+        return (
+            this_host()
+            .spawn_procs(per_host={"procs": 1})
+            .spawn("inner_marker", WrapperMarkerActor)
+        )
+
+
+def _make_python_wrapper() -> str:
+    """
+    Write a shell wrapper that stamps PYTHON_WRAPPER_PID=$$ (the wrapper
+    shell's PID) and execs to the real Python interpreter.
+
+    Using the PID rather than a plain boolean means each wrapper invocation
+    produces a *different* value.  The recursive test can therefore verify
+    that the wrapper ran a second time (producing a different PID) rather than
+    just inheriting the first PID from the parent process environment.
+    """
+    real_python = sys.executable
+    tmpdir = tempfile.mkdtemp(prefix="monarch_test_python_exe_")
+    wrapper_path = os.path.join(tmpdir, "python_wrapper")
+    with open(wrapper_path, "w") as f:
+        f.write(
+            textwrap.dedent(
+                f"""\
+                #!/bin/sh
+                export PYTHON_WRAPPER_PID=$$
+                exec {real_python} "$@"
+                """
+            )
+        )
+    os.chmod(wrapper_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+    return wrapper_path
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_with_python_executable() -> None:
+    wrapper_path = _make_python_wrapper()
+    modified_host = this_host().with_python_executable(wrapper_path)
+
+    # Direct spawn: proc should be launched via the wrapper; wrapper PID is set.
+    am = modified_host.spawn_procs(per_host={"procs": 1}).spawn(
+        "marker", WrapperMarkerActor
+    )
+    direct_pid = am.get_wrapper_pid.call_one().get()
+    assert direct_pid != "", "wrapper was not executed for direct spawn"
+
+    # Recursive spawn: actor calls this_host().spawn_procs() and the inner proc
+    # should also be launched via the wrapper — proving the bootstrap command is
+    # stored on the HostMeshRef and propagated.  The wrapper PID must differ
+    # from the direct-spawn PID, ruling out simple env-var inheritance.
+    inner_am = am.spawn_inner.call_one().get()
+    inner_pid = inner_am.get_wrapper_pid.call_one().get()
+    assert inner_pid != "", "wrapper was not executed for recursive spawn"
+    assert inner_pid != direct_pid, (
+        "recursive spawn inherited PID instead of re-running wrapper"
     )

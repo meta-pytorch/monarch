@@ -46,7 +46,7 @@ const MOCK_SUMMARY = {
   mesh_counts: { total: 10 },
   hierarchy_counts: { host_meshes: 2, proc_meshes: 4, actor_meshes: 4 },
   actor_counts: { total: 10, by_status: { idle: 5, failed: 1, stopped: 4 } },
-  message_counts: { total: 82, by_status: { delivered: 77 }, by_endpoint: { train_step: 18 }, delivery_rate: 0.939 },
+  message_counts: { total: 82, by_status: { complete: 77 }, by_endpoint: { train_step: 18 }, delivery_rate: 0.939 },
   errors: { failed_actors: [], stopped_actors: [], failed_messages: 0 },
   timeline: { start_us: 1700000000000000, end_us: 1700000300000000, failure_onset_us: null, total_status_events: 207, total_message_events: 246 },
   health_score: 64,

@@ -929,11 +929,9 @@ pub(crate) fn parse_error_envelope(json: &serde_json::Value) -> Vec<Line<'static
 ///
 /// ## Ok variant
 /// Renders a two-field metadata header (`pid` / `binary` basename),
-/// a blank separator, then the stack with thread-header lines styled
-/// using `scheme.node_proc` and indented frame lines styled using
-/// `scheme.node_actor`. `Process N: ...` banner lines emitted by
-/// py-spy are suppressed because the metadata header already contains
-/// that information.
+/// a blank separator, then per-thread sections from the structured
+/// `stack_traces` array. Thread headers are styled using
+/// `scheme.node_proc` and frame lines using `scheme.node_actor`.
 pub(crate) fn pyspy_json_to_lines(
     json: &serde_json::Value,
     scheme: &ColorScheme,
@@ -951,7 +949,6 @@ pub(crate) fn pyspy_json_to_lines(
             .and_then(|n| n.to_str())
             .unwrap_or(binary)
             .to_owned();
-        let stack = ok.get("stack").and_then(|s| s.as_str()).unwrap_or("");
 
         let mut lines: Vec<Line<'static>> = vec![];
 
@@ -967,26 +964,92 @@ pub(crate) fn pyspy_json_to_lines(
         lines.push(Line::from(header));
         lines.push(Line::from("")); // blank separator
 
-        if stack.is_empty() {
+        let traces = ok
+            .get("stack_traces")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+
+        if traces.is_empty() {
             lines.push(Line::from("(empty stack)"));
             return lines;
         }
 
-        for l in stack.lines() {
-            // Suppress the "Process N: /very/long/path ..." banner that
-            // py-spy emits at the top of the output — pid and binary are
-            // already shown in the metadata header above.
-            if l.starts_with("Process ") {
-                continue;
+        for trace in traces {
+            // Thread header: "Thread 0x1234 (MainThread) [active, gil]"
+            let thread_id = trace.get("thread_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let thread_name = trace
+                .get("thread_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let active = trace
+                .get("active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let owns_gil = trace
+                .get("owns_gil")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let mut flags = Vec::new();
+            if active {
+                flags.push("active");
             }
-            if l.starts_with(|c: char| c.is_whitespace()) {
-                // Indented stack frame line
-                lines.push(Line::from(Span::styled(l.to_owned(), scheme.node_actor)));
+            if owns_gil {
+                flags.push("gil");
+            }
+            let flags_str = if flags.is_empty() {
+                String::new()
             } else {
-                // Thread header or other top-level line
-                lines.push(Line::from(Span::styled(l.to_owned(), scheme.node_proc)));
+                format!(" [{}]", flags.join(", "))
+            };
+            let name_part = if thread_name.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", thread_name)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("Thread 0x{thread_id:x}{name_part}{flags_str}"),
+                scheme.node_proc,
+            )));
+
+            // Frames, innermost first.
+            let frames = trace
+                .get("frames")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            for (i, frame) in frames.iter().enumerate() {
+                let name = frame.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let filename = frame
+                    .get("short_filename")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| frame.get("filename").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                let line_no = frame.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                lines.push(Line::from(Span::styled(
+                    format!("  #{i:<3} {name} ({filename}:{line_no})"),
+                    scheme.node_actor,
+                )));
+            }
+            lines.push(Line::from("")); // blank separator between threads
+        }
+
+        // Render non-fatal warnings (e.g., --native-all fallback).
+        let warnings = ok
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for w in warnings {
+            if let Some(s) = w.as_str() {
+                lines.push(Line::from(Span::styled(
+                    format!("warn: {s}"),
+                    scheme.detail_status_warn,
+                )));
             }
         }
+
         return lines;
     }
     if let Some(nf) = json.get("BinaryNotFound") {

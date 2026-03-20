@@ -8,13 +8,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import math
 import mmap
 import os
+import shutil
+import stat
 import tempfile
+import time
+from collections.abc import Generator
 
 import pytest
+from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
 from monarch._rust_bindings.monarch_extension.fast_pack import (
     load_file_and_hash,
     pack_files_with_offsets,
@@ -415,3 +421,407 @@ class TestPreadErrorHandling:
         """Packing a nonexistent file should fail, not silently zero-fill."""
         with pytest.raises(BaseException, match="panicked"):  # noqa: B017
             pack_files_with_offsets([("/nonexistent/path/to/file.bin", 0, 100)], 100)
+
+
+def _check_fuse_available() -> bool:
+    """Check if FUSE mounts actually work, not just that the binary exists."""
+    if shutil.which("fusermount3") is None or not os.path.exists("/dev/fuse"):
+        return False
+    # /dev/fuse may exist but be unusable (e.g. Docker without CAP_SYS_ADMIN).
+    # Probe by checking if we can open it.
+    try:
+        fd = os.open("/dev/fuse", os.O_RDWR)
+        os.close(fd)
+        return True
+    except OSError:
+        return False
+
+
+_fuse_available: bool = _check_fuse_available()
+
+
+def _make_attr(
+    mode: int = 0o100644,
+    size: int = 0,
+    nlink: int = 1,
+) -> dict[str, object]:
+    now = time.time()
+    return {
+        "st_atime": now,
+        "st_ctime": now,
+        "st_gid": os.getgid(),
+        "st_mode": mode,
+        "st_mtime": now,
+        "st_nlink": nlink,
+        "st_size": size,
+        "st_uid": os.getuid(),
+    }
+
+
+def _dir_attr(size: int = 4096, nlink: int = 2) -> dict[str, object]:
+    return _make_attr(mode=0o40755, size=size, nlink=nlink)
+
+
+def _file_attr(size: int) -> dict[str, object]:
+    return _make_attr(mode=0o100644, size=size)
+
+
+def _symlink_attr(target_len: int) -> dict[str, object]:
+    return _make_attr(mode=0o120777, size=target_len)
+
+
+@contextlib.contextmanager
+def _fuse_mount(
+    metadata: dict[str, object],
+    # pyre-ignore[24]: memoryview is not generic in Pyre
+    chunks: list[memoryview],
+    chunk_size: int,
+    mount_point: str,
+) -> Generator[object, None, None]:
+    """Mount a FUSE filesystem and unmount on exit for test isolation."""
+    handle = mount_chunked_fuse(metadata, chunks, chunk_size, mount_point)
+    yield handle
+    handle.unmount()
+
+
+@pytest.mark.skipif(
+    not _fuse_available,
+    reason="FUSE not available (missing fusermount3, /dev/fuse, or permissions)",
+)
+class TestFuseMount:
+    """Comprehensive tests for the chunked_fuse FUSE filesystem."""
+
+    def test_single_file_read(self) -> None:
+        """Mount a single file and read its content back."""
+        content = b"hello fuse world"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["a.txt"]},
+            "/a.txt": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+        ):
+            with open(os.path.join(mnt, "a.txt"), "rb") as f:
+                assert f.read() == content
+
+    def test_multiple_files(self) -> None:
+        """Mount multiple files and verify each has correct content."""
+        files = {
+            "a.txt": b"aaa",
+            "b.txt": b"bbbbbb",
+            "c.txt": b"c",
+        }
+        packed = b"".join(files.values())
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": list(files.keys())},
+        }
+        offset = 0
+        for name, content in files.items():
+            metadata[f"/{name}"] = {
+                "attr": _file_attr(len(content)),
+                "global_offset": offset,
+                "file_len": len(content),
+            }
+            offset += len(content)
+
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(packed)], len(packed), mnt),
+        ):
+            for name, expected in files.items():
+                with open(os.path.join(mnt, name), "rb") as f:
+                    assert f.read() == expected
+
+    def test_subdirectory(self) -> None:
+        """Files in a subdirectory are accessible."""
+        content = b"nested content"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(nlink=3), "children": ["sub"]},
+            "/sub": {"attr": _dir_attr(), "children": ["f.txt"]},
+            "/sub/f.txt": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+        ):
+            with open(os.path.join(mnt, "sub", "f.txt"), "rb") as f:
+                assert f.read() == content
+            assert stat.S_ISDIR(os.stat(os.path.join(mnt, "sub")).st_mode)
+
+    def test_listdir(self) -> None:
+        """os.listdir returns the correct children."""
+        metadata: dict[str, object] = {
+            "/": {
+                "attr": _dir_attr(),
+                "children": ["x.bin", "y.bin", "sub"],
+            },
+            "/x.bin": {
+                "attr": _file_attr(1),
+                "global_offset": 0,
+                "file_len": 1,
+            },
+            "/y.bin": {
+                "attr": _file_attr(1),
+                "global_offset": 1,
+                "file_len": 1,
+            },
+            "/sub": {"attr": _dir_attr(), "children": []},
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(b"\x00\x00")], 2, mnt),
+        ):
+            assert sorted(os.listdir(mnt)) == ["sub", "x.bin", "y.bin"]
+            assert os.listdir(os.path.join(mnt, "sub")) == []
+
+    def test_symlink(self) -> None:
+        """Symlinks are readable via readlink."""
+        target = "/some/target/path"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["link"]},
+            "/link": {
+                "attr": _symlink_attr(len(target)),
+                "link_target": target,
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(b"\x00")], 1, mnt),
+        ):
+            assert os.readlink(os.path.join(mnt, "link")) == target
+            assert stat.S_ISLNK(os.lstat(os.path.join(mnt, "link")).st_mode)
+
+    def test_small_chunk_size(self) -> None:
+        """File spanning multiple chunks is read correctly."""
+        content = b"A" * 10 + b"B" * 10 + b"C" * 5
+        chunk_size = 10
+        chunk_list = [
+            memoryview(content[i : i + chunk_size])
+            for i in range(0, len(content), chunk_size)
+        ]
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, chunk_list, chunk_size, mnt),
+        ):
+            with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                assert f.read() == content
+
+    def test_partial_read(self) -> None:
+        """Reading a slice of a file returns the correct bytes."""
+        content = b"0123456789abcdef"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+        ):
+            with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                f.seek(4)
+                assert f.read(4) == b"4567"
+                f.seek(10)
+                assert f.read() == b"abcdef"
+                f.seek(100)
+                assert f.read() == b""
+
+    def test_dotdot_has_parent_attrs(self) -> None:
+        """stat('sub/..') should return root's attrs, not sub's."""
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(size=4096, nlink=3), "children": ["sub"]},
+            "/sub": {"attr": _dir_attr(size=80), "children": []},
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(b"\x00" * 64)], 64, mnt),
+        ):
+            sub_stat = os.stat(os.path.join(mnt, "sub"))
+            dotdot_stat = os.stat(os.path.join(mnt, "sub", ".."))
+            root_stat = os.stat(mnt)
+
+            assert dotdot_stat.st_size == root_stat.st_size
+            assert dotdot_stat.st_nlink == root_stat.st_nlink
+            assert stat.S_IMODE(dotdot_stat.st_mode) == stat.S_IMODE(root_stat.st_mode)
+            assert sub_stat.st_size != root_stat.st_size
+
+    def test_end_to_end_pack_mount_read(self) -> None:
+        """Full round-trip: create files, pack, mount, read back."""
+        with tempfile.TemporaryDirectory() as src:
+            os.makedirs(os.path.join(src, "sub"))
+            files = {
+                "hello.txt": b"hello world",
+                "binary.bin": os.urandom(2048),
+                os.path.join("sub", "nested.txt"): b"nested content here",
+            }
+            for name, content in files.items():
+                with open(os.path.join(src, name), "wb") as f:
+                    f.write(content)
+
+            meta, _staging_mv, chunks, _hashes = pack_directory_chunked(src)
+
+            with tempfile.TemporaryDirectory() as mnt:
+                chunk_size = len(bytes(chunks[0])) if chunks else 1
+                with _fuse_mount(meta, chunks, chunk_size, mnt):
+                    for name, expected in files.items():
+                        with open(os.path.join(mnt, name), "rb") as f:
+                            assert f.read() == expected, f"content mismatch for {name}"
+
+    def test_file_permissions(self) -> None:
+        """File and directory permissions are preserved."""
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["rw.txt", "ro.txt"]},
+            "/rw.txt": {
+                "attr": _make_attr(mode=0o100666, size=1),
+                "global_offset": 0,
+                "file_len": 1,
+            },
+            "/ro.txt": {
+                "attr": _make_attr(mode=0o100444, size=1),
+                "global_offset": 1,
+                "file_len": 1,
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(b"\x00\x00")], 2, mnt),
+        ):
+            rw = os.stat(os.path.join(mnt, "rw.txt"))
+            ro = os.stat(os.path.join(mnt, "ro.txt"))
+            assert stat.S_IMODE(rw.st_mode) == 0o666
+            assert stat.S_IMODE(ro.st_mode) == 0o444
+
+    def test_nonexistent_file(self) -> None:
+        """Accessing a nonexistent path raises FileNotFoundError."""
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": []},
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(b"\x00")], 1, mnt),
+        ):
+            with pytest.raises(FileNotFoundError):
+                open(os.path.join(mnt, "nope.txt"), "rb")
+            with pytest.raises(FileNotFoundError):
+                os.stat(os.path.join(mnt, "nope.txt"))
+
+    def test_zero_chunk_size_rejected(self) -> None:
+        """chunk_size=0 should raise immediately."""
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": []},
+        }
+        with tempfile.TemporaryDirectory() as mnt:
+            with pytest.raises(RuntimeError, match="chunk_size must be > 0"):
+                mount_chunked_fuse(metadata, [], 0, mnt)
+
+    def test_relative_mount_point_rejected(self) -> None:
+        """Relative mount point should raise immediately."""
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": []},
+        }
+        with pytest.raises(RuntimeError, match="absolute path"):
+            mount_chunked_fuse(metadata, [], 1, "relative/path")
+
+    def test_mount_nonexistent_directory(self) -> None:
+        """Mounting on a path that doesn't exist should fail."""
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": []},
+        }
+        with pytest.raises(RuntimeError):
+            mount_chunked_fuse(metadata, [], 1, "/tmp/nonexistent_fuse_test_dir")
+
+    def test_many_files(self) -> None:
+        """Mount with many files and read all of them."""
+        num_files = 200
+        file_size = 128
+        packed = os.urandom(num_files * file_size)
+        children = [f"f_{i}.bin" for i in range(num_files)]
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": children},
+        }
+        for i in range(num_files):
+            metadata[f"/f_{i}.bin"] = {
+                "attr": _file_attr(file_size),
+                "global_offset": i * file_size,
+                "file_len": file_size,
+            }
+
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(packed)], len(packed), mnt),
+        ):
+            for i in range(num_files):
+                with open(os.path.join(mnt, f"f_{i}.bin"), "rb") as f:
+                    expected = packed[i * file_size : (i + 1) * file_size]
+                    assert f.read() == expected
+
+    def test_repeated_reads(self) -> None:
+        """Reading the same file repeatedly returns consistent data."""
+        content = os.urandom(4096)
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["data.bin"]},
+            "/data.bin": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(content)], len(content), mnt),
+        ):
+            path = os.path.join(mnt, "data.bin")
+            for _ in range(50):
+                with open(path, "rb") as f:
+                    assert f.read() == content
+
+    def test_mount_unmount_remount(self) -> None:
+        """Mount, unmount, then mount again on the same directory."""
+        content = b"round-trip"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.txt"]},
+            "/f.txt": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with tempfile.TemporaryDirectory() as mnt:
+            # First mount/unmount cycle.
+            with _fuse_mount(metadata, [memoryview(content)], len(content), mnt):
+                with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                    assert f.read() == content
+
+            # Second mount on the same directory.
+            content2 = b"second time"
+            metadata2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["g.txt"]},
+                "/g.txt": {
+                    "attr": _file_attr(len(content2)),
+                    "global_offset": 0,
+                    "file_len": len(content2),
+                },
+            }
+            with _fuse_mount(metadata2, [memoryview(content2)], len(content2), mnt):
+                with open(os.path.join(mnt, "g.txt"), "rb") as f:
+                    assert f.read() == content2
