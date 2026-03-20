@@ -20,10 +20,13 @@ def scoped_state(
 ) -> Generator[JobState, None, None]:
     """Context manager that yields the job state and kills the job on exit.
 
-    On a clean exit, gracefully shuts down all host meshes before killing
-    the job. On an abnormal exit (exception), skips shutdown and goes
-    straight to kill. Failures to kill are silently ignored, as the job
-    may already be in a broken state.
+    On a clean exit, gracefully shuts down all host meshes. If shutdown
+    fails or an exception occurred, kills the job. Failures to kill are
+    silently ignored, as the job may already be in a broken state.
+
+    Calling job.kill() after a successful shutdown causes the global monarch
+    error handler to fire (due to pending message acks), so we only kill on
+    failure paths.
 
     Example::
 
@@ -37,11 +40,15 @@ def scoped_state(
         yield state
         success = True
     finally:
-        try:
-            if success:
+        shutdown_ok = False
+        if success:
+            try:
                 for host_mesh in state._hosts.values():
                     host_mesh.shutdown().get(timeout=10.0)
-        finally:
+                shutdown_ok = True
+            except Exception:
+                pass
+        if not shutdown_ok:
             try:
                 job.kill()
             except Exception:
