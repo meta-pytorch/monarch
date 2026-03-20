@@ -72,7 +72,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Debug;
-use std::future;
 use std::future::Future;
 use std::ops::Bound::Excluded;
 use std::pin::Pin;
@@ -1058,51 +1057,9 @@ pub trait MailboxServer: MailboxSender + Clone + Sized + 'static {
 
 impl<T: MailboxSender + Clone + Sized + Sync + Send + 'static> MailboxServer for T {}
 
-struct Buffer<T: Message> {
-    queue: mpsc::UnboundedSender<(T, PortHandle<Undeliverable<T>>)>,
-    #[allow(dead_code)]
-    processed: watch::Receiver<usize>,
-    seq: AtomicUsize,
-}
-
-impl<T: Message> Buffer<T> {
-    fn new<Fut>(
-        process: impl Fn(T, PortHandle<Undeliverable<T>>) -> Fut + Send + Sync + 'static,
-    ) -> Self
-    where
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        let (queue, mut next) = mpsc::unbounded_channel();
-        let (last_processed, processed) = watch::channel(0);
-        crate::init::get_runtime().spawn(async move {
-            let mut seq = 0;
-            while let Some((msg, return_handle)) = next.recv().await {
-                process(msg, return_handle).await;
-                seq += 1;
-                let _ = last_processed.send(seq);
-            }
-        });
-        Self {
-            queue,
-            processed,
-            seq: AtomicUsize::new(0),
-        }
-    }
-
-    fn send(
-        &self,
-        item: (T, PortHandle<Undeliverable<T>>),
-    ) -> Result<(), mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>> {
-        self.seq.fetch_add(1, Ordering::SeqCst);
-        self.queue.send(item)?;
-        Ok(())
-    }
-}
-
 /// A mailbox server client that transmits messages on a Tx channel.
 pub struct MailboxClient {
-    // The unbounded sender.
-    buffer: Buffer<MessageEnvelope>,
+    tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync>,
 
     // To cancel monitoring tx health.
     _tx_monitoring: CancellationToken,
@@ -1119,7 +1076,7 @@ pub struct MailboxClient {
 impl fmt::Debug for MailboxClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MailboxClient")
-            .field("buffer", &"<Buffer>")
+            .field("tx", &"<Tx>")
             .finish()
     }
 }
@@ -1129,50 +1086,13 @@ impl MailboxClient {
     /// [`MailboxServer`] on the provided Tx channel.
     pub fn new(tx: impl channel::Tx<MessageEnvelope> + Send + Sync + 'static) -> Self {
         let addr = tx.addr();
-        let tx = Arc::new(tx);
+        let tx: Arc<dyn channel::Tx<MessageEnvelope> + Send + Sync> = Arc::new(tx);
         let tx_status = tx.status().clone();
         let tx_monitoring = CancellationToken::new();
         let completed = Arc::new(AtomicUsize::new(0));
         let completed_notify = Arc::new(tokio::sync::Notify::new());
-        let buffer = {
-            let completed = completed.clone();
-            let completed_notify = completed_notify.clone();
-            Buffer::new(move |envelope, return_handle| {
-                let tx = Arc::clone(&tx);
-                let (return_channel, return_receiver) =
-                    oneshot::channel::<SendError<MessageEnvelope>>();
-                // Set up for delivery failure.
-                let return_handle_0 = return_handle.clone();
-                let completed = completed.clone();
-                let completed_notify = completed_notify.clone();
-                tokio::spawn(async move {
-                    match return_receiver.await {
-                        Ok(SendError {
-                            error,
-                            message,
-                            reason,
-                        }) => {
-                            message.undeliverable(
-                                DeliveryError::BrokenLink(format!(
-                                    "failed to enqueue in MailboxClient when processing buffer: {error} with reason {reason:?}"
-                                )),
-                                return_handle_0,
-                            );
-                        }
-                        Err(_) => {
-                            // Oneshot sender was dropped — message was acked.
-                        }
-                    }
-                    completed.fetch_add(1, Ordering::SeqCst);
-                    completed_notify.notify_waiters();
-                });
-                // Send the message for transmission.
-                tx.try_post(envelope, return_channel);
-                future::ready(())
-            })
-        };
         let this = Self {
-            buffer,
+            tx,
             _tx_monitoring: tx_monitoring.clone(),
             submitted: Arc::new(AtomicUsize::new(0)),
             completed,
@@ -1223,18 +1143,33 @@ impl MailboxSender for MailboxClient {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
-        if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
-        {
-            let err = DeliveryError::BrokenLink(
-                "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
-            );
-
-            // Failed to enqueue.
-            envelope.undeliverable(err, return_handle);
-        } else {
-            self.submitted.fetch_add(1, Ordering::SeqCst);
-        }
+        let (return_channel, return_receiver) = oneshot::channel::<SendError<MessageEnvelope>>();
+        let return_handle_0 = return_handle.clone();
+        let completed = self.completed.clone();
+        let completed_notify = self.completed_notify.clone();
+        crate::init::get_runtime().spawn(async move {
+            match return_receiver.await {
+                Ok(SendError {
+                    error,
+                    message,
+                    reason,
+                }) => {
+                    message.undeliverable(
+                        DeliveryError::BrokenLink(format!(
+                            "failed to enqueue in MailboxClient: {error} with reason {reason:?}"
+                        )),
+                        return_handle_0,
+                    );
+                }
+                Err(_) => {
+                    // Oneshot sender was dropped — message was acked.
+                }
+            }
+            completed.fetch_add(1, Ordering::SeqCst);
+            completed_notify.notify_waiters();
+        });
+        self.tx.try_post(envelope, return_channel);
+        self.submitted.fetch_add(1, Ordering::SeqCst);
     }
 
     async fn flush(&self) -> Result<(), anyhow::Error> {
