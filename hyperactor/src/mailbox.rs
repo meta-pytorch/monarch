@@ -1104,8 +1104,11 @@ pub struct MailboxClient {
     // The unbounded sender.
     buffer: Buffer<MessageEnvelope>,
 
-    // To cancel monitoring tx health.
-    _tx_monitoring: CancellationToken,
+    // Cancels the monitor_tx_health task when MailboxClient is dropped.
+    _tx_monitoring: tokio_util::sync::DropGuard,
+
+    // Cancelled by `monitor_tx_health` when the channel closes or fails.
+    channel_closed: CancellationToken,
 
     // Flush tracking: counts messages successfully submitted to the buffer.
     submitted: Arc<AtomicUsize>,
@@ -1171,14 +1174,16 @@ impl MailboxClient {
                 future::ready(())
             })
         };
+        let channel_closed = CancellationToken::new();
         let this = Self {
             buffer,
-            _tx_monitoring: tx_monitoring.clone(),
+            _tx_monitoring: tx_monitoring.clone().drop_guard(),
+            channel_closed: channel_closed.clone(),
             submitted: Arc::new(AtomicUsize::new(0)),
             completed,
             completed_notify,
         };
-        Self::monitor_tx_health(tx_status, tx_monitoring, addr);
+        Self::monitor_tx_health(tx_status, tx_monitoring, channel_closed, addr);
         this
     }
 
@@ -1188,10 +1193,12 @@ impl MailboxClient {
         Ok(MailboxClient::new(channel::dial(addr)?))
     }
 
-    // Set up a watch for the tx's health.
+    // Set up a watch for the tx's health. When the channel closes,
+    // cancels `channel_closed` so that `flush` waiters can bail out.
     fn monitor_tx_health(
         mut rx: watch::Receiver<TxStatus>,
         cancel_token: CancellationToken,
+        channel_closed: CancellationToken,
         addr: ChannelAddr,
     ) {
         crate::init::get_runtime().spawn(async move {
@@ -1200,8 +1207,7 @@ impl MailboxClient {
                     changed = rx.changed() => {
                         if changed.is_err() || *rx.borrow() == TxStatus::Closed {
                             tracing::warn!("connection to {} lost", addr);
-                            // TODO: Potential for supervision event
-                            // interaction here.
+                            channel_closed.cancel();
                             break;
                         }
                     }
@@ -1243,7 +1249,12 @@ impl MailboxSender for MailboxClient {
             if self.completed.load(Ordering::SeqCst) >= target {
                 return Ok(());
             }
-            self.completed_notify.notified().await;
+            tokio::select! {
+                _ = self.completed_notify.notified() => {}
+                _ = self.channel_closed.cancelled() => {
+                    return Err(anyhow::anyhow!("channel closed while flushing"));
+                }
+            }
         }
     }
 }
@@ -4470,5 +4481,71 @@ mod tests {
 
         serve_handle.stop("test done");
         serve_handle.await.unwrap().unwrap();
+    }
+
+    /// Test that `MailboxClient::flush()` returns an error when the
+    /// channel is closed while messages are still in-flight.
+    #[tokio::test]
+    async fn test_flush_fails_on_channel_close() {
+        use std::sync::Mutex;
+
+        // A Tx that holds onto return_channels so messages are never acked.
+        struct HoldingTx {
+            status: watch::Receiver<TxStatus>,
+            held: Mutex<Vec<oneshot::Sender<SendError<MessageEnvelope>>>>,
+        }
+
+        #[async_trait]
+        impl channel::Tx<MessageEnvelope> for HoldingTx {
+            fn do_post(
+                &self,
+                _message: MessageEnvelope,
+                return_channel: Option<oneshot::Sender<SendError<MessageEnvelope>>>,
+            ) {
+                // Hold the return_channel so the message is never acked.
+                if let Some(rc) = return_channel {
+                    self.held.lock().unwrap().push(rc);
+                }
+            }
+
+            fn addr(&self) -> ChannelAddr {
+                ChannelAddr::Local(0)
+            }
+
+            fn status(&self) -> &watch::Receiver<TxStatus> {
+                &self.status
+            }
+        }
+
+        let (status_tx, status_rx) = watch::channel(TxStatus::Active);
+        let tx = HoldingTx {
+            status: status_rx,
+            held: Mutex::new(Vec::new()),
+        };
+
+        let client = MailboxClient::new(tx);
+
+        let mbox = Mailbox::new_detached(test_actor_id("0", "actor0"));
+        let (port, _receiver) = mbox.open_port::<u64>();
+        let port = port.bind();
+
+        // Send a message. The HoldingTx will hold the return_channel,
+        // keeping the message in-flight forever.
+        client
+            .serialize_and_send(&port, 42u64, monitored_return_handle())
+            .unwrap();
+
+        // Signal channel closure via TxStatus, exercising the
+        // monitor_tx_health → channel_closed path.
+        status_tx.send(TxStatus::Closed).unwrap();
+
+        // flush should detect the channel closure and return an error.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), client.flush())
+            .await
+            .expect("flush should not hang when channel is closed");
+        assert!(
+            result.is_err(),
+            "flush should return an error on channel close"
+        );
     }
 }
