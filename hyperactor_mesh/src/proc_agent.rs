@@ -349,6 +349,15 @@ impl ActorInstanceState {
                 true
             }
         });
+
+        // Once the actor reaches terminal state, clear subscribers and
+        // waiters. No further state changes will occur, so keeping them
+        // just leaks memory and causes stale traffic during
+        // handle_undeliverable_message scans.
+        if self.is_terminal() {
+            self.subscribers.clear();
+            self.pending_wait_status.clear();
+        }
     }
 }
 

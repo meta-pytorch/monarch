@@ -175,10 +175,10 @@ impl<A: Referable> ActorMesh<A> {
 
             let statuses = rx.recv().await?;
             if let Some(state) = &statuses.state {
-                // Check that all actors are in some terminal state.
+                // Check that all actors have reached a terminal state.
                 // Failed is ok, because one of these actors may have failed earlier
                 // and we're trying to stop the others.
-                let all_stopped = state.statuses.values().all(|s| s.is_terminating());
+                let all_stopped = state.statuses.values().all(|s| s.is_terminal());
                 if all_stopped {
                     Ok(())
                 } else {
