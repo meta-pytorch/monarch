@@ -108,6 +108,7 @@ html_theme_options = {
 }
 
 html_favicon = "_static/torch-monarch-icons.svg"
+html_css_files = ["custom.css"]
 
 html_sidebars = {
     "generated/examples/getting_started": [],

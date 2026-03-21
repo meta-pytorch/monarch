@@ -472,6 +472,7 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                             .client_config_override
                             .clone(),
                         proc_bind: create_or_update.spec.proc_bind.clone(),
+                        bootstrap_command: create_or_update.spec.bootstrap_command.clone(),
                     },
                 )
                 .await
@@ -814,11 +815,12 @@ wirevalue::register_type!(ShutdownHost);
 #[async_trait]
 impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
-        // Ack immediately so caller can stop waiting.
-        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
-        cx.mailbox()
-            .serialize_and_send(&msg.ack, (), return_handle)?;
-
+        // Terminate children BEFORE acking, so the caller's networking
+        // stays alive while children flush their forwarders during
+        // teardown. If we ack first, the caller proceeds to tear down
+        // the host proc's networking while children are still running,
+        // causing their forwarder flushes to hang until
+        // MESSAGE_DELIVERY_TIMEOUT expires.
         let mut shutdown_tx = None;
         if let Some(host_mode) = self.host.take() {
             match host_mode {
@@ -846,7 +848,13 @@ impl Handler<ShutdownHost> for HostAgent {
             }
         }
 
-        // If message is returned, it means it ack was not sent successfully.
+        // Ack after children are terminated so the caller does not
+        // tear down the host's networking prematurely.
+        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
+        cx.mailbox()
+            .serialize_and_send(&msg.ack, (), return_handle)?;
+
+        // If message is returned, it means the ack was not sent successfully.
         if return_receiver.recv().await.is_ok() {
             tracing::warn!("failed to send ack");
         }

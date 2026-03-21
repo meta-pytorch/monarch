@@ -7,15 +7,12 @@
  */
 
 import React from "react";
+import { STATUS_COLORS } from "../utils/status";
 
-const LEGEND_ITEMS = [
-  { color: "var(--status-healthy)", label: "Idle / Active" },
-  { color: "var(--status-processing)", label: "Processing / Running" },
-  { color: "var(--status-transitional)", label: "Transitional" },
-  { color: "var(--status-failed)", label: "Failed" },
-  { color: "var(--status-stopped)", label: "Stopped" },
-  { color: "var(--status-unknown)", label: "Neutral (n/a)" },
-];
+const LEGEND_ITEMS = Object.entries(STATUS_COLORS).map(([status, color]) => ({
+  color,
+  label: status.charAt(0).toUpperCase() + status.slice(1),
+}));
 
 const TIER_ITEMS = [
   { radius: 14, label: "Host Mesh" },

@@ -52,6 +52,16 @@ class HostMesh:
         """
         ...
 
+    def with_bootstrap(self, bootstrap_command: BootstrapCommand) -> "HostMesh":
+        """
+        Return a new HostMesh that will use the given bootstrap command when
+        spawning procs, overriding the host agent's default.
+
+        Arguments:
+        - `bootstrap_command`: The bootstrap command to use for launching procs.
+        """
+        ...
+
     def _spawn_admin(
         self,
         instance: Instance,

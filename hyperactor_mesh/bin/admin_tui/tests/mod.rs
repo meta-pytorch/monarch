@@ -1655,26 +1655,47 @@ fn parse_error_envelope_missing_code_and_message() {
     assert_eq!(lines[0].spans[0].content, "unknown: ");
 }
 
-// PY-3: Ok result replaces overlay content with the stack lines.
-// pyspy_json_to_lines: Ok with non-empty stack → metadata header + blank + stack lines.
+// PY-3: Ok result replaces overlay content with structured stack traces.
+// pyspy_json_to_lines: Ok with one thread/frame → header + blank + thread + frame + trailing blank.
 #[test]
 fn pyspy_json_to_lines_ok_with_stack() {
-    let json = serde_json::json!({"Ok": {"pid": 1, "binary": "py-spy", "stack": "Thread 0\n  foo.py:1\n"}});
+    let json = serde_json::json!({"Ok": {
+        "pid": 1,
+        "binary": "py-spy",
+        "stack_traces": [{
+            "pid": 1,
+            "thread_id": 0,
+            "thread_name": null,
+            "os_thread_id": null,
+            "active": false,
+            "owns_gil": false,
+            "frames": [{
+                "name": "foo",
+                "filename": "foo.py",
+                "module": null,
+                "short_filename": null,
+                "line": 1,
+                "locals": null,
+                "is_entry": false
+            }]
+        }]
+    }});
     let scheme = ColorScheme::nord();
     let lines = pyspy_json_to_lines(&json, &scheme);
-    // header + blank separator + 2 stack lines; trailing newline must not produce empty line
-    assert_eq!(lines.len(), 4);
+    // header + blank + thread header + frame + trailing blank
+    assert_eq!(lines.len(), 5);
     assert_eq!(line_text(&lines[0]), "pid: 1  binary: py-spy");
     assert_eq!(line_text(&lines[1]), ""); // blank separator
-    assert_eq!(line_text(&lines[2]), "Thread 0");
-    assert_eq!(line_text(&lines[3]), "  foo.py:1");
+    assert_eq!(line_text(&lines[2]), "Thread 0x0");
+    assert_eq!(line_text(&lines[3]), "  #0   foo (foo.py:1)");
+    assert_eq!(line_text(&lines[4]), ""); // trailing blank
 }
 
 // PY-3: empty stack still produces a readable sentinel rather than a blank overlay.
-// pyspy_json_to_lines: Ok with empty stack → metadata header + blank + sentinel line.
+// pyspy_json_to_lines: Ok with empty stack_traces → metadata header + blank + sentinel line.
 #[test]
 fn pyspy_json_to_lines_ok_empty_stack() {
-    let json = serde_json::json!({"Ok": {"pid": 1, "binary": "py-spy", "stack": ""}});
+    let json = serde_json::json!({"Ok": {"pid": 1, "binary": "py-spy", "stack_traces": []}});
     let scheme = ColorScheme::nord();
     let lines = pyspy_json_to_lines(&json, &scheme);
     assert_eq!(lines.len(), 3); // header + blank + sentinel
@@ -1752,26 +1773,46 @@ fn pyspy_json_to_lines_unknown_variant() {
     );
 }
 
-// PY-3: "Process N: /path ..." banner emitted by py-spy is stripped so the
-// pid/binary metadata header (already rendered at the top) doesn't dominate.
-// pyspy_json_to_lines: Ok with Process banner → banner line stripped.
+// PY-3: structured output renders thread name, flags, and binary basename.
+// pyspy_json_to_lines: Ok with named active thread holding GIL → thread
+// header includes name and [active, gil] flags; binary path is basename-only.
 #[test]
-fn pyspy_json_to_lines_ok_strips_process_banner() {
+fn pyspy_json_to_lines_ok_thread_name_and_flags() {
     let json = serde_json::json!({
         "Ok": {
             "pid": 123,
             "binary": "/very/long/path/to/pyspy_workload",
-            "stack": "Process 123: /very/long/path/to/pyspy_workload --args\nThread 0\n  foo.py:1\n"
+            "stack_traces": [{
+                "pid": 123,
+                "thread_id": 4660,
+                "thread_name": "MainThread",
+                "os_thread_id": null,
+                "active": true,
+                "owns_gil": true,
+                "frames": [{
+                    "name": "foo",
+                    "filename": "/path/to/foo.py",
+                    "module": null,
+                    "short_filename": "foo.py",
+                    "line": 1,
+                    "locals": null,
+                    "is_entry": false
+                }]
+            }]
         }
     });
     let scheme = ColorScheme::nord();
     let lines = pyspy_json_to_lines(&json, &scheme);
-    // header + blank + "Thread 0" + "  foo.py:1" = 4; Process banner stripped
-    assert_eq!(lines.len(), 4);
+    // header + blank + thread header + frame + trailing blank
+    assert_eq!(lines.len(), 5);
     assert_eq!(line_text(&lines[0]), "pid: 123  binary: pyspy_workload");
     assert_eq!(line_text(&lines[1]), "");
-    assert_eq!(line_text(&lines[2]), "Thread 0");
-    assert_eq!(line_text(&lines[3]), "  foo.py:1");
+    assert_eq!(
+        line_text(&lines[2]),
+        "Thread 0x1234 (MainThread) [active, gil]"
+    );
+    assert_eq!(line_text(&lines[3]), "  #0   foo (foo.py:1)");
+    assert_eq!(line_text(&lines[4]), "");
 }
 
 // ── TUI-21 build_diag_overlay tests ────────────────────────────────────────
