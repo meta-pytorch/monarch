@@ -327,56 +327,31 @@ class IRGraph:
                     return True
             return False
 
-        if new_storage_event and not find_or_create_event("StorageCreationEvent"):
-            self.data_dag.append(
-                StorageCreationEvent(
-                    command_id=command_id,
-                    storage_id=storage_id,
-                    size=tensor_size,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
-        if new_tensor_event and not find_or_create_event("TensorCreationEvent"):
-            self.data_dag.append(
-                TensorCreationEvent(
-                    command_id=command_id,
-                    DTensorRef=ref,
-                    storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
-        if not find_or_create_event("TensorAccessEvent"):
-            self.data_dag.append(
-                TensorAccessEvent(
-                    command_id=command_id,
-                    DTensorRef=ref,
-                    storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
-        if mutate and not find_or_create_event("TensorMutationEvent"):
-            self.data_dag.append(
-                TensorMutationEvent(
-                    command_id=command_id,
-                    DTensorRef=ref,
-                    storage_id=storage_id,
-                    dtype=dtype,
-                    dims=dims,
-                    devices=[worker_rank],
-                    mesh_ref=None,
-                    stream_name=stream_name,
-                )
-            )
+        def _append_event_if_new(event_type, condition, **extra_fields):
+            if condition and not find_or_create_event(event_type.__name__):
+                base = {
+                    "command_id": command_id,
+                    "storage_id": storage_id,
+                    "devices": [worker_rank],
+                    "mesh_ref": None,
+                    "stream_name": stream_name,
+                }
+                self.data_dag.append(event_type(**base, **extra_fields))
+
+        _append_event_if_new(StorageCreationEvent, new_storage_event, size=tensor_size)
+        _append_event_if_new(
+            TensorCreationEvent,
+            new_tensor_event,
+            DTensorRef=ref,
+            dtype=dtype,
+            dims=dims,
+        )
+        _append_event_if_new(
+            TensorAccessEvent, True, DTensorRef=ref, dtype=dtype, dims=dims
+        )
+        _append_event_if_new(
+            TensorMutationEvent, mutate, DTensorRef=ref, dtype=dtype, dims=dims
+        )
 
         if update_storage_devices:
             find_or_create_event("StorageCreationEvent")
@@ -435,21 +410,13 @@ class IRGraph:
         dst_stream_name: str,
         result_tensor_dims: Tuple[int, ...],
     ) -> None:
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].result_tensor_id = result_tensor_id
-        self._control.sendtensor_info[result_tensor_id].src_devices = src_devices
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].src_stream_name = src_stream_name
-        self._control.sendtensor_info[result_tensor_id].dst_devices = dst_devices
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].dst_stream_name = dst_stream_name
-        self._control.sendtensor_info[
-            result_tensor_id
-        ].result_tensor_dims = result_tensor_dims
-        return
+        info = self._control.sendtensor_info[result_tensor_id]
+        info.result_tensor_id = result_tensor_id
+        info.src_devices = src_devices
+        info.src_stream_name = src_stream_name
+        info.dst_devices = dst_devices
+        info.dst_stream_name = dst_stream_name
+        info.result_tensor_dims = result_tensor_dims
 
     def convert_devices_to_meshes(self) -> None:
         """
