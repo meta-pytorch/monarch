@@ -32,6 +32,7 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
+      upload-artifact: test-reports-gpu-python
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -61,6 +62,12 @@ jobs:
         pip install pytest-split
 
         run_test_groups
+
+        # Copy JUnit XML to the artifact dir so the ci-summary job can
+        # download and parse structured test results.
+        if [ -n "${RUNNER_ARTIFACT_DIR:-}" ]; then
+          cp "${RUNNER_TEST_RESULTS_DIR:-test-results}"/*.xml "${RUNNER_ARTIFACT_DIR}/" 2>/dev/null || true
+        fi
 
         # TODO(meriksen): temporarily disabled to unblock lands while debugging
         # mock CUDA issues on the OSS setup

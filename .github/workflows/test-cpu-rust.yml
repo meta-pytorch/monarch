@@ -25,6 +25,7 @@ jobs:
       runner: ${{ inputs.runner }}
       docker-image: ${{ inputs.docker-image }}
       submodules: recursive
+      upload-artifact: test-reports-cpu-rust
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -61,3 +62,9 @@ jobs:
         echo "=== sccache stats ==="
         sccache --show-stats
         echo "=== end sccache stats ==="
+
+        # Copy nextest JUnit XML to the artifact dir so the ci-summary
+        # job can download and parse structured test results.
+        if [ -n "${RUNNER_ARTIFACT_DIR:-}" ]; then
+          cp target/nextest/ci/junit.xml "${RUNNER_ARTIFACT_DIR}/junit.xml" 2>/dev/null || true
+        fi
