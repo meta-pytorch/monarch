@@ -114,6 +114,49 @@ except `/SKILL.md` (`text/markdown`).
 
   Timeout returns the standard `gateway_timeout` error envelope.
 
+- `GET {base}/v1/config/{proc_reference}`
+  Returns the effective CONFIG-marked configuration entries from the
+  process hosting `{proc_reference}`. The reference must be a valid
+  ProcId (percent-encoded in the URL path).
+
+  Success returns a `ConfigDumpResult` JSON object:
+  ```json
+  {
+    "entries": [
+      {
+        "name": "hyperactor::config::codec_max_frame_length",
+        "value": "1048576",
+        "default_value": "1048576",
+        "source": "Default",
+        "changed_from_default": false,
+        "env_var": "HYPERACTOR_CODEC_MAX_FRAME_LENGTH"
+      }
+    ]
+  }
+  ```
+
+  Each entry contains:
+  - `name` — fully-qualified config key (module_path::key_name)
+  - `value` — current resolved value (display string)
+  - `default_value` — declared default (null if none)
+  - `source` — which layer provided the value: Default,
+    ClientOverride, File, Env, Runtime, or TestOverride
+  - `changed_from_default` — true when value differs from default
+  - `env_var` — environment variable name (null if not env-backed)
+
+  Entries are sorted by `name`. Only CONFIG-marked keys are
+  included (not INTROSPECT keys).
+
+  The endpoint supports worker procs and the service proc. Same
+  routing as py-spy: ProcAgent for worker procs, HostAgent for the
+  service proc. If the target agent is not reachable, an immediate
+  `not_found` error is returned. Timeout returns `gateway_timeout`.
+
+  Automated integration test:
+  ```
+  buck2 test fbcode//monarch/hyperactor_mesh:config_integration_test
+  ```
+
 - `GET {base}/SKILL.md`
   This document.
 
