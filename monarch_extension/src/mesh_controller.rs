@@ -234,10 +234,25 @@ impl _Controller {
         signal_safe_block_on(py, async move { stop_worker_receiver.recv().await })?
             .map_err(to_py_error)?
             .map_err(PyRuntimeError::new_err)?;
+
+        // Get status watch before sending drain_and_stop so we can
+        // wait for the actor to fully terminate.
+        let mut status_rx = self.controller_handle.blocking_lock().status();
+
         self.controller_handle
             .blocking_lock()
             .drain_and_stop("mesh controller shutdown")
-            .map_err(to_py_error)
+            .map_err(to_py_error)?;
+
+        // Wait for the MeshControllerActor to reach terminal status.
+        // This ensures all resources (mailbox, IPC sessions, etc.) are
+        // fully cleaned up before we return, preventing accumulation of
+        // stale state across rapid spawn/exit cycles.
+        signal_safe_block_on(py, async move {
+            let _ = status_rx.wait_for(ActorStatus::is_terminal).await;
+        })?;
+
+        Ok(())
     }
 }
 

@@ -90,11 +90,20 @@ pub enum Status {
 }
 
 impl Status {
-    /// Returns whether the status is a terminating status.
+    /// Returns whether the status is a terminating status (includes `Stopping`).
     pub fn is_terminating(&self) -> bool {
         matches!(
             self,
             Status::Stopping | Status::Stopped | Status::Failed(_) | Status::Timeout(_)
+        )
+    }
+
+    /// Returns whether the status is a terminal status — the resource
+    /// has reached a final state and will not transition again.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Status::Stopped | Status::Failed(_) | Status::Timeout(_)
         )
     }
 
