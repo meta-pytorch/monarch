@@ -212,6 +212,7 @@ impl<A: Referable> ActorMesh<A> {
                     ActorStatus::Stopped("mesh stopped".to_string()),
                     None,
                 ),
+                crashed_ranks: None,
             }));
         }
         // Also take the controller from the ref, since that is used for
@@ -725,10 +726,16 @@ impl<A: Referable> ActorMeshRef<A> {
                     // whole mesh.
                     if let MessageOrFailure::Message(message) = message {
                         if let Some(message) = &message {
-                            if let Some(rank) = &message.rank {
-                                ndslice::view::Ranked::region(self).slice().contains(*rank)
+                            let region = ndslice::view::Ranked::region(self).slice();
+                            if let Some(crashed) = &message.crashed_ranks {
+                                // Replay message: accept if any crashed rank
+                                // overlaps with this slice's region.
+                                crashed.iter().any(|r| region.contains(*r))
+                            } else if let Some(rank) = &message.rank {
+                                region.contains(*rank)
                             } else {
-                                // If rank is None, it applies to the whole mesh.
+                                // rank=None with no crashed_ranks means whole mesh
+                                // (e.g. mesh stop).
                                 true
                             }
                         } else {
@@ -782,6 +789,7 @@ impl<A: Referable> ActorMeshRef<A> {
                             )),
                             None,
                         ),
+                        crashed_ranks: None,
                     })
                 }
             }?
