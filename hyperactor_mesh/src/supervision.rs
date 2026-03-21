@@ -29,6 +29,11 @@ pub struct MeshFailure {
     pub rank: Option<usize>,
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
+    /// When replaying crash state to new subscribers, this contains all
+    /// crashed ranks so the filter can check overlap with a slice's region.
+    /// Normal (non-replay) messages leave this as None.
+    #[serde(default)]
+    pub crashed_ranks: Option<Vec<usize>>,
 }
 wirevalue::register_type!(MeshFailure);
 
