@@ -24,12 +24,20 @@ if __name__ == "__main__":
         default=100,
         help="Number of test iterations (default: 100)",
     )
-    parser.add_argument(
+    device_group = parser.add_mutually_exclusive_group()
+    device_group.add_argument(
         "--device",
         type=str,
         nargs=2,
         default=["cpu", "cpu"],
         help="Two devices for actor0 and actor1: cpu or cuda:X where X is 0-7 (default: ['cpu', 'cpu'])",
+    )
+    device_group.add_argument(
+        "--device-pairs",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Device pairs for multi-pair mode, e.g.: cuda:0,cuda:1 cuda:2,cuda:3",
     )
     parser.add_argument(
         "--operation",
@@ -74,7 +82,7 @@ else:
 
 # pyre-ignore
 import torch
-from monarch.actor import Actor, endpoint, this_host
+from monarch.actor import Actor, endpoint, ProcMesh, this_host
 from monarch.rdma import RDMABuffer
 
 
@@ -166,6 +174,7 @@ class RDMATest(Actor):
 
         # cleanup
         await buffer.drop()
+        del tensor, byte_view
 
     @endpoint
     async def recv(self, rdma_buffer, shape, dtype, is_warmup):
@@ -193,6 +202,8 @@ class RDMATest(Actor):
         if not is_warmup:
             self.timing_data.append(elapsed)
             self.size_data.append(size_elem)
+
+        del tensor, byte_view
 
     @endpoint
     async def print_statistics(self, calc_bwd: bool = False):
@@ -344,6 +355,124 @@ async def main(
     await mesh_1.stop()
 
 
+def validate_device(device: str) -> str:
+    """Validate and return a device string, falling back to cpu if needed."""
+    device = device.lower()
+    if device == "cpu":
+        return device
+    if device.startswith("cuda:"):
+        device_id = -1
+        try:
+            device_id = int(device.split(":")[1])
+            if device_id < 0 or device_id > 7:
+                print(f"Error: CUDA device ID must be 0-7. Got: {device_id}")
+                exit(1)
+        except (ValueError, IndexError):
+            print(
+                f"Error: Invalid device format. Use 'cpu' or 'cuda:X' where X is 0-7. Got: {device}"
+            )
+            exit(1)
+        if not torch.cuda.is_available():
+            print("Warning: CUDA requested but not available. Falling back to CPU.")
+            return "cpu"
+        elif device_id >= torch.cuda.device_count():
+            print(
+                f"Warning: CUDA device {device_id} not available. "
+                f"Available devices: 0-{torch.cuda.device_count() - 1}. Falling back to CPU."
+            )
+            return "cpu"
+        return device
+    print(
+        f"Error: Invalid device format. Use 'cpu' or 'cuda:X' where X is 0-7. Got: {device}"
+    )
+    exit(1)
+
+
+async def run_pair(
+    label: str,
+    mesh_left: ProcMesh,
+    mesh_right: ProcMesh,
+    device_left: str,
+    device_right: str,
+    operation: str,
+    size_mb: int,
+    iterations: int,
+    warmup_iterations: int,
+    concurrency: int,
+):
+    """Run a single device pair's warmup + timed iterations. Returns (label, actor_0, actor_1, elapsed)."""
+    actor_0 = mesh_left.spawn(
+        f"rdma_{label}_left", RDMATest, device_left, operation, size_mb
+    )
+    actor_1 = mesh_right.spawn(
+        f"rdma_{label}_right", RDMATest, device_right, operation, size_mb
+    )
+    await actor_0.set_other_actor.call(actor_1)
+
+    for _ in range(warmup_iterations):
+        await actor_0.send.call(is_warmup=True, concurrency=concurrency)
+
+    start = time.time()
+    for _ in range(iterations):
+        await actor_0.send.call(concurrency=concurrency)
+    elapsed = time.time() - start
+
+    return label, actor_0, actor_1, elapsed
+
+
+async def main_multi_pair(
+    device_pairs: list[tuple[str, str]],
+    iterations: int = 100,
+    operation: str = "write",
+    size_mb: int = 64,
+    warmup_iterations: int = 10,
+    concurrency: int = 1,
+):
+    mesh_left = this_host().spawn_procs()
+    mesh_right = this_host().spawn_procs()
+
+    tasks = []
+    for i, (dev_l, dev_r) in enumerate(device_pairs):
+        label = f"pair{i}_{dev_l}_{dev_r}".replace(":", "")
+        tasks.append(
+            run_pair(
+                label,
+                mesh_left,
+                mesh_right,
+                dev_l,
+                dev_r,
+                operation,
+                size_mb,
+                iterations,
+                warmup_iterations,
+                concurrency,
+            )
+        )
+
+    results = await asyncio.gather(*tasks)
+
+    # Per-pair statistics
+    for label, actor_0, actor_1, elapsed in results:
+        print(f"\n{'#' * 60}")
+        print(f"# {label}")
+        print(f"{'#' * 60}")
+        await actor_0.print_batch_statistics.call(
+            concurrency=concurrency, total_elapsed_time=elapsed
+        )
+        await actor_1.print_statistics.call(calc_bwd=True)
+
+    # Aggregate summary
+    total_elapsed = max(r[3] for r in results)
+    print(f"\n{'=' * 60}")
+    print("AGGREGATE MULTI-PAIR SUMMARY")
+    print(f"{'=' * 60}")
+    print(f"  Pairs: {len(device_pairs)}")
+    print(f"  Max wall-clock time across pairs: {total_elapsed:.3f} s")
+
+    await mesh_left.stop()
+    await mesh_right.stop()
+
+
 if __name__ == "__main__":
     assert args
 
@@ -352,50 +481,40 @@ if __name__ == "__main__":
         print(f"Error: --size must be a multiple of 4. Got: {args.size}")
         exit(1)
 
-    # Parse and validate device list
-    devices = [device.lower() for device in args.device]
-    validated_devices = []
-
-    for i, device in enumerate(devices):
-        if device == "cpu":
-            validated_devices.append(device)  # CPU is always valid
-        elif device.startswith("cuda:"):
-            # Validate CUDA device format
-            try:
-                device_id = int(device.split(":")[1])
-                if device_id < 0 or device_id > 7:
-                    print(f"Error: CUDA device ID must be 0-7. Got: {device_id}")
-                    exit(1)
-            except (ValueError, IndexError):
+    if args.device_pairs is not None:
+        # Multi-pair mode
+        parsed_pairs = []
+        for pair_str in args.device_pairs:
+            parts = pair_str.split(",")
+            if len(parts) != 2:
                 print(
-                    f"Error: Invalid device format. Use 'cpu' or 'cuda:X' where X is 0-7. Got: {args.device[i]}"
+                    f"Error: Each device pair must be two devices separated by comma. Got: {pair_str}"
                 )
                 exit(1)
+            dev_l = validate_device(parts[0])
+            dev_r = validate_device(parts[1])
+            parsed_pairs.append((dev_l, dev_r))
 
-            # Check if CUDA is available
-            if not torch.cuda.is_available():
-                print("Warning: CUDA requested but not available. Falling back to CPU.")
-                validated_devices.append("cpu")
-            elif device_id >= torch.cuda.device_count():
-                print(
-                    f"Warning: CUDA device {device_id} not available. Available devices: 0-{torch.cuda.device_count() - 1}. Falling back to CPU."
-                )
-                validated_devices.append("cpu")
-            else:
-                validated_devices.append(device)
-        else:
-            print(
-                f"Error: Invalid device format. Use 'cpu' or 'cuda:X' where X is 0-7. Got: {args.device[i]}"
+        asyncio.run(
+            main_multi_pair(
+                parsed_pairs,
+                args.iterations,
+                args.operation,
+                args.size,
+                args.warmup_iterations,
+                args.concurrency,
             )
-            exit(1)
-
-    asyncio.run(
-        main(
-            validated_devices,
-            args.iterations,
-            args.operation,
-            args.size,
-            args.warmup_iterations,
-            args.concurrency,
         )
-    )
+    else:
+        # Single-pair mode
+        validated_devices = [validate_device(d) for d in args.device]
+        asyncio.run(
+            main(
+                validated_devices,
+                args.iterations,
+                args.operation,
+                args.size,
+                args.warmup_iterations,
+                args.concurrency,
+            )
+        )

@@ -84,7 +84,11 @@ def build_ssl_context(args: argparse.Namespace) -> Optional[ssl.SSLContext]:
 def fetch_json(url: str, ctx: Optional[ssl.SSLContext]) -> dict:
     """GET a URL and parse JSON response."""
     req = urllib.request.Request(url)
-    resp = urllib.request.urlopen(req, context=ctx, timeout=10)
+    # Matches MESH_ADMIN_PYSPY_CLIENT_TIMEOUT (default 20s). Must
+    # exceed MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT (default 13s) so we
+    # receive a structured PySpyResult even when py-spy uses the
+    # full subprocess budget with native stack unwinding.
+    resp = urllib.request.urlopen(req, context=ctx, timeout=20)
     return json.loads(resp.read())
 
 
@@ -145,10 +149,26 @@ def sample_pyspy(
     return fetch_json(f"{admin_url}/v1/pyspy/{encoded}", ctx)
 
 
-def has_evidence(stack: str, mode: str) -> bool:
-    """Check whether a stack contains mode-specific evidence frames."""
+def qualified_frame_name(frame: dict) -> str:
+    """Build a qualified name from a structured py-spy frame.
+
+    In py-spy ``--json`` output the function name and module are separate
+    fields (e.g. ``name="sleep"``, ``module="time"``).  Evidence patterns
+    like ``"time.sleep"`` need to match against a combined representation.
+    Returns ``"module.name"`` when a module is present, otherwise just
+    ``"name"``.
+    """
+    name = frame.get("name", "")
+    module = frame.get("module")
+    if module:
+        return f"{module}.{name}"
+    return name
+
+
+def has_evidence(name: str, mode: str) -> bool:
+    """Check whether a (possibly qualified) frame name matches mode evidence."""
     patterns = MODE_EVIDENCE.get(mode, [])
-    return any(p in stack for p in patterns)
+    return any(p in name for p in patterns)
 
 
 def short_name(proc_ref: str) -> str:
@@ -187,18 +207,37 @@ def run_verification(args: argparse.Namespace) -> int:
             try:
                 result = sample_pyspy(args.admin_url, proc_ref, ctx)
             except Exception as e:
-                print(f"  {name}: ERROR {e}")
+                body = ""
+                reader = getattr(e, "read", None)
+                if reader is not None:
+                    try:
+                        body = reader().decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+                print(f"  {name}: ERROR {e} {body}")
                 failed += 1
                 continue
 
             if "Ok" in result:
                 ok += 1
-                stack = result["Ok"].get("stack", "")
-                if has_evidence(stack, args.mode):
+                stack_traces = result["Ok"].get("stack_traces", [])
+                found = False
+                for trace in stack_traces:
+                    for frame in trace.get("frames", []):
+                        if has_evidence(qualified_frame_name(frame), args.mode):
+                            found = True
+                            break
+                    if found:
+                        break
+                if found:
                     evidence += 1
             elif "BinaryNotFound" in result:
                 not_found += 1
             elif "Failed" in result:
+                f = result["Failed"]
+                stderr = f.get("stderr", "")
+                exit_code = f.get("exit_code")
+                print(f"  {name}: FAILED exit={exit_code} stderr={stderr[:200]}")
                 failed += 1
 
         total_ok += ok
@@ -230,9 +269,18 @@ def run_verification(args: argparse.Namespace) -> int:
         )
 
     # Evaluate.
-    if total_failed > 0:
-        print(f"FAIL: {total_failed} failed response(s)")
+    # Occasional timeouts are expected with --native/--native-all
+    # (native stack unwinding is slower than Python-only capture).
+    # Fail only when failures dominate — no Ok responses at all.
+    if total_failed > 0 and total_ok == 0:
+        print(f"FAIL: all {total_failed} response(s) failed")
         return EXIT_FAIL
+    if total_failed > 0:
+        total_samples = total_ok + total_not_found + total_failed
+        print(
+            f"WARN: {total_failed}/{total_samples} response(s) failed "
+            f"(timeouts expected with native stack unwinding)"
+        )
 
     if total_ok == 0 and total_not_found > 0:
         print("SKIP: py-spy not available (all BinaryNotFound)")

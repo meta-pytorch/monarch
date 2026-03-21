@@ -285,6 +285,9 @@ use crate::host_mesh::host_agent::HostId;
 use crate::introspect::NodePayload;
 use crate::introspect::NodeProperties;
 use crate::introspect::to_node_payload;
+use crate::proc_agent::PROC_AGENT_ACTOR_NAME;
+use crate::proc_agent::PySpyDump;
+use crate::pyspy::PySpyResult;
 
 /// Send an `IntrospectMessage` to an actor and receive the reply.
 /// Encapsulates open_once_port + send + timeout + error handling.
@@ -1095,7 +1098,7 @@ impl MeshAdminAgent {
         }
 
         // Fall back to querying the ProcAgent directly (user procs).
-        let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+        let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
         let result = query_child_introspect(
             cx,
             &mesh_agent_id,
@@ -1257,7 +1260,7 @@ impl MeshAdminAgent {
         } else {
             // Check terminated snapshots first — fast, no ambiguity.
             let proc_id = actor_id.proc_id();
-            let mesh_agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+            let mesh_agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
             let terminated = query_child_introspect(
                 cx,
                 &mesh_agent_id,
@@ -1614,20 +1617,25 @@ fn parse_pyspy_proc_reference(
 async fn pyspy_bridge(
     State(state): State<Arc<BridgeState>>,
     AxumPath(proc_reference): AxumPath<String>,
-) -> Result<Json<crate::pyspy::PySpyResult>, ApiError> {
+) -> Result<Json<PySpyResult>, ApiError> {
     let (proc_reference, proc_id) = parse_pyspy_proc_reference(&proc_reference)?;
-    let agent_id = proc_id.actor_id(crate::proc_agent::PROC_AGENT_ACTOR_NAME, 0);
+    let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
 
     // Send PySpyDump directly to ProcAgent.
     let cx = &state.bridge_cx;
-    let port = hyperactor_reference::PortRef::<crate::proc_agent::PySpyDump>::attest_message_port(
-        &agent_id,
-    );
-    let (reply_handle, reply_rx) = open_once_port::<crate::pyspy::PySpyResult>(cx);
+    let port = hyperactor_reference::PortRef::<PySpyDump>::attest_message_port(&agent_id);
+    let (reply_handle, reply_rx) = open_once_port::<PySpyResult>(cx);
+    // Native frames are essential for diagnosing hangs in C
+    // extensions and CUDA calls — the primary py-spy use case in
+    // Monarch. These defaults match the old hyperactor_multiprocess
+    // battle-tested diagnostics.
     port.send(
         cx,
-        crate::proc_agent::PySpyDump {
+        PySpyDump {
             threads: false,
+            native: true,
+            native_all: true,
+            nonblocking: false,
             result: reply_handle.bind(),
         },
     )
@@ -1637,7 +1645,7 @@ async fn pyspy_bridge(
         details: None,
     })?;
 
-    let result = tokio::time::timeout(
+    let wire_result = tokio::time::timeout(
         hyperactor_config::global::get(crate::config::MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT),
         reply_rx.recv(),
     )
@@ -1659,7 +1667,7 @@ async fn pyspy_bridge(
         details: None,
     })?;
 
-    Ok(Json(result))
+    Ok(Json(wire_result))
 }
 
 /// Resolve an opaque reference string to a `NodePayload` via the

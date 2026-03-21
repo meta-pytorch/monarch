@@ -58,6 +58,10 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::Name;
+use crate::pyspy::PySpyOpts;
+use crate::pyspy::PySpyResult;
+use crate::pyspy::PySpyWorker;
+use crate::pyspy::RunPySpyDump;
 use crate::resource;
 
 /// Actor name used when spawning the proc agent on user procs.
@@ -87,6 +91,29 @@ pub enum GspawnResult {
 }
 wirevalue::register_type!(GspawnResult);
 
+/// Request a py-spy stack dump from this process.
+///
+/// The ProcAgent runs inside the target OS process (1:1 mapping).
+/// py-spy attaches to `std::process::id()` to capture Python stacks.
+/// See PS-1 in `introspect` module doc.
+#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
+pub struct PySpyDump {
+    /// Include per-thread stacks.
+    pub threads: bool,
+    /// Include native C/C++ frames for threads that have Python frames
+    /// (`--native`).
+    pub native: bool,
+    /// Include native C/C++ frames for all threads, even those without
+    /// Python frames (`--native-all`).
+    pub native_all: bool,
+    /// Use nonblocking mode (py-spy reads without pausing the target).
+    pub nonblocking: bool,
+    /// Reply port for the result.
+    #[reply]
+    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
+}
+wirevalue::register_type!(PySpyDump);
+
 /// Deferred republish of introspect properties.
 ///
 /// Sent as a zero-delay self-message from the supervision event
@@ -103,18 +130,6 @@ wirevalue::register_type!(GspawnResult);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Named, Bind, Unbind)]
 struct RepublishIntrospect;
 wirevalue::register_type!(RepublishIntrospect);
-
-/// py-spy attaches to `std::process::id()` to capture Python stacks.
-/// See PS-1 in `introspect` module doc.
-#[derive(Debug, Serialize, Deserialize, Named, Handler, HandleClient, RefClient)]
-pub struct PySpyDump {
-    /// Include per-thread stacks.
-    pub threads: bool,
-    /// Reply port for the result.
-    #[reply]
-    pub result: hyperactor_reference::OncePortRef<crate::pyspy::PySpyResult>,
-}
-wirevalue::register_type!(PySpyDump);
 
 /// Collect live actor children and system actor children from the
 /// proc's instance DashMap using `all_instance_keys()` with point
@@ -911,9 +926,41 @@ impl Handler<PySpyDump> for ProcAgent {
         cx: &Context<Self>,
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
-        let runner = crate::pyspy::PySpyRunner;
-        let result = runner.dump_self(message.threads).await;
-        message.result.send(cx, result)?;
+        // Spawn a short-lived child actor to run py-spy without
+        // blocking the ProcAgent message loop. The worker replies
+        // directly to the original caller and self-terminates.
+        let worker = match PySpyWorker.spawn(cx) {
+            Ok(handle) => handle,
+            Err(e) => {
+                let fail = PySpyResult::Failed {
+                    pid: std::process::id(),
+                    binary: String::new(),
+                    exit_code: None,
+                    stderr: format!("failed to spawn pyspy worker: {}", e),
+                };
+                message.result.send(cx, fail)?;
+                return Ok(());
+            }
+        };
+        let opts = PySpyOpts {
+            threads: message.threads,
+            native: message.native,
+            native_all: message.native_all,
+            nonblocking: message.nonblocking,
+        };
+        // Once message.result moves into RunPySpyDump, we lose the
+        // reply port. MailboxSenderError does not carry the unsent
+        // message, so on send failure the caller will observe a
+        // timeout rather than an explicit Failed reply.
+        if let Err(e) = worker.send(
+            cx,
+            RunPySpyDump {
+                opts,
+                reply_port: message.result,
+            },
+        ) {
+            tracing::error!("failed to send to pyspy worker: {}", e);
+        }
         Ok(())
     }
 }

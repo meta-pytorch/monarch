@@ -4,8 +4,8 @@
 actor messaging. It provides:
 
 1. Remote actors with scalable messaging: Actors are grouped into collections called meshes and messages can be broadcast to all members.
-2. Fault tolerance through supervision trees: Actors and processes for a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery.
-3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided tranfers based on libibverbs
+2. Fault tolerance through supervision trees: Actors and processes form a tree and failures propagate up the tree, providing good default error behavior and enabling fine-grained fault recovery.
+3. Point-to-point RDMA transfers: cheap registration of any GPU or CPU memory in a process, with the one-sided transfers based on libibverbs
 4. Distributed tensors: actors can work with tensor objects sharded across processes
 
 Monarch code imperatively describes how to create processes and actors using a simple python API:
@@ -46,11 +46,11 @@ Here are some suggested steps to get started with Monarch:
 
 1. **Installation**: Check out the [Install guide](installation) for getting monarch installed.
 2. **Getting Started**: The [getting started](./generated/examples/getting_started) provides an introduction to monarchs core API
-2. **Explore Examples**: Review the [Examples](./generated/examples/index) to see Monarch in action
-3. **Dive Deeper**: Explore the API Documentation for more detailed information:
+3. **Explore Examples**: Review the [Examples](./generated/examples/index) to see Monarch in action
+4. **Dive Deeper**: Explore the API Documentation for more detailed information:
     - [Python API](api/index)
     - [Rust API](rust-api)
-4. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors), the foundational building blocks of Monarch.
+5. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors), the foundational building blocks of Monarch.
 
 ```{toctree}
 :maxdepth: 2

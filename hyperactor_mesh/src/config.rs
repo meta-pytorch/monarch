@@ -191,15 +191,17 @@ declare_attrs! {
     pub attr MESH_ADMIN_QUERY_CHILD_TIMEOUT: Duration = Duration::from_millis(100);
 
     /// Timeout for py-spy dump requests. See PS-5 in `introspect`
-    /// module doc. py-spy dump is typically ~100ms, but ptrace attach
-    /// can stall on heavily loaded hosts. Independent of
+    /// module doc. With `--native --native-all`, py-spy unwinds native
+    /// stacks via libunwind which is significantly slower than
+    /// Python-only capture (~100ms). 10s accommodates native unwinding
+    /// on heavily loaded hosts. Independent of
     /// `MESH_ADMIN_SINGLE_HOST_TIMEOUT` because py-spy does real I/O
     /// (subprocess + ptrace) rather than actor messaging.
     @meta(CONFIG = ConfigAttr::new(
         Some("HYPERACTOR_MESH_ADMIN_PYSPY_TIMEOUT".to_string()),
         Some("mesh_admin_pyspy_timeout".to_string()),
     ))
-    pub attr MESH_ADMIN_PYSPY_TIMEOUT: Duration = Duration::from_secs(5);
+    pub attr MESH_ADMIN_PYSPY_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Timeout for the `/v1/tree` fan-out. Kept generous because the
     /// tree dump walks every host and proc in the mesh.
@@ -217,5 +219,28 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT".to_string()),
         Some("mesh_admin_pyspy_bridge_timeout".to_string()),
     ))
-    pub attr MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(7);
+    pub attr MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(13);
+
+    /// Client-side timeout for py-spy requests. Must exceed
+    /// `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT` so the server can return a
+    /// structured `PySpyResult` even when the subprocess uses the
+    /// full budget. See PS-6 in `introspect` module doc.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_PYSPY_CLIENT_TIMEOUT".to_string()),
+        Some("mesh_admin_pyspy_client_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_PYSPY_CLIENT_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Path to the py-spy binary. When non-empty, tried before
+    /// the fallback `"py-spy"` PATH lookup. See PS-3 in
+    /// `introspect` module doc.
+    ///
+    /// Note: env var is `PYSPY_BIN` (not `HYPERACTOR_MESH_PYSPY_BIN`)
+    /// to preserve backward compatibility with existing deployments
+    /// that already set `PYSPY_BIN`.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("PYSPY_BIN".to_string()),
+        Some("pyspy_bin".to_string()),
+    ))
+    pub attr PYSPY_BIN: String = String::new();
 }

@@ -96,7 +96,7 @@ except `/SKILL.md` (`text/markdown`).
   target environment and ptrace permissions.
 
   Success returns a `PySpyResult` JSON variant:
-  - `{"Ok": {"pid": N, "binary": "...", "stack": "..."}}` — stack dump
+  - `{"Ok": {"pid": N, "binary": "...", "stack_traces": [...], "warnings": [...]}}` — structured stack dump
   - `{"BinaryNotFound": {"searched": [...]}}` — py-spy not available
   - `{"Failed": {"pid": N, "binary": "...", "exit_code": N, "stderr": "..."}}` — py-spy error
 

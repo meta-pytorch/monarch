@@ -425,10 +425,7 @@ def _run_simulation(
                     mid = msg_seq()
                     ts_msg = now + rng.randint(0, 500_000)
 
-                    final_status = rng.choices(
-                        ["delivered", "failed"],
-                        weights=[15, 1],
-                    )[0]
+                    final_status = "complete"
 
                     sender_actor = next(a for a in actors if a["id"] == sender_id)
 
@@ -438,14 +435,13 @@ def _run_simulation(
                             "timestamp_us": ts_msg,
                             "from_actor_id": sender_id,
                             "to_actor_id": receiver_id,
-                            "status": final_status,
                             "endpoint": endpoint,
                             "port_id": rng.randint(1, 100),
                         }
                     )
 
                     for step_idx, step_status in enumerate(
-                        ["queued", "sent", final_status]
+                        ["queued", "active", final_status]
                     ):
                         new_msg_events.append(
                             {
@@ -461,7 +457,7 @@ def _run_simulation(
                             "id": sm_seq(),
                             "timestamp_us": ts_msg,
                             "sender_actor_id": sender_id,
-                            "mesh_id": sender_actor["mesh_id"],
+                            "actor_mesh_id": sender_actor["mesh_id"],
                             "view_json": '{"offset": [0], "sizes": [1]}',
                             "shape_json": '{"dims": [1]}',
                         }
