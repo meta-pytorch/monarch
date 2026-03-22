@@ -291,7 +291,11 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // All ProcAgents send updates directly to this port
                 // so that failures along the comm tree path does not
                 // affect clean shutdowns.
-                subscriber: this.port().bind().unsplit(),
+                // Avoid binding the handle here: the controller's
+                // exported ports are bound when proc_mesh installs the
+                // ActorRef after spawn. Binding the same handle twice
+                // panics.
+                subscriber: hyperactor_reference::PortRef::<resource::State<ActorState>>::attest_message_port(this.self_id()).unsplit(),
             },
         )?;
 
