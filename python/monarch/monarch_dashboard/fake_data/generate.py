@@ -243,7 +243,9 @@ def _generate_hierarchy() -> tuple[
                 "class": "Host",
                 "given_name": host_given,
                 "full_name": host_full,
-                "shape_json": json.dumps({"dims": [1]}),
+                "shape_json": json.dumps(
+                    {"inner": {"labels": ["hosts"], "sizes": [1]}}
+                ),
                 "parent_mesh_id": None,
                 "parent_view_json": None,
             }
@@ -285,9 +287,16 @@ def _generate_hierarchy() -> tuple[
                     "class": "Proc",
                     "given_name": pm_given,
                     "full_name": pm_full,
-                    "shape_json": json.dumps({"dims": [1]}),
+                    "shape_json": json.dumps(
+                        {"inner": {"labels": ["replica"], "sizes": [1]}}
+                    ),
                     "parent_mesh_id": host_mesh_id,
-                    "parent_view_json": json.dumps({"offset": [0], "sizes": [1]}),
+                    "parent_view_json": json.dumps(
+                        {
+                            "labels": ["replica"],
+                            "slice": {"offset": 0, "sizes": [1], "strides": [1]},
+                        }
+                    ),
                 }
             )
 
@@ -322,9 +331,16 @@ def _generate_hierarchy() -> tuple[
                         "class": am_class,
                         "given_name": am_given,
                         "full_name": am_full,
-                        "shape_json": json.dumps({"dims": [2]}),
+                        "shape_json": json.dumps(
+                            {"inner": {"labels": ["replica"], "sizes": [2]}}
+                        ),
                         "parent_mesh_id": proc_mesh_id,
-                        "parent_view_json": json.dumps({"offset": [0], "sizes": [1]}),
+                        "parent_view_json": json.dumps(
+                            {
+                                "labels": ["replica"],
+                                "slice": {"offset": 0, "sizes": [1], "strides": [1]},
+                            }
+                        ),
                     }
                 )
 
@@ -668,8 +684,8 @@ def _generate_messages(
                     "timestamp_us": ts_msg,
                     "sender_actor_id": sender_id,
                     "actor_mesh_id": sender_actor["mesh_id"],
-                    "view_json": '{"offset": [0], "sizes": [1]}',
-                    "shape_json": '{"dims": [1]}',
+                    "view_json": '{"labels": ["replica"], "slice": {"offset": 0, "sizes": [1], "strides": [1]}}',
+                    "shape_json": '{"inner": {"labels": ["replica"], "sizes": [1]}}',
                 }
             )
 
