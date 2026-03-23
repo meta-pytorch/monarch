@@ -84,7 +84,7 @@ class MeshRoutesTest(_RouteTestBase):
         resp = self.client.get("/api/meshes/1")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["id"], 1)
+        self.assertEqual(data["id"], "1")
         self.assertIn("class", data)
         self.assertIn("full_name", data)
 
@@ -150,7 +150,7 @@ class ActorRoutesTest(_RouteTestBase):
         resp = self.client.get("/api/actors/1")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
-        self.assertEqual(data["id"], 1)
+        self.assertEqual(data["id"], "1")
         self.assertIn("latest_status", data)
         self.assertIn("status_timestamp_us", data)
 
@@ -186,7 +186,7 @@ class ActorStatusEventsRoutesTest(_RouteTestBase):
         events = resp.get_json()
         self.assertGreater(len(events), 0)
         for e in events:
-            self.assertEqual(e["actor_id"], 1)
+            self.assertEqual(e["actor_id"], "1")
 
     def test_status_events_not_found_actor(self):
         resp = self.client.get("/api/actors/9999/status_events")
