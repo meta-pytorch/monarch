@@ -14,6 +14,7 @@ import { ActorDetail } from "./components/ActorDetail";
 import { DagView } from "./components/DagView";
 import { SummaryView } from "./components/SummaryView";
 import { NavItem } from "./types";
+import { leafName } from "./utils/status";
 import "./App.css";
 
 const TABS = [
@@ -24,13 +25,12 @@ const TABS = [
 
 const MESH_COLUMNS = [
   { key: "given_name", label: "Name" },
+  { key: "class", label: "Type" },
   { key: "shape_json", label: "Shape" },
-  { key: "full_name", label: "Full Name" },
 ];
 
 const AGENT_COLUMNS = [
   { key: "full_name", label: "Name" },
-  { key: "mesh_class", label: "Class" },
   { key: "rank", label: "Rank" },
   { key: "latest_status", label: "Status" },
 ];
@@ -42,6 +42,18 @@ const ACTOR_COLUMNS = [
   { key: "status_timestamp_us", label: "Last Updated" },
 ];
 
+/** True if actor name looks like a HostAgent (system agent for hosts). */
+const _isHostAgent = (name: string): boolean => {
+  const low = name.toLowerCase();
+  return low.includes("hostagent") || low.includes("host_agent");
+};
+
+/** True if actor name looks like a ProcAgent (system agent for procs). */
+const _isProcAgent = (name: string): boolean => {
+  const low = name.toLowerCase();
+  return low.includes("procagent") || low.includes("proc_agent");
+};
+
 /** Navigation graph: for each level, what comes next and how to label it. */
 const LEVELS: Partial<Record<NavItem["level"], {
   next: NavItem["level"];
@@ -49,12 +61,12 @@ const LEVELS: Partial<Record<NavItem["level"], {
   idField: "meshId" | "actorId";
   idKey: string;
 }>> = {
-  host_meshes:  { next: "host_units",   label: (r) => r.given_name,                              idField: "meshId",  idKey: "id" },
-  host_units:   { next: "proc_meshes",  label: (r) => r.mesh_name ?? "Host",                       idField: "meshId",  idKey: "mesh_id" },
-  proc_meshes:  { next: "proc_units",   label: (r) => r.given_name,                              idField: "meshId",  idKey: "id" },
-  proc_units:   { next: "actor_meshes", label: (r) => r.mesh_name ?? "Proc",                     idField: "meshId",  idKey: "mesh_id" },
-  actor_meshes: { next: "actors",       label: (r) => r.given_name,                              idField: "meshId",  idKey: "id" },
-  actors:       { next: "actor_detail", label: (r) => r.full_name?.split("/").pop() ?? "Actor",  idField: "actorId", idKey: "id" },
+  host_meshes:  { next: "host_units",   label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
+  host_units:   { next: "proc_meshes",  label: (r) => leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
+  proc_meshes:  { next: "proc_units",   label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
+  proc_units:   { next: "actor_meshes", label: (r) => leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
+  actor_meshes: { next: "actors",       label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
+  actors:       { next: "actor_detail", label: (r) => leafName(r.full_name), idField: "actorId", idKey: "id" },
 };
 
 /** MeshTable config per hierarchy level. */
@@ -62,13 +74,14 @@ const LEVEL_CONFIG: Partial<Record<NavItem["level"], {
   apiPath: (n: NavItem) => string;
   columns: Array<{ key: string; label: string }>;
   title: string;
+  clientFilter?: (rows: any[]) => any[];
 }>> = {
-  host_meshes:  { apiPath: ()  => "/meshes?class=Host",            columns: MESH_COLUMNS,  title: "Host Meshes" },
-  host_units:   { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,   columns: AGENT_COLUMNS, title: "Host Units" },
-  proc_meshes:  { apiPath: (n) => `/meshes/${n.meshId}/children`,  columns: MESH_COLUMNS,  title: "Proc Meshes" },
-  proc_units:   { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,   columns: AGENT_COLUMNS, title: "Proc Units" },
-  actor_meshes: { apiPath: (n) => `/meshes/${n.meshId}/children`,  columns: MESH_COLUMNS,  title: "Actor Meshes" },
-  actors:       { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,   columns: ACTOR_COLUMNS, title: "Actors" },
+  host_meshes:  { apiPath: ()  => "/meshes?class=Host",                                          columns: MESH_COLUMNS,  title: "Host Meshes" },
+  host_units:   { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,                                 columns: AGENT_COLUMNS, title: "Host Units",    clientFilter: (rows) => rows.filter(r => _isHostAgent(r.full_name ?? "")) },
+  proc_meshes:  { apiPath: (n) => `/meshes/${n.meshId}/children?mesh_class=Proc`,                columns: MESH_COLUMNS,  title: "Proc Meshes" },
+  proc_units:   { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,                                 columns: AGENT_COLUMNS, title: "Proc Units",    clientFilter: (rows) => rows.filter(r => _isProcAgent(r.full_name ?? "")) },
+  actor_meshes: { apiPath: (n) => `/meshes/${n.meshId}/children?exclude_classes=Host,Proc`,      columns: MESH_COLUMNS,  title: "Actor Meshes" },
+  actors:       { apiPath: (n) => `/actors?mesh_id=${n.meshId}`,                                 columns: ACTOR_COLUMNS, title: "Actors" },
 };
 
 function App() {
@@ -116,6 +129,7 @@ function App() {
           columns={cfg.columns}
           onRowClick={handleRowClick}
           title={cfg.title}
+          clientFilter={cfg.clientFilter}
         />
       );
     }

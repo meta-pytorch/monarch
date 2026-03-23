@@ -16,7 +16,7 @@ fbinit = { version = "0.2.0", git = "https://github.com/facebookexperimental/rus
 hdrhistogram = "7.5"
 hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 lazy_static = "1.5"
-libc = "0.2.139"
+libc = "0.2.183"
 opentelemetry = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "logs", "metrics", "reqwest-blocking-client", "trace", "zstd-tonic"], default-features = false }
 opentelemetry_sdk = { version = "0.31", features = ["experimental_metrics_custom_reader", "metrics", "rt-tokio"] }

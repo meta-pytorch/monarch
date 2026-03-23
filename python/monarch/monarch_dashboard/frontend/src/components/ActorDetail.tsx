@@ -6,14 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import React from "react";
-import { Actor, ActorStatusEvent, Message } from "../types";
+import React, { useState } from "react";
+import { Actor, ActorStatusEvent, EntityId, Message, MessageStatusEvent } from "../types";
 import { StatusBadge } from "./StatusBadge";
-import { formatTimestamp, messageStatusColor } from "../utils/status";
+import { formatTimestamp, messageStatusColor, splitMessages } from "../utils/status";
 import { useApi } from "../hooks/useApi";
 
 interface ActorDetailProps {
-  actorId: number;
+  actorId: EntityId;
 }
 
 /** Actor detail view: metadata, status timeline, incoming/outgoing messages. */
@@ -33,8 +33,7 @@ export function ActorDetail({ actorId }: ActorDetailProps) {
     return <div className="error-state">Actor not found</div>;
   }
 
-  const incoming = (messages ?? []).filter((m) => m.to_actor_id === actorId);
-  const outgoing = (messages ?? []).filter((m) => m.from_actor_id === actorId);
+  const { incoming, outgoing } = splitMessages(messages ?? [], actorId);
 
   return (
     <div className="actor-detail">
@@ -124,6 +123,12 @@ function MessageTable({
   directionLabel: string;
   directionKey: "from_actor_id" | "to_actor_id";
 }) {
+  const [expandedId, setExpandedId] = useState<EntityId | null>(null);
+
+  const toggleExpand = (id: EntityId) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  };
+
   return (
     <div className="detail-card">
       <h2 className="detail-card-title">
@@ -145,30 +150,81 @@ function MessageTable({
             </thead>
             <tbody>
               {messages.map((msg) => (
-                <tr key={msg.id}>
-                  <td>Actor #{(msg as any)[directionKey]}</td>
-                  <td>
-                    <span className="endpoint-tag">{msg.endpoint ?? "—"}</span>
-                  </td>
-                  <td>
-                    <span
-                      className="msg-status"
-                      style={{ color: messageStatusColor(msg.status) }}
-                    >
-                      {msg.status}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="mono-cell">
-                      {formatTimestamp(msg.timestamp_us)}
-                    </span>
-                  </td>
-                </tr>
+                <React.Fragment key={msg.id}>
+                  <tr
+                    className="clickable-row"
+                    onClick={() => toggleExpand(msg.id)}
+                  >
+                    <td>Actor #{msg[directionKey]}</td>
+                    <td>
+                      <span className="endpoint-tag">{msg.endpoint ?? "—"}</span>
+                    </td>
+                    <td>
+                      {msg.latest_status ? (
+                        <span
+                          style={{ color: messageStatusColor(msg.latest_status) }}
+                        >
+                          {msg.latest_status}
+                        </span>
+                      ) : "—"}
+                    </td>
+                    <td>
+                      <span className="mono-cell">
+                        {formatTimestamp(msg.timestamp_us)}
+                      </span>
+                    </td>
+                  </tr>
+                  {expandedId === msg.id && (
+                    <tr className="msg-status-expanded-row">
+                      <td colSpan={4}>
+                        <MessageStatusTimeline messageId={msg.id} />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Fetches and displays the full status event timeline for a single message. */
+function MessageStatusTimeline({ messageId }: { messageId: EntityId }) {
+  const { data: events, loading } = useApi<MessageStatusEvent[]>(
+    `/message_status_events?message_id=${messageId}`,
+    0,
+  );
+
+  if (loading) {
+    return <div className="msg-status-timeline-loading">Loading events...</div>;
+  }
+  if (!events || events.length === 0) {
+    return <div className="msg-status-timeline-empty">No status events</div>;
+  }
+
+  return (
+    <div className="msg-status-timeline">
+      {events.map((evt, i) => (
+        <div key={evt.id} className="msg-status-step">
+          <span
+            className="msg-status-dot"
+            style={{ background: messageStatusColor(evt.status) }}
+          />
+          <span
+            className="msg-status-label"
+            style={{ color: messageStatusColor(evt.status) }}
+          >
+            {evt.status}
+          </span>
+          <span className="mono-cell msg-status-time">
+            {formatTimestamp(evt.timestamp_us)}
+          </span>
+          {i < events.length - 1 && <span className="msg-status-arrow">→</span>}
+        </div>
+      ))}
     </div>
   );
 }

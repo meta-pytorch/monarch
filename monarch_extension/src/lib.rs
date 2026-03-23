@@ -24,6 +24,8 @@ mod blocking;
 mod chunked_fuse;
 mod fast_pack;
 mod panic;
+mod tls_receiver;
+mod tls_sender;
 mod trace;
 
 use pyo3::prelude::*;
@@ -230,6 +232,16 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::fast_pack::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.fast_pack",
+    )?)?;
+
+    crate::tls_receiver::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.tls_receiver",
+    )?)?;
+
+    crate::tls_sender::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.tls_sender",
     )?)?;
 
     crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(

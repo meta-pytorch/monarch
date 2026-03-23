@@ -8,9 +8,9 @@
 
 import React from "react";
 import { DagNode } from "../utils/dagLayout";
-import { Actor, ActorStatusEvent, Mesh, Message } from "../types";
+import { Actor, ActorStatusEvent, EntityId, Mesh, Message } from "../types";
 import { StatusBadge } from "./StatusBadge";
-import { formatTimestamp } from "../utils/status";
+import { formatTimestamp, messageStatusColor, splitMessages } from "../utils/status";
 import { useApi } from "../hooks/useApi";
 
 interface NodeDetailProps {
@@ -65,7 +65,7 @@ function MetaRow({ label, value }: { label: string; value: string }) {
 }
 
 /** Actor-specific details: status timeline + messages. */
-function ActorDetails({ actorId }: { actorId: number }) {
+function ActorDetails({ actorId }: { actorId: EntityId }) {
   const { data: events } = useApi<ActorStatusEvent[]>(
     `/actors/${actorId}/status_events`
   );
@@ -73,8 +73,7 @@ function ActorDetails({ actorId }: { actorId: number }) {
     `/actors/${actorId}/messages`
   );
 
-  const incoming = (messages ?? []).filter((m) => m.to_actor_id === actorId);
-  const outgoing = (messages ?? []).filter((m) => m.from_actor_id === actorId);
+  const { incoming, outgoing } = splitMessages(messages ?? [], actorId);
 
   return (
     <>
@@ -128,7 +127,7 @@ function ActorDetails({ actorId }: { actorId: number }) {
                     <td style={{ color: "var(--status-processing)" }}>&larr; in</td>
                     <td>#{m.from_actor_id}</td>
                     <td><span className="endpoint-tag">{m.endpoint ?? "\u2014"}</span></td>
-                    <td>{m.status}</td>
+                    <td>{m.latest_status ? <span style={{ color: messageStatusColor(m.latest_status) }}>{m.latest_status}</span> : "\u2014"}</td>
                   </tr>
                 ))}
                 {outgoing.slice(0, 10).map((m) => (
@@ -136,7 +135,7 @@ function ActorDetails({ actorId }: { actorId: number }) {
                     <td style={{ color: "var(--accent-secondary)" }}>&rarr; out</td>
                     <td>#{m.to_actor_id}</td>
                     <td><span className="endpoint-tag">{m.endpoint ?? "\u2014"}</span></td>
-                    <td>{m.status}</td>
+                    <td>{m.latest_status ? <span style={{ color: messageStatusColor(m.latest_status) }}>{m.latest_status}</span> : "\u2014"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -149,7 +148,7 @@ function ActorDetails({ actorId }: { actorId: number }) {
 }
 
 /** Mesh-specific details: show child meshes and actors. */
-function MeshDetails({ meshId }: { meshId: number }) {
+function MeshDetails({ meshId }: { meshId: EntityId }) {
   const { data: mesh } = useApi<Mesh>(`/meshes/${meshId}`);
   const { data: children } = useApi<Mesh[]>(`/meshes/${meshId}/children`);
   const { data: actors } = useApi<Actor[]>(`/actors?mesh_id=${meshId}`);

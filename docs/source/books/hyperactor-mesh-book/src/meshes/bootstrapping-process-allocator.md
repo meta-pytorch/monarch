@@ -2,7 +2,7 @@
 
 ## 2. Get something that can spawn processes
 
-In the canonical v1 flow we need a *thing in the parent* that can say "start another OS process that will come up as a hyperactor proc/host and talk back to me." In this codebase that "thing" is the **process allocator**, implemented as `hyperactor::alloc::ProcessAllocator` defined in `hyperactor/src/process.rs`.
+In the canonical flow we need a *thing in the parent* that can say "start another OS process that will come up as a hyperactor proc/host and talk back to me." In this codebase that "thing" is the **process allocator**, implemented as `hyperactor_mesh::alloc::ProcessAllocator` defined in `hyperactor_mesh/src/alloc/process.rs`.
 
 In the unit-test version (`bootstrap_canonical_simple`) it looks like this:
 

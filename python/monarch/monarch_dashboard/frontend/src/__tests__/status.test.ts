@@ -11,29 +11,23 @@ import {
   formatTimestamp,
   formatShape,
   messageStatusColor,
+  leafName,
+  splitMessages,
 } from "../utils/status";
 
 describe("statusColor", () => {
-  test("returns green for idle", () => {
-    expect(statusColor("idle")).toBe("var(--status-healthy)");
-  });
-
-  test("returns blue for processing", () => {
+  test("returns distinct color for each ActorStatus variant", () => {
+    expect(statusColor("idle")).toBe("var(--status-idle)");
+    expect(statusColor("client")).toBe("var(--status-client)");
     expect(statusColor("processing")).toBe("var(--status-processing)");
-  });
-
-  test("returns amber for transitional statuses", () => {
-    for (const s of ["created", "initializing", "saving", "loading", "stopping"]) {
-      expect(statusColor(s)).toBe("var(--status-transitional)");
-    }
-  });
-
-  test("returns red for failed", () => {
+    expect(statusColor("saving")).toBe("var(--status-saving)");
+    expect(statusColor("loading")).toBe("var(--status-loading)");
+    expect(statusColor("created")).toBe("var(--status-created)");
+    expect(statusColor("initializing")).toBe("var(--status-initializing)");
+    expect(statusColor("stopping")).toBe("var(--status-stopping)");
     expect(statusColor("failed")).toBe("var(--status-failed)");
-  });
-
-  test("returns gray for stopped", () => {
     expect(statusColor("stopped")).toBe("var(--status-stopped)");
+    expect(statusColor("unknown")).toBe("var(--status-unknown)");
   });
 
   test("returns muted for null/undefined", () => {
@@ -75,19 +69,67 @@ describe("formatShape", () => {
 });
 
 describe("messageStatusColor", () => {
-  test("delivered is green", () => {
-    expect(messageStatusColor("delivered")).toBe("var(--status-healthy)");
-  });
-
-  test("failed is red", () => {
-    expect(messageStatusColor("failed")).toBe("var(--status-failed)");
-  });
-
   test("queued is amber", () => {
-    expect(messageStatusColor("queued")).toBe("var(--status-transitional)");
+    expect(messageStatusColor("queued")).toBe("var(--msg-status-queued)");
   });
 
-  test("sent is blue", () => {
-    expect(messageStatusColor("sent")).toBe("var(--status-processing)");
+  test("active is blue", () => {
+    expect(messageStatusColor("active")).toBe("var(--msg-status-active)");
+  });
+
+  test("complete is green", () => {
+    expect(messageStatusColor("complete")).toBe("var(--msg-status-complete)");
+  });
+
+  test("unknown status falls back to muted", () => {
+    expect(messageStatusColor("failed")).toBe("var(--text-muted)");
+    expect(messageStatusColor("delivered")).toBe("var(--text-muted)");
+    expect(messageStatusColor("unknown_status")).toBe("var(--text-muted)");
+  });
+});
+
+describe("leafName", () => {
+  test("extracts last segment from slash-separated name", () => {
+    expect(leafName("host_mesh_0/proc_mesh_0/Trainer")).toBe("Trainer");
+  });
+
+  test("extracts last segment from comma-separated name", () => {
+    expect(leafName("host,proc,Trainer")).toBe("Trainer");
+  });
+
+  test("handles mixed separators", () => {
+    expect(leafName("host/proc,unit")).toBe("unit");
+  });
+
+  test("returns dash for null/undefined", () => {
+    expect(leafName(null)).toBe("—");
+    expect(leafName(undefined)).toBe("—");
+  });
+
+  test("returns name as-is when no separators", () => {
+    expect(leafName("Trainer")).toBe("Trainer");
+  });
+});
+
+describe("splitMessages", () => {
+  const msgs = [
+    { id: 1, from_actor_id: 10, to_actor_id: 20 },
+    { id: 2, from_actor_id: 20, to_actor_id: 10 },
+    { id: 3, from_actor_id: 10, to_actor_id: 30 },
+  ];
+
+  test("splits by actor id", () => {
+    const { incoming, outgoing } = splitMessages(msgs, 10);
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0].id).toBe(2);
+    expect(outgoing).toHaveLength(2);
+  });
+
+  test("handles string actor ids", () => {
+    const { incoming, outgoing } = splitMessages(msgs, "20");
+    expect(incoming).toHaveLength(1);
+    expect(incoming[0].id).toBe(1);
+    expect(outgoing).toHaveLength(1);
+    expect(outgoing[0].id).toBe(2);
   });
 });
