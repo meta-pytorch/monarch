@@ -15,41 +15,21 @@ Monarch actor API.  Five philosophers sit around a table, each needing
 two chopsticks (shared with neighbours) to eat.  A Waiter actor
 arbitrates access to prevent deadlock.
 
-This example also spawns a MeshAdminAgent so you can attach the admin
-TUI to observe the running mesh topology in real time.
+The waiter proc mesh demonstrates overlapping proc-to-actor topology:
+
+- **3 waiter proc units** (P0, P1, P2) with **2 overlapping actor meshes**:
+  waiter_a on P0+P1, waiter_b on P1+P2 (overlap on P1).
+- ``--kill-waiter-proc-after N`` kills the waiter proc mesh after N seconds.
+  All 3 proc units die and both actor meshes inherit terminal status via
+  proc-level DAG propagation.
 
 Usage::
 
-    buck2 run fbcode//monarch/python/examples:dining_philosophers
-
-Then, in another terminal::
-
-    buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr <addr>
-
-where ``<addr>`` is the address printed by the example.
-
-To also launch the Monarch Dashboard for live telemetry::
-
     buck2 run fbcode//monarch/python/examples:dining_philosophers -- --dashboard
-    # Then SSH-tunnel: ssh -L 8265:localhost:8265 <devserver>
-    # Open http://localhost:8265 in your browser.
 
-Note: ``buck2 run`` does not include the frontend build assets in the
-dashboard (the Buck target does not bundle them).  The dashboard will
-start in API-only mode.  To get the full frontend UI, run via Python
-with a pip-installed wheel that includes the assets::
-
-    # 1. Build the React frontend (requires npm / Node.js):
-    cd fbcode/monarch/python/monarch/monarch_dashboard/frontend
-    npm install && npm run build
-
-    # 2. Build and install the wheel (picks up frontend/build/):
-    cd fbcode/monarch
-    uv build --wheel --no-build-isolation
-    pip install dist/torchmonarch-*.whl --force-reinstall
-
-    # 3. Run with Python directly:
-    python examples/dining_philosophers.py --dashboard
+    # Test proc-level DAG propagation:
+    buck2 run fbcode//monarch/python/examples:dining_philosophers -- \
+        --dashboard --kill-waiter-proc-after 30
 """
 
 import argparse
@@ -58,8 +38,17 @@ import os
 from enum import auto, Enum
 from typing import Any
 
+import monarch.actor
 from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.distributed_telemetry.actor import start_telemetry
+
+
+def _unhandled_fault(fault):
+    """Log but don't crash on unhandled actor faults (e.g. waiter proc death)."""
+    print(f"[fault] {fault}", flush=True)
+
+
+monarch.actor.unhandled_fault_hook = _unhandled_fault
 
 
 class ChopstickStatus(Enum):
@@ -76,7 +65,7 @@ class Philosopher(Actor):
         self.rank: int = 0
         self.left_status = ChopstickStatus.NONE
         self.right_status = ChopstickStatus.NONE
-        self.waiter: Any = None  # ActorMesh reference to the Waiter
+        self.waiter: Any = None
         self.meals_eaten: int = 0
 
     def _chopstick_indices(self) -> tuple[int, int]:
@@ -88,24 +77,28 @@ class Philosopher(Actor):
         left, right = self._chopstick_indices()
         self.left_status = ChopstickStatus.REQUESTED
         self.right_status = ChopstickStatus.REQUESTED
-        await self.waiter.request_chopsticks.call_one(self.rank, left, right)
+        try:
+            await self.waiter.request_chopsticks.call_one(self.rank, left, right)
+        except Exception:
+            print(f"philosopher {self.rank}: waiter unavailable, stopping", flush=True)
 
     async def _release_chopsticks(self) -> None:
         left, right = self._chopstick_indices()
         self.left_status = ChopstickStatus.NONE
         self.right_status = ChopstickStatus.NONE
-        await self.waiter.release_chopsticks.call_one(left, right)
+        try:
+            await self.waiter.release_chopsticks.call_one(left, right)
+        except Exception:
+            print(f"philosopher {self.rank}: waiter unavailable, stopping", flush=True)
 
     @endpoint
     async def start(self, waiter: Any) -> None:
-        """Begin the philosopher's lifecycle."""
         self.rank = current_rank().rank
         self.waiter = waiter
         await self._request_chopsticks()
 
     @endpoint
     async def grant_chopstick(self, chopstick: int) -> None:
-        """Called by the Waiter when a chopstick is granted."""
         left, right = self._chopstick_indices()
         if chopstick == left:
             self.left_status = ChopstickStatus.GRANTED
@@ -121,14 +114,10 @@ class Philosopher(Actor):
                 f"philosopher {self.rank} is eating (meal {self.meals_eaten})",
                 flush=True,
             )
-            await asyncio.sleep(1)  # savor the meal
+            await asyncio.sleep(1)
             await self._release_chopsticks()
-            await asyncio.sleep(0.5)  # think for a bit
+            await asyncio.sleep(0.5)
             await self._request_chopsticks()
-
-    @endpoint
-    async def get_meals_eaten(self) -> int:
-        return self.meals_eaten
 
 
 class Waiter(Actor):
@@ -169,14 +158,13 @@ NUM_PHILOSOPHERS = 5
 async def async_main(
     dashboard: bool = False,
     dashboard_port: int = 8265,
-    kill_waiter_after: float | None = None,
+    kill_waiter_proc_after: float | None = None,
 ) -> None:
     if dashboard:
         start_telemetry(include_dashboard=True, dashboard_port=dashboard_port)
 
     host = this_host()
 
-    # Spawn the admin agent so the TUI can attach.
     admin_url = await host._spawn_admin()
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
@@ -186,12 +174,7 @@ async def async_main(
         else ""
     )
     print(f"\nMesh admin server listening on {admin_url}")
-    print(f"  - Root node:     curl {mtls_flags}{admin_url}/v1/root")
     print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
-    print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
-    print(
-        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
-    )
     if dashboard:
         dashboard_url = os.environ.get(
             "MONARCH_DASHBOARD_URL", f"http://localhost:{dashboard_port}"
@@ -199,30 +182,37 @@ async def async_main(
         print(f"  - Dashboard:     {dashboard_url}")
     print("\nPress Ctrl+C to stop.\n", flush=True)
 
-    # Spawn philosopher processes and actors.
-    procs = host.spawn_procs(per_host={"replica": NUM_PHILOSOPHERS})
+    # --- Philosopher proc mesh ---
+    phil_procs = host.spawn_procs(per_host={"replica": NUM_PHILOSOPHERS})
+    philosophers = phil_procs.spawn("philosopher", Philosopher, NUM_PHILOSOPHERS)
 
-    # Spawn waiter on its own proc mesh so it appears in the dashboard hierarchy.
-    waiter_proc = host.spawn_procs(name="waiter")
-    philosophers = procs.spawn("philosopher", Philosopher, NUM_PHILOSOPHERS)
-    waiter = waiter_proc.spawn("waiter", Waiter, philosophers)
+    # --- Waiter proc mesh: 3 procs, two overlapping actor meshes ---
+    # waiter_a on P0+P1, waiter_b on P1+P2 (overlap on P1).
+    # Killing waiter_procs tests proc-level DAG propagation:
+    # all 3 proc units die → both actor meshes inherit terminal status.
+    waiter_procs = host.spawn_procs(name="waiter", per_host={"replica": 3})
+    waiter_a = waiter_procs.slice(replica=slice(0, 2)).spawn(
+        "waiter_a", Waiter, philosophers
+    )
+    waiter_b = waiter_procs.slice(replica=slice(1, 3)).spawn(
+        "waiter_b", Waiter, philosophers
+    )  # noqa: F841 — exists for overlapping topology
 
-    # Start all philosophers — each will begin requesting chopsticks.
-    philosophers.start.broadcast(waiter)
+    # All philosophers use waiter_a[0] for arbitration.
+    # waiter_b exists solely to create the overlapping proc-to-actor mapping.
+    philosophers.start.broadcast(waiter_a.slice(replica=0))
 
-    # Run until interrupted.
     try:
-        if kill_waiter_after is not None:
-            await asyncio.sleep(kill_waiter_after)
-            print("Killing the waiter...")
-            waiter.stop().get()
+        if kill_waiter_proc_after is not None:
+            await asyncio.sleep(kill_waiter_proc_after)
+            print("Killing waiter proc mesh...", flush=True)
+            await waiter_procs.stop()
+
         await asyncio.sleep(float("inf"))
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         print("\nShutting down...", flush=True)
-        await waiter_proc.stop()
-        await procs.stop()
 
 
 def main() -> None:
@@ -230,7 +220,7 @@ def main() -> None:
     parser.add_argument(
         "--dashboard",
         action="store_true",
-        help="Launch the Monarch Dashboard for live telemetry",
+        help="Launch the Monarch Dashboard",
     )
     parser.add_argument(
         "--dashboard-port",
@@ -239,10 +229,10 @@ def main() -> None:
         help="Dashboard port (default: 8265)",
     )
     parser.add_argument(
-        "--kill-waiter-after",
+        "--kill-waiter-proc-after",
         type=float,
         default=None,
-        help="Kill the waiter actor after N seconds (for testing error display)",
+        help="Kill the waiter proc mesh after N seconds (tests proc-level DAG propagation)",
     )
     args = parser.parse_args()
 
@@ -251,7 +241,7 @@ def main() -> None:
             async_main(
                 dashboard=args.dashboard,
                 dashboard_port=args.dashboard_port,
-                kill_waiter_after=args.kill_waiter_after,
+                kill_waiter_proc_after=args.kill_waiter_proc_after,
             )
         )
     except KeyboardInterrupt:
