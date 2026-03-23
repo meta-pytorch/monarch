@@ -349,6 +349,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
+            None,
             false,
         )
         .await

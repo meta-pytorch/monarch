@@ -108,6 +108,7 @@ use crate::mailbox::DeliveryError;
 use crate::mailbox::DialMailboxRouter;
 use crate::mailbox::IntoBoxedMailboxSender as _;
 use crate::mailbox::Mailbox;
+use crate::mailbox::MailboxClient;
 use crate::mailbox::MailboxMuxer;
 use crate::mailbox::MailboxSender;
 use crate::mailbox::MailboxServer as _;
@@ -248,6 +249,25 @@ impl Proc {
         let proc_id = reference::ProcId::with_name(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
         proc.clone().serve(rx);
+        Ok(proc)
+    }
+
+    /// Connect to a host's duplex server and return a [`Proc`] whose
+    /// identity is assigned by the host. Outbound messages are forwarded
+    /// over the duplex channel; inbound messages are served into the
+    /// proc's muxer. Mirrors [`Proc::direct`] but the identity and
+    /// routing are managed by the remote host.
+    pub async fn attach_to_host(duplex_addr: ChannelAddr) -> Result<Self, anyhow::Error> {
+        use crate::channel::Rx;
+        let (duplex_tx, mut duplex_rx) =
+            channel::duplex::dial::<MessageEnvelope, MessageEnvelope>(duplex_addr)?;
+        let envelope: MessageEnvelope = duplex_rx.recv().await?;
+        let assignment = envelope.deserialized::<crate::host::BootstrapAssignment>()?;
+        let proc = Self::configured(
+            assignment.proc_id,
+            MailboxClient::new(duplex_tx).into_boxed(),
+        );
+        proc.clone().serve(duplex_rx);
         Ok(proc)
     }
 
