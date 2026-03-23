@@ -59,7 +59,7 @@ spec:
   podTemplate:
     containers:
     - name: worker
-      image: ghcr.io/meta-pytorch/monarch:latest
+      image: ghcr.io/meta-pytorch/monarch:local-tag
       command:
         - python
         - -u
@@ -72,13 +72,23 @@ spec:
           logging.basicConfig(level=logging.INFO)
           logger = logging.getLogger("monarch-worker")
           port = os.environ.get("MONARCH_PORT", "26600")
+          duplex = os.environ.get("MONARCH_DUPLEX_PORT")
           # Use FQDN for cross-pod DNS resolution
           hostname = socket.getfqdn()
           address = f"tcp://{hostname}:{port}"
+          if duplex:
+            duplex = f"tcp://0.0.0.0:{duplex}"
           logger.info(f"--- Starting Monarch Worker ---")
           logger.info(f"Identity: {hostname}")
           logger.info(f"Listening on: {address}")
-          run_worker_loop_forever(address=address, ca="trust_all_connections")
+          if duplex:
+            logger.info(f"Duplex listening on: {duplex}")
+          run_worker_loop_forever(address=address, ca="trust_all_connections", duplex_address=duplex)
+      env:
+      - name: MONARCH_DUPLEX_PORT
+        value: "34000"
+      - name: MONARCH_LOG_DESTINATION
+        value: stdout
 ---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
@@ -95,7 +105,7 @@ spec:
   podTemplate:
     containers:
     - name: worker
-      image: ghcr.io/meta-pytorch/monarch:latest
+      image: ghcr.io/meta-pytorch/monarch:local-tag
       command:
         - python
         - -u
@@ -115,6 +125,9 @@ spec:
           logger.info(f"Identity: {hostname}")
           logger.info(f"Listening on: {address}")
           run_worker_loop_forever(address=address, ca="trust_all_connections")
+      env:
+        - name: MONARCH_LOG_DESTINATION
+          value: stdout
 ---
 # Controller pod for running the hello_kubernetes_job script
 apiVersion: v1
@@ -125,7 +138,7 @@ metadata:
 spec:
   containers:
     - name: controller
-      image: ghcr.io/meta-pytorch/monarch:latest
+      image: ghcr.io/meta-pytorch/monarch:local-tag
       command: ["sleep"]
       args: ["infinity"]
   serviceAccountName: hello-controller

@@ -58,7 +58,8 @@ metadata:
 spec:
   containers:
     - name: controller
-      image: ghcr.io/meta-pytorch/monarch:latest
+      image: localhost/rileydulin/monarch:local-tag
+      imagePullPolicy: Never
       command: ["sleep"]
       args: ["infinity"]
   serviceAccountName: hello-controller
