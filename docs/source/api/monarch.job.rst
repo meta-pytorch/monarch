@@ -69,6 +69,15 @@ LocalJob
    :show-inheritance:
    :exclude-members: __init__
 
+ProcessJob
+----------
+
+.. autoclass:: ProcessJob
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :exclude-members: __init__
+
 SlurmJob
 --------
 

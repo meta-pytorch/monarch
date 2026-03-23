@@ -61,6 +61,7 @@ use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::host_mesh::host_agent::SpawnMeshAdminClient;
+use crate::host_mesh::host_agent::StopHostClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -159,6 +160,20 @@ impl HostRef {
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
             .shutdown_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .await?;
+        Ok(())
+    }
+
+    /// Request a stop of this host: tear down all resources but keep
+    /// the worker process alive for reconnection.
+    pub(crate) async fn stop(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+        let agent = self.mesh_agent();
+        let terminate_timeout =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+        let max_in_flight =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
+        agent
+            .stop_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
             .await?;
         Ok(())
     }
@@ -678,6 +693,47 @@ impl HostMesh {
     /// ensure shutdown is run on Drop.
     pub fn shutdown_guard(self) -> HostMeshShutdownGuard {
         HostMeshShutdownGuard(self)
+    }
+
+    /// Stop all hosts owned by this `HostMesh`, terminating user procs
+    /// but keeping worker processes and their sockets alive for
+    /// reconnection.
+    ///
+    /// After `stop`, the same worker addresses can be passed to
+    /// [`HostMesh::attach`] to create a new mesh.
+    #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
+    pub async fn stop(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+        tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
+        let mut failed_hosts = vec![];
+        for host in self.current_ref.values() {
+            if let Err(e) = host.stop(cx).await {
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Stop::Host::Failed",
+                    %host,
+                    error = %e,
+                    "host stop failed"
+                );
+                failed_hosts.push(host);
+            }
+        }
+        if failed_hosts.is_empty() {
+            tracing::info!(name = "HostMeshStatus", status = "Stop::Success");
+        } else {
+            tracing::error!(
+                name = "HostMeshStatus",
+                status = "Stop::Failed",
+                "host mesh stop failed; check the logs of the failed hosts for details: {:?}",
+                failed_hosts
+            );
+        }
+
+        // Defuse the Drop impl so it doesn't send ShutdownHost to hosts
+        // we intentionally kept alive. Replace the allocation with an
+        // empty Owned variant so Drop has no hosts to iterate.
+        self.allocation = HostMeshAllocation::Owned { hosts: vec![] };
+
+        Ok(())
     }
 }
 
