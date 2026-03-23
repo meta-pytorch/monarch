@@ -113,6 +113,17 @@ class HostMesh:
         """
         ...
 
+    def stop(self, instance: Instance) -> PythonTask[None]:
+        """
+        Stop the hosts in this mesh, releasing all resources but keeping
+        worker processes alive for reconnection. Throws if this object is
+        backed by a reference rather than an owned mesh.
+
+        Arguments:
+        - `instance`: The instance to use to stop the mesh.
+        """
+        ...
+
 @final
 class BootstrapCommand:
     def __init__(

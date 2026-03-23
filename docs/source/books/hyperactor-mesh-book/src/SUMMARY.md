@@ -6,7 +6,7 @@
       - [2. Process allocator & v0 bootstrap](meshes/bootstrapping-process-allocator.md)
       - [3. HostMesh from an allocation](meshes/bootstrapping-hostmesh-from-allocation.md)
       - [4. Doing real work (hosts → procs → actors)](meshes/bootstrapping-doing-real-work.md)
-      - [Boostrapping from Python](meshes/bootstrapping-from-python.md)
+      - [Bootstrapping from Python](meshes/bootstrapping-from-python.md)
   - [Host & agents (control plane & mux)](meshes/host-and-agents.md)
   - [Proc meshes & ProcAgent](meshes/proc-mesh-and-agent.md)
   - [Process-backed hosts: BootstrapProcManager](meshes/bootstrap-proc-manager.md)

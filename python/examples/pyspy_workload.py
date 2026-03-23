@@ -147,9 +147,11 @@ async def async_main() -> None:
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print("\nVerify with:")
     print("  buck2 run fbcode//monarch/python/examples:verify_pyspy -- \\")
-    print(f"    --admin-url {admin_url} --mode {args.mode} --samples 10")
     if mtls_flags:
+        print(f"    --admin-url {admin_url} --mode {args.mode} --samples 10 \\")
         print(f"    {mtls_flags.strip()}")
+    else:
+        print(f"    --admin-url {admin_url} --mode {args.mode} --samples 10")
     print("\nPress Ctrl+C to stop.\n", flush=True)
 
     # Spawn worker procs. The actor name pyspy_worker lets the

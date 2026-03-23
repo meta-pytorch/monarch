@@ -34,7 +34,7 @@ hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
 inventory = "0.3.22"
 lazy_errors = "0.10.1"
 lazy_static = "1.5"
-libc = "0.2.139"
+libc = "0.2.183"
 monarch_conda = { version = "0.0.0", path = "../monarch_conda" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
