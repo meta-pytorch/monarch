@@ -575,14 +575,12 @@ fn bootstrap_attached(
             match tokio::time::timeout(Duration::from_secs(10), Proc::attach_to_host(addr.clone()))
                 .await
             {
-                Ok(Ok(proc)) => proc,
-                Ok(Err(e)) => return Err(PyRuntimeError::new_err(e.to_string())),
-                Err(e) => {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "timeout waiting for attach to host at address {}: {}",
-                        addr, e
-                    )));
-                }
+                Ok(Ok(proc)) => Ok(proc),
+                Ok(Err(e)) => Err(PyRuntimeError::new_err(e.to_string())),
+                Err(e) => Err(PyRuntimeError::new_err(format!(
+                    "timeout waiting for attach to host at address {}: {}",
+                    addr, e
+                ))),
             }?;
 
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None)
