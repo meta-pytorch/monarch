@@ -546,9 +546,8 @@ fn bootstrap_attached(
         Some(cmd) => cmd.to_rust(),
         None => BootstrapCommand::current().map_err(|e| PyException::new_err(e.to_string()))?,
     };
-    let addr: ChannelAddr = duplex_address
-        .parse()
-        .map_err(|e| PyException::new_err(format!("{e}")))?;
+    let addr = ChannelAddr::from_zmq_url(duplex_address)
+        .map_err(|e| PyValueError::new_err(format!("{}", e)))?;
 
     PyPythonTask::new(async move {
         // FIXME: This will supply "this_host()", should it be its own host or the remote one?
@@ -572,9 +571,19 @@ fn bootstrap_attached(
         // Register C so MeshAdminAgent can discover it ("A/C
         // invariant" - hyperactor_mesh/src/mesh_admin.rs).
         hyperactor_mesh::global_context::register_client_host(host_mesh.clone());
-        let proc = Proc::attach_to_host(addr)
-            .await
-            .map_err(|e| PyException::new_err(e.to_string()))?;
+        let proc =
+            match tokio::time::timeout(Duration::from_secs(10), Proc::attach_to_host(addr.clone()))
+                .await
+            {
+                Ok(Ok(proc)) => proc,
+                Ok(Err(e)) => return Err(PyRuntimeError::new_err(e.to_string())),
+                Err(e) => {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "timeout waiting for attach to host at address {}: {}",
+                        addr, e
+                    )));
+                }
+            }?;
 
         let agent_handle = ProcAgent::boot_v1(proc.clone(), None)
             .map_err(|e| PyException::new_err(e.to_string()))?;
