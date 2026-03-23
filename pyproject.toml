@@ -34,6 +34,7 @@ dependencies = [
     "opentelemetry-api",
     "clusterscope",
     "flask>=2.0",
+    "xxhash",
 ]
 
 # PyTorch nightly build indices for different platforms

@@ -269,8 +269,10 @@ use hyperactor::Handler;
 use hyperactor::Instance;
 use hyperactor::RefClient;
 use hyperactor::channel::try_tls_acceptor;
+use hyperactor::host::SERVICE_PROC_NAME;
 use hyperactor::introspect::IntrospectMessage;
 use hyperactor::introspect::IntrospectResult;
+use hyperactor::introspect::IntrospectView;
 use hyperactor::mailbox::open_once_port;
 use hyperactor::reference as hyperactor_reference;
 use serde::Deserialize;
@@ -280,6 +282,7 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use typeuri::Named;
 
+use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostId;
 use crate::introspect::NodePayload;
@@ -1609,20 +1612,97 @@ fn parse_pyspy_proc_reference(
     Ok((decoded, proc_id))
 }
 
+/// Probe whether an actor is reachable by sending a lightweight
+/// introspect query bounded by `MESH_ADMIN_QUERY_CHILD_TIMEOUT`.
+///
+/// Returns `Ok(true)` if the actor responds, `Ok(false)` if the
+/// actor is absent or unresponsive (timeout / recv error).
+/// Returns `Err(ApiError)` on bridge-side send failure — a real
+/// infrastructure problem, not an absent actor.
+async fn probe_actor(
+    cx: &Instance<()>,
+    agent_id: &hyperactor_reference::ActorId,
+) -> Result<bool, ApiError> {
+    let port = hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(agent_id);
+    let (handle, rx) = open_once_port::<IntrospectResult>(cx);
+    port.send(
+        cx,
+        IntrospectMessage::Query {
+            view: IntrospectView::Entity,
+            reply: handle.bind(),
+        },
+    )
+    .map_err(|e| {
+        tracing::warn!(
+            name = "pyspy_probe_send_failed",
+            %agent_id,
+            error = %e,
+        );
+        ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send probe to {}: {}", agent_id, e),
+            details: None,
+        }
+    })?;
+
+    let timeout = hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT);
+    match tokio::time::timeout(timeout, rx.recv()).await {
+        Ok(Ok(_)) => Ok(true),
+        Ok(Err(e)) => {
+            tracing::debug!(
+                name = "pyspy_probe_recv_failed",
+                %agent_id,
+                error = %e,
+            );
+            Ok(false)
+        }
+        Err(_elapsed) => {
+            tracing::debug!(
+                name = "pyspy_probe_timeout",
+                %agent_id,
+            );
+            Ok(false)
+        }
+    }
+}
+
 /// HTTP bridge for py-spy stack dump requests.
 ///
-/// Parses the proc reference, constructs the ProcAgent `ActorId`,
-/// and sends `PySpyDump` directly — same direct-to-actor pattern
-/// as `query_introspect`. See PS-* in `introspect` module doc.
+/// Parses the proc reference, routes to the appropriate actor
+/// (ProcAgent on worker procs, HostAgent on the service proc),
+/// probes for reachability, and sends `PySpyDump` directly.
+/// See PS-12, PS-13 in `introspect` module doc.
 async fn pyspy_bridge(
     State(state): State<Arc<BridgeState>>,
     AxumPath(proc_reference): AxumPath<String>,
 ) -> Result<Json<PySpyResult>, ApiError> {
     let (proc_reference, proc_id) = parse_pyspy_proc_reference(&proc_reference)?;
-    let agent_id = proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0);
 
-    // Send PySpyDump directly to ProcAgent.
+    // PS-12: route by proc name — service proc → HostAgent, all others → ProcAgent.
+    let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
+        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
+    } else {
+        proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
+    };
+
+    // PS-13: defensive probe — verify the target actor is reachable
+    // before committing to the full py-spy timeout.
     let cx = &state.bridge_cx;
+    if !probe_actor(cx, &agent_id).await? {
+        return Err(ApiError::not_found(
+            format!(
+                "proc {} does not have a reachable py-spy handler (expected {} actor)",
+                proc_reference,
+                if proc_id.base_name() == SERVICE_PROC_NAME {
+                    HOST_MESH_AGENT_ACTOR_NAME
+                } else {
+                    PROC_AGENT_ACTOR_NAME
+                },
+            ),
+            None,
+        ));
+    }
+
     let port = hyperactor_reference::PortRef::<PySpyDump>::attest_message_port(&agent_id);
     let (reply_handle, reply_rx) = open_once_port::<PySpyResult>(cx);
     // Native frames are essential for diagnosing hangs in C

@@ -8,7 +8,7 @@
 
 import React from "react";
 import { useApi } from "../hooks/useApi";
-import { Summary } from "../types";
+import { EntityId, Summary } from "../types";
 import { statusColor, formatTimestamp, messageStatusColor } from "../utils/status";
 import { StatusBadge } from "./StatusBadge";
 
@@ -81,10 +81,11 @@ function ActorErrorGroup({
   title,
 }: {
   actors: Array<{
-    actor_id: number;
+    actor_id: EntityId;
     full_name: string;
     reason: string | null;
     timestamp_us: number;
+    mesh_id?: EntityId;
   }>;
   title: string;
 }) {
@@ -101,8 +102,13 @@ function ActorErrorGroup({
             {a.full_name.split("/").pop()}
           </div>
           <div className="summary-error-detail">
-            <span className="summary-error-reason">
-              {a.reason ?? title.toLowerCase().replace(" actors", "")}
+            <span className="summary-error-reason-wrap">
+              <span className="summary-error-reason">
+                {a.reason ?? title.toLowerCase().replace(" actors", "")}
+              </span>
+              <span className="summary-error-popover">
+                {a.reason ?? title.toLowerCase().replace(" actors", "")}
+              </span>
             </span>
             <span className="summary-error-time">
               {formatTimestamp(a.timestamp_us)}
@@ -143,10 +149,10 @@ function ErrorPanel({ errors }: { errors: Summary["errors"] }) {
 
       {errors.failed_messages > 0 && (
         <div className="summary-error-group">
-          <h4 className="summary-error-heading">Failed Messages</h4>
+          <h4 className="summary-error-heading">Undelivered Messages</h4>
           <div className="summary-error-item">
             <div className="summary-error-name">
-              {errors.failed_messages} message{errors.failed_messages !== 1 ? "s" : ""} failed delivery
+              {errors.failed_messages} message{errors.failed_messages !== 1 ? "s" : ""} not delivered
             </div>
           </div>
         </div>
@@ -160,27 +166,36 @@ function MessageTraffic({ counts }: { counts: Summary["message_counts"] }) {
     (a, b) => b[1] - a[1]
   );
   const maxCount = Math.max(...endpoints.map(([, c]) => c));
+  const statusEntries = Object.entries(counts.by_status);
+  const total = counts.total || 1;
 
   return (
     <div className="summary-section" data-testid="message-traffic">
       <h3 className="summary-section-title">Message Traffic</h3>
 
-      {/* Delivery rate gauge */}
+      {/* Segmented status bar */}
       <div className="summary-delivery-rate">
         <div className="summary-delivery-bar-bg">
-          <div
-            className="summary-delivery-bar-fill"
-            style={{ width: `${counts.delivery_rate * 100}%` }}
-          />
+          {statusEntries.map(([status, count]) => (
+            <div
+              key={status}
+              className="summary-delivery-bar-segment"
+              style={{
+                width: `${(count / total) * 100}%`,
+                background: messageStatusColor(status),
+              }}
+              title={`${status}: ${count} (${((count / total) * 100).toFixed(1)}%)`}
+            />
+          ))}
         </div>
         <span className="summary-delivery-label">
           {(counts.delivery_rate * 100).toFixed(1)}% delivery rate
         </span>
       </div>
 
-      {/* Status breakdown */}
+      {/* Status legend */}
       <div className="summary-msg-statuses">
-        {Object.entries(counts.by_status).map(([status, count]) => (
+        {statusEntries.map(([status, count]) => (
           <div key={status} className="summary-msg-status-chip">
             <span
               className="status-dot"

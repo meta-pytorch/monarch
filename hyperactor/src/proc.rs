@@ -844,13 +844,26 @@ impl Proc {
 
         // Flush the forwarder so that any messages posted during
         // teardown (e.g. supervision events) are wire-delivered
-        // before we tear down the proc's networking.
-        if let Err(err) = self.state().forwarder.flush().await {
-            tracing::warn!(
-                "{}: forwarder flush failed during proc exit: {:?}",
-                self.proc_id(),
-                err
-            );
+        // before we tear down the proc's networking. The flush is
+        // best-effort: if the remote side has already torn down its
+        // networking, acks may never arrive and flush would hang
+        // indefinitely, so we bound it with a configurable timeout.
+        let flush_timeout = hyperactor_config::global::get(crate::config::FORWARDER_FLUSH_TIMEOUT);
+        match tokio::time::timeout(flush_timeout, self.state().forwarder.flush()).await {
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    "{}: forwarder flush failed during proc exit: {:?}",
+                    self.proc_id(),
+                    err
+                );
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "{}: forwarder flush timed out during proc exit",
+                    self.proc_id(),
+                );
+            }
+            Ok(Ok(())) => {}
         }
 
         if let Some(this_handle) = this_handle

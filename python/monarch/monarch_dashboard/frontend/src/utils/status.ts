@@ -8,21 +8,18 @@
 
 /** Status color and label utilities for Monarch actor statuses. */
 
-const STATUS_COLORS: Record<string, string> = {
-  idle: "var(--status-healthy)",
+export const STATUS_COLORS: Record<string, string> = {
+  idle: "var(--status-idle)",
+  client: "var(--status-client)",
   processing: "var(--status-processing)",
-  created: "var(--status-transitional)",
-  initializing: "var(--status-transitional)",
-  saving: "var(--status-transitional)",
-  loading: "var(--status-transitional)",
-  stopping: "var(--status-transitional)",
+  saving: "var(--status-saving)",
+  loading: "var(--status-loading)",
+  created: "var(--status-created)",
+  initializing: "var(--status-initializing)",
+  stopping: "var(--status-stopping)",
   failed: "var(--status-failed)",
   stopped: "var(--status-stopped)",
   unknown: "var(--status-unknown)",
-  client: "var(--status-unknown)",
-  "n/a": "var(--status-neutral)",
-  active: "var(--status-healthy)",
-  running: "var(--status-processing)",
 };
 
 /** Map a status string to its CSS color variable. */
@@ -32,9 +29,11 @@ export function statusColor(status: string | null | undefined): string {
 }
 
 /** Format a microsecond timestamp to a readable string. */
-export function formatTimestamp(us: number): string {
+export function formatTimestamp(us: number | null | undefined): string {
+  if (us == null || isNaN(us)) return "—";
   const ms = us / 1000;
   const d = new Date(ms);
+  if (isNaN(d.getTime())) return "—";
   return d.toISOString().replace("T", " ").replace("Z", "").slice(0, 23);
 }
 
@@ -49,13 +48,33 @@ export function formatShape(shapeJson: string): string {
   }
 }
 
-/** Message status color. */
+/** Extract the last segment from a hierarchical name.
+ *  Handles both ``/`` (fake data) and ``,`` (real data) separators.
+ *  e.g. "host_mesh_0/proc_mesh_0/Trainer" → "Trainer"
+ */
+export function leafName(name: string | null | undefined): string {
+  if (!name) return "—";
+  return name.split("/").pop()!.split(",").pop()!;
+}
+
+/** Split messages into incoming and outgoing for a given actor. */
+export function splitMessages<T extends { from_actor_id: any; to_actor_id: any }>(
+  messages: T[],
+  actorId: number | string,
+): { incoming: T[]; outgoing: T[] } {
+  const id = String(actorId);
+  return {
+    incoming: messages.filter((m) => String(m.to_actor_id) === id),
+    outgoing: messages.filter((m) => String(m.from_actor_id) === id),
+  };
+}
+
+/** Message status color (queued/active/complete lifecycle). */
 export function messageStatusColor(status: string): string {
   switch (status.toLowerCase()) {
-    case "delivered": return "var(--status-healthy)";
-    case "sent": return "var(--status-processing)";
-    case "queued": return "var(--status-transitional)";
-    case "failed": return "var(--status-failed)";
+    case "queued": return "var(--msg-status-queued)";
+    case "active": return "var(--msg-status-active)";
+    case "complete": return "var(--msg-status-complete)";
     default: return "var(--text-muted)";
   }
 }
