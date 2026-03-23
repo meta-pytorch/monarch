@@ -474,9 +474,6 @@ def get_dag_data() -> dict[str, Any]:
 
       host_mesh -> host_unit -> proc_mesh -> proc_unit -> actor_mesh -> actor
 
-    Status propagation: if a host_unit has a terminal status (failed/stopped/
-    stopping), all proc_units and actors under that host inherit it.
-
     Returns ``{"nodes": [...], "edges": [...]}``.
     """
     meshes = _query("SELECT * FROM meshes ORDER BY id")
@@ -518,21 +515,6 @@ def get_dag_data() -> dict[str, Any]:
     actor_statuses: dict[int, str] = {}
     for a in actors:
         actor_statuses[a["id"]] = (a.get("latest_status") or "unknown").lower()
-
-    # -- Terminal status propagation --
-    terminal = {"stopped", "failed", "stopping"}
-
-    def host_terminal_status(host_mesh_id: int) -> str | None:
-        for agent in host_agents_by_mesh.get(host_mesh_id, []):
-            s = actor_statuses.get(agent["id"], "unknown")
-            if s in terminal:
-                return s
-        return None
-
-    proc_to_host: dict[int, int] = {}
-    for pm in proc_meshes:
-        if pm["parent_mesh_id"] is not None:
-            proc_to_host[pm["id"]] = pm["parent_mesh_id"]
 
     def _leaf_name(name: str) -> str:
         """Extract the last segment from a hierarchical name.
@@ -582,10 +564,7 @@ def get_dag_data() -> dict[str, Any]:
         )
 
     for pm in proc_meshes:
-        host_id = proc_to_host.get(pm["id"])
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         for agent in proc_agents_by_mesh.get(pm["id"], []):
-            own = actor_statuses.get(agent["id"], "unknown")
             nodes.append(
                 {
                     "id": f"proc_unit-{agent['id']}",
@@ -593,7 +572,7 @@ def get_dag_data() -> dict[str, Any]:
                     "tier": "proc_unit",
                     "label": _leaf_name(agent["full_name"]),
                     "subtitle": "Proc",
-                    "status": t_host if t_host else own,
+                    "status": actor_statuses.get(agent["id"], "unknown"),
                 }
             )
 
@@ -610,12 +589,6 @@ def get_dag_data() -> dict[str, Any]:
         )
 
     for a in regular_actors:
-        parent_mesh = mesh_by_id.get(a["mesh_id"])
-        parent_proc_id = parent_mesh["parent_mesh_id"] if parent_mesh else None
-        host_id = (
-            proc_to_host.get(parent_proc_id) if parent_proc_id is not None else None
-        )
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         nodes.append(
             {
                 "id": f"actor-{a['id']}",
@@ -623,7 +596,7 @@ def get_dag_data() -> dict[str, Any]:
                 "tier": "actor",
                 "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
-                "status": t_host if t_host else actor_statuses.get(a["id"], "unknown"),
+                "status": actor_statuses.get(a["id"], "unknown"),
             }
         )
 
