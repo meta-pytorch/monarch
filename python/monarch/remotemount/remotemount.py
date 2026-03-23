@@ -409,7 +409,11 @@ class FUSEActor(Actor):
             self._alloc_storage(total_size)
 
         self._tls_receiver = TlsReceiver(num_streams)
-        return self._tls_receiver.addr, self._tls_receiver.tls_hostname, self._cache_path or ""
+        return (
+            self._tls_receiver.addr,
+            self._tls_receiver.tls_hostname,
+            self._cache_path or "",
+        )
 
     @endpoint
     def receive_blocks(self):
@@ -686,7 +690,11 @@ class MountHandler:
         # 3. Send blocks directly from the staging buffer.
         t_setup = time.time()
         send_blocks_from_buffer(
-            self._staging_mv, total_size, dirty_blocks, addresses, cache_path,
+            self._staging_mv,
+            total_size,
+            dirty_blocks,
+            addresses,
+            cache_path,
             tls_hostname=tls_hostname,
         )
         t_send = time.time()
