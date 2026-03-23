@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use std::io;
 use std::time::Duration;
 
-use chrono::Local;
 use crossterm::event::Event;
 use crossterm::event::EventStream;
 use crossterm::event::KeyCode;
@@ -22,13 +21,12 @@ use hyperactor_mesh::introspect::NodePayload;
 use hyperactor_mesh::introspect::NodeProperties;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::Modifier;
-use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use tokio::sync::oneshot;
 
 use crate::ActiveJob;
+use crate::ActiveJobEvent;
 use crate::Args;
 use crate::ColorScheme;
 use crate::Cursor;
@@ -46,7 +44,6 @@ use crate::collect_expanded_refs;
 use crate::collect_failed_refs;
 use crate::collect_refs;
 use crate::derive_label;
-use crate::diagnostics::DiagResult;
 use crate::diagnostics::run_diagnostics;
 use crate::fetch_with_join;
 use crate::find_at_depth_from_root_mut;
@@ -608,48 +605,53 @@ impl App {
         }
     }
 
+    /// Set the active job and build its overlay. TUI-21: both fields
+    /// are always set together. Replacing a prior variant drops its
+    /// receiver, cancelling any in-flight async work (PY-2).
+    pub(crate) fn set_job(&mut self, job: ActiveJob) {
+        self.active_job = Some(job);
+        self.overlay = None; // clear stale overlay so scroll starts at 0
+        self.rebuild_overlay();
+    }
+
+    /// Dismiss the active job and its overlay. TUI-21: both fields
+    /// are always cleared together.
+    pub(crate) fn dismiss_job(&mut self) {
+        self.active_job = None;
+        self.overlay = None;
+    }
+
+    /// Rebuild the overlay from the current active job state,
+    /// preserving scroll position. No-op when no job is active.
+    pub(crate) fn rebuild_overlay(&mut self) {
+        if let Some(job) = &self.active_job {
+            let scroll = self.overlay.as_ref().map(|o| o.scroll.get()).unwrap_or(0);
+            self.overlay = Some(job.build_overlay(&self.theme));
+            if let Some(ov) = &self.overlay {
+                ov.scroll.set(scroll);
+            }
+        }
+    }
+
     /// Open a py-spy loading overlay and spawn the one-shot HTTP fetch.
     ///
-    /// Assigns `self.active_job = Some(PySpy { rx, .. })`, which drops
-    /// any prior variant and its receiver, cancelling any in-flight
-    /// fetch (PY-1/PY-2).
+    /// Calls `set_job` which drops any prior variant and its receiver,
+    /// cancelling any in-flight fetch (PY-1/PY-2).
     pub(crate) fn start_pyspy(&mut self, proc_ref: String) {
         let short = proc_ref
             .split(',')
             .next_back()
             .unwrap_or(&proc_ref)
             .to_string();
-        let sep = self.theme.labels.separator;
         let scheme = self.theme.scheme; // ColorScheme: Copy
-        // Mirror the diagnostics overlay structure: bold name + info "Running…"
-        // in the title, and a pinned status line showing "Running… • fetching
-        // stack trace" (PY-3).
-        self.overlay = Some(Overlay {
-            title: Line::from(vec![
-                Span::styled(
-                    format!("py-spy: {short}"),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{sep}{}", self.theme.labels.diag_running),
-                    scheme.info,
-                ),
-            ]),
-            status_line: Some(Line::from(vec![
-                Span::styled(self.theme.labels.diag_running, scheme.info),
-                Span::styled(format!("{sep}fetching stack trace"), scheme.detail_label),
-            ])),
-            lines: vec![],
-            loading: true,
-            scroll: std::cell::Cell::new(0),
-            max_scroll: std::cell::Cell::new(u16::MAX),
-        });
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let (tx, rx) = oneshot::channel();
-        self.active_job = Some(ActiveJob::PySpy {
+        self.set_job(ActiveJob::PySpy {
             rx: Some(rx),
-            short: short.clone(),
+            short,
+            lines: vec![],
+            completed_at: None,
         });
         tokio::spawn(async move {
             let url = format!("{}/v1/pyspy/{}", base_url, urlencoding::encode(&proc_ref));
@@ -679,44 +681,13 @@ impl App {
     /// (e.g. after expanding nodes or toggling system-proc
     /// visibility).
     pub(crate) fn on_key(&mut self, key: KeyEvent) -> KeyResult {
-        // When the diagnostics pane is showing, intercept navigation keys.
-        if matches!(&self.active_job, Some(ActiveJob::Diagnostics { .. })) {
+        // When an overlay is active, intercept navigation keys.
+        // Shared across all overlay variants; variant-specific rerun
+        // keys are dispatched by overlay_rerun_key.
+        if self.active_job.is_some() {
             match key.code {
                 KeyCode::Esc => {
-                    self.active_job = None;
-                    self.overlay = None;
-                }
-                KeyCode::Char('q') => {
-                    self.should_quit = true;
-                }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.should_quit = true;
-                }
-                KeyCode::Char('r') | KeyCode::Char('d') => {
-                    return KeyResult::RunDiagnostics;
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if let Some(overlay) = &self.overlay {
-                        overlay.scroll_up();
-                    }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if let Some(overlay) = &self.overlay {
-                        overlay.scroll_down();
-                    }
-                }
-                _ => {}
-            }
-            return KeyResult::None;
-        }
-
-        // When a generic overlay (py-spy, config, etc.) is active,
-        // intercept navigation keys.
-        if self.overlay.is_some() {
-            match key.code {
-                KeyCode::Esc => {
-                    self.active_job = None; // TUI-21 / PY-2
-                    self.overlay = None;
+                    self.dismiss_job();
                 }
                 KeyCode::Char('q') => {
                     self.should_quit = true;
@@ -734,12 +705,10 @@ impl App {
                         ov.scroll_down();
                     }
                 }
-                KeyCode::Char('p') => {
-                    if let Some(proc_ref) = self.pyspy_proc_ref() {
-                        return KeyResult::RunPySpy(proc_ref);
-                    }
+                _ => {
+                    // Variant-specific rerun keys.
+                    return self.overlay_rerun_key(key);
                 }
-                _ => {}
             }
             return KeyResult::None;
         }
@@ -903,6 +872,27 @@ impl App {
                 }
             }
             _ => KeyResult::None,
+        }
+    }
+
+    /// Dispatch variant-specific rerun keys when an overlay is active.
+    pub(crate) fn overlay_rerun_key(&self, key: KeyEvent) -> KeyResult {
+        match &self.active_job {
+            Some(ActiveJob::Diagnostics { .. }) => match key.code {
+                KeyCode::Char('r') | KeyCode::Char('d') => KeyResult::RunDiagnostics,
+                _ => KeyResult::None,
+            },
+            Some(ActiveJob::PySpy { .. }) => match key.code {
+                KeyCode::Char('p') => {
+                    if let Some(proc_ref) = self.pyspy_proc_ref() {
+                        KeyResult::RunPySpy(proc_ref)
+                    } else {
+                        KeyResult::None
+                    }
+                }
+                _ => KeyResult::None,
+            },
+            None => KeyResult::None,
         }
     }
 }
@@ -1106,12 +1096,6 @@ pub(crate) fn pyspy_json_to_lines(
     vec![Line::from(format!("unexpected response: {json}"))]
 }
 
-/// Result of the active overlay-producing job completing one event.
-enum ActiveJobEvent {
-    DiagResult(Option<DiagResult>),
-    PySpyResult(Vec<Line<'static>>),
-}
-
 /// Await the next event from whichever overlay-producing job is currently live.
 ///
 /// Returns `std::future::pending()` when `active_job` is `None` or when
@@ -1195,14 +1179,13 @@ pub(crate) async fn run_app(
                                     app.client.clone(),
                                     app.base_url.clone(),
                                 );
-                                // PY-5: assigning Diagnostics drops any prior PySpy variant.
-                                app.active_job = Some(ActiveJob::Diagnostics {
+                                // PY-5: set_job drops any prior PySpy variant.
+                                app.set_job(ActiveJob::Diagnostics {
                                     results: Vec::new(),
                                     running: true,
                                     rx: Some(rx),
                                     completed_at: None,
                                 });
-                                app.overlay = Some(crate::render::detail_pane::build_diag_overlay(&app));
                             }
                             KeyResult::RunPySpy(proc_ref) => {
                                 app.start_pyspy(proc_ref);
@@ -1215,63 +1198,10 @@ pub(crate) async fn run_app(
                 }
             }
             job_event = recv_active_job(&mut app.active_job) => {
-                match job_event {
-                    ActiveJobEvent::DiagResult(result) => {
-                        match result {
-                            Some(r) => {
-                                if let Some(ActiveJob::Diagnostics { results, .. }) = &mut app.active_job {
-                                    results.push(r);
-                                }
-                                app.overlay = Some(crate::render::detail_pane::build_diag_overlay(&app));
-                            }
-                            None => {
-                                if let Some(ActiveJob::Diagnostics { running, rx, completed_at, .. })
-                                    = &mut app.active_job
-                                {
-                                    *running = false;
-                                    *rx = None;
-                                    *completed_at = Some(
-                                        Local::now().format("%H:%M:%S").to_string(),
-                                    );
-                                }
-                                app.overlay = Some(crate::render::detail_pane::build_diag_overlay(&app));
-                            }
-                        }
-                    }
-                    ActiveJobEvent::PySpyResult(lines) => {
-                        // Extract short label via shared borrow before mutable borrows below.
-                        let short = match &app.active_job {
-                            Some(ActiveJob::PySpy { short, .. }) => short.clone(),
-                            _ => "proc".to_string(),
-                        };
-                        // Mark receiver as spent.
-                        if let Some(ActiveJob::PySpy { rx, .. }) = &mut app.active_job {
-                            *rx = None;
-                        }
-                        // Rebuild overlay title and populate lines (PY-3).
-                        if let Some(ov) = &mut app.overlay {
-                            let ts = Local::now().format("%H:%M:%S").to_string();
-                            let sep = app.theme.labels.separator;
-                            let scheme = app.theme.scheme;
-                            ov.title = Line::from(vec![
-                                Span::styled(
-                                    format!("py-spy: {short}"),
-                                    Style::default().add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(
-                                    format!("{sep}{}", app.theme.labels.diag_completed_at),
-                                    scheme.detail_label,
-                                ),
-                                Span::raw(" "),
-                                Span::styled(ts, scheme.stat_timing),
-                            ]);
-                            ov.status_line = None;
-                            ov.lines = lines;
-                            ov.loading = false;
-                            ov.scroll.set(0);
-                        }
-                    }
+                if let Some(job) = &mut app.active_job {
+                    job.on_event(job_event);
                 }
+                app.rebuild_overlay();
             }
         }
 

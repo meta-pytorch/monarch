@@ -4,6 +4,7 @@ ARG PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime
 # Build from latest pytorch stable image; should be relatively in sync with torchmonarch and pytorch.
 FROM ghcr.io/pytorch/pytorch:${PYTORCH_TAG}
 
+ARG MONARCH_VERSION
 SHELL ["/bin/bash", "-c"]
 
 # System dependencies.
@@ -11,7 +12,7 @@ RUN apt-get update -y && \
     apt-get install curl clang liblzma-dev libunwind-dev libibverbs-dev librdmacm-dev protobuf-compiler -y
 
 # Install monarch w/ kubernetes.
-RUN pip install torchmonarch[kubernetes] --break-system-packages
+RUN pip install "torchmonarch[kubernetes]==${MONARCH_VERSION}" --break-system-packages
 
 # Install torchx-nightly w/ kubernetes.
 RUN pip install torchx-nightly[kubernetes] --break-system-packages

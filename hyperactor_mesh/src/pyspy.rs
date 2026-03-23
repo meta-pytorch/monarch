@@ -187,6 +187,39 @@ pub struct PySpyWorker;
 
 impl Actor for PySpyWorker {}
 
+impl PySpyWorker {
+    /// Spawn a PySpyWorker, forward the py-spy request, and let
+    /// the worker reply directly to the caller. On spawn failure,
+    /// sends a `Failed` result back via `reply_port`.
+    pub(crate) fn spawn_and_forward(
+        cx: &impl hyperactor::context::Actor,
+        opts: PySpyOpts,
+        reply_port: hyperactor::reference::OncePortRef<PySpyResult>,
+    ) -> Result<(), anyhow::Error> {
+        let worker = match Self.spawn(cx) {
+            Ok(handle) => handle,
+            Err(e) => {
+                let fail = PySpyResult::Failed {
+                    pid: std::process::id(),
+                    binary: String::new(),
+                    exit_code: None,
+                    stderr: format!("failed to spawn pyspy worker: {}", e),
+                };
+                reply_port.send(cx, fail)?;
+                return Ok(());
+            }
+        };
+        // Once reply_port moves into RunPySpyDump, we lose it.
+        // MailboxSenderError does not carry the unsent message, so
+        // on send failure the caller will observe a timeout rather
+        // than an explicit Failed reply.
+        if let Err(e) = worker.send(cx, RunPySpyDump { opts, reply_port }) {
+            tracing::error!("failed to send to pyspy worker: {}", e);
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Handler<RunPySpyDump> for PySpyWorker {
     async fn handle(

@@ -116,6 +116,19 @@ class RankActor(Actor):
     async def get_rank(self) -> int:
         return context().actor_instance.rank.rank
 
+    @endpoint
+    async def get_pid(self) -> int:
+        return os.getpid()
+
+
+def is_process_running(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
+        return True
+    except OSError:
+        return False
+
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
@@ -160,6 +173,41 @@ def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
     with pytest.raises(RuntimeError):
         hm_unpickled.shutdown().get()
     hm.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_stop_and_reconnect() -> None:
+    job = ProcessJob({"hosts": 2})
+
+    # First connection: spawn actors, verify they work.
+    hm = job.state(cached_path=None).hosts
+    pm = hm.spawn_procs(per_host={"gpus": 1})
+    am = pm.spawn("actor", RankActor)
+    pids = am.get_pid.call().get()
+    assert len(pids) == 2
+    pids = [pid for _, pid in pids.items()]
+
+    # Stop: terminate user procs but keep workers alive.
+    hm.stop().get()
+    # Ensure that the procs are actually dead.
+    assert all(not is_process_running(pid) for pid in pids)
+
+    # Sleep for a bit to ensure that there's no error after the stop. 30 seconds
+    # is the default channel timeout for an undeliverable message. The actor
+    # mesh and proc mesh controllers should be able to stop fine and not send
+    # any messages to the dead procs and actors.
+    time.sleep(35)
+
+    # Second connection: reconnect to the same workers via state().
+    hm2 = job.state(cached_path=None).hosts
+    pm2 = hm2.spawn_procs(per_host={"gpus": 1})
+    am2 = pm2.spawn("actor", RankActor)
+    ranks2 = am2.get_rank.call().get()
+    assert len(ranks2) == 2
+
+    # Shutdown: fully tear down and exit workers.
+    hm2.shutdown().get()
 
 
 class PidActor(Actor):

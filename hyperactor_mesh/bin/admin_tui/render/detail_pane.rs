@@ -26,8 +26,8 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 
-use crate::ActiveJob;
 use crate::App;
+use crate::Theme;
 use crate::diagnostics::DiagNodeRole;
 use crate::diagnostics::DiagOutcome;
 use crate::diagnostics::DiagPhase;
@@ -449,33 +449,20 @@ fn render_actor_detail(
     frame.render_widget(recorder, chunks[1]);
 }
 
-/// Build an `Overlay` from the current diagnostics state.
+/// Build an `Overlay` from diagnostics state.
 ///
-/// Called after each diagnostic result arrives and when diagnostics
-/// completes, to keep `app.overlay` in sync with `ActiveJob::Diagnostics`.
-pub(crate) fn build_diag_overlay(app: &App) -> crate::overlay::Overlay {
-    let (results, running, completed_at) = match &app.active_job {
-        Some(ActiveJob::Diagnostics {
-            results,
-            running,
-            completed_at,
-            ..
-        }) => (results.as_slice(), *running, completed_at.as_deref()),
-        _ => {
-            // Should not happen (TUI-21), but return an empty overlay as fallback.
-            return crate::overlay::Overlay {
-                title: Line::from("Diagnostics"),
-                status_line: None,
-                lines: vec![],
-                loading: false,
-                scroll: std::cell::Cell::new(0),
-                max_scroll: std::cell::Cell::new(0),
-            };
-        }
-    };
-
-    let scheme = &app.theme.scheme;
-    let labels = &app.theme.labels;
+/// Called by `ActiveJob::build_overlay` for the `Diagnostics` variant.
+/// Takes individual fields rather than `&App` so that the borrow
+/// checker allows `rebuild_overlay` to hold `&self.active_job` (shared)
+/// while writing to `self.overlay`.
+pub(crate) fn build_diag_overlay(
+    results: &[DiagResult],
+    running: bool,
+    completed_at: Option<&str>,
+    theme: &Theme,
+) -> crate::overlay::Overlay {
+    let scheme = &theme.scheme;
+    let labels = &theme.labels;
     let sep = labels.separator;
 
     // Title line.
@@ -587,21 +574,14 @@ pub(crate) fn build_diag_overlay(app: &App) -> crate::overlay::Overlay {
         lines.push(diag_result_line(r, scheme, labels));
     }
 
-    let overlay = crate::overlay::Overlay {
+    crate::overlay::Overlay {
         title,
         status_line: Some(status_line),
         lines,
         loading: running,
         scroll: std::cell::Cell::new(0),
         max_scroll: std::cell::Cell::new(u16::MAX),
-    };
-
-    // Preserve scroll position from existing overlay if present.
-    if let Some(existing) = &app.overlay {
-        overlay.scroll.set(existing.scroll.get());
     }
-
-    overlay
 }
 
 /// Format one diagnostic probe result as a TUI row.
