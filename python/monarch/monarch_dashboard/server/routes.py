@@ -19,19 +19,27 @@ from . import db
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
-# JavaScript cannot safely represent integers > 2^53 - 1.  Monarch uses
-# 64-bit IDs, so we convert them to strings before sending JSON.
-_JS_MAX_SAFE_INTEGER = 2**53 - 1
+# Monarch uses 64-bit IDs which can exceed JavaScript's Number.MAX_SAFE_INTEGER.
+# We always serialize ID fields as strings for type consistency on the frontend.
 
 
-def _sanitize_for_js(obj: Any) -> Any:
-    """Recursively convert integers exceeding JS MAX_SAFE_INTEGER to strings."""
+def _sanitize_for_js(obj: Any, _key: str | None = None) -> Any:
+    """Recursively convert ID fields to strings for JavaScript safety.
+
+    Any dict value whose key is ``"id"`` or ends with ``"_id"`` is
+    stringified, regardless of magnitude.  This keeps the frontend
+    ``EntityId`` type a simple ``string`` rather than ``number | string``.
+    """
     if isinstance(obj, bool):
         return obj
-    if isinstance(obj, int):
-        return str(obj) if abs(obj) > _JS_MAX_SAFE_INTEGER else obj
+    if (
+        isinstance(obj, int)
+        and _key is not None
+        and (_key == "id" or _key.endswith("_id"))
+    ):
+        return str(obj)
     if isinstance(obj, dict):
-        return {k: _sanitize_for_js(v) for k, v in obj.items()}
+        return {k: _sanitize_for_js(v, _key=k) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_sanitize_for_js(item) for item in obj]
     return obj
