@@ -310,7 +310,7 @@ impl IbvManagerActor {
             }
         }
 
-        let mut actor = Self {
+        let actor = Self {
             owner: OnceLock::new(),
             device_qps: HashMap::new(),
             pending_qp_creation: Arc::new(Mutex::new(HashSet::new())),
