@@ -24,20 +24,21 @@ use typeuri::Named;
 pub struct MeshFailure {
     /// Name of the mesh which the event originated from.
     pub actor_mesh_name: Option<String>,
-    /// Rank of the mesh from which the event originated.
-    /// TODO: Point instead?
-    pub rank: Option<usize>,
     /// The supervision event on an actor located at mesh + rank.
     pub event: ActorSupervisionEvent,
-    /// When replaying crash state to new subscribers, this contains all
-    /// crashed ranks so the filter can check overlap with a slice's region.
-    /// Normal (non-replay) messages leave this as None.
-    #[serde(default)]
-    pub crashed_ranks: Option<Vec<usize>>,
+    /// The set of crashed ranks in the mesh. Empty means the event
+    /// applies to the whole mesh (e.g. mesh stop, controller timeout).
+    pub crashed_ranks: Vec<usize>,
 }
 wirevalue::register_type!(MeshFailure);
 
 impl MeshFailure {
+    /// Returns true if the given rank is part of this failure.
+    /// A whole-mesh event (empty crashed_ranks) contains every rank.
+    pub fn contains_rank(&self, rank: usize) -> bool {
+        self.crashed_ranks.is_empty() || self.crashed_ranks.contains(&rank)
+    }
+
     /// Helper function to handle a message to an actor that just wants to forward
     /// it to the next owner.
     pub fn default_handler(&self, cx: &impl context::Actor) -> Result<(), anyhow::Error> {
@@ -62,15 +63,15 @@ impl std::fmt::Display for MeshFailure {
             .as_ref()
             .map(|m| format!(" on mesh \"{}\"", m))
             .unwrap_or("".to_string());
-        let rank = self
-            .rank
-            .as_ref()
-            .map(|r| format!(" at rank {}", r))
-            .unwrap_or("".to_string());
+        let ranks = if self.crashed_ranks.is_empty() {
+            String::new()
+        } else {
+            format!(" at ranks {:?}", self.crashed_ranks)
+        };
         write!(
             f,
             "failure{}{} with event: {}",
-            actor_mesh_name, rank, self.event
+            actor_mesh_name, ranks, self.event
         )
     }
 }

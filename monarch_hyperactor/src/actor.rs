@@ -987,9 +987,8 @@ impl Actor for PythonActor {
             &cx,
             MeshFailure {
                 actor_mesh_name: None,
-                rank: None,
                 event: event.clone(),
-                crashed_ranks: None,
+                crashed_ranks: vec![],
             },
         )
         .await
