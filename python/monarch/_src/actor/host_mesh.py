@@ -40,21 +40,21 @@ def _bootstrap_cmd() -> BootstrapCommand:
     )
 
 
-def this_host() -> "HostMesh":
+def this_host(*, attach_to: str | None = None) -> "HostMesh":
     """
     The current machine.
 
     This is just shorthand for looking it up via the context
     """
-    return this_proc().host_mesh
+    return this_proc(attach_to=attach_to).host_mesh
 
 
-def this_proc() -> "ProcMesh":
+def this_proc(*, attach_to: str | None = None) -> "ProcMesh":
     """
     The current singleton process that this specific actor is
     running on
     """
-    return context().actor_instance.proc
+    return context(attach_to=attach_to).actor_instance.proc
 
 
 class HostMesh(MeshTrait):
