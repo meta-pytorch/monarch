@@ -377,8 +377,7 @@ impl<A: Referable> Handler<Subscribe> for ActorMeshController<A> {
                 Unhealthy::StreamClosed(msg) | Unhealthy::Crashed(msg) => msg,
             };
             let mut replay_msg = msg.clone();
-            replay_msg.crashed_ranks =
-                self.health_state.crashed_ranks.keys().copied().collect();
+            replay_msg.crashed_ranks = self.health_state.crashed_ranks.keys().copied().collect();
             send_subscriber_message(cx, &message.0, replay_msg);
         }
         let port_id = message.0.port_id().clone();
