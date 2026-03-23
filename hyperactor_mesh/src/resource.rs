@@ -90,13 +90,14 @@ pub enum Status {
 }
 
 impl Status {
-    /// Returns whether the status is a terminating status.
+    /// Returns whether the status is a terminating status (includes `Stopping`).
     pub fn is_terminating(&self) -> bool {
         matches!(
             self,
             Status::Stopping | Status::Stopped | Status::Failed(_) | Status::Timeout(_)
         )
     }
+
 
     /// Tells whether the status represents a failure. A failure is both terminating
     /// (the resource is not running), but also means abnormal exit (the resource
