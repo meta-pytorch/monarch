@@ -85,9 +85,12 @@
 //!   with `http://` or `https://`; bare `host:port` is resolved to
 //!   a scheme during client construction, never stored schemeless.
 //! - **TUI-21 (job-overlay-coherence):** `active_job.is_some() ↔
-//!   overlay.is_some()`. Both are set and cleared together. Makes it
-//!   structurally impossible to have an orphaned overlay or a running
-//!   job with no display surface.
+//!   overlay.is_some()`. Enforced by `set_job`/`dismiss_job` —
+//!   all creation goes through `set_job` (which calls
+//!   `rebuild_overlay`) and all teardown through `dismiss_job`
+//!   (which clears both fields). Makes it structurally impossible
+//!   to have an orphaned overlay or a running job with no display
+//!   surface.
 //!
 //! Py-spy overlay invariants:
 //!
@@ -107,9 +110,10 @@
 //!   via `detail.parent` on Actor.
 //! - **PY-5 (overlay-isolation):** Diagnostics and py-spy overlays
 //!   must not write into each other's display surface. Enforced by
-//!   `active_job`: `RunDiagnostics` assigns the `Diagnostics` variant
-//!   (dropping any live `PySpy` receiver); Esc clears `active_job`;
-//!   `recv_active_job` fires only for the variant currently stored.
+//!   `set_job`: `RunDiagnostics` calls `set_job` with the
+//!   `Diagnostics` variant (dropping any live `PySpy` receiver);
+//!   Esc calls `dismiss_job`; `recv_active_job` fires only for the
+//!   variant currently stored.
 //!
 //! Laziness + recursion benefits:
 //! - **Lazy expansion**: proc/actor children are placeholders until

@@ -100,6 +100,18 @@ except `/SKILL.md` (`text/markdown`).
   - `{"BinaryNotFound": {"searched": [...]}}` — py-spy not available
   - `{"Failed": {"pid": N, "binary": "...", "exit_code": N, "stderr": "..."}}` — py-spy error
 
+  The endpoint supports worker procs and the service proc. A
+  proc supports py-spy iff its stable handler actor is
+  reachable: the service proc requires `host_agent`; non-service
+  procs require `proc_agent[0]`. On worker procs, the request is
+  handled by ProcAgent. On the service proc (which hosts
+  HostAgent instead of ProcAgent), the bridge automatically
+  routes to HostAgent. If the target agent is not reachable, an
+  immediate `not_found` error is returned instead of waiting for
+  the full bridge timeout. If the probe send itself fails (a
+  bridge-side infrastructure problem), `internal_error` is
+  returned.
+
   Timeout returns the standard `gateway_timeout` error envelope.
 
 - `GET {base}/SKILL.md`

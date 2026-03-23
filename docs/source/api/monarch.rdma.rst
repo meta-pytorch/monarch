@@ -27,3 +27,5 @@ Utility Functions
 =================
 
 .. autofunction:: is_ibverbs_available
+
+.. autofunction:: get_rdma_backend

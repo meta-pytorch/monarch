@@ -292,6 +292,10 @@ async fn halt<R>() -> R {
 /// Obtained from [`host`]. Awaiting [`HostShutdownHandle::join`] blocks until
 /// the [`ShutdownHost`] handler sends back the mailbox server handle, drains
 /// it, and (if `exit_on_shutdown`) calls `process::exit`.
+///
+/// Note: [`StopHost`] does **not** trigger this handle — a stopped host
+/// keeps its mailbox server (and Unix socket) alive so new clients can
+/// reconnect to the same address.
 pub struct HostShutdownHandle {
     rx: tokio::sync::oneshot::Receiver<MailboxServerHandle>,
     exit_on_shutdown: bool,
@@ -345,9 +349,9 @@ pub async fn host(
     let host = Host::new(manager, addr).await?;
     let addr = host.addr().clone();
 
-    // The ShutdownHost handler will call host.serve() inside HostAgent::init
-    // (after this.bind::<Self>(), so the actor port is bound before the
-    // frontend starts routing messages), then send the resulting
+    // The ShutdownHost/StopHost handler will call host.serve() inside
+    // HostAgent::init (after this.bind::<Self>(), so the actor port is bound
+    // before the frontend starts routing messages), then send the resulting
     // MailboxServerHandle back here for draining.
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<MailboxServerHandle>();
 
@@ -2216,10 +2220,11 @@ impl hyperactor::host::BulkTerminate for BootstrapProcManager {
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        // Snapshot to avoid holding the lock across awaits.
+        // Drain the children list to avoid holding the lock across awaits and
+        // avoid subsequent calls from trying to terminate again.
         let handles: Vec<BootstrapProcHandle> = {
-            let guard = self.children.lock().await;
-            guard.values().cloned().collect()
+            let mut guard = self.children.lock().await;
+            guard.drain().map(|(_, v)| v).collect()
         };
 
         let attempted = handles.len();
