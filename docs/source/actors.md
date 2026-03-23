@@ -348,8 +348,9 @@ with procs.activate():
 Stream responses as they arrive.
 
 ```python
-# Process responses as they come
-async for result in workers.compute.stream(data):
+# Process responses as they arrive (stream returns Iterator[Future])
+for future in workers.compute.stream(data):
+    result = future.get()
     print(f"Got result: {result}")
     process_result(result)
 ```
@@ -415,8 +416,8 @@ class ContextAwareActor(Actor):
         # Get actor instance
         actor_inst = ctx.actor_instance
 
-        # Get process reference
-        proc = ctx.proc
+        # Get process reference (via actor instance)
+        proc = actor_inst.proc
 
         return {
             "rank": rank,
@@ -435,7 +436,7 @@ The position in the mesh for the current message.
 @endpoint
 def process(self):
     rank = context().message_rank
-    # rank is a dict: {"hosts": 0, "gpus": 3}
+    # rank is a Point (dict-like): {"hosts": 0, "gpus": 3}
 
     if rank["gpus"] == 0:
         print("I'm the first GPU!")
@@ -478,8 +479,8 @@ Reference to the process hosting this actor.
 ```python
 @endpoint
 def spawn_sibling(self):
-    # Get our process
-    proc = context().proc
+    # Get our process (via actor instance)
+    proc = context().actor_instance.proc
 
     # Spawn sibling actor on same process
     sibling = proc.spawn("sibling", SiblingActor)
@@ -492,14 +493,13 @@ def spawn_sibling(self):
 graph TD
     A[context] --> B[message_rank]
     A --> C[actor_instance]
-    A --> D[proc]
 
     C --> C1[actor_id]
     C --> C2[rank]
     C --> C3[proc_id]
+    C --> D[proc]
 
     D --> D1[spawn]
-    D --> D2[host_mesh]
 
     style A fill:#007c88,stroke:#333,stroke-width:2px
 ```
@@ -685,7 +685,7 @@ From these principles, we can also derive that ownership follows a strict hierar
 We can always draw a single path from any mesh to some "root" owner. This makes
 the supervision hierarchy a tree. There are no orphan (managed) objects in the system: all failures must propagate.
 
-The following is a further axiomitization, separating actor supervision from mesh lifecycle management:
+The following is a further axiomatization, separating actor supervision from mesh lifecycle management:
 
 #### Actors
 Actors form a strict hierarchy of ownership. Typically the root of the hierarchy is the main script's client actor. We say that an actor is owned by its parent. A root actor is not owned.
@@ -784,21 +784,19 @@ class SupervisorActor(Actor):
     def __init__(self):
         self.children = []
 
-    def __supervise__(self, event):
-        print(f"Supervision event: {event}")
+    def __supervise__(self, failure: MeshFailure) -> bool:
+        # failure.report() returns a human-readable error string
+        # failure.mesh_name identifies which owned mesh failed
+        print(f"Supervision event for {failure.mesh_name}: {failure.report()}")
 
-        if event.is_recoverable():
-            # Restart failed actor
-            self.restart_child(event.actor_id)
-            return True  # Handled
-        else:
-            # Propagate to parent
-            return False
+        # Return True to mark the failure as handled,
+        # or False to propagate it up the ownership hierarchy.
+        return False
 
     @endpoint
     def spawn_worker(self):
-        # Spawn supervised child
-        worker = context().proc.spawn("worker", WorkerActor)
+        # Spawn supervised child (proc accessed via actor instance)
+        worker = context().actor_instance.proc.spawn("worker", WorkerActor)
         self.children.append(worker)
         return worker
 ```
@@ -846,6 +844,7 @@ Share readonly state across actor mesh:
 
 ```python
 from monarch.actor import ValueMesh
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 
 class ConfigActor(Actor):
     def __init__(self, config_mesh: ValueMesh[dict]):
@@ -857,9 +856,10 @@ class ConfigActor(Actor):
     def get_config(self):
         return self.config
 
-# Create value mesh
+# Create value mesh: build a Shape, then pass values
 configs = [{"id": i, "param": i * 10} for i in range(8)]
-config_mesh = ValueMesh.from_list(configs, extent={"gpus": 8})
+shape = Shape(["gpus"], Slice(offset=0, sizes=[8], strides=[1]))
+config_mesh = ValueMesh(shape, configs)
 
 # Spawn actors with value mesh
 actors = procs.spawn("actors", ConfigActor, config_mesh)
@@ -1149,7 +1149,7 @@ from monarch.actor import context
 def my_endpoint(self):
     ctx = context()
     rank = ctx.message_rank
-    proc = ctx.proc
+    proc = ctx.actor_instance.proc
 ```
 
 ### Supervision

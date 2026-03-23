@@ -549,15 +549,23 @@ impl<M: ProcManager + BulkTerminate> Host<M> {
     /// A [`TerminateSummary`] with counts of attempted/ok/failed
     /// terminations.
     pub async fn terminate_children(
-        &self,
+        &mut self,
         cx: &impl context::Actor,
         timeout: Duration,
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        self.manager
+        let summary = self
+            .manager
             .terminate_all(cx, timeout, max_in_flight, reason)
-            .await
+            .await;
+        // Unbind procs from the router so if new procs are made with the same
+        // names, they can use the same slot.
+        for name in self.procs.drain() {
+            let proc_id = reference::ProcId::with_name(self.frontend_addr.clone(), &name);
+            self.router.unbind(&proc_id.into());
+        }
+        summary
     }
 }
 
@@ -895,10 +903,11 @@ where
         max_in_flight: usize,
         reason: &str,
     ) -> TerminateSummary {
-        // Snapshot procs so we don't hold the lock across awaits.
+        // Drain procs so we don't hold the lock across awaits and subsequent
+        // calls to terminate_all don't try to re-terminate.
         let procs: Vec<Proc> = {
-            let guard = self.procs.lock().await;
-            guard.values().cloned().collect()
+            let mut guard = self.procs.lock().await;
+            guard.drain().map(|(_, v)| v).collect()
         };
 
         let attempted = procs.len();

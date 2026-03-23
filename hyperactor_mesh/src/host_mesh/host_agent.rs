@@ -57,6 +57,9 @@ use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
 use crate::mesh_admin::MeshAdminMessageClient;
 use crate::proc_agent::ProcAgent;
+use crate::proc_agent::PySpyDump;
+use crate::pyspy::PySpyOpts;
+use crate::pyspy::PySpyWorker;
 use crate::resource;
 use crate::resource::ProcSpec;
 
@@ -231,9 +234,11 @@ struct ProcStatusChanged {
         resource::WaitRankStatus { cast = true },
         resource::List,
         ShutdownHost,
+        StopHost,
         SpawnMeshAdmin,
         SetClientConfig,
         ProcStatusChanged,
+        PySpyDump,
     ]
 )]
 pub struct HostAgent {
@@ -261,7 +266,8 @@ pub struct HostAgent {
     /// Handle to the host's frontend mailbox server, set during `init` after
     /// `this.bind::<Self>()` ensures the actor port is registered before the
     /// mailbox starts routing messages. Sent back to the bootstrap loop via
-    /// `shutdown_tx` when the host shuts down so the caller can drain it.
+    /// `shutdown_tx` when the host shuts down so the caller can
+    /// drain it.
     mailbox_handle: Option<MailboxServerHandle>,
 }
 
@@ -277,6 +283,36 @@ impl HostAgent {
             local_mesh_agent: OnceLock::new(),
             mailbox_handle: None,
         }
+    }
+
+    /// Terminate all tracked children on the host and clear proc state.
+    ///
+    /// The host, system proc, mailbox server, and HostAgent all stay
+    /// alive — only user procs are killed. After this returns the host
+    /// is ready to accept new spawn requests with the same proc names.
+    async fn terminate_children_and_clear(
+        &mut self,
+        cx: &Context<'_, Self>,
+        timeout: std::time::Duration,
+        max_in_flight: usize,
+    ) {
+        if let Some(host_mode) = self.host.as_mut() {
+            match host_mode {
+                HostAgentMode::Process { host, .. } => {
+                    let summary = host
+                        .terminate_children(cx, timeout, max_in_flight.clamp(1, 256), "stop host")
+                        .await;
+                    tracing::info!(?summary, "terminated children on host");
+                }
+                HostAgentMode::Local(host) => {
+                    let summary = host
+                        .terminate_children(cx, timeout, max_in_flight, "stop host")
+                        .await;
+                    tracing::info!(?summary, "terminated children on local host");
+                }
+            }
+        }
+        self.created.clear();
     }
 
     /// Publish the current host properties and children list for
@@ -812,6 +848,51 @@ pub struct ShutdownHost {
 }
 wirevalue::register_type!(ShutdownHost);
 
+/// Stop the host: tear down all resources (procs, host, router) but
+/// keep the worker process alive so a new client can re-bootstrap.
+/// TODO: consider generalizing resource::StopAll to use for this case.
+#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
+pub struct StopHost {
+    /// Grace window: send SIGTERM and wait this long before
+    /// escalating.
+    pub timeout: std::time::Duration,
+    /// Max number of children to terminate concurrently on this host.
+    pub max_in_flight: usize,
+    /// Ack that the agent finished stop work (best-effort).
+    #[reply]
+    pub ack: hyperactor::reference::PortRef<()>,
+}
+wirevalue::register_type!(StopHost);
+
+#[async_trait]
+impl Handler<StopHost> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, msg: StopHost) -> anyhow::Result<()> {
+        // Terminate children BEFORE acking, so the caller's networking
+        // stays alive while children flush their forwarders during
+        // teardown. If we ack first, the caller proceeds to tear down
+        // the host proc's networking while children are still running,
+        // causing their forwarder flushes to hang until
+        // MESSAGE_DELIVERY_TIMEOUT expires.
+        self.terminate_children_and_clear(cx, msg.timeout, msg.max_in_flight)
+            .await;
+
+        // Ack after children are terminated so the caller does not
+        // tear down the host's networking prematurely.
+        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
+        cx.mailbox()
+            .serialize_and_send(&msg.ack, (), return_handle)?;
+        if return_receiver.recv().await.is_ok() {
+            tracing::warn!("failed to send ack");
+        }
+        tracing::info!(
+            proc_id = %cx.self_id().proc_id(),
+            actor_id = %cx.self_id(),
+            "host stopped, ready for new client"
+        );
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Handler<ShutdownHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ShutdownHost) -> anyhow::Result<()> {
@@ -821,32 +902,8 @@ impl Handler<ShutdownHost> for HostAgent {
         // the host proc's networking while children are still running,
         // causing their forwarder flushes to hang until
         // MESSAGE_DELIVERY_TIMEOUT expires.
-        let mut shutdown_tx = None;
-        if let Some(host_mode) = self.host.take() {
-            match host_mode {
-                HostAgentMode::Process {
-                    host,
-                    shutdown_tx: tx,
-                } => {
-                    let summary = host
-                        .terminate_children(
-                            cx,
-                            msg.timeout,
-                            msg.max_in_flight.clamp(1, 256),
-                            "shutdown host",
-                        )
-                        .await;
-                    tracing::info!(?summary, "terminated children on host");
-                    shutdown_tx = tx;
-                }
-                HostAgentMode::Local(host) => {
-                    let summary = host
-                        .terminate_children(cx, msg.timeout, msg.max_in_flight, "shutdown host")
-                        .await;
-                    tracing::info!(?summary, "terminated children on local host");
-                }
-            }
-        }
+        self.terminate_children_and_clear(cx, msg.timeout, msg.max_in_flight)
+            .await;
 
         // Ack after children are terminated so the caller does not
         // tear down the host's networking prematurely.
@@ -859,10 +916,13 @@ impl Handler<ShutdownHost> for HostAgent {
             tracing::warn!("failed to send ack");
         }
 
-        // Drop the host to release any resources that somehow survived.
-        let _ = self.host.take();
-
-        if let Some(tx) = shutdown_tx {
+        // Drop the host and signal the bootstrap loop to drain the
+        // mailbox and exit.
+        if let Some(HostAgentMode::Process {
+            shutdown_tx: Some(tx),
+            ..
+        }) = self.host.take()
+        {
             tracing::info!(
                 proc_id = %cx.self_id().proc_id(),
                 actor_id = %cx.self_id(),
@@ -1085,6 +1145,23 @@ impl Handler<GetLocalProc> for HostAgent {
         };
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<PySpyDump> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: PySpyDump,
+    ) -> Result<(), anyhow::Error> {
+        let opts = PySpyOpts {
+            threads: message.threads,
+            native: message.native,
+            native_all: message.native_all,
+            nonblocking: message.nonblocking,
+        };
+        PySpyWorker::spawn_and_forward(cx, opts, message.result)
     }
 }
 

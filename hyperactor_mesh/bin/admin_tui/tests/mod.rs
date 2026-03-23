@@ -10,6 +10,10 @@
 //! tree + cursor + fetch). Per-module unit tests live in each
 //! module's own `#[cfg(test)] mod tests` block.
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+
 use super::*;
 use crate::diagnostics::DiagOutcome;
 use crate::diagnostics::DiagPhase;
@@ -1820,19 +1824,14 @@ fn pyspy_json_to_lines_ok_thread_name_and_flags() {
 // TUI-21: running diagnostics produces a loading overlay with status line.
 #[test]
 fn build_diag_overlay_running() {
-    let mut app = App::new(
-        "http://localhost:8080".to_string(),
-        reqwest::Client::new(),
-        ThemeName::Nord,
-        LangName::En,
-    );
-    app.active_job = Some(ActiveJob::Diagnostics {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::Diagnostics {
         results: Vec::new(),
         running: true,
         rx: None,
         completed_at: None,
-    });
-    let overlay = crate::render::detail_pane::build_diag_overlay(&app);
+    };
+    let overlay = job.build_overlay(&theme);
     assert!(overlay.loading, "overlay should be loading while running");
     assert!(
         overlay.status_line.is_some(),
@@ -1853,13 +1852,8 @@ fn build_diag_overlay_running() {
 // overlay whose status line summarises the pass count.
 #[test]
 fn build_diag_overlay_one_result() {
-    let mut app = App::new(
-        "http://localhost:8080".to_string(),
-        reqwest::Client::new(),
-        ThemeName::Nord,
-        LangName::En,
-    );
-    app.active_job = Some(ActiveJob::Diagnostics {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::Diagnostics {
         results: vec![DiagResult {
             label: "root".into(),
             reference: "root_ref".into(),
@@ -1870,8 +1864,8 @@ fn build_diag_overlay_one_result() {
         running: false,
         rx: None,
         completed_at: Some("12:00:00".into()),
-    });
-    let overlay = crate::render::detail_pane::build_diag_overlay(&app);
+    };
+    let overlay = job.build_overlay(&theme);
     assert!(
         !overlay.loading,
         "overlay should not be loading when completed"
@@ -1891,29 +1885,300 @@ fn build_diag_overlay_one_result() {
     );
 }
 
-// TUI-21: no active job returns a fallback empty overlay without panicking.
+// TUI-21: set_job establishes the job-overlay biconditional.
 #[test]
-fn build_diag_overlay_no_active_job() {
-    let app = App::new(
+fn set_job_establishes_overlay() {
+    let mut app = App::new(
         "http://localhost:8080".to_string(),
         reqwest::Client::new(),
         ThemeName::Nord,
         LangName::En,
     );
     assert!(app.active_job.is_none());
-    let overlay = crate::render::detail_pane::build_diag_overlay(&app);
-    assert!(!overlay.loading, "fallback overlay should not be loading");
+    assert!(app.overlay.is_none());
+    app.set_job(ActiveJob::Diagnostics {
+        results: Vec::new(),
+        running: true,
+        rx: None,
+        completed_at: None,
+    });
+    assert!(app.active_job.is_some(), "set_job should set active_job");
+    assert!(app.overlay.is_some(), "set_job should create overlay");
+}
+
+// TUI-21: dismiss_job clears both fields together.
+#[test]
+fn dismiss_job_clears_both() {
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
+    app.set_job(ActiveJob::Diagnostics {
+        results: Vec::new(),
+        running: true,
+        rx: None,
+        completed_at: None,
+    });
+    app.dismiss_job();
+    assert!(
+        app.active_job.is_none(),
+        "dismiss_job should clear active_job"
+    );
+    assert!(app.overlay.is_none(), "dismiss_job should clear overlay");
+}
+
+// ── ActiveJob::build_overlay PySpy tests ───────────────────────────────────
+
+// PY-3: PySpy loading state: rx is Some → overlay.loading, has status_line.
+#[test]
+fn build_overlay_pyspy_loading() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let (_, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let job = ActiveJob::PySpy {
+        rx: Some(rx),
+        short: "worker[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+    };
+    let overlay = job.build_overlay(&theme);
+    assert!(overlay.loading, "rx is Some → loading");
+    assert!(
+        overlay.status_line.is_some(),
+        "loading overlay needs status line"
+    );
+    let title = line_text(&overlay.title);
+    assert!(
+        title.contains("py-spy: worker[0]"),
+        "title should name the proc, got: {title}"
+    );
+}
+
+// PY-3: PySpy completed state: rx is None → not loading, no status_line, lines populated.
+#[test]
+fn build_overlay_pyspy_completed() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::PySpy {
+        rx: None,
+        short: "worker[0]".to_string(),
+        lines: vec![ratatui::text::Line::from("frame 0")],
+        completed_at: Some("14:30:00".to_string()),
+    };
+    let overlay = job.build_overlay(&theme);
+    assert!(!overlay.loading, "rx is None → not loading");
     assert!(
         overlay.status_line.is_none(),
-        "fallback overlay should have no status line"
+        "completed overlay has no status line"
     );
+    assert_eq!(overlay.lines.len(), 1, "lines should be populated");
+    let title = line_text(&overlay.title);
     assert!(
-        overlay.lines.is_empty(),
-        "fallback overlay should have no lines"
+        title.contains("14:30:00"),
+        "title should show completion time, got: {title}"
     );
-    let title_text = line_text(&overlay.title);
+}
+
+// PY-3: PySpy completed with empty output: rx is None, lines empty → not loading.
+// Distinguishes "completed with no output" from "still loading".
+#[test]
+fn build_overlay_pyspy_completed_empty() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::PySpy {
+        rx: None,
+        short: "worker[0]".to_string(),
+        lines: vec![],
+        completed_at: Some("14:30:00".to_string()),
+    };
+    let overlay = job.build_overlay(&theme);
     assert!(
-        title_text.contains("Diagnostics"),
-        "fallback title should contain 'Diagnostics', got: {title_text}"
+        !overlay.loading,
+        "empty lines with rx None is completed, not loading"
+    );
+    assert!(overlay.lines.is_empty());
+}
+
+// ── ActiveJob::on_event tests ──────────────────────────────────────────────
+
+// TUI-21: on_event DiagResult(Some) pushes to results without changing running state.
+#[test]
+fn on_event_diag_result_pushes() {
+    let mut job = ActiveJob::Diagnostics {
+        results: vec![],
+        running: true,
+        rx: None,
+        completed_at: None,
+    };
+    let r = DiagResult {
+        label: "check".into(),
+        reference: "ref".into(),
+        note: None,
+        phase: DiagPhase::AdminInfra,
+        outcome: DiagOutcome::Pass { elapsed_ms: 1 },
+    };
+    job.on_event(ActiveJobEvent::DiagResult(Some(r)));
+    if let ActiveJob::Diagnostics {
+        results, running, ..
+    } = &job
+    {
+        assert_eq!(results.len(), 1);
+        assert!(*running, "should still be running after a single result");
+    } else {
+        panic!("job variant changed");
+    }
+}
+
+// TUI-21: on_event DiagResult(None) marks completed — clears rx, sets timestamp.
+#[test]
+fn on_event_diag_stream_end() {
+    let mut job = ActiveJob::Diagnostics {
+        results: vec![],
+        running: true,
+        rx: None,
+        completed_at: None,
+    };
+    job.on_event(ActiveJobEvent::DiagResult(None));
+    if let ActiveJob::Diagnostics {
+        running,
+        rx,
+        completed_at,
+        ..
+    } = &job
+    {
+        assert!(!running, "should be stopped after stream end");
+        assert!(rx.is_none());
+        assert!(completed_at.is_some(), "should have a completion timestamp");
+    } else {
+        panic!("job variant changed");
+    }
+}
+
+// PY-2/PY-3: on_event PySpyResult populates lines, clears rx, sets timestamp.
+#[test]
+fn on_event_pyspy_result() {
+    let (_, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let mut job = ActiveJob::PySpy {
+        rx: Some(rx),
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    };
+    let result_lines = vec![ratatui::text::Line::from("frame")];
+    job.on_event(ActiveJobEvent::PySpyResult(result_lines));
+    if let ActiveJob::PySpy {
+        rx,
+        lines,
+        completed_at,
+        ..
+    } = &job
+    {
+        assert!(rx.is_none(), "rx should be cleared");
+        assert_eq!(lines.len(), 1);
+        assert!(completed_at.is_some(), "should have a completion timestamp");
+    } else {
+        panic!("job variant changed");
+    }
+}
+
+// ── overlay_rerun_key tests ────────────────────────────────────────────────
+
+// PY-5: Diagnostics overlay: 'd' and 'r' trigger rerun.
+#[test]
+fn overlay_rerun_key_diag_d() {
+    let mut app = make_app_with_cursor(vec![proc_node("p")], 0);
+    app.active_job = Some(ActiveJob::Diagnostics {
+        results: vec![],
+        running: false,
+        rx: None,
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(matches!(
+        app.overlay_rerun_key(key),
+        KeyResult::RunDiagnostics
+    ));
+    let key_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert!(matches!(
+        app.overlay_rerun_key(key_r),
+        KeyResult::RunDiagnostics
+    ));
+}
+
+// PY-5: Diagnostics overlay: unrelated key is not dispatched.
+#[test]
+fn overlay_rerun_key_diag_unrelated() {
+    let mut app = make_app_with_cursor(vec![proc_node("p")], 0);
+    app.active_job = Some(ActiveJob::Diagnostics {
+        results: vec![],
+        running: false,
+        rx: None,
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
+}
+
+// PY-1: PySpy overlay: 'p' on a proc node triggers fresh fetch.
+#[test]
+fn overlay_rerun_key_pyspy_p() {
+    let mut app = make_app_with_cursor(vec![proc_node("proc_ref,worker[0]")], 0);
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "worker[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::RunPySpy(_)));
+}
+
+// PY-5: PySpy overlay: unrelated key is not dispatched.
+#[test]
+fn overlay_rerun_key_pyspy_unrelated() {
+    let mut app = make_app_with_cursor(vec![proc_node("p")], 0);
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
+}
+
+// PY-5: No active job → rerun key is a no-op.
+#[test]
+fn overlay_rerun_key_no_job() {
+    let app = make_app_with_cursor(vec![proc_node("p")], 0);
+    let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
+}
+
+// PY-4: PySpy overlay 'p' when cursor is on a non-proc node (pyspy_proc_ref → None).
+#[test]
+fn overlay_rerun_key_pyspy_no_proc_ref() {
+    let host = TreeNode {
+        reference: "host1".into(),
+        label: "host1".into(),
+        node_type: NodeType::Host,
+        expanded: false,
+        fetched: true,
+        has_children: false,
+        stopped: false,
+        failed: false,
+        is_system: false,
+        children: vec![],
+    };
+    let mut app = make_app_with_cursor(vec![host], 0);
+    app.active_job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert!(
+        matches!(app.overlay_rerun_key(key), KeyResult::None),
+        "p on a Host node should not trigger RunPySpy"
     );
 }
