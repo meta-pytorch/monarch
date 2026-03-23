@@ -423,5 +423,230 @@ class GetSummaryTest(_DbTestBase):
         self.assertLess(summary["health_score"], 100)
 
 
+class RegionMappingTest(unittest.TestCase):
+    """Tests for ndslice Region → proc rank mapping helpers."""
+
+    def test_parse_region_valid(self):
+        region_json = '{"labels": ["workers"], "slice": {"offset": 2, "sizes": [3], "strides": [1]}}'
+        result = db._parse_region(region_json)
+        self.assertEqual(result, (2, [3], [1]))
+
+    def test_parse_region_none(self):
+        self.assertIsNone(db._parse_region(None))
+        self.assertIsNone(db._parse_region(""))
+
+    def test_parse_region_invalid_json(self):
+        self.assertIsNone(db._parse_region("not json"))
+
+    def test_parse_region_missing_slice(self):
+        self.assertIsNone(db._parse_region('{"labels": ["x"]}'))
+
+    def test_1d_contiguous(self):
+        # offset=2, sizes=[3], strides=[1] → ranks 2, 3, 4
+        self.assertEqual(db._actor_rank_to_proc_rank(0, 2, [3], [1]), 2)
+        self.assertEqual(db._actor_rank_to_proc_rank(1, 2, [3], [1]), 3)
+        self.assertEqual(db._actor_rank_to_proc_rank(2, 2, [3], [1]), 4)
+
+    def test_1d_strided(self):
+        # offset=1, sizes=[2], strides=[2] → ranks 1, 3
+        self.assertEqual(db._actor_rank_to_proc_rank(0, 1, [2], [2]), 1)
+        self.assertEqual(db._actor_rank_to_proc_rank(1, 1, [2], [2]), 3)
+
+    def test_2d(self):
+        # 2D: offset=0, sizes=[2, 3], strides=[3, 1]
+        # Row-major: (0,0)=0, (0,1)=1, (0,2)=2, (1,0)=3, (1,1)=4, (1,2)=5
+        self.assertEqual(db._actor_rank_to_proc_rank(0, 0, [2, 3], [3, 1]), 0)
+        self.assertEqual(db._actor_rank_to_proc_rank(1, 0, [2, 3], [3, 1]), 1)
+        self.assertEqual(db._actor_rank_to_proc_rank(2, 0, [2, 3], [3, 1]), 2)
+        self.assertEqual(db._actor_rank_to_proc_rank(3, 0, [2, 3], [3, 1]), 3)
+        self.assertEqual(db._actor_rank_to_proc_rank(5, 0, [2, 3], [3, 1]), 5)
+
+    def test_2d_with_offset(self):
+        # offset=6, sizes=[2, 3], strides=[3, 1] → 6,7,8,9,10,11
+        self.assertEqual(db._actor_rank_to_proc_rank(0, 6, [2, 3], [3, 1]), 6)
+        self.assertEqual(db._actor_rank_to_proc_rank(5, 6, [2, 3], [3, 1]), 11)
+
+    def test_proc_ranks_for_region(self):
+        ranks = db._proc_ranks_for_region(2, [3], [1])
+        self.assertEqual(ranks, {2, 3, 4})
+
+    def test_proc_ranks_for_region_2d(self):
+        ranks = db._proc_ranks_for_region(0, [2, 3], [3, 1])
+        self.assertEqual(ranks, {0, 1, 2, 3, 4, 5})
+
+
+class DagRegionEdgesTest(_DbTestBase):
+    """Test that get_dag_data uses parent_view_json for proc→actor_mesh edges."""
+
+    def test_dag_has_proc_unit_to_actor_mesh_edges(self):
+        dag = db.get_dag_data()
+        hier_edges = [
+            e
+            for e in dag["edges"]
+            if e["type"] == "hierarchy"
+            and e["source_id"].startswith("proc_unit-")
+            and e["target_id"].startswith("actor_mesh-")
+        ]
+        # Fake data has 4 proc meshes × 1 actor mesh each = 4 edges
+        self.assertGreaterEqual(len(hier_edges), 4)
+
+
+class DagTerminalPropagationTest(unittest.TestCase):
+    """Test downward terminal status propagation through the full DAG.
+
+    Topology: host_mesh → host_unit → proc_mesh → proc_unit → actor_mesh → actor.
+    When a proc_unit fails, the proc_mesh, actor_mesh, and actor all inherit
+    the terminal status.  The host_mesh/host_unit remain unaffected.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Build a minimal DB: healthy host, one failed proc, one actor."""
+        import json
+        import sqlite3
+
+        from monarch.monarch_dashboard.fake_data.generate import SCHEMA_SQL
+
+        cls._tmpdir = tempfile.mkdtemp()
+        cls._db_path = os.path.join(cls._tmpdir, "prop.db")
+        conn = sqlite3.connect(cls._db_path)
+        conn.executescript(SCHEMA_SQL)
+
+        # host mesh (id=1)
+        conn.execute("INSERT INTO meshes VALUES (1,0,'Host','hm','hm','{}',NULL,NULL)")
+        # proc mesh (id=2) under host mesh 1
+        conn.execute(
+            "INSERT INTO meshes VALUES (2,0,'Proc','pm','pm','{}',1,"
+            '\'{"labels":["r"],"slice":{"offset":0,"sizes":[1],"strides":[1]}}\')'
+        )
+        # actor mesh (id=3) under proc mesh 2
+        conn.execute(
+            "INSERT INTO meshes VALUES (3,0,'Trainer','am','am','{}',2,"
+            '\'{"labels":["r"],"slice":{"offset":0,"sizes":[1],"strides":[1]}}\')'
+        )
+        # HostAgent (id=1) on host mesh — healthy
+        conn.execute("INSERT INTO actors VALUES (1,0,1,0,'hm/HostAgent[0]',NULL)")
+        # ProcAgent (id=2) on proc mesh — will be failed
+        conn.execute("INSERT INTO actors VALUES (2,0,2,0,'pm/ProcAgent[0]',NULL)")
+        # Regular actor (id=3) on actor mesh — should inherit proc failure
+        conn.execute("INSERT INTO actors VALUES (3,0,3,0,'am/Trainer[0]',NULL)")
+
+        # Status events: host agent running, proc agent failed, actor running
+        conn.execute("INSERT INTO actor_status_events VALUES (1,0,1,'idle',NULL)")
+        conn.execute("INSERT INTO actor_status_events VALUES (2,0,2,'failed','OOM')")
+        conn.execute("INSERT INTO actor_status_events VALUES (3,0,3,'idle',NULL)")
+        conn.commit()
+        conn.close()
+        db.init(cls._db_path)
+
+    @classmethod
+    def tearDownClass(cls):
+        os.remove(cls._db_path)
+
+    def _nodes_by_tier(self, tier: str) -> list[dict]:
+        dag = db.get_dag_data()
+        return [n for n in dag["nodes"] if n["tier"] == tier]
+
+    def test_host_mesh_stays_healthy(self):
+        nodes = self._nodes_by_tier("host_mesh")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "n/a")
+
+    def test_host_unit_stays_healthy(self):
+        nodes = self._nodes_by_tier("host_unit")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "idle")
+
+    def test_proc_mesh_inherits_terminal(self):
+        nodes = self._nodes_by_tier("proc_mesh")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "failed")
+
+    def test_proc_unit_shows_failed(self):
+        nodes = self._nodes_by_tier("proc_unit")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "failed")
+
+    def test_actor_mesh_inherits_terminal(self):
+        nodes = self._nodes_by_tier("actor_mesh")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "failed")
+
+    def test_actor_inherits_terminal(self):
+        nodes = self._nodes_by_tier("actor")
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "failed")
+
+
+class DagHostTerminalPropagationTest(unittest.TestCase):
+    """Test that host death propagates through proc and actor layers."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Build DB: failed host, healthy proc (own), healthy actor."""
+        import json
+        import sqlite3
+
+        from monarch.monarch_dashboard.fake_data.generate import SCHEMA_SQL
+
+        cls._tmpdir = tempfile.mkdtemp()
+        cls._db_path = os.path.join(cls._tmpdir, "host_prop.db")
+        conn = sqlite3.connect(cls._db_path)
+        conn.executescript(SCHEMA_SQL)
+
+        conn.execute("INSERT INTO meshes VALUES (1,0,'Host','hm','hm','{}',NULL,NULL)")
+        conn.execute(
+            "INSERT INTO meshes VALUES (2,0,'Proc','pm','pm','{}',1,"
+            '\'{"labels":["r"],"slice":{"offset":0,"sizes":[1],"strides":[1]}}\')'
+        )
+        conn.execute(
+            "INSERT INTO meshes VALUES (3,0,'Trainer','am','am','{}',2,"
+            '\'{"labels":["r"],"slice":{"offset":0,"sizes":[1],"strides":[1]}}\')'
+        )
+        conn.execute("INSERT INTO actors VALUES (1,0,1,0,'hm/HostAgent[0]',NULL)")
+        conn.execute("INSERT INTO actors VALUES (2,0,2,0,'pm/ProcAgent[0]',NULL)")
+        conn.execute("INSERT INTO actors VALUES (3,0,3,0,'am/Trainer[0]',NULL)")
+
+        # Host agent failed, proc and actor are idle
+        conn.execute("INSERT INTO actor_status_events VALUES (1,0,1,'stopped',NULL)")
+        conn.execute("INSERT INTO actor_status_events VALUES (2,0,2,'idle',NULL)")
+        conn.execute("INSERT INTO actor_status_events VALUES (3,0,3,'idle',NULL)")
+        conn.commit()
+        conn.close()
+        db.init(cls._db_path)
+
+    @classmethod
+    def tearDownClass(cls):
+        os.remove(cls._db_path)
+
+    def _nodes_by_tier(self, tier: str) -> list[dict]:
+        dag = db.get_dag_data()
+        return [n for n in dag["nodes"] if n["tier"] == tier]
+
+    def test_host_mesh_shows_terminal(self):
+        nodes = self._nodes_by_tier("host_mesh")
+        self.assertEqual(nodes[0]["status"], "stopped")
+
+    def test_host_unit_shows_terminal(self):
+        nodes = self._nodes_by_tier("host_unit")
+        self.assertEqual(nodes[0]["status"], "stopped")
+
+    def test_proc_unit_inherits_host_terminal(self):
+        nodes = self._nodes_by_tier("proc_unit")
+        self.assertEqual(nodes[0]["status"], "stopped")
+
+    def test_proc_mesh_inherits_host_terminal(self):
+        nodes = self._nodes_by_tier("proc_mesh")
+        self.assertEqual(nodes[0]["status"], "stopped")
+
+    def test_actor_mesh_inherits_host_terminal(self):
+        nodes = self._nodes_by_tier("actor_mesh")
+        self.assertEqual(nodes[0]["status"], "stopped")
+
+    def test_actor_inherits_host_terminal(self):
+        nodes = self._nodes_by_tier("actor")
+        self.assertEqual(nodes[0]["status"], "stopped")
+
+
 if __name__ == "__main__":
     unittest.main()
