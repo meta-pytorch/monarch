@@ -331,7 +331,7 @@ pub async fn host(
     addr: ChannelAddr,
     command: Option<BootstrapCommand>,
     config: Option<Attrs>,
-    duplex_server: Option<ChannelAddr>,
+    duplex_addr: Option<ChannelAddr>,
     exit_on_shutdown: bool,
 ) -> anyhow::Result<(ActorHandle<HostAgent>, HostShutdownHandle)> {
     if let Some(attrs) = config {
@@ -347,7 +347,7 @@ pub async fn host(
     };
     let manager = BootstrapProcManager::new(command)?;
 
-    let host = Host::new_with_default(manager, addr, duplex_server, None).await?;
+    let host = Host::new_with_default(manager, addr, duplex_addr.clone(), None).await?;
     let addr = host.addr().clone();
 
     // The ShutdownHost/StopHost handler will call host.serve() inside
@@ -366,8 +366,9 @@ pub async fn host(
     )?;
 
     tracing::info!(
-        "serving host at {}, agent: {}",
+        "serving host at {} with duplex {:?}, agent: {}",
         addr,
+        duplex_addr,
         host_mesh_agent.bind::<HostAgent>()
     );
 

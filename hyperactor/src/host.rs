@@ -265,6 +265,9 @@ impl<M: ProcManager> Host<M> {
         tracing::info!(
             frontend_addr = frontend_addr.to_string(),
             backend_addr = backend_addr.to_string(),
+            duplex_addr = duplex_addr
+                .map(|a| a.to_string())
+                .unwrap_or("none".to_string()),
             service_proc_id = service_proc_id.to_string(),
             local_proc_id = local_proc_id.to_string(),
             "serving host"
@@ -400,22 +403,23 @@ fn start_duplex_accept_loop(
             };
 
             let n = counter.fetch_add(1, Ordering::Relaxed);
-            let name = format!("remote-{}", n);
+            let name = format!("remote_{}", n);
             let proc_id = reference::ProcId::with_name(frontend_addr.clone(), &name);
 
             // Send BootstrapAssignment as the first message.
             let sender_id =
                 reference::ActorId::root(proc_id.clone(), SERVICE_PROC_NAME.to_string());
             let dest = reference::PortId::new(sender_id.clone(), 0);
-            let envelope = MessageEnvelope::serialize(
-                sender_id,
-                dest,
-                &BootstrapAssignment {
-                    proc_id: proc_id.clone(),
-                },
-                Flattrs::new(),
-            )
-            .expect("failed to serialize BootstrapAssignment");
+            let assignment = BootstrapAssignment {
+                proc_id: proc_id.clone(),
+            };
+            let envelope = MessageEnvelope::serialize(sender_id, dest, &assignment, Flattrs::new())
+                .expect("failed to serialize BootstrapAssignment");
+            tracing::info!(
+                "duplex got new connection, sending {:?} to {:?}",
+                assignment,
+                duplex_tx
+            );
             duplex_tx.post(envelope);
 
             // Register in duplex_routes for outbound routing.

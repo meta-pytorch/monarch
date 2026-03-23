@@ -154,6 +154,14 @@ impl<M: RemoteMessage> Clone for DuplexTx<M> {
     }
 }
 
+impl<M: RemoteMessage> std::fmt::Debug for DuplexTx<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DuplexTx")
+            .field("addr", &self.addr)
+            .finish()
+    }
+}
+
 /// Start a duplex server on the given address.
 pub fn serve<In: RemoteMessage, Out: RemoteMessage>(
     addr: ChannelAddr,
