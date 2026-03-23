@@ -443,35 +443,35 @@ class RegionMappingTest(unittest.TestCase):
 
     def test_1d_contiguous(self):
         # offset=2, sizes=[3], strides=[1] → ranks 2, 3, 4
-        self.assertEqual(db._actor_rank_to_proc_rank(0, 2, [3], [1]), 2)
-        self.assertEqual(db._actor_rank_to_proc_rank(1, 2, [3], [1]), 3)
-        self.assertEqual(db._actor_rank_to_proc_rank(2, 2, [3], [1]), 4)
+        self.assertEqual(db._child_rank_to_parent_rank(0, 2, [3], [1]), 2)
+        self.assertEqual(db._child_rank_to_parent_rank(1, 2, [3], [1]), 3)
+        self.assertEqual(db._child_rank_to_parent_rank(2, 2, [3], [1]), 4)
 
     def test_1d_strided(self):
         # offset=1, sizes=[2], strides=[2] → ranks 1, 3
-        self.assertEqual(db._actor_rank_to_proc_rank(0, 1, [2], [2]), 1)
-        self.assertEqual(db._actor_rank_to_proc_rank(1, 1, [2], [2]), 3)
+        self.assertEqual(db._child_rank_to_parent_rank(0, 1, [2], [2]), 1)
+        self.assertEqual(db._child_rank_to_parent_rank(1, 1, [2], [2]), 3)
 
     def test_2d(self):
         # 2D: offset=0, sizes=[2, 3], strides=[3, 1]
         # Row-major: (0,0)=0, (0,1)=1, (0,2)=2, (1,0)=3, (1,1)=4, (1,2)=5
-        self.assertEqual(db._actor_rank_to_proc_rank(0, 0, [2, 3], [3, 1]), 0)
-        self.assertEqual(db._actor_rank_to_proc_rank(1, 0, [2, 3], [3, 1]), 1)
-        self.assertEqual(db._actor_rank_to_proc_rank(2, 0, [2, 3], [3, 1]), 2)
-        self.assertEqual(db._actor_rank_to_proc_rank(3, 0, [2, 3], [3, 1]), 3)
-        self.assertEqual(db._actor_rank_to_proc_rank(5, 0, [2, 3], [3, 1]), 5)
+        self.assertEqual(db._child_rank_to_parent_rank(0, 0, [2, 3], [3, 1]), 0)
+        self.assertEqual(db._child_rank_to_parent_rank(1, 0, [2, 3], [3, 1]), 1)
+        self.assertEqual(db._child_rank_to_parent_rank(2, 0, [2, 3], [3, 1]), 2)
+        self.assertEqual(db._child_rank_to_parent_rank(3, 0, [2, 3], [3, 1]), 3)
+        self.assertEqual(db._child_rank_to_parent_rank(5, 0, [2, 3], [3, 1]), 5)
 
     def test_2d_with_offset(self):
         # offset=6, sizes=[2, 3], strides=[3, 1] → 6,7,8,9,10,11
-        self.assertEqual(db._actor_rank_to_proc_rank(0, 6, [2, 3], [3, 1]), 6)
-        self.assertEqual(db._actor_rank_to_proc_rank(5, 6, [2, 3], [3, 1]), 11)
+        self.assertEqual(db._child_rank_to_parent_rank(0, 6, [2, 3], [3, 1]), 6)
+        self.assertEqual(db._child_rank_to_parent_rank(5, 6, [2, 3], [3, 1]), 11)
 
-    def test_proc_ranks_for_region(self):
-        ranks = db._proc_ranks_for_region(2, [3], [1])
+    def test_parent_ranks_for_region(self):
+        ranks = db._parent_ranks_for_region(2, [3], [1])
         self.assertEqual(ranks, {2, 3, 4})
 
-    def test_proc_ranks_for_region_2d(self):
-        ranks = db._proc_ranks_for_region(0, [2, 3], [3, 1])
+    def test_parent_ranks_for_region_2d(self):
+        ranks = db._parent_ranks_for_region(0, [2, 3], [3, 1])
         self.assertEqual(ranks, {0, 1, 2, 3, 4, 5})
 
 
