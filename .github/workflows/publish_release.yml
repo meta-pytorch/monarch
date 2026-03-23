@@ -6,6 +6,11 @@ on:
       version:
         description: "Version string (e.g. 0.1.0rc1 or 0.1.0)"
         required: true
+      is_prerelease:
+        description: "Is this a pre-release? (If false, tags as latest)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -29,7 +34,7 @@ jobs:
       python-versions: '["3.10", "3.11", "3.12", "3.13"]'
       runner: linux.arm64.2xlarge
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
-      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      torch-spec: 'torch==2.10.0 --extra-index-url https://download.pytorch.org/whl/cu128'
       gpu-arch-type: cuda
       gpu-arch-version: '12.8'
       version: ${{ github.event.inputs.version }}
@@ -86,13 +91,24 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Determine Docker Tags
+        id: determine-tags
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          PRERELEASE="${{ github.event.inputs.is_prerelease }}"
+          TAGS="ghcr.io/${{ github.repository }}:${VERSION}-cuda12.8"
+          if [[ "$PRERELEASE" == "false" ]]; then
+            TAGS="$TAGS,ghcr.io/${{ github.repository }}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: . # Build context is the root directory
           file: ./Dockerfile
           push: true # Push the image to the registry
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.event.inputs.version }}-cuda12.8
-            ghcr.io/${{ github.repository }}:latest
-          build-args: PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime
+          tags: ${{ steps.determine-tags.outputs.tags }}
+          build-args: |
+            PYTORCH_TAG=2.10.0-cuda12.8-cudnn9-runtime
+            MONARCH_VERSION=${{ github.event.inputs.version }}

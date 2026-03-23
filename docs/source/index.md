@@ -25,7 +25,7 @@ Monarch code imperatively describes how to create processes and actors using a s
     # create the trainers
     trainers = training_procs.spawn("trainers", Trainer)
 
-    # tell all the trainers to to take a step
+    # tell all the trainers to take a step
     fut = trainers.train.call(step=0)
 
     # wait for all trainers to complete
@@ -45,7 +45,7 @@ Note: Monarch is currently only supported on Linux systems
 Here are some suggested steps to get started with Monarch:
 
 1. **Installation**: Check out the [Install guide](installation) for getting monarch installed.
-2. **Getting Started**: The [getting started](./generated/examples/getting_started) provides an introduction to monarchs core API
+2. **Getting Started**: The [getting started](./generated/examples/getting_started) provides an introduction to Monarch's core API
 3. **Explore Examples**: Review the [Examples](./generated/examples/index) to see Monarch in action
 4. **Dive Deeper**: Explore the API Documentation for more detailed information:
     - [Python API](api/index)

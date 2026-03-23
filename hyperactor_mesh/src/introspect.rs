@@ -125,6 +125,30 @@
 //!   stderr mentions the flag), `try_exec` drops the flag and
 //!   retries automatically. This handles version skew where deployed
 //!   py-spy predates `--native-all` support.
+//! - **PS-12 (universal py-spy):** Worker procs and the service
+//!   proc can handle `PySpyDump`. Worker procs handle it via
+//!   ProcAgent; the service proc handles it via HostAgent (same
+//!   spawn-worker pattern). `pyspy_bridge` routes by proc name:
+//!   if `proc_id.base_name() == SERVICE_PROC_NAME`, the target
+//!   is `host_agent`; otherwise `proc_agent[0]`. Procs lacking
+//!   either agent (e.g. mesh-admin) fast-fail via PS-13.
+//! - **PS-13 (defensive probe):** Before sending `PySpyDump`,
+//!   `pyspy_bridge` probes the selected actor with an introspect
+//!   query bounded by `MESH_ADMIN_QUERY_CHILD_TIMEOUT` (default
+//!   100ms). Three outcomes: (a) probe reply arrives — proceed
+//!   with `PySpyDump`; (b) probe times out or recv closes —
+//!   return `not_found` (actor absent/unreachable); (c) probe
+//!   send itself fails — return `internal_error` (bridge-side
+//!   infrastructure failure). Cases (b) and (c) fast-fail
+//!   instead of waiting the full 13s
+//!   `MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT`.
+//! - **PS-14 (reachability-based capability):** A proc supports
+//!   py-spy iff its stable handler actor is reachable: the
+//!   service proc requires a reachable `host_agent`; non-service
+//!   procs require a reachable `proc_agent[0]`. `PySpyWorker` is
+//!   transient per-request machinery (spawned on `PySpyDump`,
+//!   stopped after replying) and is not part of the reachability
+//!   contract.
 //!
 //! v1 contract notes:
 //! - The current py-spy bridge expects a ProcId-form reference and

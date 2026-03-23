@@ -32,15 +32,15 @@ fn num_threads() -> usize {
         .map(|n| n.get().min(DEFAULT_MAX_THREADS))
         .unwrap_or(1)
 }
-const HASH_BLOCK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+pub(crate) const HASH_BLOCK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 /// Maximum bytes a single work unit reads. Large files are split into
 /// chunks of this size so multiple threads can read them in parallel.
 const READ_CHUNK_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
-struct FileInfo {
-    path: String,
-    offset: usize,
-    size: usize,
+pub(crate) struct FileInfo {
+    pub(crate) path: String,
+    pub(crate) offset: usize,
+    pub(crate) size: usize,
 }
 
 /// A unit of read work: read `size` bytes from `file_idx` at `file_offset`
@@ -59,7 +59,7 @@ struct ReadWork {
 /// Work units are distributed round-robin by descending size so that
 /// large chunks spread evenly across threads instead of piling up on
 /// thread 0.
-fn pack_files_into(buf_ptr: usize, files: &[FileInfo], max_threads: usize) {
+pub(crate) fn pack_files_into(buf_ptr: usize, files: &[FileInfo], max_threads: usize) {
     // Build work units: split large files into READ_CHUNK_SIZE pieces.
     let mut work_units: Vec<ReadWork> = Vec::new();
     for (file_idx, f) in files.iter().enumerate() {
@@ -152,7 +152,7 @@ fn pack_files_into(buf_ptr: usize, files: &[FileInfo], max_threads: usize) {
 /// Compute xxh64 block hashes over the buffer in parallel.
 ///
 /// Returns hex digest strings, one per `HASH_BLOCK_SIZE` block.
-fn compute_block_hashes(
+pub(crate) fn compute_block_hashes(
     buf_ptr: usize,
     total_size: usize,
     block_size: usize,
@@ -189,7 +189,7 @@ fn compute_block_hashes(
 }
 
 /// Allocate an anonymous mmap region.
-fn mmap_anonymous(total_size: usize) -> Result<*mut libc::c_void, std::io::Error> {
+pub(crate) fn mmap_anonymous(total_size: usize) -> Result<*mut libc::c_void, std::io::Error> {
     // SAFETY: mmap with MAP_PRIVATE | MAP_ANONYMOUS allocates zeroed pages
     // backed by swap, not a file descriptor.
     let ptr = unsafe {

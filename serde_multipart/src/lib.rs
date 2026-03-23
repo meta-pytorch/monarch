@@ -224,8 +224,8 @@ impl Buf for Frame {
     // does not do any vectoring (returning only a single IoSlice at a time).
     fn chunks_vectored<'a>(&'a self, dst: &mut [IoSlice<'a>]) -> usize {
         let n = min(dst.len(), self.buffers.len());
-        for i in 0..n {
-            dst[i] = IoSlice::new(self.buffers[i].chunk());
+        for (i, slot) in dst.iter_mut().enumerate().take(n) {
+            *slot = IoSlice::new(self.buffers[i].chunk());
         }
         n
     }

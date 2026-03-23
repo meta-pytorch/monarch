@@ -15,27 +15,27 @@ An `ActorId` uniquely identifies an actor within a proc. It combines the proc th
     Ord,
     Named
 )]
-pub struct ActorId(pub ProcId, pub String, pub usize);
+pub struct ActorId(ProcId, String, Index);
 ```
 - The first field is the actor's `ProcId`.
 - The second is the actor's name (used for grouping and logging).
-- The third is the pid, which distinguishes multiple instances with the same name.
+- The third is the pid (`Index`), which distinguishes multiple instances with the same name.
 
 ### Construction
 
-Construct an actor ID directly:
+Fields are private; use named constructors:
 ```rust
 use hyperactor::reference::{ActorId, ProcId};
 
 let addr = "tcp:127.0.0.1:8080".parse()?;
-let proc = ProcId(addr, "myproc".to_string());
-let actor = ActorId(proc, "worker".into(), 1);
+let proc = ProcId::with_name(addr, "myproc");
+let actor = ActorId::new(proc.clone(), "worker", 1);
 ```
 
 To refer to the root actor (the canonical instance), use:
 ```rust
 let root = ActorId::root(proc, "worker".into());
-// Equivalent to ActorId(proc, "worker".into(), 0)
+// Equivalent to ActorId::new(proc, "worker", 0)
 ```
 
 ### Methods
