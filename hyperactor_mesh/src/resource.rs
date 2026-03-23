@@ -98,7 +98,6 @@ impl Status {
         )
     }
 
-
     /// Tells whether the status represents a failure. A failure is both terminating
     /// (the resource is not running), but also means abnormal exit (the resource
     /// did not stop cleanly).
