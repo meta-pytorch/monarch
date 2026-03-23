@@ -474,8 +474,15 @@ def get_dag_data() -> dict[str, Any]:
 
       host_mesh -> host_unit -> proc_mesh -> proc_unit -> actor_mesh -> actor
 
-    Status propagation: if a host_unit has a terminal status (failed/stopped/
-    stopping), all proc_units and actors under that host inherit it.
+    Status propagation flows top-down: when a unit dies, everything
+    underneath inherits its terminal status.  Effective statuses are
+    computed once per tier and reused by children:
+
+      host_unit (own) → proc_unit (inherits host) → actor_mesh (inherits
+      covering proc_units) → actor (inherits actor_mesh)
+
+    Mesh nodes aggregate from their children: if any child unit is
+    terminal, the mesh shows terminal.
 
     Returns ``{"nodes": [...], "edges": [...]}``.
     """
@@ -519,20 +526,67 @@ def get_dag_data() -> dict[str, Any]:
     for a in actors:
         actor_statuses[a["id"]] = (a.get("latest_status") or "unknown").lower()
 
-    # -- Terminal status propagation --
+    # -- Downward terminal status propagation --
+    # Rule: when a unit dies, everything underneath inherits terminal status.
+    # Effective statuses are computed top-down, once per tier.
     terminal = {"stopped", "failed", "stopping"}
 
-    def host_terminal_status(host_mesh_id: int) -> str | None:
-        for agent in host_agents_by_mesh.get(host_mesh_id, []):
-            s = actor_statuses.get(agent["id"], "unknown")
+    def _first_terminal(statuses: list[str]) -> str | None:
+        for s in statuses:
             if s in terminal:
                 return s
         return None
 
+    # 1. Host mesh status = aggregate of host_unit statuses
+    host_mesh_terminal: dict[int, str] = {}
+    for hm_id, agents in host_agents_by_mesh.items():
+        t = _first_terminal([actor_statuses.get(a["id"], "unknown") for a in agents])
+        if t:
+            host_mesh_terminal[hm_id] = t
+
+    # 2. Proc unit effective status = inherited from parent host OR own
     proc_to_host: dict[int, int] = {}
     for pm in proc_meshes:
         if pm["parent_mesh_id"] is not None:
             proc_to_host[pm["id"]] = pm["parent_mesh_id"]
+
+    proc_unit_effective: dict[int, str] = {}
+    for pm in proc_meshes:
+        host_id = proc_to_host.get(pm["id"])
+        t_host = host_mesh_terminal.get(host_id) if host_id is not None else None
+        for agent in proc_agents_by_mesh.get(pm["id"], []):
+            own = actor_statuses.get(agent["id"], "unknown")
+            proc_unit_effective[agent["id"]] = t_host if t_host else own
+
+    # Proc mesh status = aggregate of proc_unit effective statuses
+    proc_mesh_terminal: dict[int, str] = {}
+    for pm in proc_meshes:
+        t = _first_terminal(
+            [proc_unit_effective.get(a["id"], "unknown")
+             for a in proc_agents_by_mesh.get(pm["id"], [])]
+        )
+        if t:
+            proc_mesh_terminal[pm["id"]] = t
+
+    # 3. Actor mesh status = inherited from covering proc_units
+    actor_mesh_inherited: dict[int, str] = {}
+    for am in actor_meshes:
+        if am["parent_mesh_id"] is None:
+            continue
+        proc_agents = proc_agents_by_mesh.get(am["parent_mesh_id"], [])
+        if not proc_agents:
+            continue
+        region = _parse_region(am.get("parent_view_json"))
+        if region is not None:
+            covered_ranks = _proc_ranks_for_region(*region)
+            covering_agents = [a for a in proc_agents if a.get("rank") in covered_ranks]
+        else:
+            covering_agents = proc_agents  # fallback: all procs
+        t = _first_terminal(
+            [proc_unit_effective.get(a["id"], "unknown") for a in covering_agents]
+        )
+        if t:
+            actor_mesh_inherited[am["id"]] = t
 
     def _leaf_name(name: str) -> str:
         """Extract the last segment from a hierarchical name.
@@ -552,7 +606,7 @@ def get_dag_data() -> dict[str, Any]:
                 "tier": "host_mesh",
                 "label": _leaf_name(m["given_name"]),
                 "subtitle": "Host Mesh",
-                "status": "n/a",
+                "status": host_mesh_terminal.get(m["id"], "n/a"),
             }
         )
 
@@ -577,15 +631,12 @@ def get_dag_data() -> dict[str, Any]:
                 "tier": "proc_mesh",
                 "label": _leaf_name(m["given_name"]),
                 "subtitle": "Proc Mesh",
-                "status": "n/a",
+                "status": proc_mesh_terminal.get(m["id"], "n/a"),
             }
         )
 
     for pm in proc_meshes:
-        host_id = proc_to_host.get(pm["id"])
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         for agent in proc_agents_by_mesh.get(pm["id"], []):
-            own = actor_statuses.get(agent["id"], "unknown")
             nodes.append(
                 {
                     "id": f"proc_unit-{agent['id']}",
@@ -593,7 +644,7 @@ def get_dag_data() -> dict[str, Any]:
                     "tier": "proc_unit",
                     "label": _leaf_name(agent["full_name"]),
                     "subtitle": "Proc",
-                    "status": t_host if t_host else own,
+                    "status": proc_unit_effective.get(agent["id"], "unknown"),
                 }
             )
 
@@ -605,17 +656,12 @@ def get_dag_data() -> dict[str, Any]:
                 "tier": "actor_mesh",
                 "label": _leaf_name(m["given_name"]),
                 "subtitle": "Actor Mesh",
-                "status": "n/a",
+                "status": actor_mesh_inherited.get(m["id"], "n/a"),
             }
         )
 
     for a in regular_actors:
-        parent_mesh = mesh_by_id.get(a["mesh_id"])
-        parent_proc_id = parent_mesh["parent_mesh_id"] if parent_mesh else None
-        host_id = (
-            proc_to_host.get(parent_proc_id) if parent_proc_id is not None else None
-        )
-        t_host = host_terminal_status(host_id) if host_id is not None else None
+        inherited = actor_mesh_inherited.get(a["mesh_id"])
         nodes.append(
             {
                 "id": f"actor-{a['id']}",
@@ -623,7 +669,9 @@ def get_dag_data() -> dict[str, Any]:
                 "tier": "actor",
                 "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
-                "status": t_host if t_host else actor_statuses.get(a["id"], "unknown"),
+                "status": inherited
+                if inherited
+                else actor_statuses.get(a["id"], "unknown"),
             }
         )
 
