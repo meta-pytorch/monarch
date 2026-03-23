@@ -238,13 +238,32 @@ class HierarchyTest(unittest.TestCase):
             self.assertEqual(count, 2, f"host mesh {hid} should have 2 proc children")
 
     def test_shape_json_is_valid(self):
-        """shape_json should be parseable and contain a 'dims' key."""
+        """shape_json should be parseable ndslice Extent format."""
         import json
 
         rows = self.conn.execute("SELECT shape_json FROM meshes").fetchall()
         for row in rows:
             data = json.loads(row["shape_json"])
-            self.assertIn("dims", data)
+            self.assertIn("inner", data)
+            self.assertIn("labels", data["inner"])
+            self.assertIn("sizes", data["inner"])
+
+    def test_parent_view_json_is_valid_region(self):
+        """Non-null parent_view_json should be parseable ndslice Region."""
+        import json
+
+        rows = self.conn.execute(
+            "SELECT parent_view_json FROM meshes WHERE parent_view_json IS NOT NULL"
+        ).fetchall()
+        self.assertGreater(len(rows), 0)
+        for row in rows:
+            data = json.loads(row["parent_view_json"])
+            self.assertIn("labels", data)
+            self.assertIn("slice", data)
+            sl = data["slice"]
+            self.assertIn("offset", sl)
+            self.assertIn("sizes", sl)
+            self.assertIn("strides", sl)
 
 
 class ActorTest(unittest.TestCase):
