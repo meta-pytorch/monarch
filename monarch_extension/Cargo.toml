@@ -23,7 +23,7 @@ futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
-libc = "0.2.139"
+libc = "0.2.183"
 monarch_cpp_static_libs = { path = "../monarch_cpp_static_libs", optional = true }
 monarch_distributed_telemetry = { version = "0.0.0", path = "../monarch_distributed_telemetry", optional = true }
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }

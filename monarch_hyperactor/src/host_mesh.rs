@@ -271,6 +271,31 @@ impl PyHostMesh {
             )),
         }
     }
+
+    fn stop(&self, instance: &PyInstance) -> PyResult<PyPythonTask> {
+        match self {
+            PyHostMesh::Owned(inner) => {
+                let instance = instance.clone();
+                let mesh_borrow = inner.0.clone();
+                let fut = async move {
+                    match mesh_borrow.take().await {
+                        Ok(mut mesh) => {
+                            mesh.stop(instance.deref()).await?;
+                            Ok(())
+                        }
+                        Err(_) => {
+                            tracing::info!("stop was already called on host mesh");
+                            Ok(())
+                        }
+                    }
+                };
+                PyPythonTask::new(fut)
+            }
+            PyHostMesh::Ref(_) => Err(PyRuntimeError::new_err(
+                "cannot stop `HostMesh` that is a reference instead of owned",
+            )),
+        }
+    }
 }
 
 #[derive(Clone)]

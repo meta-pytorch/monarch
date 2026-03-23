@@ -19,7 +19,6 @@ use crate::ActiveJob;
 use crate::App;
 use crate::format::format_uptime;
 use crate::model::NodeType;
-use crate::theme::Labels;
 use crate::theme::LangName;
 use crate::theme::ThemeName;
 
@@ -182,25 +181,13 @@ pub(crate) fn render_header(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
     frame.render_widget(header, area);
 }
 
-/// Select the correct footer help string based on the active job state.
-///
-/// Extracted as a pure function so it can be tested without a terminal.
-fn footer_text<'a>(job: &Option<ActiveJob>, labels: &'a Labels) -> &'a str {
-    match job {
-        Some(ActiveJob::Diagnostics { running: true, .. }) => labels.footer_diag_running_help_text,
-        Some(ActiveJob::Diagnostics { .. }) => labels.footer_diag_help_text,
-        Some(ActiveJob::PySpy { .. }) => labels.footer_pyspy_help_text,
-        None => labels.footer_help_text,
-    }
-}
-
 /// Render the bottom help bar showing the keyboard shortcuts.
 ///
 /// Shows mode-specific hints: topology navigation when the tree is
 /// active, diagnostics navigation when the diagnostics pane is
 /// active.
 pub(crate) fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let text = footer_text(&app.active_job, &app.theme.labels);
+    let text = ActiveJob::footer_text(&app.active_job, &app.theme.labels);
     let footer = Paragraph::new(text)
         .style(app.theme.scheme.footer_help)
         .block(Block::default().borders(Borders::TOP));
@@ -210,6 +197,7 @@ pub(crate) fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &Ap
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Labels;
     use crate::theme::LangName;
     use crate::theme::Theme;
     use crate::theme::ThemeName;
@@ -229,12 +217,12 @@ mod tests {
             completed_at: None,
         });
         assert_eq!(
-            footer_text(&job, &labels),
+            ActiveJob::footer_text(&job, &labels),
             labels.footer_diag_running_help_text
         );
     }
 
-    // TUI-21: completed diagnostics selects the diag help text.
+    // TUI-21: completed diagnostics selects the diag-completed help text.
     #[test]
     fn footer_diag_completed() {
         let labels = en_labels();
@@ -244,7 +232,10 @@ mod tests {
             rx: None,
             completed_at: Some("12:00:00".to_string()),
         });
-        assert_eq!(footer_text(&job, &labels), labels.footer_diag_help_text);
+        assert_eq!(
+            ActiveJob::footer_text(&job, &labels),
+            labels.footer_diag_completed_help_text
+        );
     }
 
     // TUI-21: active py-spy overlay selects the py-spy help text.
@@ -254,8 +245,13 @@ mod tests {
         let job = Some(ActiveJob::PySpy {
             rx: None,
             short: "my_proc".to_string(),
+            lines: vec![],
+            completed_at: None,
         });
-        assert_eq!(footer_text(&job, &labels), labels.footer_pyspy_help_text);
+        assert_eq!(
+            ActiveJob::footer_text(&job, &labels),
+            labels.footer_pyspy_help_text
+        );
     }
 
     // TUI-21: no active job selects the default help text.
@@ -263,6 +259,9 @@ mod tests {
     fn footer_idle() {
         let labels = en_labels();
         let job: Option<ActiveJob> = None;
-        assert_eq!(footer_text(&job, &labels), labels.footer_help_text);
+        assert_eq!(
+            ActiveJob::footer_text(&job, &labels),
+            labels.footer_help_text
+        );
     }
 }

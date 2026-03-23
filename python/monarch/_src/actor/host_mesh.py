@@ -365,6 +365,10 @@ class HostMesh(MeshTrait):
         if this host mesh is a *reference* rather than *owned*, which can happen
         if this `HostMesh` object was received from a remote actor or if it was
         produced by slicing.
+        After shutting down, the hosts in this mesh will be unusable, and no new
+        HostMeshes will be able to connect to them.
+        If you want to stop everything on the host but keep them available for
+        new clients, use `stop()` instead.
 
         This is run automatically on __aexit__ when used as an async context manager.
 
@@ -377,6 +381,25 @@ class HostMesh(MeshTrait):
             await hy_mesh.shutdown(context().actor_instance._as_rust())
             # Remove the inner host mesh to clean up associated memory.
             self._inner_host_mesh = None
+
+        return Future(coro=task())
+
+    def stop(self) -> Future[None]:
+        """
+        Stop the host mesh, releasing all resources but keeping worker
+        processes alive for reconnection. A new HostMesh can be created that
+        points to the same hosts.
+
+        Like `shutdown`, this throws if the host mesh is a reference
+        rather than owned.
+
+        Returns:
+            Future[None]: A future that completes when the host mesh has been stopped.
+        """
+
+        async def task() -> None:
+            hy_mesh = await self._hy_host_mesh
+            await hy_mesh.stop(context().actor_instance._as_rust())
 
         return Future(coro=task())
 
@@ -420,7 +443,7 @@ class HostMesh(MeshTrait):
     def initialized(self) -> Future[Literal[True]]:
         """
         Future completes with 'True' when the `HostMesh` has initialized.
-        Because `HostMesh` are remote objects, there is no guarentee that the `HostMesh` is
+        Because `HostMesh` are remote objects, there is no guarantee that the `HostMesh` is
         still usable after this completes, only that at some point in the past it was usable.
         """
         hm: Shared[HyHostMesh] = self._hy_host_mesh
