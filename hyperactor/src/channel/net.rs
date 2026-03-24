@@ -2829,8 +2829,10 @@ mod tests {
         // Send some messages, but not acking any of them.
         net_tx_send(&tx, &[100, 101, 102, 103, 104]).await;
 
-        // How many times to reconnect.
-        let n = 10;
+        // How many times to reconnect. Keep this small because the send loop
+        // applies exponential backoff between reconnections, and mock connections
+        // are too short-lived to trigger the backoff reset.
+        let n = 3;
 
         // Reconnect multiple times. The messages should be resent every time
         // because none of them is acked.
