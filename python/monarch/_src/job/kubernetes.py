@@ -111,7 +111,7 @@ class KubeConfig:
         """Whether this kubeconfig is for out-of-cluster usage."""
         return self.remote is not None or self.local is not None
 
-    def load(self):
+    def load(self) -> None:
         if self.local is not None:
             try:
                 config.load_kube_config(config_file=str(self.local))
@@ -187,7 +187,9 @@ class KubernetesJob(JobTrait):
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._namespace = namespace
         self._timeout = timeout
-        self._kubeconfig = kubeconfig if kubeconfig is not None else KubeConfig()
+        self._kubeconfig: KubeConfig = (
+            kubeconfig if kubeconfig is not None else KubeConfig()
+        )
         self._meshes: Dict[str, _MeshConfig] = {}
         self._port_forward_processes: List["subprocess.Popen[str]"] = []
         super().__init__()
@@ -473,7 +475,6 @@ class KubernetesJob(JobTrait):
         c = client.CoreV1Api()
         w = watch.Watch()
 
-        logger.info("beginning to watch for pods with selector '%s'", label_selector)
         try:
             for event in w.stream(
                 c.list_namespaced_pod,
@@ -507,11 +508,6 @@ class KubernetesJob(JobTrait):
                 # Handle DELETED events
                 if event_type == "DELETED":
                     ready_pods_by_rank.pop(pod_rank, None)
-                    logger.info(
-                        "Pod '%s' deleted, removed rank %d from ready pods",
-                        pod.metadata.name,
-                        pod_rank,
-                    )
                     continue
 
                 # Only process ADDED/MODIFIED events from here
@@ -526,12 +522,6 @@ class KubernetesJob(JobTrait):
                         port=self._discover_monarch_port(pod),
                         duplex_port=self._discover_monarch_duplex_port(pod),
                     )
-                    logger.info(
-                        "Pod '%s' is ready with rank %d: %s",
-                        pod.metadata.name,
-                        pod_rank,
-                        ready_pods_by_rank[pod_rank],
-                    )
 
                     # Check if we have all required ranks (0 to num_replicas-1)
                     if len(ready_pods_by_rank) == num_replicas:
@@ -540,11 +530,6 @@ class KubernetesJob(JobTrait):
                         ]
                 else:
                     # Pod is no longer ready, remove its rank
-                    logger.info(
-                        "Pod '%s' is not ready with rank %d",
-                        pod.metadata.name,
-                        pod_rank,
-                    )
                     ready_pods_by_rank.pop(pod_rank, None)
 
             # Watch ended without finding all required ranks
@@ -592,15 +577,13 @@ class KubernetesJob(JobTrait):
         """
         Discover the monarch port from the pod specification.
 
-        Checks in order:
-        1. MONARCH_PORT environment variable in container spec
-        2. Falls back to default monarch_port
+        Checks for MONARCH_DUPLEX_PORT environment variable in container spec
 
         Args:
             pod: Kubernetes pod object
 
         Returns:
-            Port number for monarch communication
+            Port number for monarch communication, or None if not found
         """
         for container in pod.spec.containers:
             # Check for MONARCH_PORT env var
@@ -617,20 +600,25 @@ class KubernetesJob(JobTrait):
 
         return None
 
-    def _setup_out_of_cluster(self, pod_endpoints: Iterable[_MonarchMeshPod]) -> None:
+    def _setup_out_of_cluster(self, pods: Iterable[_MonarchMeshPod]) -> None:
         """
         Set up port forwarding for out-of-cluster access.
 
-        For each worker address, this function would set up port forwarding
-        from the local machine to the worker pod. This uses kubectl port-forward
-        for now, but could be changed to something with fewer security requirements
-        in the future.
+        The client needs to attach to one of the hosts inside the cluster in order
+        for messages to route in and out.
+        To do so, we expose a duplex address on at least one of the hosts, and attach
+        the client to that address.
+        This uses kubectl port-forward to map a port on the localhost of the client
+        to that address (detected by _discover_monarch_duplex_port).
+        This can be changed to something with fewer security requirements than
+        'port-forward' in the future.
 
         Args:
-            pod_endpoints: List of pod endpoints to set up port forwarding for.
-
-        Returns:
-            A list of local ports that were opened for port forwarding, corresponding to each pod.
+            pods: List of pods to set up port forwarding for.
+        Side effects:
+            After this function returns, the client will have a new Proc that is
+            attached to the remote host. Local procs and actors are still reachable,
+            but this *must* be called before any usage of other monarch APIs.
         """
         logger.info("Setting up port forwarding for out-of-cluster access")
         # While there is a kubernetes Python API for setting up port forwarding,
@@ -655,7 +643,7 @@ class KubernetesJob(JobTrait):
         # Set up a port-forward to the duplex port if one exists. We only need
         # to use one of the hosts as a duplex entrypoint.
         duplex_addr = None
-        for pod in pod_endpoints:
+        for pod in pods:
             duplex_port = pod.duplex_port
             if duplex_port is None or duplex_addr:
                 continue
@@ -743,20 +731,17 @@ class KubernetesJob(JobTrait):
             pod_rank_label = mesh_config["pod_rank_label"]
 
             # Wait for pods to be ready and discover their ports
-            pod_endpoints = self._wait_for_ready_pods(
+            pods = self._wait_for_ready_pods(
                 label_selector, num_replicas, pod_rank_label, timeout=self._timeout
             )
 
             # Create worker addresses using discovered IPs and ports
-            workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pod_endpoints]
+            workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
             # Before attaching to ports, the out-of-cluster use case needs to setup
             # a way to reach the workers inside the cluster.
             if self._kubeconfig.out_of_cluster:
-                self._setup_out_of_cluster(pod_endpoints)
+                self._setup_out_of_cluster(pods)
 
-            logger.info(
-                "Calling attach_to_workers(name=%s, workers=%s)", mesh_name, workers
-            )
             # Create host mesh by attaching to workers
             host_mesh = attach_to_workers(
                 name=mesh_name,

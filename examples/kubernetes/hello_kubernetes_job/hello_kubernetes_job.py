@@ -8,7 +8,7 @@ import argparse
 import socket
 
 from monarch.actor import Actor, endpoint
-from monarch.job.kubernetes import ImageSpec, KubeConfig, KubernetesJob
+from monarch.job.kubernetes import ImageSpec, KubernetesJob
 
 
 class SimpleActor(Actor):
@@ -39,25 +39,9 @@ def main():
         action="store_true",
         help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
-    parser.add_argument(
-        "--image",
-        type=str,
-        default="ghcr.io/meta-pytorch/monarch:latest",
-        help="Container image to use for provisioned meshes",
-    )
-    parser.add_argument(
-        "--out-of-cluster",
-        action="store_true",
-        help="Use kubeconfig for out-of-cluster access",
-    )
     args = parser.parse_args()
 
-    job = KubernetesJob(
-        namespace="monarch-tests",
-        kubeconfig=KubeConfig.from_path("~/.kube/config")
-        if args.out_of_cluster
-        else None,
-    )
+    job = KubernetesJob(namespace="monarch-tests")
     if args.volcano:
         # Volcano adds volcano.sh/job-name and volcano.sh/task-index labels to pods
         job.add_mesh(
@@ -77,28 +61,21 @@ def main():
         # The Monarch operator (must be pre-installed) creates the
         # StatefulSets and headless Services automatically.
         job.add_mesh(
-            "mesh1",
-            2,
-            image_spec=ImageSpec(args.image),
+            "mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
         )
         job.add_mesh(
-            "mesh2",
-            2,
-            image_spec=ImageSpec(args.image),
+            "mesh2", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
         )
     else:
         job.add_mesh("mesh1", 2)
         job.add_mesh("mesh2", 2)
 
-    state = job.state(cached_path=None)
-    print(f"Job state: {state}")
+    state = job.state()
 
     procs1 = state.mesh1.spawn_procs()
-    print(f"Spawned procs1: {procs1}")
     greet_from_mesh("mesh1", procs1)
 
     procs2 = state.mesh2.spawn_procs()
-    print(f"Spawned procs2: {procs2}")
     greet_from_mesh("mesh2", procs2)
 
     procs1.stop().get()

@@ -2182,3 +2182,218 @@ fn overlay_rerun_key_pyspy_no_proc_ref() {
         "p on a Host node should not trigger RunPySpy"
     );
 }
+
+// ── Config overlay tests (CFG-1 through CFG-5) ────────────────────────────
+
+// CFG-3: Config loading state: rx is Some → loading.
+#[test]
+fn build_overlay_config_loading() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let (_, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let job = ActiveJob::Config {
+        rx: Some(rx),
+        short: "worker[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+    };
+    let overlay = job.build_overlay(&theme);
+    assert!(overlay.loading, "rx is Some → loading");
+    assert!(
+        overlay.status_line.is_some(),
+        "loading overlay needs status line"
+    );
+    let title = line_text(&overlay.title);
+    assert!(
+        title.contains("config: worker[0]"),
+        "title should name the proc, got: {title}"
+    );
+}
+
+// CFG-3: Config completed state: rx is None → not loading, lines populated.
+#[test]
+fn build_overlay_config_completed() {
+    let theme = Theme::new(ThemeName::Nord, LangName::En);
+    let job = ActiveJob::Config {
+        rx: None,
+        short: "worker[0]".to_string(),
+        lines: vec![ratatui::text::Line::from(
+            "codec_max_frame_length = 1048576",
+        )],
+        completed_at: Some("14:30:00".to_string()),
+    };
+    let overlay = job.build_overlay(&theme);
+    assert!(!overlay.loading, "rx is None → not loading");
+    assert!(
+        overlay.status_line.is_none(),
+        "completed overlay has no status line"
+    );
+    assert_eq!(overlay.lines.len(), 1, "lines should be populated");
+    let title = line_text(&overlay.title);
+    assert!(
+        title.contains("14:30:00"),
+        "title should show completion time, got: {title}"
+    );
+}
+
+// CFG-2: on_event ConfigResult populates lines, clears rx, sets timestamp.
+#[test]
+fn on_event_config_result() {
+    let (_, rx) = tokio::sync::oneshot::channel::<Vec<ratatui::text::Line<'static>>>();
+    let mut job = ActiveJob::Config {
+        rx: Some(rx),
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    };
+    let result_lines = vec![ratatui::text::Line::from("key = value")];
+    job.on_event(ActiveJobEvent::ConfigResult(result_lines));
+    if let ActiveJob::Config {
+        rx,
+        lines,
+        completed_at,
+        ..
+    } = &job
+    {
+        assert!(rx.is_none(), "rx should be cleared");
+        assert_eq!(lines.len(), 1);
+        assert!(completed_at.is_some(), "should have a completion timestamp");
+    } else {
+        panic!("job variant changed");
+    }
+}
+
+// CFG-1: Config overlay: 'C' on a proc node triggers fresh fetch.
+#[test]
+fn overlay_rerun_key_config_c() {
+    let mut app = make_app_with_cursor(vec![proc_node("proc_ref,worker[0]")], 0);
+    app.active_job = Some(ActiveJob::Config {
+        rx: None,
+        short: "worker[0]".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
+    assert!(matches!(
+        app.overlay_rerun_key(key),
+        KeyResult::RunConfig(_)
+    ));
+}
+
+// CFG-5: Config overlay: unrelated key is not dispatched.
+#[test]
+fn overlay_rerun_key_config_unrelated() {
+    let mut app = make_app_with_cursor(vec![proc_node("p")], 0);
+    app.active_job = Some(ActiveJob::Config {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(matches!(app.overlay_rerun_key(key), KeyResult::None));
+}
+
+// CFG-5: Footer text for Config overlay.
+#[test]
+fn footer_text_config() {
+    let labels = Labels::en();
+    let job = Some(ActiveJob::Config {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let text = ActiveJob::footer_text(&job, &labels);
+    assert_eq!(text, labels.footer_config_help_text);
+}
+
+// CFG-5: Footer text for Diagnostics overlay (cross-check isolation).
+#[test]
+fn footer_text_diagnostics() {
+    let labels = Labels::en();
+    let job = Some(ActiveJob::Diagnostics {
+        results: vec![],
+        running: true,
+        rx: None,
+        completed_at: None,
+    });
+    let text = ActiveJob::footer_text(&job, &labels);
+    assert_eq!(text, labels.footer_diag_running_help_text);
+}
+
+// CFG-5: Footer text for PySpy overlay (cross-check isolation).
+#[test]
+fn footer_text_pyspy() {
+    let labels = Labels::en();
+    let job = Some(ActiveJob::PySpy {
+        rx: None,
+        short: "w".to_string(),
+        lines: vec![],
+        completed_at: None,
+    });
+    let text = ActiveJob::footer_text(&job, &labels);
+    assert_eq!(text, labels.footer_pyspy_help_text);
+}
+
+// CFG-5: Footer text when no job is active.
+#[test]
+fn footer_text_none() {
+    let labels = Labels::en();
+    let text = ActiveJob::footer_text(&None, &labels);
+    assert_eq!(text, labels.footer_help_text);
+}
+
+// CFG-4: 'C' on a Proc dispatches RunConfig.
+#[test]
+fn on_key_config_on_proc() {
+    let mut app = make_app_with_cursor(vec![proc_node("proc_ref,worker[0]")], 0);
+    let key = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
+    let result = app.on_key(key);
+    assert!(
+        matches!(result, KeyResult::RunConfig(_)),
+        "C on Proc should dispatch RunConfig, got: {result:?}"
+    );
+}
+
+// CFG-4: 'C' on a Root node is a no-op.
+#[test]
+fn on_key_config_on_root() {
+    // An app with no children → the visible_rows is empty, so on_key
+    // returns None (no selection target).
+    let mut app = App::new(
+        "http://localhost:8080".to_string(),
+        reqwest::Client::new(),
+        ThemeName::Nord,
+        LangName::En,
+    );
+    let key = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
+    let result = app.on_key(key);
+    assert!(
+        matches!(result, KeyResult::None),
+        "C with no selection should be None, got: {result:?}"
+    );
+}
+
+// CFG-4: 'C' on a Host node is a no-op (pyspy_proc_ref returns None).
+#[test]
+fn on_key_config_on_host() {
+    let host = TreeNode {
+        reference: "host1".into(),
+        label: "host1".into(),
+        node_type: NodeType::Host,
+        expanded: false,
+        fetched: true,
+        has_children: false,
+        stopped: false,
+        failed: false,
+        is_system: false,
+        children: vec![],
+    };
+    let mut app = make_app_with_cursor(vec![host], 0);
+    let key = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
+    let result = app.on_key(key);
+    assert!(
+        matches!(result, KeyResult::None),
+        "C on Host should be None, got: {result:?}"
+    );
+}

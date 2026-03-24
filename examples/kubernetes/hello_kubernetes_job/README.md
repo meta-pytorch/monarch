@@ -25,7 +25,7 @@ kubectl apply -f manifests/hello_provision.yaml
 
 This creates a controller pod with RBAC permissions to create MonarchMesh CRDs and watch pods.
 
-### Running the Example In-Cluster
+### Running the Example
 
 ```bash
 # Copy the script to the controller
@@ -33,16 +33,6 @@ kubectl cp hello_kubernetes_job.py monarch-tests/hello-controller:/tmp/hello_kub
 
 # Run with --provision to create MonarchMesh CRDs from Python
 kubectl exec -it hello-controller -n monarch-tests -- python /tmp/hello_kubernetes_job.py --provision
-```
-
-The `--provision` flag tells `KubernetesJob` to create the MonarchMesh CRDs via the K8s API.
-When the script finishes, it cleans up by deleting the CRDs.
-
-### Running the Example Out-of-Cluster
-
-```bash
-# Make sure monarch is installed first
-uv run python hello_kubernetes_job.py --provision
 ```
 
 The `--provision` flag tells `KubernetesJob` to create the MonarchMesh CRDs via the K8s API.
@@ -175,47 +165,3 @@ The `--volcano` flag configures `KubernetesJob` to use Volcano's labels:
 ```bash
 kubectl delete -f manifests/volcano_workers.yaml
 ```
-
-## Updating monarch build for images
-
-To update the version of monarch used in the cluster, which includes changes to both
-Rust and Python:
-```bash
-# Make sure to build for python 3.12 since the pytorch base image uses that python version
-uv python pin 3.12
-# Build the binary distribution, outputs to "dist/" directory.
-# --no-build-isolation allows using cached rust builds which speeds up subsequent
-# iterations.
-uv build --no-build-isolation --wheel
-
-# With docker:
-# Build and tag a docker image with your build of monarch. You can update the
-# PYTORCH_TAG to use a different base image depending on your needs.
-# The nightly dockerfile is used because it uses the package you already built,
-# rather than downloading from PyPI.
-docker build -f Dockerfile.nightly \
-  -t $USER/monarch:local-tag \
-  --build-arg PYTORCH_TAG=2.12.0.dev20260224-cuda12.8-cudnn9-runtime \
-  --build-arg MONARCH_WHEELS=dist \
-  .
-
-# Push so it's available to the kubernetes cluster.
-# Either (a) push to a container registry so your cluster can access it.
-# Might be slow based on your upload speed and the size of the container.
-docker push $USER/monarch:latest
-# Or (b) if you have a fully local kubernetes cluster you can change it to
-# imagePullPolicy: Never in the manifest and it'll use the image locally. This
-# is the fastest iteration speed.
-
-# With podman + kind:
-# Same build command, replace "docker" with "podman"
-# Save image to archive
-podman save localhost/$USER/monarch:local-tag -o /tmp/monarch-image
-# Then push to your kind cluster for local dev:
-KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/monarch-image -n monarch-cluster
-
-```
-
-Then update the docker images from ghcr.io/meta-pytorch/monarch:latest to use
-your new image. Make sure to prepend the service you used for docker login like
-ghcr.io or docker.io, and that you have pushed the image first.
