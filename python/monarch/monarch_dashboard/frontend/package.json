@@ -11,7 +11,7 @@
     "esbuild": "^0.27.4"
   },
   "scripts": {
-    "build": "node node_modules/esbuild/bin/esbuild src/index.tsx --bundle --outfile=build/static/js/main.js --loader:.tsx=tsx --loader:.ts=ts --loader:.css=css --jsx=automatic --minify --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
+    "build": "npx esbuild src/index.tsx --bundle --outfile=build/static/js/main.js --loader:.tsx=tsx --loader:.ts=ts --loader:.css=css --jsx=automatic --minify --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
     "test": "echo \"no test runner configured\""
   },
   "proxy": "http://localhost:5199",
