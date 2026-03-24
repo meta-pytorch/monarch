@@ -160,6 +160,7 @@ impl From<BindSpec> for PyBindSpec {
     name = "ChannelAddr",
     module = "monarch._rust_bindings.monarch_hyperactor.channel"
 )]
+#[derive(Clone)]
 pub struct PyChannelAddr {
     inner: ChannelAddr,
 }
@@ -205,6 +206,23 @@ impl PyChannelAddr {
         }
     }
 
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ChannelAddr.parse(\"{}\")", self.inner)
+    }
+
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let cls = py
+            .import("monarch._rust_bindings.monarch_hyperactor.channel")?
+            .getattr("ChannelAddr")?;
+        let parse = cls.getattr("parse")?;
+        let args = (self.inner.to_string(),).into_bound_py_any(py)?;
+        Ok((parse, args))
+    }
+
     /// Returns the channel transport of this channel address.
     pub fn get_transport(&self) -> PyResult<PyChannelTransport> {
         let transport = self.inner.transport();
@@ -221,6 +239,18 @@ impl PyChannelAddr {
             ChannelTransport::Local => Ok(PyChannelTransport::Local),
             ChannelTransport::Unix => Ok(PyChannelTransport::Unix),
         }
+    }
+}
+
+impl From<PyChannelAddr> for ChannelAddr {
+    fn from(val: PyChannelAddr) -> Self {
+        val.inner
+    }
+}
+
+impl From<ChannelAddr> for PyChannelAddr {
+    fn from(inner: ChannelAddr) -> Self {
+        PyChannelAddr { inner }
     }
 }
 
