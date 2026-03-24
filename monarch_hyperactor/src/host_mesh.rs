@@ -198,10 +198,16 @@ impl PyHostMesh {
     /// When `admin_addr` is provided (as a `"host:port"` string), the
     /// HTTP server binds to that address; otherwise it reads
     /// `MESH_ADMIN_ADDR` from config.
+    ///
+    /// When `query_engine` is provided, it is handed to the admin
+    /// agent so that `/v1/query` and `POST /v1/pyspy/…` can call into
+    /// the Python `QueryEngine` without a module-level global.
+    #[pyo3(signature = (instance, admin_addr=None, query_engine=None))]
     fn _spawn_admin(
         &self,
         instance: &PyInstance,
         admin_addr: Option<String>,
+        query_engine: Option<pyo3::Py<pyo3::PyAny>>,
     ) -> PyResult<PyPythonTask> {
         let admin_addr = admin_addr
             .map(|s| {
@@ -209,6 +215,12 @@ impl PyHostMesh {
                     .map_err(|e| PyException::new_err(format!("invalid admin_addr '{}': {}", s, e)))
             })
             .transpose()?;
+        // Set the pending engine *before* spawning, so that
+        // `MeshAdminAgent::init()` can `.take()` it synchronously.
+        // See `PENDING_QUERY_ENGINE` doc for concurrency caveats.
+        if let Some(engine) = query_engine {
+            hyperactor_mesh::mesh_admin::set_pending_query_engine(engine);
+        }
         let host_mesh = self.mesh_ref()?.clone();
         let instance = instance.clone();
         PyPythonTask::new(async move {

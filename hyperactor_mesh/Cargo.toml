@@ -42,6 +42,7 @@ path = "benches/main.rs"
 [dependencies]
 algebra = { version = "0.0.0", path = "../algebra" }
 anyhow = "1.0.102"
+arrow = { version = "57.3.0", features = ["ffi", "json", "prettyprint", "pyarrow"] }
 async-trait = "0.1.86"
 axum = { version = "0.8", features = ["macros", "ws"] }
 base64 = { version = "0.22.1", features = ["alloc"] }
@@ -71,6 +72,7 @@ nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "
 opentelemetry = "0.31"
 pin-project = "1.1.11"
 preempt_rwlock = { version = "0.0.0", path = "../preempt_rwlock" }
+pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 rand = { version = "0.9", features = ["small_rng"] }
 ratatui = { version = "0.29.0", features = ["termion", "termwiz", "unstable-rendered-line-info"] }
 reqwest = { version = "0.13.2", features = ["blocking", "charset", "cookies", "gzip", "http2", "json", "multipart", "rustls", "socks", "stream", "system-proxy"], default-features = false }

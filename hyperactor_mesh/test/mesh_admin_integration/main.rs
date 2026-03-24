@@ -262,6 +262,7 @@ mod dining;
 mod harness;
 mod openapi;
 mod pyspy;
+mod query;
 mod ref_check;
 mod ref_edge;
 mod tree;
@@ -353,4 +354,13 @@ async fn test_auth_failures_rust() {
 #[tokio::test]
 async fn test_openapi_conformance_rust() {
     dining::run_openapi_conformance_rust().await;
+}
+
+// --- query family ---
+
+/// /v1/query endpoint: SQL queries return JSON rows from the
+/// telemetry query engine.
+#[tokio::test]
+async fn test_query_endpoint() {
+    query::run_query_endpoint().await;
 }

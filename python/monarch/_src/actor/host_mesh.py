@@ -171,7 +171,11 @@ class HostMesh(MeshTrait):
             proc_bind,
         )
 
-    def _spawn_admin(self, admin_addr: Optional[str] = None) -> "Future[str]":
+    def _spawn_admin(
+        self,
+        admin_addr: Optional[str] = None,
+        query_engine: Optional[Any] = None,
+    ) -> "Future[str]":
         """
         Spawn a MeshAdminAgent on the head host's system proc and
         return its HTTP address.
@@ -186,6 +190,8 @@ class HostMesh(MeshTrait):
             admin_addr: Optional socket address for the admin HTTP server
                 (e.g. ``"[::]:1729"``). When ``None``, reads
                 ``MESH_ADMIN_ADDR`` from config.
+            query_engine: Optional ``QueryEngine`` instance to pass to the
+                admin agent for ``/v1/query`` and py-spy dump storage.
 
         Returns:
             Future[str]: The admin HTTP URL (e.g. ``"https://myhost.facebook.com:1729"``).
@@ -194,7 +200,9 @@ class HostMesh(MeshTrait):
         async def task() -> str:
             hy_mesh = await self._hy_host_mesh
             return await hy_mesh._spawn_admin(
-                context().actor_instance._as_rust(), admin_addr
+                context().actor_instance._as_rust(),
+                admin_addr,
+                query_engine,
             )
 
         return Future(coro=task())
