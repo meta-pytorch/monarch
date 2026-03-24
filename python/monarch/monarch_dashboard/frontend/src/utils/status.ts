@@ -37,10 +37,15 @@ export function formatTimestamp(us: number | null | undefined): string {
   return d.toISOString().replace("T", " ").replace("Z", "").slice(0, 23);
 }
 
-/** Parse shape_json into a readable dims string like "[2, 4]". */
+/** Parse shape_json into a readable dims string like "[2, 4]".
+ *  Handles both the real ndslice Extent format
+ *  ``{"inner": {"labels": ["workers"], "sizes": [2]}}`` and the legacy
+ *  ``{"dims": [2]}`` format.
+ */
 export function formatShape(shapeJson: string): string {
   try {
     const parsed = JSON.parse(shapeJson);
+    if (parsed.inner?.sizes) return `[${parsed.inner.sizes.join(", ")}]`;
     if (parsed.dims) return `[${parsed.dims.join(", ")}]`;
     return shapeJson;
   } catch {

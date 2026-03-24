@@ -1176,7 +1176,11 @@ impl Handler<ConfigDump> for HostAgent {
         message: ConfigDump,
     ) -> Result<(), anyhow::Error> {
         let entries = hyperactor_config::global::config_entries();
-        message.result.send(cx, ConfigDumpResult { entries })?;
+        // Reply is best-effort: the caller may have timed out and dropped
+        // the once-port.  That must not crash this actor.
+        if let Err(e) = message.result.send(cx, ConfigDumpResult { entries }) {
+            tracing::warn!("HostAgent: ConfigDump reply undeliverable (caller timed out): {e}",);
+        }
         Ok(())
     }
 }

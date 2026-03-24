@@ -9,11 +9,11 @@
 /** Data contract types matching the Monarch Dashboard API. */
 
 /**
- * Entity IDs may be 64-bit integers which exceed JavaScript's
- * Number.MAX_SAFE_INTEGER.  The server serializes these as strings
- * to preserve precision; small IDs remain numeric.
+ * Entity IDs are 64-bit integers which can exceed JavaScript's
+ * Number.MAX_SAFE_INTEGER.  The server always serializes them as
+ * strings for type consistency.
  */
-export type EntityId = number | string;
+export type EntityId = string;
 
 /** A mesh in the hierarchy (Host, Proc, or actor mesh). */
 export interface Mesh {
