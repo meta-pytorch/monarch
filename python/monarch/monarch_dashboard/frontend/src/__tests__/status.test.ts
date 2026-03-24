@@ -51,19 +51,23 @@ describe("formatTimestamp", () => {
 });
 
 describe("formatShape", () => {
-  test("formats dims array", () => {
-    expect(formatShape('{"dims": [2, 4]}')).toBe("[2, 4]");
+  test("formats ndslice Extent format", () => {
+    expect(formatShape('{"inner": {"labels": ["workers", "gpu"], "sizes": [2, 4]}}')).toBe("[2, 4]");
   });
 
-  test("formats single dim", () => {
-    expect(formatShape('{"dims": [1]}')).toBe("[1]");
+  test("formats single dim ndslice Extent", () => {
+    expect(formatShape('{"inner": {"labels": ["replica"], "sizes": [1]}}')).toBe("[1]");
+  });
+
+  test("formats legacy dims array", () => {
+    expect(formatShape('{"dims": [2, 4]}')).toBe("[2, 4]");
   });
 
   test("returns raw on invalid JSON", () => {
     expect(formatShape("not json")).toBe("not json");
   });
 
-  test("returns raw when no dims key", () => {
+  test("returns raw when no recognized key", () => {
     expect(formatShape('{"foo": 1}')).toBe('{"foo": 1}');
   });
 });

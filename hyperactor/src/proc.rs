@@ -1299,8 +1299,9 @@ impl<A: Actor> Instance<A> {
             || old == new)
         {
             let new_status = new.arm().unwrap_or("unknown");
-            let change_reason = match new {
+            let change_reason = match &new {
                 ActorStatus::Failed(reason) => reason.to_string(),
+                ActorStatus::Stopped(reason) => reason.clone(),
                 _ => "".to_string(),
             };
             tracing::info!(
