@@ -311,6 +311,28 @@ pip install -e '.[test]'
 pytest python/tests/ -v -m "not oss_skip"
 ```
 
+## Disabling flaky CI tests
+
+If a test is consistently failing in OSS CI and needs to be temporarily
+disabled without a code change, open a GitHub issue on this repo with a title
+of the form:
+
+```
+DISABLED <test-name>
+```
+
+At the start of each CI run, `scripts/fetch_disabled_tests.py` fetches all
+open issues whose titles start with `DISABLED ` and skips the named tests.
+Closing the issue re-enables the test on the next run.
+
+**Naming format:**
+
+- **Rust (cargo nextest):** use the test name exactly as it appears in nextest
+  output: `<binary> <module::path::test_fn>`, e.g.
+  `DISABLED hyperactor proc::tests::test_child_lifecycle`
+- **Python (pytest):** use the test function name, e.g.
+  `DISABLED test_my_function`
+
 ## License
 
 Monarch is BSD-3 licensed, as found in the [LICENSE](LICENSE) file.
