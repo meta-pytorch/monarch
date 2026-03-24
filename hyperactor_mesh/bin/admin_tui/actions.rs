@@ -7,6 +7,7 @@
  */
 
 /// Result of handling a key event.
+#[derive(Debug)]
 pub(crate) enum KeyResult {
     /// Nothing changed.
     None,
@@ -20,4 +21,6 @@ pub(crate) enum KeyResult {
     RunDiagnostics,
     /// Fetch a py-spy stack dump for the given proc reference.
     RunPySpy(String),
+    /// Fetch the config dump for the given proc reference.
+    RunConfig(String),
 }
