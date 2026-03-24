@@ -16,6 +16,7 @@
 
 pub mod database_scanner;
 mod entity_dispatcher;
+pub mod pyspy_table;
 pub mod query_engine;
 mod record_batch_sink;
 
@@ -27,6 +28,10 @@ pub use entity_dispatcher::EntityDispatcher;
 use hyperactor::Bind;
 use hyperactor::Unbind;
 use pyo3::prelude::*;
+pub use pyspy_table::PySpyDump;
+pub use pyspy_table::PySpyFrame;
+pub use pyspy_table::PySpyLocalVariable;
+pub use pyspy_table::PySpyStackTrace;
 pub use query_engine::QueryEngine;
 pub use record_batch_sink::FlushCallback;
 pub use record_batch_sink::RecordBatchSink;
