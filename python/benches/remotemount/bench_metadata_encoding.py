@@ -144,7 +144,7 @@ def bench_real_pack(num_files: int, file_size: int = 1024) -> tuple[float, float
 
         # Time pack
         start = time.perf_counter()
-        meta, _staging_mv, _chunks, _shm_path = pack_directory_chunked(d)
+        meta, _staging_mv, _chunks, _shm_path, _pi = pack_directory_chunked(d)
         pack_time = time.perf_counter() - start
 
         # Time json.dumps

@@ -108,7 +108,7 @@ def bench_pack(total_gb: float, iterations: int = 3) -> None:
         # Warmup (first run populates page cache).
         print("  Warmup...", end=" ", flush=True)
         t0 = time.monotonic()
-        meta, staging_mv, chunks, hashes = pack_directory_chunked(base_dir)
+        meta, staging_mv, chunks, hashes, _pi = pack_directory_chunked(base_dir)
         warmup_time = time.monotonic() - t0
         warmup_gbs = actual_gb / warmup_time
         print(f"{warmup_time:.2f}s ({warmup_gbs:.2f} GB/s)")
@@ -118,7 +118,7 @@ def bench_pack(total_gb: float, iterations: int = 3) -> None:
         assert total_packed == actual, f"packed {total_packed} != actual {actual}"
         assert len(hashes) > 0, "expected at least one hash"
 
-        del meta, staging_mv, chunks, hashes
+        del meta, staging_mv, chunks, hashes, _pi
         gc.collect()
 
         # Timed runs.
@@ -126,11 +126,11 @@ def bench_pack(total_gb: float, iterations: int = 3) -> None:
         nhashes = 0
         for _i in range(iterations):
             t0 = time.monotonic()
-            meta, staging_mv, chunks, hashes = pack_directory_chunked(base_dir)
+            meta, staging_mv, chunks, hashes, _pi = pack_directory_chunked(base_dir)
             elapsed = time.monotonic() - t0
             times.append(elapsed)
             nhashes = len(hashes)
-            del meta, staging_mv, chunks, hashes
+            del meta, staging_mv, chunks, hashes, _pi
             gc.collect()
 
         avg = sum(times) / len(times)
@@ -160,8 +160,8 @@ def bench_scaling(size_gb: float = 4.0) -> None:
         print(f"  {file_size_stats(file_sizes)}")
 
         # Warmup.
-        meta, staging_mv, chunks, hashes = pack_directory_chunked(base_dir)
-        del meta, staging_mv, chunks, hashes
+        meta, staging_mv, chunks, hashes, _pi = pack_directory_chunked(base_dir)
+        del meta, staging_mv, chunks, hashes, _pi
         gc.collect()
 
         core_counts = [c for c in [1, 2, 4, 8, 16] if c <= available]
@@ -178,10 +178,10 @@ def bench_scaling(size_gb: float = 4.0) -> None:
             times = []
             for _i in range(3):
                 t0 = time.monotonic()
-                meta, staging_mv, chunks, hashes = pack_directory_chunked(base_dir)
+                meta, staging_mv, chunks, hashes, _pi = pack_directory_chunked(base_dir)
                 elapsed = time.monotonic() - t0
                 times.append(elapsed)
-                del meta, staging_mv, chunks, hashes
+                del meta, staging_mv, chunks, hashes, _pi
                 gc.collect()
 
             best = min(times)
