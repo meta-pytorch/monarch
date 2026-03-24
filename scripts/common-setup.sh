@@ -227,6 +227,22 @@ setup_cuda_environment() {
     echo "✓ CUDA environment configured (CUDA_LIB_DIR: $CUDA_LIB_DIR)"
 }
 
+# Detect and configure ROCm environment for linking
+setup_rocm_environment() {
+    echo "Setting up ROCm environment..."
+
+    ROCM_HOME="${ROCM_HOME:-/opt/rocm}"
+
+    if [ -d "$ROCM_HOME" ]; then
+        export PATH="$ROCM_HOME/bin:$PATH"
+        export LD_LIBRARY_PATH="$ROCM_HOME/lib:$ROCM_HOME/lib64:${LD_LIBRARY_PATH:-}"
+        export LIBRARY_PATH="$ROCM_HOME/lib:$ROCM_HOME/lib64:${LIBRARY_PATH:-}"
+        echo "✓ ROCm environment configured (ROCM_HOME: $ROCM_HOME)"
+    else
+        echo "⚠ ROCm not found at $ROCM_HOME"
+    fi
+}
+
 # Common setup for test workflows (environment only)
 setup_test_environment() {
     local python_version=${1:-3.10}

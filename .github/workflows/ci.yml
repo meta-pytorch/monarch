@@ -36,10 +36,11 @@ jobs:
 
   test-gpu-python:
     name: Test GPU Python
-    needs: build-cuda
+    needs: [build-cuda, build-rocm]
     uses: ./.github/workflows/test-gpu-python.yml
     with:
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
+      artifact-name-cuda: monarch-cuda-${{ github.sha }}-py3.10
+      artifact-name-rocm: monarch-rocm7.2-${{ github.sha }}
 
   test-cpu-rust:
     name: Test CPU Rust
@@ -54,10 +55,11 @@ jobs:
 
   test-gpu-rust:
     name: Test GPU Rust
-    needs: build-cuda
+    needs: [build-cuda, build-rocm]
     uses: ./.github/workflows/test-gpu-rust.yml
     with:
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
+      artifact-name-cuda: monarch-cuda-${{ github.sha }}-py3.10
+      artifact-name-rocm: monarch-rocm7.2-${{ github.sha }}
 
   build-docker:
     name: Build Docker image
