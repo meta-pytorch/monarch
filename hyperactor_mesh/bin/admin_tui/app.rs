@@ -673,6 +673,46 @@ impl App {
         });
     }
 
+    /// Open a config loading overlay and spawn the one-shot HTTP fetch.
+    ///
+    /// Calls `set_job` which drops any prior variant and its receiver,
+    /// cancelling any in-flight fetch (CFG-1/CFG-2).
+    pub(crate) fn start_config(&mut self, proc_ref: String) {
+        let short = proc_ref
+            .split(',')
+            .next_back()
+            .unwrap_or(&proc_ref)
+            .to_string();
+        let scheme = self.theme.scheme; // ColorScheme: Copy
+        let client = self.client.clone();
+        let base_url = self.base_url.clone();
+        let (tx, rx) = oneshot::channel();
+        self.set_job(ActiveJob::Config {
+            rx: Some(rx),
+            short,
+            lines: vec![],
+            completed_at: None,
+        });
+        tokio::spawn(async move {
+            let url = format!("{}/v1/config/{}", base_url, urlencoding::encode(&proc_ref));
+            let lines: Vec<Line<'static>> = match client.get(&url).send().await {
+                Err(e) => vec![Line::from(format!("request failed: {e}"))],
+                Ok(resp) if !resp.status().is_success() => {
+                    let status = resp.status();
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(json) => parse_error_envelope(&json),
+                        Err(_) => vec![Line::from(format!("HTTP {status}"))],
+                    }
+                }
+                Ok(resp) => match resp.json::<serde_json::Value>().await {
+                    Err(e) => vec![Line::from(format!("parse error: {e}"))],
+                    Ok(json) => config_json_to_lines(&json, &scheme),
+                },
+            };
+            let _ = tx.send(lines);
+        });
+    }
+
     /// Handle a single keypress and update in-memory UI state.
     ///
     /// Returns a `KeyResult` describing whether only the
@@ -844,6 +884,14 @@ impl App {
                     KeyResult::None
                 }
             }
+            KeyCode::Char('C') => {
+                // CFG-4: same target resolution as pyspy_proc_ref.
+                if let Some(proc_ref) = self.pyspy_proc_ref() {
+                    KeyResult::RunConfig(proc_ref)
+                } else {
+                    KeyResult::None
+                }
+            }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Page up (Ctrl+U, vi-style)
                 if self.cursor.page_up(10) {
@@ -886,6 +934,16 @@ impl App {
                 KeyCode::Char('p') => {
                     if let Some(proc_ref) = self.pyspy_proc_ref() {
                         KeyResult::RunPySpy(proc_ref)
+                    } else {
+                        KeyResult::None
+                    }
+                }
+                _ => KeyResult::None,
+            },
+            Some(ActiveJob::Config { .. }) => match key.code {
+                KeyCode::Char('C') => {
+                    if let Some(proc_ref) = self.pyspy_proc_ref() {
+                        KeyResult::RunConfig(proc_ref)
                     } else {
                         KeyResult::None
                     }
@@ -1096,6 +1154,83 @@ pub(crate) fn pyspy_json_to_lines(
     vec![Line::from(format!("unexpected response: {json}"))]
 }
 
+/// Format a `ConfigDumpResult` JSON response into styled `Line`s.
+///
+/// Groups entries by module prefix, highlights entries where
+/// `changed_from_default` is true with the `info` style, and dims
+/// default-valued entries.
+pub(crate) fn config_json_to_lines(
+    json: &serde_json::Value,
+    scheme: &ColorScheme,
+) -> Vec<Line<'static>> {
+    let entries = match json.get("entries").and_then(|e| e.as_array()) {
+        Some(arr) => arr,
+        None => return vec![Line::from(format!("unexpected response: {json}"))],
+    };
+
+    if entries.is_empty() {
+        return vec![Line::from("(no config entries)")];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_module: Option<String> = None;
+
+    for entry in entries {
+        let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        let value = entry.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        let source = entry.get("source").and_then(|s| s.as_str()).unwrap_or("?");
+        let changed = entry
+            .get("changed_from_default")
+            .and_then(|c| c.as_bool())
+            .unwrap_or(false);
+
+        // Group by module prefix (everything before the last `::`).
+        let module = name.rsplit_once("::").map(|(m, _)| m).unwrap_or(name);
+        if current_module.as_deref() != Some(module) {
+            if current_module.is_some() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                format!("  {module}"),
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+            )));
+            current_module = Some(module.to_string());
+        }
+
+        // Key name is the last segment after `::`.
+        let key_name = name.rsplit_once("::").map(|(_, k)| k).unwrap_or(name);
+
+        // Key column: always bold label style for readability.
+        let key_style = scheme.detail_label;
+
+        // Value column: highlight changed values, dim defaults.
+        let value_style = if changed {
+            scheme.info
+        } else {
+            scheme.detail_stopped // dimmed — default value, nothing to notice
+        };
+
+        // Source column: color-coded by layer provenance.
+        let source_style = match source {
+            "Default" => scheme.detail_stopped,     // dimmed — uninteresting
+            "Env" => scheme.stat_timing,            // yellow — env override stands out
+            "Runtime" => scheme.stat_selection,     // purple — programmatic override
+            "TestOverride" => scheme.error,         // red — test-only, should not appear in prod
+            "ClientOverride" => scheme.stat_system, // blue — client-sent config
+            "File" => scheme.node_actor,            // muted blue — file-based config
+            _ => scheme.detail_label,               // fallback
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {key_name:<40}"), key_style),
+            Span::styled(format!("{value:<20}"), value_style),
+            Span::styled(source.to_string(), source_style),
+        ]));
+    }
+
+    lines
+}
+
 /// Await the next event from whichever overlay-producing job is currently live.
 ///
 /// Returns `std::future::pending()` when `active_job` is `None` or when
@@ -1118,6 +1253,15 @@ async fn recv_active_job(job: &mut Option<ActiveJob>) -> ActiveJobEvent {
                 Err(_) => vec![Line::from("(fetch task dropped)")],
             };
             ActiveJobEvent::PySpyResult(lines)
+        }
+        Some(ActiveJob::Config {
+            rx: Some(inner), ..
+        }) => {
+            let lines = match inner.await {
+                Ok(l) => l,
+                Err(_) => vec![Line::from("(fetch task dropped)")],
+            };
+            ActiveJobEvent::ConfigResult(lines)
         }
         _ => std::future::pending().await,
     }
@@ -1189,6 +1333,9 @@ pub(crate) async fn run_app(
                             }
                             KeyResult::RunPySpy(proc_ref) => {
                                 app.start_pyspy(proc_ref);
+                            }
+                            KeyResult::RunConfig(proc_ref) => {
+                                app.start_config(proc_ref);
                             }
                             KeyResult::None => {}
                         }
