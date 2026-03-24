@@ -282,6 +282,8 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use typeuri::Named;
 
+use crate::config_dump::ConfigDump;
+use crate::config_dump::ConfigDumpResult;
 use crate::host_mesh::host_agent::HOST_MESH_AGENT_ACTOR_NAME;
 use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostId;
@@ -304,11 +306,13 @@ async fn query_introspect(
     let introspect_port =
         hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
     introspect_port.send(
         cx,
         IntrospectMessage::Query {
             view,
-            reply: reply_handle.bind(),
+            reply: reply_ref,
         },
     )?;
     tokio::time::timeout(timeout, reply_rx.recv())
@@ -328,11 +332,13 @@ async fn query_child_introspect(
     let introspect_port =
         hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
     introspect_port.send(
         cx,
         IntrospectMessage::QueryChild {
             child_ref,
-            reply: reply_handle.bind(),
+            reply: reply_ref,
         },
     )?;
     tokio::time::timeout(timeout, reply_rx.recv())
@@ -1338,6 +1344,8 @@ impl MeshAdminAgent {
 /// - `GET /v1/schema/error` — JSON Schema for `ApiErrorEnvelope`.
 /// - `GET /v1/openapi.json` — OpenAPI 3.1 spec (embeds JSON Schemas).
 /// - `GET /v1/tree` — ASCII topology dump.
+/// - `GET /v1/pyspy/{*proc_reference}` — py-spy stack dump for a proc.
+/// - `GET /v1/config/{*proc_reference}` — config snapshot for a proc.
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
 /// - `GET /SKILL.md` — agent-facing API documentation (markdown).
 fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
@@ -1349,6 +1357,7 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
         .route("/v1/openapi.json", get(serve_openapi))
         .route("/v1/tree", get(tree_dump))
         .route("/v1/pyspy/{*proc_reference}", get(pyspy_bridge))
+        .route("/v1/config/{*proc_reference}", get(config_bridge))
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
 }
@@ -1576,6 +1585,51 @@ pub fn build_openapi_spec() -> serde_json::Value {
                         }
                     }
                 }
+            },
+            "/v1/config/{proc_reference}": {
+                "get": {
+                    "summary": "Config snapshot for a proc",
+                    "operationId": "getConfig",
+                    "description": "Returns the effective CONFIG-marked configuration entries from the target process. Routes to ProcAgent (worker procs) or HostAgent (service proc).",
+                    "parameters": [{
+                        "name": "proc_reference",
+                        "in": "path",
+                        "required": true,
+                        "description": "URL-encoded proc reference (ProcId)",
+                        "schema": { "type": "string" }
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "ConfigDumpResult — sorted list of config entries",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "entries": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "name": { "type": "string" },
+                                                        "value": { "type": "string" },
+                                                        "default_value": { "type": ["string", "null"] },
+                                                        "source": { "type": "string" },
+                                                        "changed_from_default": { "type": "boolean" },
+                                                        "env_var": { "type": ["string", "null"] }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "404": error_response("Proc not found or handler not reachable"),
+                        "500": error_response("Internal error"),
+                        "504": error_response("Gateway timeout")
+                    }
+                }
             }
         },
         "components": {
@@ -1705,6 +1759,10 @@ async fn pyspy_bridge(
 
     let port = hyperactor_reference::PortRef::<PySpyDump>::attest_message_port(&agent_id);
     let (reply_handle, reply_rx) = open_once_port::<PySpyResult>(cx);
+    // Mark the reply port non-returnable. Same rationale as config_bridge:
+    // a timed-out admin client must not crash the observed actor.
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
     // Native frames are essential for diagnosing hangs in C
     // extensions and CUDA calls — the primary py-spy use case in
     // Monarch. These defaults match the old hyperactor_multiprocess
@@ -1716,7 +1774,7 @@ async fn pyspy_bridge(
             native: true,
             native_all: true,
             nonblocking: false,
-            result: reply_handle.bind(),
+            result: reply_ref,
         },
     )
     .map_err(|e| ApiError {
@@ -1746,6 +1804,75 @@ async fn pyspy_bridge(
         message: format!("failed to receive PySpyResult: {}", e),
         details: None,
     })?;
+
+    Ok(Json(wire_result))
+}
+
+/// HTTP bridge for config dump requests.
+///
+/// Parses the proc reference, routes to the appropriate actor
+/// (ProcAgent on worker procs, HostAgent on the service proc),
+/// probes for reachability, and sends `ConfigDump` directly.
+/// See CFG-4 in `admin_tui/main.rs`.
+async fn config_bridge(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+) -> Result<Json<ConfigDumpResult>, ApiError> {
+    let (proc_reference, proc_id) = parse_pyspy_proc_reference(&proc_reference)?;
+
+    // Route by proc name — service proc → HostAgent, all others → ProcAgent.
+    let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
+        proc_id.actor_id(HOST_MESH_AGENT_ACTOR_NAME, 0)
+    } else {
+        proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
+    };
+
+    // No preflight probe. The previous probe_actor() call used
+    // MESH_ADMIN_QUERY_CHILD_TIMEOUT (100ms) and mapped timeout to 404
+    // "not_found", which misclassifies a live but busy actor as absent.
+    // The ConfigDump send and its own bridge timeout handle both the
+    // absent and busy cases correctly.
+    let cx = &state.bridge_cx;
+
+    let port = hyperactor_reference::PortRef::<ConfigDump>::attest_message_port(&agent_id);
+    let (reply_handle, reply_rx) = open_once_port::<ConfigDumpResult>(cx);
+    // Mark the reply port non-returnable. If the bridge times out and
+    // drops the receiver, the late reply from HostAgent/ProcAgent is
+    // silently dropped instead of bouncing an Undeliverable back to
+    // the observed actor (which would crash it via the default fatal
+    // handle_undeliverable_message).
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
+
+    port.send(cx, ConfigDump { result: reply_ref })
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send ConfigDump: {}", e),
+            details: None,
+        })?;
+
+    // Config dumps go through the actor message queue (not the introspection
+    // callback path). Use the dedicated bridge timeout.
+    let bridge_timeout =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
+    let wire_result = tokio::time::timeout(bridge_timeout, reply_rx.recv())
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                proc_reference = %proc_reference,
+                "mesh admin: config dump timed out (gateway_timeout)",
+            );
+            ApiError {
+                code: "gateway_timeout".to_string(),
+                message: format!("timed out waiting for config dump from {}", proc_reference),
+                details: None,
+            }
+        })?
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to receive ConfigDumpResult: {}", e),
+            details: None,
+        })?;
 
     Ok(Json(wire_result))
 }
