@@ -1308,9 +1308,9 @@ impl ProcMeshRef {
         .await
         {
             Ok(statuses) => {
-                // Check that all actors are in some terminal state.
-                // Failed is ok, because one of these actors may have failed earlier
-                // and we're trying to stop the others.
+                // Check that all actors are in a terminating state (Stopping
+                // or beyond). Failed is ok, because one of these actors may
+                // have failed earlier and we're trying to stop the others.
                 let all_stopped = statuses.values().all(|s| s.is_terminating());
                 if all_stopped {
                     Ok(statuses)

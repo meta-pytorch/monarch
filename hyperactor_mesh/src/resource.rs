@@ -90,7 +90,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// Returns whether the status is a terminating status.
+    /// Returns whether the status is a terminating status (includes `Stopping`).
     pub fn is_terminating(&self) -> bool {
         matches!(
             self,
