@@ -340,6 +340,100 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/config/{proc_reference}": {
+      "get": {
+        "description": "Returns the effective CONFIG-marked configuration entries from the target process. Routes to ProcAgent (worker procs) or HostAgent (service proc).",
+        "operationId": "getConfig",
+        "parameters": [
+          {
+            "description": "URL-encoded proc reference (ProcId)",
+            "in": "path",
+            "name": "proc_reference",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "entries": {
+                      "items": {
+                        "properties": {
+                          "changed_from_default": {
+                            "type": "boolean"
+                          },
+                          "default_value": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "env_var": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "ConfigDumpResult — sorted list of config entries"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Proc not found or handler not reachable"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal error"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Gateway timeout"
+          }
+        },
+        "summary": "Config snapshot for a proc"
+      }
+    },
     "/v1/root": {
       "get": {
         "operationId": "getRoot",
