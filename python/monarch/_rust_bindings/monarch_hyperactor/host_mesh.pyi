@@ -158,6 +158,25 @@ def bootstrap_host(
     """
     ...
 
+def bootstrap_attached(
+    bootstrap_cmd: BootstrapCommand | None,
+    duplex_addr: str,
+) -> PythonTask[tuple[HostMesh, ProcMesh, Instance]]:
+    """
+    Bootstrap a host mesh in this process, returning the host mesh,
+    proc mesh, and client instance.
+
+    Arguments:
+    - `bootstrap_cmd`: The bootstrap command to use to bootstrap this host.
+        This does *not* apply to nor change the host that serves the duplex address.
+    - `duplex_addr`: The host that serves a duplex address which this proc will
+        attach as a remote proc. This proc's lifecycle is not owned by that host,
+        but it does use the host to provide the mailbox.
+        This allows a host to act as a forwarder of messages to a remote proc,
+        in cases where the proc is not visible to other hosts in the mesh.
+    """
+    ...
+
 def shutdown_local_host_mesh() -> PythonTask[None]:
     """
     Shutdown the local host mesh created by bootstrap_host().

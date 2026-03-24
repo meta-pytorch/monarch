@@ -39,7 +39,11 @@ def _as_python_task(s: str | Future[str]) -> "PythonTask[str]":
 
 
 def run_worker_loop_forever(
-    *, private_key: PrivateKey = None, ca: CA, address: str
+    *,
+    private_key: PrivateKey = None,
+    ca: CA,
+    address: str,
+    duplex_address: Optional[str] = None,
 ) -> None:
     """
     Start a monarch server at "address" capable of letting this machine participate in
@@ -77,7 +81,7 @@ def run_worker_loop_forever(
             "implementation does not get the host name right if it was specified as a wild card. We have to fix this"
         )
 
-    _run_worker_loop_forever(address).block_on()
+    _run_worker_loop_forever(address, duplex_address=duplex_address).block_on()
 
 
 def attach_to_workers(
