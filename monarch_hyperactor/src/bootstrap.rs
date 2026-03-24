@@ -52,8 +52,14 @@ pub fn bootstrap_main(py: Python) -> PyResult<Bound<PyAny>> {
 }
 
 #[pyfunction]
-pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPythonTask> {
+#[pyo3(signature = (address, *, duplex_address=None))]
+pub fn run_worker_loop_forever(
+    _py: Python<'_>,
+    address: &str,
+    duplex_address: Option<&str>,
+) -> PyResult<PyPythonTask> {
     let addr = ChannelAddr::from_zmq_url(address)?;
+    let duplex_addr = duplex_address.map(ChannelAddr::from_zmq_url).transpose()?;
 
     // Check if we're running in a PAR/XAR build by looking for FB_XAR_INVOKED_NAME environment variable
     let invoked_name = std::env::var("FB_XAR_INVOKED_NAME");
@@ -105,7 +111,7 @@ pub fn run_worker_loop_forever(_py: Python<'_>, address: &str) -> PyResult<PyPyt
         addr,
         config: None,
         command,
-        duplex_addr: None,
+        duplex_addr,
         // This function is the entry point of the program, and no one else
         // will terminate this process. So it needs to exit on its own.
         exit_on_shutdown: true,

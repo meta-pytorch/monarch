@@ -451,7 +451,7 @@ impl ProcAgent {
         Ok((proc, handle))
     }
 
-    pub(crate) fn boot_v1(
+    pub fn boot_v1(
         proc: Proc,
         shutdown_tx: Option<tokio::sync::oneshot::Sender<i32>>,
     ) -> Result<ActorHandle<Self>, anyhow::Error> {
