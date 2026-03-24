@@ -259,5 +259,6 @@ def start_telemetry(
         dashboard_url = info["url"]
         os.environ["MONARCH_DASHBOARD_URL"] = dashboard_url
         logger.info("Monarch Dashboard: %s", dashboard_url)
+        print(f"Monarch Dashboard: {dashboard_url}", flush=True)
 
     return query_engine
