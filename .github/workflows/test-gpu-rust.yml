@@ -3,35 +3,38 @@ name: Test GPU Rust
 on:
   workflow_call:
     inputs:
-      artifact-name:
-        description: 'Wheel artifact name from build workflow'
+      artifact-name-cuda:
+        description: 'CUDA wheel artifact name'
         required: true
         type: string
+      artifact-name-rocm:
+        description: 'ROCm wheel artifact name'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: test-gpu-rust-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  set-matrix:
+    uses: ./.github/workflows/set-matrix.yaml
+
   test-gpu-rust:
-    name: Test GPU Rust (cuda12.8)
+    name: Test GPU Rust (${{ matrix.name }})
+    needs: set-matrix
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - name: 4xlargegpu
-            runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.matrix) }}
     with:
       timeout: 120
-      runner: ${{ matrix.runs-on }}
+      runner: ${{ matrix.runner }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
-      download-artifact: ${{ inputs.artifact-name }}
+      download-artifact: ${{ matrix.name == 'cuda' && inputs.artifact-name-cuda || inputs.artifact-name-rocm }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -52,8 +55,12 @@ jobs:
         # Setup Tensor Engine dependencies
         setup_tensor_engine
 
-        # Setup CUDA environment and library paths
-        setup_cuda_environment
+        # Setup environment based on GPU type
+        if [[ "${{ matrix.gpu-arch-type }}" == "cuda" ]]; then
+          setup_cuda_environment
+        elif [[ "${{ matrix.gpu-arch-type }}" == "rocm" ]]; then
+          setup_rocm_environment
+        fi
 
         # Setup PyTorch with C++ headers using common-setup utility
         setup_pytorch_with_headers "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
