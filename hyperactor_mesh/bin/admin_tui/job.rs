@@ -51,6 +51,15 @@ pub(crate) enum ActiveJob {
         /// Set to a formatted timestamp when the result arrives.
         completed_at: Option<String>,
     },
+    /// A single config dump HTTP fetch.
+    ///
+    /// Same rx/lines semantics as PySpy: `rx.is_some()` → loading.
+    Config {
+        rx: Option<oneshot::Receiver<Vec<Line<'static>>>>,
+        short: String,
+        lines: Vec<Line<'static>>,
+        completed_at: Option<String>,
+    },
 }
 
 impl ActiveJob {
@@ -128,6 +137,66 @@ impl ActiveJob {
                     max_scroll: Cell::new(u16::MAX),
                 }
             }
+            ActiveJob::Config {
+                rx,
+                short,
+                lines,
+                completed_at,
+            } => {
+                let scheme = &theme.scheme;
+                let labels = &theme.labels;
+                let sep = labels.separator;
+                let loading = rx.is_some();
+
+                let title = if loading {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("config: {short}"),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("{sep}{}", labels.diag_running), scheme.info),
+                    ])
+                } else if let Some(ts) = completed_at {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("config: {short}"),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{sep}{}", labels.diag_completed_at),
+                            scheme.detail_label,
+                        ),
+                        Span::raw(" "),
+                        Span::styled(ts.clone(), scheme.stat_timing),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        format!("config: {short}"),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ))
+                };
+
+                let status_line = if loading {
+                    Some(Line::from(vec![
+                        Span::styled(labels.diag_running, scheme.info),
+                        Span::styled(
+                            format!("{sep}fetching config snapshot"),
+                            scheme.detail_label,
+                        ),
+                    ]))
+                } else {
+                    None
+                };
+
+                Overlay {
+                    title,
+                    status_line,
+                    lines: lines.clone(),
+                    loading,
+                    scroll: Cell::new(0),
+                    max_scroll: Cell::new(u16::MAX),
+                }
+            }
         }
     }
 
@@ -140,6 +209,7 @@ impl ActiveJob {
             }
             Some(ActiveJob::Diagnostics { .. }) => labels.footer_diag_completed_help_text,
             Some(ActiveJob::PySpy { .. }) => labels.footer_pyspy_help_text,
+            Some(ActiveJob::Config { .. }) => labels.footer_config_help_text,
             None => labels.footer_help_text,
         }
     }
@@ -185,6 +255,21 @@ impl ActiveJob {
                     debug_assert!(false, "PySpyResult delivered to non-PySpy job");
                 }
             }
+            ActiveJobEvent::ConfigResult(new_lines) => {
+                if let ActiveJob::Config {
+                    rx,
+                    lines,
+                    completed_at,
+                    ..
+                } = self
+                {
+                    *rx = None;
+                    *lines = new_lines;
+                    *completed_at = Some(Local::now().format("%H:%M:%S").to_string());
+                } else {
+                    debug_assert!(false, "ConfigResult delivered to non-Config job");
+                }
+            }
         }
     }
 }
@@ -193,4 +278,5 @@ impl ActiveJob {
 pub(crate) enum ActiveJobEvent {
     DiagResult(Option<DiagResult>),
     PySpyResult(Vec<Line<'static>>),
+    ConfigResult(Vec<Line<'static>>),
 }

@@ -34,8 +34,14 @@ use serde_multipart::Part;
 use crate::EntityDispatcher;
 use crate::QueryResponse;
 use crate::RecordBatchSink;
+use crate::pyspy_table::PySpyDumpBuffer;
+use crate::pyspy_table::PySpyFrameBuffer;
+use crate::pyspy_table::PySpyLocalVariableBuffer;
+use crate::pyspy_table::PySpyStackTraceBuffer;
+use crate::record_batch_sink::RecordBatchBuffer;
 use crate::serialize_batch;
 use crate::serialize_schema;
+use crate::timestamp_to_micros;
 
 /// Wraps a table's data so we can dynamically push new batches.
 /// The MemTable is created on initialization and shared with queries.
@@ -153,6 +159,30 @@ impl DatabaseScanner {
         scanner.dispatcher = Some(dispatcher.clone());
         hyperactor_telemetry::set_entity_dispatcher(Box::new(dispatcher));
 
+        // Pre-register py-spy tables so QueryEngine discovers them at setup time
+        for (name, batch) in [
+            (
+                "pyspy_dumps",
+                PySpyDumpBuffer::default().to_record_batch().unwrap(),
+            ),
+            (
+                "pyspy_stack_traces",
+                PySpyStackTraceBuffer::default().to_record_batch().unwrap(),
+            ),
+            (
+                "pyspy_frames",
+                PySpyFrameBuffer::default().to_record_batch().unwrap(),
+            ),
+            (
+                "pyspy_local_variables",
+                PySpyLocalVariableBuffer::default()
+                    .to_record_batch()
+                    .unwrap(),
+            ),
+        ] {
+            Self::push_batch_to_tables(&scanner.table_data, name, batch).unwrap();
+        }
+
         Ok(scanner)
     }
 
@@ -220,6 +250,17 @@ impl DatabaseScanner {
         Ok(PyBytes::new(py, &bytes))
     }
 
+    /// Store a py-spy dump result into the pyspy_stacks table.
+    fn store_pyspy_dump_py(
+        &self,
+        dump_id: &str,
+        proc_ref: &str,
+        pyspy_result_json: &str,
+    ) -> PyResult<()> {
+        self.store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+            .map_err(|e| PyException::new_err(e.to_string()))
+    }
+
     /// Perform a scan, sending results directly to the dest port.
     ///
     /// Sends local scan results to `dest` synchronously. The Python caller
@@ -270,15 +311,6 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
-    /// Internal method to push a RecordBatch to a table.
-    ///
-    /// Creates the table if it doesn't exist, using the batch's schema.
-    /// If the batch is empty, creates the table with the schema but doesn't append.
-    /// This method is used both by the Python push_batch and by the Rust RecordBatchSink.
-    pub fn push_batch_internal(&self, table_name: &str, batch: RecordBatch) -> anyhow::Result<()> {
-        Self::push_batch_to_tables(&self.table_data, table_name, batch)
-    }
-
     /// Static method to push a batch to the table_data map.
     /// This can be used from closures that capture the Arc.
     ///
@@ -342,6 +374,176 @@ impl DatabaseScanner {
                 }
             }),
         )
+    }
+
+    /// Parse a py-spy result JSON and store data in normalized py-spy tables.
+    ///
+    /// Populates four tables matching the `hyperactor_mesh::pyspy` structs:
+    /// - `pyspy_dumps`: one row per dump
+    /// - `pyspy_stack_traces`: one row per thread (matches `PySpyStackTrace`)
+    /// - `pyspy_frames`: one row per frame (matches `PySpyFrame`)
+    /// - `pyspy_local_variables`: one row per local variable (matches `PySpyLocalVariable`)
+    ///
+    /// Design notes:
+    /// - Non-Ok results (`BinaryNotFound`, `Failed`) are silently dropped.
+    ///   We intentionally do not record them as structured telemetry today;
+    ///   the caller can log or count those cases if needed.
+    /// - `dump_id` is caller-provided; uniqueness is the caller's responsibility.
+    /// - `timestamp_us` records ingestion time, not py-spy capture time (the
+    ///   py-spy JSON carries no capture timestamp).
+    /// - We parse via `serde_json::Value` rather than importing the typed
+    ///   `PySpyResult` to avoid a crate dependency on `hyperactor_mesh`. The
+    ///   tradeoff is that schema drift in the py-spy structs will not be caught
+    ///   at compile time.
+    pub fn store_pyspy_dump(
+        &self,
+        dump_id: &str,
+        proc_ref: &str,
+        pyspy_result_json: &str,
+    ) -> anyhow::Result<()> {
+        use crate::pyspy_table::PySpyDump;
+        use crate::pyspy_table::PySpyDumpBuffer;
+        use crate::pyspy_table::PySpyFrame;
+        use crate::pyspy_table::PySpyFrameBuffer;
+        use crate::pyspy_table::PySpyLocalVariable;
+        use crate::pyspy_table::PySpyLocalVariableBuffer;
+        use crate::pyspy_table::PySpyStackTrace;
+        use crate::pyspy_table::PySpyStackTraceBuffer;
+        use crate::record_batch_sink::RecordBatchBuffer;
+
+        let value: serde_json::Value = serde_json::from_str(pyspy_result_json)?;
+        let ok = match value.get("Ok") {
+            Some(ok) => ok,
+            None => return Ok(()),
+        };
+
+        let pid = ok.get("pid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let binary = ok
+            .get("binary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let traces = ok.get("stack_traces").and_then(|v| v.as_array());
+
+        let now_us = timestamp_to_micros(&SystemTime::now());
+
+        // Insert dump row
+        let mut dump_buf = PySpyDumpBuffer::default();
+        dump_buf.insert(PySpyDump {
+            dump_id: dump_id.to_string(),
+            timestamp_us: now_us,
+            pid,
+            binary,
+            proc_ref: proc_ref.to_string(),
+        });
+        Self::push_batch_to_tables(&self.table_data, "pyspy_dumps", dump_buf.to_record_batch()?)?;
+
+        // Insert stack trace, frame, and local variable rows
+        let mut trace_buf = PySpyStackTraceBuffer::default();
+        let mut frame_buf = PySpyFrameBuffer::default();
+        let mut local_buf = PySpyLocalVariableBuffer::default();
+
+        if let Some(traces) = traces {
+            for trace in traces {
+                let thread_id = trace.get("thread_id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                trace_buf.insert(PySpyStackTrace {
+                    dump_id: dump_id.to_string(),
+                    pid: trace
+                        .get("pid")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(pid as i64) as i32,
+                    thread_id,
+                    thread_name: trace
+                        .get("thread_name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    os_thread_id: trace.get("os_thread_id").and_then(|v| v.as_u64()),
+                    active: trace
+                        .get("active")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    owns_gil: trace
+                        .get("owns_gil")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                });
+
+                if let Some(frames) = trace.get("frames").and_then(|v| v.as_array()) {
+                    for (depth, frame) in frames.iter().enumerate() {
+                        frame_buf.insert(PySpyFrame {
+                            dump_id: dump_id.to_string(),
+                            thread_id,
+                            frame_depth: depth as i32,
+                            name: frame
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            filename: frame
+                                .get("filename")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            module: frame
+                                .get("module")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            short_filename: frame
+                                .get("short_filename")
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                            line: frame.get("line").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            is_entry: frame
+                                .get("is_entry")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                        });
+
+                        if let Some(locals) = frame.get("locals").and_then(|v| v.as_array()) {
+                            for local in locals {
+                                local_buf.insert(PySpyLocalVariable {
+                                    dump_id: dump_id.to_string(),
+                                    thread_id,
+                                    frame_depth: depth as i32,
+                                    name: local
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    addr: local.get("addr").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    arg: local
+                                        .get("arg")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false),
+                                    repr: local
+                                        .get("repr")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_stack_traces",
+            trace_buf.to_record_batch()?,
+        )?;
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_frames",
+            frame_buf.to_record_batch()?,
+        )?;
+        Self::push_batch_to_tables(
+            &self.table_data,
+            "pyspy_local_variables",
+            local_buf.to_record_batch()?,
+        )?;
+        Ok(())
     }
 
     /// Apply retention policies for all configured tables.
@@ -486,7 +688,12 @@ pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use std::sync::Arc;
 
+    use datafusion::arrow::array::Array;
+    use datafusion::arrow::array::BooleanArray;
+    use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::array::UInt64Array;
     use datafusion::arrow::datatypes::DataType;
     use datafusion::arrow::datatypes::Field;
     use datafusion::arrow::datatypes::Schema;
@@ -560,5 +767,393 @@ mod tests {
         // If push ran first: 1,2,3,4,5,10,11 -> retain x>=3 -> 3,4,5,10,11 = 5 rows
         // If push ran after: 1,2,3,4,5 -> retain x>=3 -> 3,4,5 -> push 10,11 = 5 rows
         assert_eq!(row_count(&table).await, 5);
+    }
+
+    fn table_row_count(scanner: &DatabaseScanner, table_name: &str) -> usize {
+        let guard = scanner.table_data.lock().unwrap();
+        match guard.get(table_name) {
+            Some(table) => get_tokio_runtime().block_on(async {
+                table.mem_table().batches[0]
+                    .read()
+                    .await
+                    .iter()
+                    .map(|b| b.num_rows())
+                    .sum::<usize>()
+            }),
+            None => 0,
+        }
+    }
+
+    fn table_batches(scanner: &DatabaseScanner, table_name: &str) -> Vec<RecordBatch> {
+        let guard = scanner.table_data.lock().unwrap();
+        match guard.get(table_name) {
+            Some(table) => get_tokio_runtime()
+                .block_on(async { table.mem_table().batches[0].read().await.clone() }),
+            None => vec![],
+        }
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_creates_normalized_rows() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+
+        let json = r#"{
+            "Ok": {
+                "pid": 1234, "binary": "python3",
+                "stack_traces": [{
+                    "pid": 1234, "thread_id": 100,
+                    "thread_name": "MainThread", "os_thread_id": 5678,
+                    "active": true, "owns_gil": true,
+                    "frames": [
+                        {"name": "inner", "filename": "a.py", "module": "a",
+                         "short_filename": "a.py", "line": 10, "locals": [
+                            {"name": "x", "addr": 100, "arg": true, "repr": "42"},
+                            {"name": "y", "addr": 200, "arg": false, "repr": null}
+                         ], "is_entry": false},
+                        {"name": "outer", "filename": "a.py", "module": "a",
+                         "short_filename": "a.py", "line": 5, "locals": [
+                            {"name": "z", "addr": 300, "arg": true, "repr": "'hello'"}
+                         ], "is_entry": true}
+                    ]
+                }],
+                "warnings": []
+            }
+        }"#;
+
+        scanner.store_pyspy_dump("dump-1", "proc[0]", json).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 1);
+        assert_eq!(table_row_count(&scanner, "pyspy_stack_traces"), 1);
+        assert_eq!(table_row_count(&scanner, "pyspy_frames"), 2);
+        assert_eq!(table_row_count(&scanner, "pyspy_local_variables"), 3);
+
+        // Verify pyspy_dumps content
+        let batches = table_batches(&scanner, "pyspy_dumps");
+        let batch = &batches[0];
+        let dump_ids = batch
+            .column_by_name("dump_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let pids = batch
+            .column_by_name("pid")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let binaries = batch
+            .column_by_name("binary")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let proc_refs = batch
+            .column_by_name("proc_ref")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(dump_ids.value(0), "dump-1");
+        assert_eq!(pids.value(0), 1234);
+        assert_eq!(binaries.value(0), "python3");
+        assert_eq!(proc_refs.value(0), "proc[0]");
+
+        // Verify pyspy_stack_traces content
+        let batches = table_batches(&scanner, "pyspy_stack_traces");
+        let batch = &batches[0];
+        let dump_ids = batch
+            .column_by_name("dump_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let thread_names = batch
+            .column_by_name("thread_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let os_thread_ids = batch
+            .column_by_name("os_thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let actives = batch
+            .column_by_name("active")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let owns_gils = batch
+            .column_by_name("owns_gil")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert_eq!(dump_ids.value(0), "dump-1");
+        assert_eq!(thread_ids.value(0), 100);
+        assert_eq!(thread_names.value(0), "MainThread");
+        assert_eq!(os_thread_ids.value(0), 5678);
+        assert!(actives.value(0), "thread should be active");
+        assert!(owns_gils.value(0), "thread should own GIL");
+
+        // Verify pyspy_frames content (2 rows: inner at depth 0, outer at depth 1)
+        let batches = table_batches(&scanner, "pyspy_frames");
+        let batch = &batches[0];
+        let names = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let filenames = batch
+            .column_by_name("filename")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let depths = batch
+            .column_by_name("frame_depth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let lines = batch
+            .column_by_name("line")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let is_entries = batch
+            .column_by_name("is_entry")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert_eq!(names.value(0), "inner");
+        assert_eq!(filenames.value(0), "a.py");
+        assert_eq!(depths.value(0), 0);
+        assert_eq!(lines.value(0), 10);
+        assert!(!is_entries.value(0), "inner frame is not entry");
+        assert_eq!(names.value(1), "outer");
+        assert_eq!(filenames.value(1), "a.py");
+        assert_eq!(depths.value(1), 1);
+        assert_eq!(lines.value(1), 5);
+        assert!(is_entries.value(1), "outer frame is entry");
+
+        // Verify pyspy_local_variables content (3 rows)
+        let batches = table_batches(&scanner, "pyspy_local_variables");
+        let batch = &batches[0];
+        let dump_ids = batch
+            .column_by_name("dump_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let depths = batch
+            .column_by_name("frame_depth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let var_names = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let addrs = batch
+            .column_by_name("addr")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let args = batch
+            .column_by_name("arg")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let reprs = batch
+            .column_by_name("repr")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        // Row 0: x, addr=100, arg=true, repr=Some("42")
+        assert_eq!(dump_ids.value(0), "dump-1");
+        assert_eq!(thread_ids.value(0), 100);
+        assert_eq!(depths.value(0), 0);
+        assert_eq!(var_names.value(0), "x");
+        assert_eq!(addrs.value(0), 100);
+        assert!(args.value(0), "x is an argument");
+        assert_eq!(reprs.value(0), "42");
+        assert!(!reprs.is_null(0), "x repr should be Some");
+        // Row 1: y, addr=200, arg=false, repr=None
+        assert_eq!(dump_ids.value(1), "dump-1");
+        assert_eq!(thread_ids.value(1), 100);
+        assert_eq!(depths.value(1), 0);
+        assert_eq!(var_names.value(1), "y");
+        assert_eq!(addrs.value(1), 200);
+        assert!(!args.value(1), "y is not an argument");
+        assert!(reprs.is_null(1), "y repr should be None");
+        // Row 2: z, addr=300, arg=true, repr=Some("'hello'")
+        assert_eq!(dump_ids.value(2), "dump-1");
+        assert_eq!(thread_ids.value(2), 100);
+        assert_eq!(depths.value(2), 1);
+        assert_eq!(var_names.value(2), "z");
+        assert_eq!(addrs.value(2), 300);
+        assert!(args.value(2), "z is an argument");
+        assert_eq!(reprs.value(2), "'hello'");
+        assert!(!reprs.is_null(2), "z repr should be Some");
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_failed_result_no_rows() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+
+        let json =
+            r#"{"Failed": {"pid": 1, "binary": "py-spy", "exit_code": 1, "stderr": "error"}}"#;
+        scanner.store_pyspy_dump("dump-2", "proc[0]", json).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 0);
+        assert_eq!(table_row_count(&scanner, "pyspy_stack_traces"), 0);
+        assert_eq!(table_row_count(&scanner, "pyspy_frames"), 0);
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_invalid_json_errors() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+        assert!(scanner.store_pyspy_dump("x", "p", "not json").is_err());
+    }
+
+    #[test]
+    fn test_store_pyspy_dump_multiple_threads() {
+        let scanner = DatabaseScanner {
+            table_data: Arc::new(StdMutex::new(HashMap::new())),
+            rank: 0,
+            retention_us: 0,
+            sink: None,
+            dispatcher: None,
+        };
+
+        let json = r#"{
+            "Ok": {
+                "pid": 1, "binary": "python3",
+                "stack_traces": [
+                    {"pid": 1, "thread_id": 1, "thread_name": "Main", "os_thread_id": 10,
+                     "active": true, "owns_gil": true,
+                     "frames": [{"name": "f1", "filename": "a.py", "line": 1, "is_entry": false}]},
+                    {"pid": 1, "thread_id": 2, "thread_name": "Worker", "os_thread_id": 11,
+                     "active": false, "owns_gil": false,
+                     "frames": [{"name": "f2", "filename": "b.py", "line": 2, "is_entry": false}]}
+                ],
+                "warnings": []
+            }
+        }"#;
+
+        scanner.store_pyspy_dump("dump-3", "proc[0]", json).unwrap();
+
+        assert_eq!(table_row_count(&scanner, "pyspy_dumps"), 1);
+        assert_eq!(table_row_count(&scanner, "pyspy_stack_traces"), 2);
+        assert_eq!(table_row_count(&scanner, "pyspy_frames"), 2);
+
+        // Verify pyspy_stack_traces content: two threads
+        let batches = table_batches(&scanner, "pyspy_stack_traces");
+        let batch = &batches[0];
+        let thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let thread_names = batch
+            .column_by_name("thread_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let actives = batch
+            .column_by_name("active")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        let owns_gils = batch
+            .column_by_name("owns_gil")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        // Thread 1: Main, active, owns GIL
+        assert_eq!(thread_ids.value(0), 1);
+        assert_eq!(thread_names.value(0), "Main");
+        assert!(actives.value(0), "Main thread should be active");
+        assert!(owns_gils.value(0), "Main thread should own GIL");
+        // Thread 2: Worker, not active, no GIL
+        assert_eq!(thread_ids.value(1), 2);
+        assert_eq!(thread_names.value(1), "Worker");
+        assert!(!actives.value(1), "Worker thread should not be active");
+        assert!(!owns_gils.value(1), "Worker thread should not own GIL");
+
+        // Verify pyspy_frames content: f1 on thread 1, f2 on thread 2
+        let batches = table_batches(&scanner, "pyspy_frames");
+        let batch = &batches[0];
+        let names = batch
+            .column_by_name("name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let frame_thread_ids = batch
+            .column_by_name("thread_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let filenames = batch
+            .column_by_name("filename")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(names.value(0), "f1");
+        assert_eq!(frame_thread_ids.value(0), 1);
+        assert_eq!(filenames.value(0), "a.py");
+        assert_eq!(names.value(1), "f2");
+        assert_eq!(frame_thread_ids.value(1), 2);
+        assert_eq!(filenames.value(1), "b.py");
     }
 }

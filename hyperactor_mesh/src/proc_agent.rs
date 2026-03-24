@@ -58,6 +58,8 @@ use serde::Serialize;
 use typeuri::Named;
 
 use crate::Name;
+use crate::config_dump::ConfigDump;
+use crate::config_dump::ConfigDumpResult;
 use crate::pyspy::PySpyOpts;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
@@ -397,6 +399,7 @@ struct SelfCheck {}
         resource::WaitRankStatus { cast = true },
         RepublishIntrospect { cast = true },
         PySpyDump,
+        ConfigDump,
     ]
 )]
 pub struct ProcAgent {
@@ -939,6 +942,21 @@ impl Handler<PySpyDump> for ProcAgent {
             nonblocking: message.nonblocking,
         };
         PySpyWorker::spawn_and_forward(cx, opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<ConfigDump> for ProcAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ConfigDump,
+    ) -> Result<(), anyhow::Error> {
+        let entries = hyperactor_config::global::config_entries();
+        // Reply is best-effort: the caller may have timed out and dropped
+        // the once-port.  That must not crash this actor.
+        let _ = message.result.send(cx, ConfigDumpResult { entries });
+        Ok(())
     }
 }
 

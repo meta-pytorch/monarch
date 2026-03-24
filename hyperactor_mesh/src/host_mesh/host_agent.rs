@@ -55,6 +55,8 @@ use crate::bootstrap;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
+use crate::config_dump::ConfigDump;
+use crate::config_dump::ConfigDumpResult;
 use crate::mesh_admin::MeshAdminMessageClient;
 use crate::proc_agent::ProcAgent;
 use crate::proc_agent::PySpyDump;
@@ -239,6 +241,7 @@ struct ProcStatusChanged {
         SetClientConfig,
         ProcStatusChanged,
         PySpyDump,
+        ConfigDump,
     ]
 )]
 pub struct HostAgent {
@@ -1162,6 +1165,23 @@ impl Handler<PySpyDump> for HostAgent {
             nonblocking: message.nonblocking,
         };
         PySpyWorker::spawn_and_forward(cx, opts, message.result)
+    }
+}
+
+#[async_trait]
+impl Handler<ConfigDump> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: ConfigDump,
+    ) -> Result<(), anyhow::Error> {
+        let entries = hyperactor_config::global::config_entries();
+        // Reply is best-effort: the caller may have timed out and dropped
+        // the once-port.  That must not crash this actor.
+        if let Err(e) = message.result.send(cx, ConfigDumpResult { entries }) {
+            tracing::warn!("HostAgent: ConfigDump reply undeliverable (caller timed out): {e}",);
+        }
+        Ok(())
     }
 }
 
