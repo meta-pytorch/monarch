@@ -190,6 +190,20 @@ declare_attrs! {
     ))
     pub attr MESH_ADMIN_QUERY_CHILD_TIMEOUT: Duration = Duration::from_millis(100);
 
+    /// Timeout for the end-to-end `/v1/config/{proc}` bridge reply.
+    /// The config-dump path forwards a `ConfigDump` message through
+    /// the HostAgent bridge and waits for `ConfigDumpResult`. This is
+    /// inter-process actor messaging — fundamentally slower than local
+    /// `QueryChild` snapshot lookups (which use
+    /// `MESH_ADMIN_QUERY_CHILD_TIMEOUT`). During startup, the
+    /// HostAgent message loop may be busy processing actor
+    /// registrations, so bridge latency can exceed several seconds.
+    @meta(CONFIG = ConfigAttr::new(
+        Some("HYPERACTOR_MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT".to_string()),
+        Some("mesh_admin_config_dump_bridge_timeout".to_string()),
+    ))
+    pub attr MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT: Duration = Duration::from_secs(5);
+
     /// Timeout for py-spy dump requests. See PS-5 in `introspect`
     /// module doc. With `--native --native-all`, py-spy unwinds native
     /// stacks via libunwind which is significantly slower than
