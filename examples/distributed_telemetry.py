@@ -34,9 +34,6 @@ import argparse
 import os
 import time
 
-# Enable unified telemetry layer before importing monarch
-os.environ["USE_UNIFIED_LAYER"] = "true"
-
 import pyarrow as pa
 from monarch.actor import Actor, endpoint
 from monarch.distributed_telemetry.actor import start_telemetry
@@ -75,6 +72,28 @@ class ComputeActor(Actor):
         child = child_procs.spawn("child_compute", ComputeActor)
         # pyre-ignore[29]: child is an ActorMesh
         return child.compute.call_one(100).get()
+
+
+class StoppingActor(Actor):
+    """Actor that stops itself with a reason from within an endpoint."""
+
+    @endpoint
+    def do_work_then_stop(self) -> str:
+        """Do some work, then stop the actor with a reason."""
+        from monarch.actor import context
+
+        context().actor_instance.stop("finished processing batch")
+        return "stopped"
+
+
+class FailingActor(Actor):
+    """Actor that aborts itself, demonstrating failure telemetry."""
+
+    @endpoint
+    def fail(self) -> None:
+        from monarch.actor import context
+
+        context().actor_instance.abort("intentional failure for demo")
 
 
 class SenderActor(Actor):
@@ -293,6 +312,15 @@ QUERIES = [
            JOIN actors a ON s.actor_id = a.id
            ORDER BY s.timestamp_us""",
     ),
+    # Show stop/failure reasons for terminal actors
+    (
+        "Actor stop and failure reasons",
+        """SELECT a.full_name, s.new_status, s.reason
+           FROM actor_status_events s
+           JOIN actors a ON s.actor_id = a.id
+           WHERE s.new_status IN ('Stopped', 'Failed')
+           ORDER BY s.timestamp_us""",
+    ),
     (
         "Actors by class",
         """SELECT class, count(*) as cnt
@@ -476,9 +504,33 @@ def run_workload(job, summary=False, interactive=False):
     # pyre-ignore[29]: actors is an ActorMesh
     actors.slice(hosts=0, workers=0).spawn_child_work.call_one().get()
 
-    # Give a moment for all trace events to be flushed
-    print("Waiting for trace events to flush...")
-    time.sleep(1.0)
+    print("Stopping sender actor...")
+    sender.stop().get()
+
+    # Issue a warm-up query to ensure telemetry children are spawned on
+    # the workers.  The coordinator lazily spawns telemetry actors via
+    # _spawn_missing_children() during the first scan; without this query
+    # the telemetry actors would not exist when the abort fires, so the
+    # Failed status event would not be captured by the distributed scan.
+    # TODO: Remove this once we have a better way to ensure the telemetry actors are spawned.
+    engine.query("SELECT COUNT(*) FROM actors")
+
+    print("Spawning an actor that stops itself with a reason...")
+    # pyre-ignore[29]: procs is a ProcMesh
+    stopper = procs.slice(hosts=0, workers=0).spawn("stopper", StoppingActor)
+    # pyre-ignore[29]: stopper is an ActorMesh
+    result = stopper.do_work_then_stop.call_one().get()
+    print(f"Stopper result before stopping: {result}")
+
+    print("Spawning an actor that fails...")
+    # pyre-ignore[29]: procs is a ProcMesh
+    failer = procs.slice(hosts=0, workers=0).spawn("failer", FailingActor)
+    try:
+        # pyre-ignore[29]: failer is an ActorMesh
+        failer.fail.call_one().get()
+        time.sleep(2.0)
+    except KeyboardInterrupt:
+        pass  # Expected: the abort propagates an error back
 
     if interactive:
         import signal

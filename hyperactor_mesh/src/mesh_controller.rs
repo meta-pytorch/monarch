@@ -293,7 +293,23 @@ impl<A: Referable> Actor for ActorMeshController<A> {
                 // All ProcAgents send updates directly to this port
                 // so that failures along the comm tree path does not
                 // affect clean shutdowns.
-                subscriber: this.port().bind().unsplit(),
+
+                // Avoid binding the handle here: the controller's
+                // exported ports are bound when proc_mesh installs the
+                // ActorRef after spawn. Binding the same handle twice
+                // panics.
+                //
+                // TODO(SF, 2026-03-32, T261106175): follow up in
+                // hyperactor on bind semantics here. `cx.port()` plus
+                // later actor-ref export currently hits `bind()` ->
+                // `bind_actor_port()` on the same handle, and
+                // `bind_actor_port()` still panics on an
+                // already-bound handle. This workaround uses
+                // `attest_message_port(...)` to avoid the eager bind,
+                // but the longer-term fix is to clarify whether that
+                // bind path should be idempotent and eliminate the
+                // need for attestation here.
+                subscriber: hyperactor_reference::PortRef::<resource::State<ActorState>>::attest_message_port(this.self_id()).unsplit(),
             },
         )?;
 
