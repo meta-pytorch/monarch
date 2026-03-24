@@ -66,6 +66,7 @@ class HostMesh:
         self,
         instance: Instance,
         admin_addr: str | None = None,
+        query_engine: Any | None = None,
     ) -> PythonTask[str]:
         """
         Spawn a MeshAdminAgent on the head host's system proc and

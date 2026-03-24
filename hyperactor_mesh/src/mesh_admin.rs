@@ -261,6 +261,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::routing::post;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -648,6 +649,25 @@ impl std::fmt::Debug for MeshAdminAgent {
     }
 }
 
+/// Process-level handoff slot for the Python `QueryEngine` object.
+///
+/// The PyO3 bridge sets this before sending `SpawnMeshAdmin` (which is
+/// a wire message and cannot carry `Py<PyAny>`). The admin actor's
+/// `init()` takes the value into `BridgeState.query_engine`.
+///
+/// **Design note:** We use a process-level `Mutex<Option<…>>` instead of
+/// embedding the engine in the spawn message because `SpawnMeshAdmin`
+/// must be serializable (it crosses actor boundaries as a wire message).
+/// `Py<PyAny>` is not `Serialize`.
+static PENDING_QUERY_ENGINE: std::sync::Mutex<Option<pyo3::Py<pyo3::PyAny>>> =
+    std::sync::Mutex::new(None);
+
+/// Set the pending query engine that the next `MeshAdminAgent::init()`
+/// will consume.
+pub fn set_pending_query_engine(engine: pyo3::Py<pyo3::PyAny>) {
+    *PENDING_QUERY_ENGINE.lock().expect("poisoned") = Some(engine);
+}
+
 /// Shared state for the reference-based `/v1/{*reference}` bridge
 /// route.
 ///
@@ -674,6 +694,14 @@ struct BridgeState {
     resolve_semaphore: tokio::sync::Semaphore,
     /// Keep the handle alive so the bridge mailbox is not dropped.
     _bridge_handle: ActorHandle<()>,
+    /// Python `QueryEngine` passed at spawn time. Used by
+    /// `query_bridge` and `pyspy_bridge` to avoid a GIL-heavy
+    /// module import on every HTTP request.
+    ///
+    /// `None` when the caller didn't start telemetry — the HTTP
+    /// handlers return a clear 500 with "telemetry not started"
+    /// rather than panicking.
+    query_engine: Option<pyo3::Py<pyo3::PyAny>>,
 }
 
 /// A TCP listener that performs a TLS handshake on each accepted
@@ -791,6 +819,7 @@ impl Actor for MeshAdminAgent {
             .proc()
             .introspectable_instance(MESH_ADMIN_BRIDGE_NAME)?;
         bridge_cx.set_system();
+        let query_engine = PENDING_QUERY_ENGINE.lock().expect("poisoned").take();
         let bridge_state = Arc::new(BridgeState {
             admin_ref: hyperactor_reference::ActorRef::attest(this.self_id().clone()),
             bridge_cx,
@@ -798,6 +827,7 @@ impl Actor for MeshAdminAgent {
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
             )),
             _bridge_handle: bridge_handle,
+            query_engine,
         });
         let router = create_mesh_admin_router(bridge_state);
 
@@ -1348,6 +1378,7 @@ impl MeshAdminAgent {
 /// - `GET /v1/pyspy/{*proc_reference}` — py-spy stack dump for a proc.
 /// - `GET /v1/config/{*proc_reference}` — config snapshot for a proc.
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
+/// - `POST /v1/query` — JSON `SqlQueryRequest` for a SQL query.
 /// - `GET /SKILL.md` — agent-facing API documentation (markdown).
 fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
     Router::new()
@@ -1359,8 +1390,91 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
         .route("/v1/tree", get(tree_dump))
         .route("/v1/pyspy/{*proc_reference}", get(pyspy_bridge))
         .route("/v1/config/{*proc_reference}", get(config_bridge))
+        .route("/v1/query", post(query_bridge))
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
+}
+
+/// Convert Arrow IPC bytes to a JSON array of objects.
+///
+/// Each row is a self-describing `{"column": value, ...}` object.
+/// Uses `arrow::json::ArrayWriter` for type-correct serialization.
+fn arrow_ipc_to_json(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use arrow::ipc::reader::StreamReader;
+    use arrow::json::ArrayWriter;
+
+    let mut reader = StreamReader::try_new(std::io::Cursor::new(data), None)?;
+    let mut buf = Vec::new();
+    let mut writer = ArrayWriter::new(&mut buf);
+    while let Some(batch) = reader.next().transpose()? {
+        writer.write(&batch)?;
+    }
+    writer.finish()?;
+    Ok(buf)
+}
+
+/// Request payload for SQL queries.
+#[derive(Deserialize)]
+struct SqlQueryRequest {
+    sql: String,
+}
+
+/// HTTP bridge for SQL queries against the telemetry query engine.
+///
+/// Bypasses `MeshAdminAgent` entirely — acquires the Python GIL via
+/// `spawn_blocking` and calls `query_engine.query_raw(sql)` on the
+/// engine passed at spawn time. Same direct-bypass pattern as
+/// `pyspy_bridge`.
+///
+/// Returns a JSON array of objects, one per row:
+/// `[{"col1": val1, "col2": val2}, ...]`
+async fn query_bridge(
+    State(state): State<Arc<BridgeState>>,
+    Json(req): Json<SqlQueryRequest>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    if state.query_engine.is_none() {
+        return Err(ApiError {
+            code: "internal_error".into(),
+            message: "telemetry not started (no query engine provided at spawn time)".into(),
+            details: None,
+        });
+    }
+    // Move the `Arc<BridgeState>` into `spawn_blocking` so we can
+    // clone the `Py<PyAny>` inside `Python::attach` — cloning a
+    // `Py<PyAny>` bumps the Python reference count and requires the
+    // current thread to be attached to the interpreter.
+    let ipc_bytes: Vec<u8> = tokio::task::spawn_blocking(move || {
+        pyo3::Python::attach(|py| -> pyo3::PyResult<Vec<u8>> {
+            use pyo3::prelude::*;
+            let engine = state.query_engine.as_ref().unwrap();
+            engine
+                .bind(py)
+                .call_method1("query_raw", (&req.sql,))?
+                .extract()
+        })
+    })
+    .await
+    .map_err(|e| ApiError {
+        code: "internal_error".into(),
+        message: format!("query task failed: {}", e),
+        details: None,
+    })?
+    .map_err(|e| ApiError {
+        code: "internal_error".into(),
+        message: format!("query failed: {}", e),
+        details: None,
+    })?;
+
+    let json_bytes = arrow_ipc_to_json(&ipc_bytes).map_err(|e| ApiError {
+        code: "internal_error".into(),
+        message: format!("failed to convert results: {}", e),
+        details: None,
+    })?;
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        json_bytes,
+    ))
 }
 
 /// Raw markdown template for the SKILL.md API document.
@@ -1666,6 +1780,46 @@ pub fn build_openapi_spec() -> serde_json::Value {
                         "404": error_response("Proc not found or handler not reachable"),
                         "500": error_response("Internal error"),
                         "504": error_response("Gateway timeout")
+                    }
+                }
+            },
+            "/v1/query": {
+                "post": {
+                    "summary": "Execute a SQL query against the telemetry query engine",
+                    "operationId": "postQuery",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["sql"],
+                                    "properties": {
+                                        "sql": {
+                                            "type": "string",
+                                            "description": "SQL query string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "JSON array of row objects",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": true
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "500": error_response("Internal error (query failed or telemetry not started)")
                     }
                 }
             }
@@ -3721,5 +3875,66 @@ mod tests {
 
         let (_, parsed) = parse_pyspy_proc_reference(&with_slash).unwrap();
         assert_eq!(parsed, proc_id);
+    }
+
+    #[test]
+    fn test_arrow_ipc_to_json_basic() {
+        use arrow::array::BooleanArray;
+        use arrow::array::Int64Array;
+        use arrow::array::StringArray;
+        use arrow::datatypes::DataType;
+        use arrow::datatypes::Field;
+        use arrow::datatypes::Schema;
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("value", DataType::Int64, false),
+            Field::new("flag", DataType::Boolean, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(Int64Array::from(vec![1, 2])),
+                Arc::new(BooleanArray::from(vec![Some(true), None])),
+            ],
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+
+        let json_bytes = arrow_ipc_to_json(&buf).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&json_bytes).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], serde_json::json!("a"));
+        assert_eq!(rows[0]["value"], serde_json::json!(1));
+        assert_eq!(rows[0]["flag"], serde_json::json!(true));
+        assert!(rows[1]["flag"].is_null());
+    }
+
+    #[test]
+    fn test_arrow_ipc_to_json_empty() {
+        use arrow::datatypes::DataType;
+        use arrow::datatypes::Field;
+        use arrow::datatypes::Schema;
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+        let batch = RecordBatch::new_empty(schema.clone());
+
+        let mut buf = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+
+        let json_bytes = arrow_ipc_to_json(&buf).unwrap();
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&json_bytes).unwrap();
+        assert!(rows.is_empty());
     }
 }

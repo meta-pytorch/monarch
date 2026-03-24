@@ -762,6 +762,57 @@
         "summary": "Py-spy stack dump for a proc"
       }
     },
+    "/v1/query": {
+      "post": {
+        "operationId": "postQuery",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "sql": {
+                    "description": "SQL query string",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "sql"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "JSON array of row objects"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal error (query failed or telemetry not started)"
+          }
+        },
+        "summary": "Execute a SQL query against the telemetry query engine"
+      }
+    },
     "/v1/root": {
       "get": {
         "operationId": "getRoot",

@@ -69,6 +69,7 @@ impl OpenApiValidator {
             "/v1/{reference}",
             "/v1/config/{proc_reference}",
             "/v1/pyspy/{proc_reference}",
+            "/v1/query",
             "/v1/tree",
             "/v1/schema",
             "/v1/schema/error",
