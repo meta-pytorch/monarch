@@ -9,18 +9,11 @@
 """Tests for distributed telemetry with automatic callback registration."""
 
 import json
-import os
-
-from isolate_in_subprocess import isolate_in_subprocess
-
-# Enable the unified telemetry layer BEFORE importing monarch
-# This is required for the TraceEventDispatcher to be created, which processes sinks
-os.environ["USE_UNIFIED_LAYER"] = "1"
-
 from typing import cast
 
 import monarch.distributed_telemetry.actor as telemetry_actor
 import pytest
+from isolate_in_subprocess import isolate_in_subprocess
 from monarch._src.actor.actor_mesh import Actor, ActorMesh
 from monarch._src.actor.endpoint import endpoint
 from monarch._src.actor.proc_mesh import (

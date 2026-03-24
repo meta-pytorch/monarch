@@ -34,9 +34,6 @@ import argparse
 import os
 import time
 
-# Enable unified telemetry layer before importing monarch
-os.environ["USE_UNIFIED_LAYER"] = "true"
-
 import pyarrow as pa
 from monarch.actor import Actor, endpoint
 from monarch.distributed_telemetry.actor import start_telemetry

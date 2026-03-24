@@ -18,8 +18,8 @@ full observability stack on Kubernetes using the
 
 When ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, Monarch's telemetry layer exports
 metrics and logs via OTLP/HTTP to the specified collector. Metrics are exported
-automatically. Log export additionally requires ``USE_UNIFIED_LAYER=true``,
-which enables the unified tracing layer that wires up the OTLP log sink.
+automatically. Log export uses the unified tracing layer, which is enabled
+by default and wires up the OTLP log sink.
 Built-in actor system metrics (mailbox posts, messages sent/received, queue
 sizes, etc.) and log events are exported with no code changes.
 
@@ -195,8 +195,8 @@ Configuration
      - ``1s``
      - How often the periodic metric reader pushes to the exporter.
    * - ``USE_UNIFIED_LAYER``
-     - ``false``
-     - Must be ``true`` to enable the unified tracing layer and OTLP log sink.
+     - ``true``
+     - Enables the unified tracing layer and OTLP log sink. Enabled by default.
    * - ``ENABLE_OTEL_METRICS``
      - ``true``
      - Set to ``false`` to disable OTel metrics entirely.
@@ -281,10 +281,6 @@ def build_worker_pod_spec(port: int) -> V1PodSpec:
                     V1EnvVar(
                         name="OTEL_SERVICE_NAME",
                         value="monarch-worker",
-                    ),
-                    V1EnvVar(
-                        name="USE_UNIFIED_LAYER",
-                        value="true",
                     ),
                     V1EnvVar(
                         name="MONARCH_FILE_LOG",
