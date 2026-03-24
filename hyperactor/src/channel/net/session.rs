@@ -52,9 +52,6 @@ use crate::channel::SendError;
 use crate::config;
 use crate::metrics;
 
-/// Per-tag buffer array. Each tag value (0..255) gets its own slot.
-const NUM_TAGS: usize = 256;
-
 struct DemuxState<R> {
     reader: FrameReader<R>,
     /// Spaced to store one buffered frame. A reader for tag `t` checks if
