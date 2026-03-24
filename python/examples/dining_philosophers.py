@@ -34,30 +34,17 @@ To also launch the Monarch Dashboard for live telemetry::
     # Then SSH-tunnel: ssh -L 8265:localhost:8265 <devserver>
     # Open http://localhost:8265 in your browser.
 
-Note: ``buck2 run`` does not include the frontend build assets in the
-dashboard (the Buck target does not bundle them).  The dashboard will
-start in API-only mode.  To get the full frontend UI, run via Python
-with a pip-installed wheel that includes the assets::
-
-    # 1. Build the React frontend (requires npm / Node.js):
-    cd fbcode/monarch/python/monarch/monarch_dashboard/frontend
-    npm install && npm run build
-
-    # 2. Build and install the wheel (picks up frontend/build/):
-    cd fbcode/monarch
-    uv build --wheel --no-build-isolation
-    pip install dist/torchmonarch-*.whl --force-reinstall
-
-    # 3. Run with Python directly:
-    python examples/dining_philosophers.py --dashboard
+The Buck build automatically bundles the React frontend assets via esbuild,
+so the full dashboard UI is available out of the box.
 """
 
 import argparse
 import asyncio
 import os
 from enum import auto, Enum
-from typing import Any
+from typing import Any, cast
 
+from monarch._src.actor.actor_mesh import ActorMesh
 from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.distributed_telemetry.actor import start_telemetry
 
@@ -215,7 +202,7 @@ async def async_main(
         if kill_waiter_after is not None:
             await asyncio.sleep(kill_waiter_after)
             print("Killing the waiter...")
-            waiter.stop().get()
+            cast(ActorMesh[Waiter], waiter).stop().get()
         await asyncio.sleep(float("inf"))
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
