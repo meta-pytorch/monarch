@@ -1160,6 +1160,7 @@ mod tests {
                 addr: host.clone(),
                 command: None,
                 config: Some(hyperactor_config::global::attrs()),
+                duplex_addr: None,
                 exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
