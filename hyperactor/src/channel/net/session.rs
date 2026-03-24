@@ -24,6 +24,7 @@ use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
+use std::time::Duration;
 
 use bytes::Buf;
 use bytes::Bytes;
@@ -1068,6 +1069,7 @@ impl<L: Link> Session<L, Disconnected> {
             let Session { link, state: _ } = self;
             let sleep = tokio::time::sleep_until(deadline);
             tokio::pin!(sleep);
+            let mut consecutive_failures: u32 = 0;
             loop {
                 let result = tokio::select! {
                     biased;
@@ -1085,14 +1087,19 @@ impl<L: Link> Session<L, Disconnected> {
                         });
                     }
                     Some(Err(err)) => {
+                        consecutive_failures += 1;
+                        let delay = Duration::from_millis(
+                            10u64.saturating_mul(1u64 << consecutive_failures.min(9)),
+                        )
+                        .min(Duration::from_secs(5));
                         tracing::info!(
                             dest = %link.dest(),
                             error = %err,
-                            "connect_by: link.next() failed, retrying"
+                            consecutive_failures,
+                            delay_ms = delay.as_millis() as u64,
+                            "connect_by: link.next() failed, retrying after backoff"
                         );
-                        // Brief pause so the timer driver can process
-                        // the deadline on current-thread runtimes.
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        tokio::time::sleep(delay).await;
                         continue;
                     }
                     None => {
