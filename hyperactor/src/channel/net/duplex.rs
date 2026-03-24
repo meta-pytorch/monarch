@@ -456,7 +456,24 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                     }
                     false
                 }
-                Err(Either::Send(e)) => log_send_error(e, &dest, session_id.0, "duplex"),
+                Err(Either::Send(e)) => {
+                    let terminal = log_send_error(e, &dest, session_id.0, "duplex");
+                    if !terminal {
+                        // Recoverable send error — reconnect after backoff.
+                        if let Some(delay) = reconnect_backoff.next_backoff() {
+                            tracing::info!(
+                                dest = %dest,
+                                session_id = session_id.0,
+                                error = %e,
+                                delay_ms = delay.as_millis() as u64,
+                                mode = "duplex",
+                                "send error (recoverable), reconnecting after backoff",
+                            );
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                    terminal
+                }
                 Err(Either::Recv(session::RecvLoopError::Io(err))) => {
                     if let Some(delay) = reconnect_backoff.next_backoff() {
                         tracing::info!(
