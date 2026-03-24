@@ -115,6 +115,28 @@
 //!   Esc calls `dismiss_job`; `recv_active_job` fires only for the
 //!   variant currently stored.
 //!
+//! Config overlay invariants:
+//!
+//! - **CFG-1 (fresh-snapshot):** Every `C` press issues a new HTTP
+//!   fetch; no cached config result is ever reused.
+//! - **CFG-2 (overlay-ownership):** A config result may only populate
+//!   a still-valid active config overlay. Stale results are
+//!   invalidated structurally: `active_job` carries the receiver
+//!   inside the `Config` variant, so replacing or clearing `active_job`
+//!   drops the receiver and cancels any in-flight fetch. TUI-21
+//!   guarantees `active_job` is always `None` when `overlay` is `None`.
+//! - **CFG-3 (replacement):** Opening or refreshing config replaces
+//!   prior overlay content and resets scroll to zero on result
+//!   arrival.
+//! - **CFG-4 (selection-totality):** `C` targets the proc ref directly
+//!   on Proc (worker or service); targets the owning proc via
+//!   `detail.parent` on Actor; no-op on Root/Host. Backend routes to
+//!   ProcAgent or HostAgent per proc type (same as PY-4).
+//! - **CFG-5 (overlay-isolation):** Config, Diagnostics, and PySpy
+//!   overlays must not write into each other's display surface.
+//!   Enforced by `set_job`: each variant drops any prior receiver;
+//!   `recv_active_job` fires only for the variant currently stored.
+//!
 //! Laziness + recursion benefits:
 //! - **Lazy expansion**: proc/actor children are placeholders until
 //!   expanded, keeping refresh costs bounded and scaling work to what
