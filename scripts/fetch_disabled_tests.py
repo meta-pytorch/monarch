@@ -21,6 +21,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -58,7 +59,12 @@ def fetch_disabled_test_names() -> list[str]:
     ]
 
 
-def write_disabled_tests(names: list[str]) -> None:
+def write_disabled_tests(names: list[str], *, force: bool = False) -> None:
+    if _DISABLED_TESTS_FILE.exists() and not force:
+        print(
+            f"Skipping write: {_DISABLED_TESTS_FILE} already exists (override active)."
+        )
+        return
     _DISABLED_TESTS_FILE.write_text("\n".join(names) + ("\n" if names else ""))
     if names:
         print(f"Wrote {len(names)} disabled test(s) to {_DISABLED_TESTS_FILE}:")
@@ -87,13 +93,18 @@ def _nextest_predicate(name: str) -> str:
     return f"test({name})"
 
 
-def write_nextest_filter(names: list[str]) -> None:
+def write_nextest_filter(names: list[str], *, force: bool = False) -> None:
     """Write the nextest -E filter expression to .config/nextest-filter.txt.
 
     CI scripts read this file and pass the value to `cargo nextest run -E`.
     When there are no disabled tests the file contains "all()" so the -E
     flag can be unconditional.
     """
+    if _NEXTEST_FILTER_FILE.exists() and not force:
+        print(
+            f"Skipping write: {_NEXTEST_FILTER_FILE} already exists (override active)."
+        )
+        return
     if names:
         predicates = " | ".join(_nextest_predicate(n) for n in names)
         expr = f"not ({predicates})"
@@ -105,9 +116,23 @@ def write_nextest_filter(names: list[str]) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing override files instead of skipping them.",
+    )
+    args = parser.parse_args()
+
     names = fetch_disabled_test_names()
-    write_disabled_tests(names)
-    write_nextest_filter(names)
+    if names:
+        print(f"Found {len(names)} disabled test(s) from GitHub issues:")
+        for name in names:
+            print(f"  {name}")
+    else:
+        print("No disabled tests found in GitHub issues.")
+    write_disabled_tests(names, force=args.force)
+    write_nextest_filter(names, force=args.force)
 
 
 if __name__ == "__main__":
