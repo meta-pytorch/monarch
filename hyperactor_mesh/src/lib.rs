@@ -27,6 +27,7 @@ pub mod bootstrap;
 pub mod casting;
 pub mod comm;
 pub mod config;
+pub mod config_dump;
 pub mod connect;
 pub mod global_context;
 pub mod host_mesh;
