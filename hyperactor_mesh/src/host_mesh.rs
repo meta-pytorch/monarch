@@ -442,6 +442,7 @@ impl HostMesh {
                 addr: addr.clone(),
                 command: Some(command.clone()),
                 config: Some(hyperactor_config::global::attrs()),
+                duplex_addr: None,
                 exit_on_shutdown: false,
             };
 
@@ -1945,6 +1946,7 @@ mod tests {
                 addr: host.clone(),
                 command: None, // use current binary
                 config: None,
+                duplex_addr: None,
                 exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
@@ -2008,6 +2010,7 @@ mod tests {
                 config: None,
                 // The entire purpose of this is to fail:
                 command: Some(BootstrapCommand::from("false")),
+                duplex_addr: None,
                 exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
@@ -2054,6 +2057,7 @@ mod tests {
                 addr: host.clone(),
                 config: None,
                 command,
+                duplex_addr: None,
                 exit_on_shutdown: false,
             };
             boot.to_env(&mut cmd);
