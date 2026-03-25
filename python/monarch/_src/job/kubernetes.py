@@ -8,12 +8,13 @@
 
 import dataclasses
 import logging
+import re
 import shutil
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NotRequired, TypedDict
+from typing import Any, Dict, List, NotRequired, TypedDict
 
 try:
     from kubernetes import client, config, watch
@@ -37,6 +38,7 @@ logger.propagate = False
 
 # Default monarch port for worker communication
 _DEFAULT_MONARCH_PORT: int = 26600
+_DEFAULT_DUPLEX_PORT: int = 34000
 _RFC_1123_MAX_LEN = 63
 
 # MonarchMesh CRD coordinates
@@ -46,14 +48,18 @@ _MONARCHMESH_PLURAL = "monarchmeshes"
 
 # Bootstrap script for provisioned worker pods.
 # Each worker discovers its own FQDN and starts listening for connections.
+# Optionally listens on a duplex address if MONARCH_DUPLEX_PORT is set.
 _WORKER_BOOTSTRAP_SCRIPT: str = textwrap.dedent("""\
     import os
     import socket
     from monarch.actor import run_worker_loop_forever
     port = os.environ.get("MONARCH_PORT", "26600")
+    duplex = os.environ.get("MONARCH_DUPLEX_PORT")
     hostname = socket.getfqdn()
     address = f"tcp://{hostname}:{port}"
-    run_worker_loop_forever(address=address, ca="trust_all_connections")
+    if duplex:
+        duplex = f"tcp://0.0.0.0:{duplex}"
+    run_worker_loop_forever(address=address, ca="trust_all_connections", duplex_address=duplex)
 """)
 
 
@@ -175,6 +181,7 @@ class KubernetesJob(JobTrait):
         namespace: str,
         timeout: int | None = None,
         kubeconfig: KubeConfig | None = None,
+        attach_to: str | None = None,
     ) -> None:
         """
         Initialize a KubernetesJob.
@@ -183,15 +190,22 @@ class KubernetesJob(JobTrait):
             namespace: Kubernetes namespace for all meshes
             timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely)
             kubeconfig: Path to a kubeconfig file for out-of-cluster configuration (default: None, use in-cluster config)
+            attach_to: ZMQ-style address of a duplex endpoint for out-of-cluster
+                access (e.g. `"tcp://127.0.0.1:34000"`).
+                To expose one, use `run_all_worker_loop_forever(..., duplex_address="tcp://hostname:port")`
+                in one of the pods.
+                Then you can use `kubectl port-forward` to expose the pod's port to localhost.
+                Other alternatives are to expose the duplex address from the cluster.
+                The user is responsible for ensuring the address is reachable.
+                Should only be used in out-of-cluster mode, where kubeconfig is provided.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._namespace = namespace
         self._timeout = timeout
-        self._kubeconfig: KubeConfig = (
-            kubeconfig if kubeconfig is not None else KubeConfig()
-        )
+        self._kubeconfig: KubeConfig = kubeconfig or KubeConfig()
+        self._attach_to = attach_to
         self._meshes: Dict[str, _MeshConfig] = {}
-        self._port_forward_processes: List["subprocess.Popen[str]"] = []
+        self._port_forward_processes: List[subprocess.Popen[str]] = []
         super().__init__()
 
     # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.
@@ -203,6 +217,7 @@ class KubernetesJob(JobTrait):
         pod_rank_label: str = "apps.kubernetes.io/pod-index",
         image_spec: ImageSpec | None = None,
         port: int = _DEFAULT_MONARCH_PORT,
+        duplex_port: int | None = None,
         pod_spec: client.V1PodSpec | None = None,
         labels: dict[str, str] | None = None,
     ) -> None:
@@ -226,6 +241,11 @@ class KubernetesJob(JobTrait):
             image_spec: ``ImageSpec`` with container image and optional resources for simple provisioning.
                    Mutually exclusive with ``pod_spec``.
             port: Monarch worker port (default: 26600).
+            duplex_port: Optional duplex port for out-of-cluster client attachment. If specified, the hosts
+                in this mesh will listen on this port for duplex connections for
+                any proc that wants to attach.
+                If kubeconfig is in out-of-cluster mode, this is automatically set
+                to the default duplex port (34000).
             pod_spec: ``V1PodSpec`` for advanced provisioning (e.g. custom volumes, sidecars).
                       Mutually exclusive with ``image_spec``.
             labels: Optional labels to apply to the MonarchMesh CRD metadata.
@@ -279,7 +299,13 @@ class KubernetesJob(JobTrait):
             mesh_entry["labels"] = labels
 
         if image_spec is not None:
-            mesh_entry["pod_spec"] = self._build_worker_pod_spec(image_spec, port)
+            # Set a default for the out-of-cluster case. If the user specified
+            # a value already it overwrites the default.
+            if duplex_port is None and self._kubeconfig.out_of_cluster:
+                duplex_port = _DEFAULT_DUPLEX_PORT
+            mesh_entry["pod_spec"] = self._build_worker_pod_spec(
+                image_spec, port, duplex_port=duplex_port
+            )
         elif pod_spec is not None:
             mesh_entry["pod_spec"] = pod_spec
 
@@ -361,6 +387,7 @@ class KubernetesJob(JobTrait):
     def _build_worker_pod_spec(
         image_spec: ImageSpec,
         port: int,
+        duplex_port: int | None = None,
     ) -> client.V1PodSpec:
         """
         Build a V1PodSpec for the MonarchMesh CRD.
@@ -371,6 +398,7 @@ class KubernetesJob(JobTrait):
         Args:
             image_spec: ImageSpec with container image and optional resources.
             port: Monarch worker port.
+            duplex_port: Optional duplex port for out-of-cluster client attachment.
 
         Returns:
             V1PodSpec suitable for the ``podTemplate`` CRD field.
@@ -382,11 +410,16 @@ class KubernetesJob(JobTrait):
                 requests=k8s_resources,
                 limits=k8s_resources,
             )
+        env = [client.V1EnvVar(name="MONARCH_PORT", value=str(port))]
+        if duplex_port is not None:
+            env.append(
+                client.V1EnvVar(name="MONARCH_DUPLEX_PORT", value=str(duplex_port))
+            )
         container = client.V1Container(
             name="worker",
             image=image_spec.image,
             command=["python", "-u", "-c", _WORKER_BOOTSTRAP_SCRIPT],
-            env=[client.V1EnvVar(name="MONARCH_PORT", value=str(port))],
+            env=env,
             resources=resources,
         )
         return client.V1PodSpec(containers=[container])
@@ -574,19 +607,8 @@ class KubernetesJob(JobTrait):
         return _DEFAULT_MONARCH_PORT
 
     def _discover_monarch_duplex_port(self, pod: client.V1Pod) -> int | None:
-        """
-        Discover the monarch port from the pod specification.
-
-        Checks for MONARCH_DUPLEX_PORT environment variable in container spec
-
-        Args:
-            pod: Kubernetes pod object
-
-        Returns:
-            Port number for monarch communication, or None if not found
-        """
+        """Discover MONARCH_DUPLEX_PORT from a pod's container env vars."""
         for container in pod.spec.containers:
-            # Check for MONARCH_PORT env var
             if container.env:
                 for env_var in container.env:
                     if env_var.name == "MONARCH_DUPLEX_PORT" and env_var.value:
@@ -597,124 +619,69 @@ class KubernetesJob(JobTrait):
                                 f"Invalid MONARCH_DUPLEX_PORT '{env_var.value}' in pod {pod.metadata.name}"
                             )
                             break
-
         return None
 
-    def _setup_out_of_cluster(self, pods: Iterable[_MonarchMeshPod]) -> None:
-        """
-        Set up port forwarding for out-of-cluster access.
+    def _port_forward_to_pod(self, pod: _MonarchMeshPod) -> str:
+        """Start kubectl port-forward to the pod's duplex port.
 
-        The client needs to attach to one of the hosts inside the cluster in order
-        for messages to route in and out.
-        To do so, we expose a duplex address on at least one of the hosts, and attach
-        the client to that address.
-        This uses kubectl port-forward to map a port on the localhost of the client
-        to that address (detected by _discover_monarch_duplex_port).
-        This can be changed to something with fewer security requirements than
-        'port-forward' in the future.
-
-        Args:
-            pods: List of pods to set up port forwarding for.
-        Side effects:
-            After this function returns, the client will have a new Proc that is
-            attached to the remote host. Local procs and actors are still reachable,
-            but this *must* be called before any usage of other monarch APIs.
+        Returns the local ``tcp://127.0.0.1:<local_port>`` address.
         """
-        logger.info("Setting up port forwarding for out-of-cluster access")
-        # While there is a kubernetes Python API for setting up port forwarding,
-        # it only opens the port on the pod and does not run the equivalent part
-        # on localhost.
-        # It can be done like this:
-        # from kubernetes.stream import portforward
-        # pf = portforward(
-        #     v1.connect_get_namespaced_pod_portforward,
-        #     name="my-pod",
-        #     namespace="default",
-        #     ports="8080"
-        # )
-        # This only gives a `pf` socket that python can write to, but not one
-        # that rust can use.
-        # So we use a subprocess to kubectl for now.
         if shutil.which("kubectl") is None:
             raise RuntimeError(
                 "kubectl is required for out-of-cluster port forwarding but was not found in PATH"
             )
+        if pod.duplex_port is None:
+            raise RuntimeError(f"Pod {pod.name} has no duplex port configured")
 
-        # Set up a port-forward to the duplex port if one exists. We only need
-        # to use one of the hosts as a duplex entrypoint.
-        duplex_addr = None
-        for pod in pods:
-            duplex_port = pod.duplex_port
-            if duplex_port is None or duplex_addr:
-                continue
+        cmd = [
+            "kubectl",
+            "port-forward",
+            "--namespace",
+            self._namespace,
+            f"pod/{pod.name}",
+            f":{pod.duplex_port}",
+        ]
+        if self._kubeconfig.local is not None:
+            cmd.extend(["--kubeconfig", str(self._kubeconfig.local)])
 
-            try:
-                cmd = [
-                    "kubectl",
-                    "port-forward",
-                    "--namespace",
-                    self._namespace,
-                    f"pod/{pod.name}",
-                    f":{duplex_port}",
-                ]
-                if self._kubeconfig.local is not None:
-                    cmd.extend(["--kubeconfig", str(self._kubeconfig.local)])
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
 
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+        if process.stdout is None:
+            raise RuntimeError(
+                f"failed to open stdout for kubectl port-forward to pod {pod.name}"
+            )
 
-                if process.stdout is None:
-                    raise RuntimeError(
-                        f"Failed to open stdout for kubectl port-forward for pod {pod.name}"
-                    )
+        first_line = process.stdout.readline()
+        if not first_line:
+            stderr_output = process.stderr.read() if process.stderr else ""
+            process.wait()
+            raise RuntimeError(
+                f"kubectl port-forward produced no output for pod {pod.name}: {stderr_output}"
+            )
 
-                first_line = process.stdout.readline()
-                if not first_line:
-                    stderr_output = process.stderr.read() if process.stderr else ""
-                    process.wait()
-                    raise RuntimeError(
-                        f"kubectl port-forward failed or returned no output for pod {pod.name}. Stderr: {stderr_output}"
-                    )
+        match = re.search(
+            r"Forwarding from (?:127\.0\.0\.1|\[::1\]):(\d+) ->", first_line
+        )
+        if not match:
+            process.kill()
+            process.wait()
+            raise RuntimeError(
+                f"could not parse local port from kubectl output for pod {pod.name}: {first_line}"
+            )
 
-                import re
-
-                match = re.search(
-                    r"Forwarding from (?:127\.0\.0\.1|\[::1\]):(\d+) ->", first_line
-                )
-                if not match:
-                    process.kill()
-                    process.wait()
-                    raise RuntimeError(
-                        f"Could not parse local port from kubectl output for pod {pod.name}: {first_line}"
-                    )
-
-                local_port = int(match.group(1))
-                self._port_forward_processes.append(process)
-                logger.info(
-                    "Port forwarding established to pod/%s on local port %d",
-                    pod.name,
-                    local_port,
-                )
-                duplex_addr = f"tcp://127.0.0.1:{local_port}"
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to set up port forwarding for pod {pod.name} with kubectl"
-                ) from e
-
-        if duplex_addr:
-            # Found at least one duplex port, use it as the location for "context".
-            # This must be the first call to context or it'll use the wrong client mailbox.
-            logger.info("Overwriting context to: %s", duplex_addr)
-            context(attach_to=duplex_addr)
-        # If no duplex address is found, that's ok. The user may be spawning
-        # multiple meshes and we only need one of them to have a duplex address
-        # exposed.
-        # If none of them have an address exposed, it'll be a connection error
-        # to the frontend address.
+        local_port = int(match.group(1))
+        self._port_forward_processes.append(process)
+        logger.info(
+            "Port forwarding established to pod/%s on local port %d",
+            pod.name,
+            local_port,
+        )
+        return f"tcp://127.0.0.1:{local_port}"
 
     def _state(self) -> JobState:
         """
@@ -724,24 +691,45 @@ class KubernetesJob(JobTrait):
             JobState containing HostMesh objects for each configured mesh
         """
         host_meshes = {}
+        attach_to = self._attach_to
 
+        # Discover all mesh pods first so we can set up port-forwarding
+        # before attaching to any workers.
+        all_mesh_pods: Dict[str, List[_MonarchMeshPod]] = {}
         for mesh_name, mesh_config in self._meshes.items():
-            label_selector = mesh_config["label_selector"]
-            num_replicas = mesh_config["num_replicas"]
-            pod_rank_label = mesh_config["pod_rank_label"]
-
             # Wait for pods to be ready and discover their ports
             pods = self._wait_for_ready_pods(
-                label_selector, num_replicas, pod_rank_label, timeout=self._timeout
+                mesh_config["label_selector"],
+                mesh_config["num_replicas"],
+                mesh_config["pod_rank_label"],
+                timeout=self._timeout,
             )
+            all_mesh_pods[mesh_name] = pods
 
+        # Set up out-of-cluster client attachment before connecting to workers.
+        if self._kubeconfig.out_of_cluster and attach_to is None:
+            # No explicit attach_to — try to auto-forward to a pod with a
+            # duplex port (provisioned pods get one automatically).
+            for pods in all_mesh_pods.values():
+                for pod in pods:
+                    if pod.duplex_port is not None:
+                        attach_to = self._port_forward_to_pod(pod)
+                        break
+                if attach_to is not None:
+                    break
+            if attach_to is None:
+                raise RuntimeError(
+                    "out-of-cluster mode requires a duplex address, but no pod has "
+                    "MONARCH_DUPLEX_PORT configured and no attach_to was provided"
+                )
+
+        if attach_to is not None:
+            logger.info("Attaching context to duplex address: %s", attach_to)
+            context(attach_to=attach_to)
+
+        for mesh_name, pods in all_mesh_pods.items():
             # Create worker addresses using discovered IPs and ports
             workers = [f"tcp://{pod.ip}:{pod.port}" for pod in pods]
-            # Before attaching to ports, the out-of-cluster use case needs to setup
-            # a way to reach the workers inside the cluster.
-            if self._kubeconfig.out_of_cluster:
-                self._setup_out_of_cluster(pods)
-
             # Create host mesh by attaching to workers
             host_mesh = attach_to_workers(
                 name=mesh_name,
@@ -807,14 +795,7 @@ class KubernetesJob(JobTrait):
                 "KubernetesJob currently does not support killing pods."
             )
 
-        try:
-            config.load_incluster_config()
-        except config.ConfigException as e:
-            raise RuntimeError(
-                "Failed to load in-cluster Kubernetes config. "
-                "KubernetesJob must run inside a Kubernetes cluster."
-            ) from e
-
+        self._kubeconfig.load()
         api = client.CustomObjectsApi()
 
         for mesh_name in provisioned:
