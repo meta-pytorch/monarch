@@ -120,11 +120,24 @@
 //!   py-spy can segfault reading mutating process memory. All
 //!   attempts share a single deadline bounded by
 //!   `MESH_ADMIN_PYSPY_TIMEOUT` (PS-5).
-//! - **PS-11 (native-all fallback):** If `native_all` is requested
-//!   but the py-spy binary rejects `--native-all` (exit code 2,
-//!   stderr mentions the flag), `try_exec` drops the flag and
-//!   retries automatically. This handles version skew where deployed
-//!   py-spy predates `--native-all` support.
+//! - **PS-11a (native-all-immediate-downgrade):** If py-spy rejects
+//!   `--native-all` with the recognized unsupported-flag signature
+//!   (exit code 2, stderr mentions `--native-all`), `try_exec`
+//!   retries immediately with `native_all = false` in the same outer
+//!   attempt.
+//! - **PS-11b (native-all-no-retry-consumption):** That downgrade
+//!   retry does not consume an outer nonblocking retry slot (PS-10)
+//!   and does not incur the 100ms inter-attempt backoff.
+//! - **PS-11c (native-all-downgrade-warning):** A successful
+//!   downgraded result includes the warning `"--native-all
+//!   unsupported by this py-spy; fell back to --native"`.
+//! - **PS-11d (native-all-failure-passthrough):** If the downgraded
+//!   retry also fails, the failure flows through the normal
+//!   nonblocking retry logic (PS-10) unchanged.
+//! - **PS-11e (native-all-sticky-downgrade):** Once the
+//!   unsupported-flag signature is detected,
+//!   `effective_opts.native_all` remains `false` for all subsequent
+//!   outer retries. The flag is not re-tested on later attempts.
 //! - **PS-12 (universal py-spy):** Worker procs and the service
 //!   proc can handle `PySpyDump`. Worker procs handle it via
 //!   ProcAgent; the service proc handles it via HostAgent (same

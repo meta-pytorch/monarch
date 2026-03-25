@@ -255,7 +255,7 @@
                   "failure_info": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/FailureInfo"
+                        "$ref": "#/components/schemas/FailureInfo"
                       },
                       {
                         "type": "null"
@@ -330,6 +330,264 @@
             "type": "object"
           }
         ]
+      },
+      "PySpyFrame": {
+        "description": "A single frame in a py-spy stack trace.",
+        "properties": {
+          "filename": {
+            "description": "Absolute path to the source file.",
+            "type": "string"
+          },
+          "is_entry": {
+            "description": "Whether this frame is an entry point (e.g., module `__main__`).",
+            "type": "boolean"
+          },
+          "line": {
+            "description": "Source line number.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "locals": {
+            "description": "Local variables captured in this frame, if available.",
+            "items": {
+              "$ref": "#/components/schemas/PySpyLocalVariable"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "module": {
+            "description": "Python module name, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Function or method name.",
+            "type": "string"
+          },
+          "short_filename": {
+            "description": "Basename or abbreviated path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "filename",
+          "line",
+          "is_entry"
+        ],
+        "type": "object"
+      },
+      "PySpyLocalVariable": {
+        "description": "A local variable captured in a py-spy frame.",
+        "properties": {
+          "addr": {
+            "description": "Memory address of the Python object.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "arg": {
+            "description": "Whether this variable is a function argument.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Variable name.",
+            "type": "string"
+          },
+          "repr": {
+            "description": "`repr()` of the value, if captured.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "addr",
+          "arg"
+        ],
+        "type": "object"
+      },
+      "PySpyResult": {
+        "description": "Result of a py-spy stack dump request.\n\nSee PS-2, PS-4 in `introspect` module doc.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Successful stack dump with structured traces.",
+            "properties": {
+              "Ok": {
+                "properties": {
+                  "binary": {
+                    "description": "Path or name of the py-spy binary that produced the dump.",
+                    "type": "string"
+                  },
+                  "pid": {
+                    "description": "OS process ID that was dumped.",
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "stack_traces": {
+                    "description": "Per-thread stack traces from py-spy.",
+                    "items": {
+                      "$ref": "#/components/schemas/PySpyStackTrace"
+                    },
+                    "type": "array"
+                  },
+                  "warnings": {
+                    "description": "Non-fatal warnings from the capture (e.g., flag\nfallbacks). Empty when the capture completed without\ncaveats.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "pid",
+                  "binary",
+                  "stack_traces",
+                  "warnings"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "Ok"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "py-spy binary not found in environment.",
+            "properties": {
+              "BinaryNotFound": {
+                "properties": {
+                  "searched": {
+                    "description": "Candidate paths that were tried before giving up.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "searched"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "BinaryNotFound"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "py-spy exited with an error.",
+            "properties": {
+              "Failed": {
+                "properties": {
+                  "binary": {
+                    "description": "Path or name of the py-spy binary that failed.",
+                    "type": "string"
+                  },
+                  "exit_code": {
+                    "description": "Exit code from the py-spy process, if available.",
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "pid": {
+                    "description": "OS process ID that was targeted.",
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "stderr": {
+                    "description": "Captured stderr output.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "pid",
+                  "binary",
+                  "stderr"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "Failed"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "PySpyResult"
+      },
+      "PySpyStackTrace": {
+        "description": "A single thread's stack trace from py-spy `--json` output.",
+        "properties": {
+          "active": {
+            "description": "Whether the thread is actively running (not idle/waiting).",
+            "type": "boolean"
+          },
+          "frames": {
+            "description": "Stack frames, innermost first.",
+            "items": {
+              "$ref": "#/components/schemas/PySpyFrame"
+            },
+            "type": "array"
+          },
+          "os_thread_id": {
+            "description": "OS-level thread ID (e.g., `gettid()` on Linux).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owns_gil": {
+            "description": "Whether the thread currently holds the GIL.",
+            "type": "boolean"
+          },
+          "pid": {
+            "description": "OS process ID that owns this thread.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "thread_id": {
+            "description": "Python-level thread identifier (`threading.get_ident()`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "thread_name": {
+            "description": "Python thread name, if set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pid",
+          "thread_id",
+          "active",
+          "owns_gil",
+          "frames"
+        ],
+        "type": "object"
       }
     }
   },
@@ -432,6 +690,76 @@
           }
         },
         "summary": "Config snapshot for a proc"
+      }
+    },
+    "/v1/pyspy/{proc_reference}": {
+      "get": {
+        "description": "Runs py-spy against the target process and returns structured stack traces. Routes to ProcAgent (worker procs) or HostAgent (service proc).",
+        "operationId": "getPyspy",
+        "parameters": [
+          {
+            "description": "URL-encoded proc reference (ProcId)",
+            "in": "path",
+            "name": "proc_reference",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PySpyResult"
+                }
+              }
+            },
+            "description": "PySpyResult — one of Ok, BinaryNotFound, or Failed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad request (malformed proc reference)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Proc not found or handler not reachable"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal error"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Gateway timeout"
+          }
+        },
+        "summary": "Py-spy stack dump for a proc"
       }
     },
     "/v1/root": {
