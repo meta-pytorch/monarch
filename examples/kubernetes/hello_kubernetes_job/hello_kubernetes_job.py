@@ -8,7 +8,7 @@ import argparse
 import socket
 
 from monarch.actor import Actor, endpoint
-from monarch.job.kubernetes import ImageSpec, KubernetesJob
+from monarch.job.kubernetes import ImageSpec, KubeConfig, KubernetesJob
 
 
 class SimpleActor(Actor):
@@ -39,9 +39,38 @@ def main():
         action="store_true",
         help="Provision MonarchMesh CRDs from Python (no YAML manifests needed)",
     )
+    parser.add_argument(
+        "--image",
+        type=str,
+        default="ghcr.io/meta-pytorch/monarch:latest",
+        help="Container image to use for provisioned meshes if --provision is set",
+    )
+    parser.add_argument(
+        "--out-of-cluster",
+        action="store_true",
+        help="Set to true if this script is running outside of the kubernetes cluster.",
+    )
+    parser.add_argument(
+        "--attach-to",
+        type=str,
+        default=None,
+        help="Duplex address for out-of-cluster access (e.g. tcp://127.0.0.1:34000). "
+        "Requires kubectl port-forward to be running. Cannot be used in combination with --provision. ",
+    )
     args = parser.parse_args()
+    if args.provision and args.attach_to:
+        raise ValueError(
+            "Cannot use --provision and --attach-to in combination. "
+            "Use --attach-to only without provision."
+        )
 
-    job = KubernetesJob(namespace="monarch-tests")
+    job = KubernetesJob(
+        namespace="monarch-tests",
+        kubeconfig=KubeConfig.from_path("~/.kube/config")
+        if args.out_of_cluster
+        else None,
+        attach_to=args.attach_to,
+    )
     if args.volcano:
         # Volcano adds volcano.sh/job-name and volcano.sh/task-index labels to pods
         job.add_mesh(
@@ -60,17 +89,15 @@ def main():
         # Provision MonarchMesh CRDs directly from Python.
         # The Monarch operator (must be pre-installed) creates the
         # StatefulSets and headless Services automatically.
-        job.add_mesh(
-            "mesh1", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
-        )
-        job.add_mesh(
-            "mesh2", 2, image_spec=ImageSpec("ghcr.io/meta-pytorch/monarch:latest")
-        )
+        # If out-of-cluster mode is on, this image also defaults to adding the
+        # duplex port.
+        job.add_mesh("mesh1", 2, image_spec=ImageSpec(args.image))
+        job.add_mesh("mesh2", 2, image_spec=ImageSpec(args.image))
     else:
         job.add_mesh("mesh1", 2)
         job.add_mesh("mesh2", 2)
 
-    state = job.state()
+    state = job.state(cached_path=None)
 
     procs1 = state.mesh1.spawn_procs()
     greet_from_mesh("mesh1", procs1)
