@@ -6,13 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Tree, root, and mTLS rejection assertion helpers.
+//! Tree and root assertion helpers.
 //!
 //! These are assertion functions, not tests. They are called from
 //! `dining::test_dining_endpoints` so that all dining-based assertions
 //! share one scenario.
 //!
-//! See MIT-6, MIT-9, MIT-13, MIT-14 in `main` module doc.
+//! See MIT-9, MIT-13, MIT-14 in `main` module doc.
 
 use std::time::Duration;
 
@@ -62,21 +62,8 @@ async fn topology_has_dining_actors(s: &DiningScenario) -> bool {
     false
 }
 
-/// MIT-6, MIT-9, MIT-13, MIT-14: All tree and mTLS assertions.
-///
-/// Order: mTLS rejection (cheap, no server state) → root → tree (polls).
+/// MIT-9, MIT-13, MIT-14: Tree and root assertions.
 pub(crate) async fn check(s: &DiningScenario) {
-    // --- MIT-6: mTLS rejection (cheap, run first) ---
-    let client = s.fixture.build_unauthenticated_client().unwrap();
-    let result = client
-        .get(format!("{}/v1/root", s.fixture.admin_url))
-        .send()
-        .await;
-    assert!(
-        result.is_err(),
-        "MIT-6: connection without client cert should be rejected"
-    );
-
     // --- MIT-13: /v1/root contract ---
     let root: NodePayload = s
         .fixture

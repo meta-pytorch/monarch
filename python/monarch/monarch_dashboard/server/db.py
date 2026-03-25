@@ -193,45 +193,45 @@ def _parse_region(
     return (sl["offset"], sl["sizes"], sl["strides"])
 
 
-def _actor_rank_to_proc_rank(
-    actor_rank: int,
+def _child_rank_to_parent_rank(
+    child_rank: int,
     offset: int,
     sizes: list[int],
     strides: list[int],
 ) -> int:
-    """Map an actor mesh rank to a proc mesh rank via the parent Region.
+    """Map a child mesh rank to a parent mesh rank via the parent Region.
 
-    The actor mesh is spawned on a view (Region) of the proc mesh.  Actors
+    A child mesh is spawned on a view (Region) of the parent mesh.  Children
     are enumerated in row-major order over the Region.  Given the Region
-    R = (offset, sizes, strides), actor rank *r* maps to::
+    R = (offset, sizes, strides), child rank *r* maps to::
 
-        proc_rank = offset + Σ_{k} i_k · strides_k
+        parent_rank = offset + Σ_{k} i_k · strides_k
 
     where (i_0, ..., i_{d-1}) is the row-major decomposition of *r* over
     *sizes*.  O(d) per call where d = len(sizes).
     """
-    proc_rank = offset
-    remainder = actor_rank
+    parent_rank = offset
+    remainder = child_rank
     for k in range(len(sizes)):
         suffix = 1
         for j in range(k + 1, len(sizes)):
             suffix *= sizes[j]
         i_k = (remainder // suffix) % sizes[k]
-        proc_rank += i_k * strides[k]
+        parent_rank += i_k * strides[k]
         remainder %= suffix
-    return proc_rank
+    return parent_rank
 
 
-def _proc_ranks_for_region(
+def _parent_ranks_for_region(
     offset: int,
     sizes: list[int],
     strides: list[int],
 ) -> set[int]:
-    """Return the set of all proc mesh ranks covered by a Region.  O(|R|)."""
+    """Return the set of all parent mesh ranks covered by a Region.  O(|R|)."""
     total = 1
     for s in sizes:
         total *= s
-    return {_actor_rank_to_proc_rank(r, offset, sizes, strides) for r in range(total)}
+    return {_child_rank_to_parent_rank(r, offset, sizes, strides) for r in range(total)}
 
 
 # Reusable SQL fragments for latest-status subqueries.
@@ -474,9 +474,6 @@ def get_dag_data() -> dict[str, Any]:
 
       host_mesh -> host_unit -> proc_mesh -> proc_unit -> actor_mesh -> actor
 
-    Status propagation: if a host_unit has a terminal status (failed/stopped/
-    stopping), all proc_units and actors under that host inherit it.
-
     Returns ``{"nodes": [...], "edges": [...]}``.
     """
     meshes = _query("SELECT * FROM meshes ORDER BY id")
@@ -518,21 +515,6 @@ def get_dag_data() -> dict[str, Any]:
     actor_statuses: dict[int, str] = {}
     for a in actors:
         actor_statuses[a["id"]] = (a.get("latest_status") or "unknown").lower()
-
-    # -- Terminal status propagation --
-    terminal = {"stopped", "failed", "stopping"}
-
-    def host_terminal_status(host_mesh_id: int) -> str | None:
-        for agent in host_agents_by_mesh.get(host_mesh_id, []):
-            s = actor_statuses.get(agent["id"], "unknown")
-            if s in terminal:
-                return s
-        return None
-
-    proc_to_host: dict[int, int] = {}
-    for pm in proc_meshes:
-        if pm["parent_mesh_id"] is not None:
-            proc_to_host[pm["id"]] = pm["parent_mesh_id"]
 
     def _leaf_name(name: str) -> str:
         """Extract the last segment from a hierarchical name.
@@ -582,10 +564,7 @@ def get_dag_data() -> dict[str, Any]:
         )
 
     for pm in proc_meshes:
-        host_id = proc_to_host.get(pm["id"])
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         for agent in proc_agents_by_mesh.get(pm["id"], []):
-            own = actor_statuses.get(agent["id"], "unknown")
             nodes.append(
                 {
                     "id": f"proc_unit-{agent['id']}",
@@ -593,7 +572,7 @@ def get_dag_data() -> dict[str, Any]:
                     "tier": "proc_unit",
                     "label": _leaf_name(agent["full_name"]),
                     "subtitle": "Proc",
-                    "status": t_host if t_host else own,
+                    "status": actor_statuses.get(agent["id"], "unknown"),
                 }
             )
 
@@ -610,12 +589,6 @@ def get_dag_data() -> dict[str, Any]:
         )
 
     for a in regular_actors:
-        parent_mesh = mesh_by_id.get(a["mesh_id"])
-        parent_proc_id = parent_mesh["parent_mesh_id"] if parent_mesh else None
-        host_id = (
-            proc_to_host.get(parent_proc_id) if parent_proc_id is not None else None
-        )
-        t_host = host_terminal_status(host_id) if host_id is not None else None
         nodes.append(
             {
                 "id": f"actor-{a['id']}",
@@ -623,7 +596,7 @@ def get_dag_data() -> dict[str, Any]:
                 "tier": "actor",
                 "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
-                "status": t_host if t_host else actor_statuses.get(a["id"], "unknown"),
+                "status": actor_statuses.get(a["id"], "unknown"),
             }
         )
 
@@ -643,10 +616,21 @@ def get_dag_data() -> dict[str, Any]:
             )
 
     # Host unit -> proc mesh
+    # Use parent_view_json (ndslice Region) on the proc mesh to determine
+    # which host ranks it covers, then connect only matching host agents.
+    # Same pattern as proc_unit -> actor_mesh linking below.
     for pm in proc_meshes:
         if pm["parent_mesh_id"] is None:
             continue
-        for agent in host_agents_by_mesh.get(pm["parent_mesh_id"], []):
+        host_agents = host_agents_by_mesh.get(pm["parent_mesh_id"], [])
+        region = _parse_region(pm.get("parent_view_json"))
+        if region is not None and host_agents:
+            covered_ranks = _parent_ranks_for_region(*region)
+            matching = [a for a in host_agents if a.get("rank") in covered_ranks]
+            targets = matching if matching else host_agents
+        else:
+            targets = host_agents
+        for agent in targets:
             edges.append(
                 {
                     "id": f"hier-host_unit-{agent['id']}-proc_mesh-{pm['id']}",
@@ -678,7 +662,7 @@ def get_dag_data() -> dict[str, Any]:
         proc_agents = proc_agents_by_mesh.get(am["parent_mesh_id"], [])
         region = _parse_region(am.get("parent_view_json"))
         if region is not None and proc_agents:
-            covered_ranks = _proc_ranks_for_region(*region)
+            covered_ranks = _parent_ranks_for_region(*region)
             matching = [a for a in proc_agents if a.get("rank") in covered_ranks]
             # Fall back to all agents if no rank matches (e.g. rank data missing).
             targets = matching if matching else proc_agents

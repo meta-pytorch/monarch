@@ -171,6 +171,13 @@ class DistributedTelemetryActor(Actor):
                 logger.info("child apply_retention failed, skipping")
 
     @endpoint
+    def store_pyspy_dump(
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> None:
+        """Store py-spy dump data in the normalized pyspy DataFusion tables."""
+        self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
+
+    @endpoint
     def scan(
         self,
         dest: PortId,
