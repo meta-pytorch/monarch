@@ -59,8 +59,7 @@ use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
 use crate::mesh_admin::MeshAdminMessageClient;
 use crate::proc_agent::ProcAgent;
-use crate::proc_agent::PySpyDump;
-use crate::pyspy::PySpyOpts;
+use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
 use crate::resource::ProcSpec;
@@ -1158,13 +1157,7 @@ impl Handler<PySpyDump> for HostAgent {
         cx: &Context<Self>,
         message: PySpyDump,
     ) -> Result<(), anyhow::Error> {
-        let opts = PySpyOpts {
-            threads: message.threads,
-            native: message.native,
-            native_all: message.native_all,
-            nonblocking: message.nonblocking,
-        };
-        PySpyWorker::spawn_and_forward(cx, opts, message.result)
+        PySpyWorker::spawn_and_forward(cx, message.opts, message.result)
     }
 }
 
