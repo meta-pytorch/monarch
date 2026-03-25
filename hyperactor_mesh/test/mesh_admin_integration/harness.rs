@@ -84,6 +84,11 @@ impl WorkloadFixture {
         Ok(builder.build()?)
     }
 
+    /// The fixture's CA PEM, for building custom TLS clients.
+    pub(crate) fn ca_pem(&self) -> &[u8] {
+        &self.ca_pem
+    }
+
     /// GET a path relative to the admin URL.
     pub(crate) async fn get(&self, path: &str) -> Result<Response> {
         let url = format!("{}{}", self.admin_url, path);
@@ -341,10 +346,10 @@ fn install_pyspy() -> Result<(Option<PathBuf>, Option<TempDir>)> {
 // PKI generation
 
 /// Generated PEM material from ephemeral PKI. MIT-4 (ephemeral-pki).
-struct PkiMaterial {
-    ca_pem: Vec<u8>,
-    cert_pem: Vec<u8>,
-    key_pem: Vec<u8>,
+pub(crate) struct PkiMaterial {
+    pub(crate) ca_pem: Vec<u8>,
+    pub(crate) cert_pem: Vec<u8>,
+    pub(crate) key_pem: Vec<u8>,
 }
 
 /// Generate ephemeral CA + server cert with rcgen. MIT-4
@@ -353,7 +358,7 @@ struct PkiMaterial {
 /// Returns separate CA, cert, and key PEM buffers. Also writes ca.crt
 /// and combined.pem to the cert_dir (the combined file is what the
 /// workload process reads via HYPERACTOR_TLS_CERT/KEY).
-fn generate_pki(cert_dir: &Path) -> Result<PkiMaterial> {
+pub(crate) fn generate_pki(cert_dir: &Path) -> Result<PkiMaterial> {
     use rcgen::BasicConstraints;
     use rcgen::CertificateParams;
     use rcgen::DnType;
@@ -439,6 +444,28 @@ fn build_client(ca_pem: &[u8], cert_pem: &[u8], key_pem: &[u8]) -> Result<Client
     );
     if !ok {
         bail!("MIT-5: failed to configure TLS on reqwest client");
+    }
+    Ok(builder.build()?)
+}
+
+/// Build a client with explicit trust root and optional client
+/// identity. Covers both "wrong client cert" (trust fixture CA,
+/// present foreign cert) and "wrong trust root" (trust foreign CA,
+/// present foreign cert).
+pub(crate) fn build_tls_client(
+    trusted_ca_pem: &[u8],
+    cert_pem: Option<&[u8]>,
+    key_pem: Option<&[u8]>,
+) -> Result<Client> {
+    let builder = Client::builder().timeout(Duration::from_secs(30));
+    let (builder, ok) = hyperactor_mesh::mesh_admin_client::add_tls(
+        builder,
+        trusted_ca_pem,
+        cert_pem.map(|b| b.to_vec()),
+        key_pem.map(|b| b.to_vec()),
+    );
+    if !ok {
+        bail!("failed to configure TLS on custom client");
     }
     Ok(builder.build()?)
 }
