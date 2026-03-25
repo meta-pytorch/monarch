@@ -236,6 +236,7 @@ struct ProcStatusChanged {
         resource::List,
         ShutdownHost,
         StopHost,
+        TerminateChildren,
         SpawnMeshAdmin,
         SetClientConfig,
         ProcStatusChanged,
@@ -866,6 +867,32 @@ pub struct StopHost {
 }
 wirevalue::register_type!(StopHost);
 
+/// Terminate all user procs on this host but keep the host, service
+/// proc, and networking alive.  Used as phase 1 of a two-phase mesh
+/// shutdown so that forwarder flushes can still reach remote hosts.
+#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
+pub struct TerminateChildren {
+    pub timeout: std::time::Duration,
+    pub max_in_flight: usize,
+    #[reply]
+    pub ack: hyperactor::reference::PortRef<()>,
+}
+wirevalue::register_type!(TerminateChildren);
+
+#[async_trait]
+impl Handler<TerminateChildren> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        msg: TerminateChildren,
+    ) -> anyhow::Result<()> {
+        self.terminate_children_and_clear(cx, msg.timeout, msg.max_in_flight)
+            .await;
+        msg.ack.send(cx, ())?;
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Handler<StopHost> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: StopHost) -> anyhow::Result<()> {
@@ -880,12 +907,7 @@ impl Handler<StopHost> for HostAgent {
 
         // Ack after children are terminated so the caller does not
         // tear down the host's networking prematurely.
-        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
-        cx.mailbox()
-            .serialize_and_send(&msg.ack, (), return_handle)?;
-        if return_receiver.recv().await.is_ok() {
-            tracing::warn!("failed to send ack");
-        }
+        msg.ack.send(cx, ())?;
         tracing::info!(
             proc_id = %cx.self_id().proc_id(),
             actor_id = %cx.self_id(),
@@ -909,14 +931,7 @@ impl Handler<ShutdownHost> for HostAgent {
 
         // Ack after children are terminated so the caller does not
         // tear down the host's networking prematurely.
-        let (return_handle, mut return_receiver) = cx.mailbox().open_port();
-        cx.mailbox()
-            .serialize_and_send(&msg.ack, (), return_handle)?;
-
-        // If message is returned, it means the ack was not sent successfully.
-        if return_receiver.recv().await.is_ok() {
-            tracing::warn!("failed to send ack");
-        }
+        msg.ack.send(cx, ())?;
 
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
