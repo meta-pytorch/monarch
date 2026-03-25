@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       runner-rocm:
-        description: 'Override default (linux.rocm.gpu.gfx942.8) ROCm runner label'
+        description: 'Override default ROCm runner label'
         required: false
         type: string
       runner-cuda:
-        description: 'Override default (linux.g5.4xlarge.nvidia.gpu) CUDA runner label'
+        description: 'Override default CUDA runner label'
         required: false
         type: string
     outputs:
