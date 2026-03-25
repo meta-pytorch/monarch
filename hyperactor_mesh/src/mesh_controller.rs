@@ -382,17 +382,19 @@ impl<A: Referable> Handler<Subscribe> for ActorMeshController<A> {
         // If we can't send a message to a subscriber, the subscriber might be gone.
         // That shouldn't cause this actor to exit.
         // This is handled by the handle_undeliverable_message method.
-        match &self.health_state.unhealthy_event {
-            None => {}
-            // For an adverse event like stopped or crashed, send a notification
-            // immediately. This represents an initial bad state, if subscribing
-            // to an already-dead mesh.
-            Some(Unhealthy::StreamClosed(msg)) => {
-                send_subscriber_message(cx, &message.0, msg.clone());
-            }
-            Some(Unhealthy::Crashed(msg)) => {
-                send_subscriber_message(cx, &message.0, msg.clone());
-            }
+        // If there are any crashed ranks, replay a failure event so the new
+        // subscriber learns about the current health state. We send a single
+        // message with all crashed ranks so the subscriber's filter can check
+        // overlap with its slice region. This avoids the watch-channel
+        // coalescing problem (sending per-rank messages would lose all but
+        // the last one).
+        if let Some(unhealthy) = &self.health_state.unhealthy_event {
+            let msg = match unhealthy {
+                Unhealthy::StreamClosed(msg) | Unhealthy::Crashed(msg) => msg,
+            };
+            let mut replay_msg = msg.clone();
+            replay_msg.crashed_ranks = self.health_state.crashed_ranks.keys().copied().collect();
+            send_subscriber_message(cx, &message.0, replay_msg);
         }
         let port_id = message.0.port_id().clone();
         if self.health_state.subscribers.insert(message.0) {
@@ -522,9 +524,8 @@ impl<A: Referable> Handler<resource::Stop> for ActorMeshController<A> {
         );
         let failure_message = MeshFailure {
             actor_mesh_name: Some(mesh_name.to_string()),
-            // Rank = none means it affects the whole mesh.
-            rank: None,
             event,
+            crashed_ranks: vec![],
         };
         self.health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
         // We don't send a message to the owner on stops, because only the owner
@@ -633,8 +634,8 @@ fn send_state_change(
 
     let failure_message = MeshFailure {
         actor_mesh_name: Some(mesh_name.to_string()),
-        rank: Some(rank),
         event: event.clone(),
+        crashed_ranks: vec![rank],
     };
     health_state.crashed_ranks.insert(rank, event.clone());
     health_state.unhealthy_event = Some(if is_proc_stopped {
