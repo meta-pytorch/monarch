@@ -1198,8 +1198,9 @@ impl MailboxClient {
             loop {
                 tokio::select! {
                     changed = rx.changed() => {
-                        if changed.is_err() || *rx.borrow() == TxStatus::Closed {
-                            tracing::warn!("connection to {} lost", addr);
+                        if changed.is_err() || rx.borrow().is_closed() {
+                            let reason = rx.borrow().as_closed().map(|r| r.to_string()).unwrap_or_else(|| "unknown".to_string());
+                            tracing::warn!("connection to {} lost: {}", addr, reason);
                             // TODO: Potential for supervision event
                             // interaction here.
                             break;
