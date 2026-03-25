@@ -303,6 +303,10 @@ pub enum TcpMode {
     strum::EnumString
 )]
 pub enum TlsMode {
+    /// Auto-detect TLS mode from TW container metadata.
+    /// If the container has IP-per-task networking, uses IpV6.
+    /// Otherwise, uses Hostname.
+    Auto,
     /// Use IpV6 address for TLS connections.
     IpV6,
     /// Use host domain name for TLS connections.
@@ -679,6 +683,10 @@ impl ChannelAddr {
                 };
                 Self::Tcp(SocketAddr::new(ip, 0))
             }
+            ChannelTransport::MetaTls(TlsMode::Auto) => {
+                let resolved = resolve_tls_mode();
+                return Self::any(ChannelTransport::MetaTls(resolved));
+            }
             ChannelTransport::MetaTls(mode) => {
                 let host_address = match mode {
                     TlsMode::Hostname => hostname::get()
@@ -688,6 +696,7 @@ impl ChannelAddr {
                     TlsMode::IpV6 => {
                         get_host_ipv6_address().expect("failed to retrieve ipv6 address")
                     }
+                    TlsMode::Auto => unreachable!(),
                 };
                 Self::MetaTls(TlsAddr::new(host_address, 0))
             }
@@ -737,6 +746,47 @@ fn get_host_ipv6_address() -> anyhow::Result<String> {
 #[cfg(not(fbcode_build))]
 fn get_host_ipv6_address() -> anyhow::Result<String> {
     Ok(local_ip_address::local_ipv6()?.to_string())
+}
+
+/// Resolve `TlsMode::Auto` into a concrete `TlsMode` by inspecting TW
+/// container metadata.
+///
+/// The heuristic: read `taskIp` from `/etc/tw/api/metadata.json` and
+/// check whether it falls in a Facebook SVC IP range (`2803:6080::/29`
+/// or `2a03:83e4:5000::/40`).  Only SVC-range containers get TLS
+/// certificates with IP SANs; all other containers get hostname-based
+/// certificates.
+#[cfg(fbcode_build)]
+fn resolve_tls_mode() -> TlsMode {
+    use crate::meta::host_ip::TwTaskIp;
+    use crate::meta::host_ip::is_facebook_svc;
+
+    match crate::meta::host_ip::tw_task_ip() {
+        TwTaskIp::Ip(v6) if is_facebook_svc(v6) => {
+            tracing::info!("Auto TLS: SVC IP-per-task container detected ({v6}), using IpV6 mode");
+            TlsMode::IpV6
+        }
+        TwTaskIp::Ip(v6) => {
+            tracing::info!(
+                "Auto TLS: non-SVC task IP ({v6}), using Hostname mode"
+            );
+            TlsMode::Hostname
+        }
+        TwTaskIp::NotTwTask => {
+            tracing::info!("Auto TLS: not a TW task, using Hostname mode");
+            TlsMode::Hostname
+        }
+        TwTaskIp::Error(msg) => {
+            tracing::warn!("Auto TLS: TW metadata error: {msg}, defaulting to Hostname");
+            TlsMode::Hostname
+        }
+    }
+}
+
+#[cfg(not(fbcode_build))]
+fn resolve_tls_mode() -> TlsMode {
+    tracing::info!("Auto TLS: non-fbcode build, using Hostname mode");
+    TlsMode::Hostname
 }
 
 impl fmt::Display for ChannelAddr {
@@ -871,11 +921,12 @@ impl ChannelAddr {
                 let (host, port) = Self::split_host_port(address)?;
 
                 if host == "*" {
-                    // Wildcard binding - use IPv6 unspecified address directly without hostname resolution
-                    Ok(Self::MetaTls(TlsAddr::new(
-                        std::net::Ipv6Addr::UNSPECIFIED.to_string(),
-                        port,
-                    )))
+                    // Wildcard binding - auto-detect TLS mode from container metadata
+                    let mut addr = Self::any(ChannelTransport::MetaTls(TlsMode::Auto));
+                    if let Self::MetaTls(ref mut tls_addr) = addr {
+                        tls_addr.port = port;
+                    }
+                    Ok(addr)
                 } else {
                     Ok(Self::MetaTls(TlsAddr::new(host, port)))
                 }
@@ -1221,11 +1272,17 @@ mod tests {
             ChannelAddr::MetaTls(TlsAddr::new("192.168.1.1", 443))
         );
 
-        // Test metatls with wildcard (should use IPv6 unspecified address)
-        assert_eq!(
-            ChannelAddr::from_zmq_url("metatls://*:8443").unwrap(),
-            ChannelAddr::MetaTls(TlsAddr::new("::", 8443))
-        );
+        // Test metatls with wildcard (auto-detects TLS mode from container metadata).
+        // On a devserver (not a TW task) this resolves to Hostname mode.
+        let wildcard_addr = ChannelAddr::from_zmq_url("metatls://*:8443").unwrap();
+        match &wildcard_addr {
+            ChannelAddr::MetaTls(tls_addr) => {
+                assert_eq!(tls_addr.port, 8443);
+                // On a devserver, hostname is used; on a TW task, IPv6 would be used.
+                assert!(!tls_addr.hostname.is_empty());
+            }
+            other => panic!("expected MetaTls, got {:?}", other),
+        }
 
         // Test TCP hostname resolution (should resolve hostname to IP)
         // Note: This test may fail in environments without proper DNS resolution

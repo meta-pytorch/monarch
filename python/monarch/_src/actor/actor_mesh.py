@@ -524,8 +524,9 @@ def enable_transport(transport: "ChannelTransport | str") -> None:
         resolved = {
             "tcp": ChannelTransport.TcpWithHostname,
             "ipc": ChannelTransport.Unix,
-            "metatls": ChannelTransport.MetaTlsWithIpV6,
+            "metatls": ChannelTransport.MetaTls,
             "metatls-hostname": ChannelTransport.MetaTlsWithHostname,
+            "metatls-ipv6": ChannelTransport.MetaTlsWithIpV6,
             "tls": ChannelTransport.Tls,
         }.get(transport)
         if resolved is not None:
