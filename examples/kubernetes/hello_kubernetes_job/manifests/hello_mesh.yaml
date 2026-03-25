@@ -72,13 +72,21 @@ spec:
           logging.basicConfig(level=logging.INFO)
           logger = logging.getLogger("monarch-worker")
           port = os.environ.get("MONARCH_PORT", "26600")
+          duplex = os.environ.get("MONARCH_DUPLEX_PORT")
           # Use FQDN for cross-pod DNS resolution
           hostname = socket.getfqdn()
           address = f"tcp://{hostname}:{port}"
+          if duplex:
+            duplex = f"tcp://0.0.0.0:{duplex}"
           logger.info(f"--- Starting Monarch Worker ---")
           logger.info(f"Identity: {hostname}")
           logger.info(f"Listening on: {address}")
-          run_worker_loop_forever(address=address, ca="trust_all_connections")
+          if duplex:
+            logger.info(f"Duplex listening on: {duplex}")
+          run_worker_loop_forever(address=address, ca="trust_all_connections", duplex_address=duplex)
+      env:
+      - name: MONARCH_DUPLEX_PORT
+        value: "34000"
 ---
 apiVersion: monarch.pytorch.org/v1alpha1
 kind: MonarchMesh
