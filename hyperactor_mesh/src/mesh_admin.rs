@@ -291,7 +291,8 @@ use crate::introspect::NodePayload;
 use crate::introspect::NodeProperties;
 use crate::introspect::to_node_payload;
 use crate::proc_agent::PROC_AGENT_ACTOR_NAME;
-use crate::proc_agent::PySpyDump;
+use crate::pyspy::PySpyDump;
+use crate::pyspy::PySpyOpts;
 use crate::pyspy::PySpyResult;
 
 /// Send an `IntrospectMessage` to an actor and receive the reply.
@@ -306,11 +307,13 @@ async fn query_introspect(
     let introspect_port =
         hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
     introspect_port.send(
         cx,
         IntrospectMessage::Query {
             view,
-            reply: reply_handle.bind(),
+            reply: reply_ref,
         },
     )?;
     tokio::time::timeout(timeout, reply_rx.recv())
@@ -330,11 +333,13 @@ async fn query_child_introspect(
     let introspect_port =
         hyperactor_reference::PortRef::<IntrospectMessage>::attest_message_port(actor_id);
     let (reply_handle, reply_rx) = open_once_port::<IntrospectResult>(cx);
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
     introspect_port.send(
         cx,
         IntrospectMessage::QueryChild {
             child_ref,
-            reply: reply_handle.bind(),
+            reply: reply_ref,
         },
     )?;
     tokio::time::timeout(timeout, reply_rx.recv())
@@ -1476,14 +1481,23 @@ pub fn build_openapi_spec() -> serde_json::Value {
             .expect("NodePayload schema must be serializable");
     let mut error_schema = serde_json::to_value(schemars::schema_for!(ApiErrorEnvelope))
         .expect("ApiErrorEnvelope schema must be serializable");
+    let mut pyspy_schema = serde_json::to_value(schemars::schema_for!(PySpyResult))
+        .expect("PySpyResult schema must be serializable");
 
     // Hoist $defs into a shared components/schemas map so
     // OpenAPI tools can resolve references.
     let mut shared_schemas = serde_json::Map::new();
     hoist_defs(&mut node_schema, &mut shared_schemas);
     hoist_defs(&mut error_schema, &mut shared_schemas);
+    hoist_defs(&mut pyspy_schema, &mut shared_schemas);
     shared_schemas.insert("NodePayload".into(), node_schema);
     shared_schemas.insert("ApiErrorEnvelope".into(), error_schema);
+    shared_schemas.insert("PySpyResult".into(), pyspy_schema);
+
+    // Rewrite any remaining $defs refs in the hoisted component schemas.
+    for value in shared_schemas.values_mut() {
+        rewrite_refs(value);
+    }
 
     let error_response = |desc: &str| -> serde_json::Value {
         serde_json::json!({
@@ -1626,6 +1640,34 @@ pub fn build_openapi_spec() -> serde_json::Value {
                         "504": error_response("Gateway timeout")
                     }
                 }
+            },
+            "/v1/pyspy/{proc_reference}": {
+                "get": {
+                    "summary": "Py-spy stack dump for a proc",
+                    "operationId": "getPyspy",
+                    "description": "Runs py-spy against the target process and returns structured stack traces. Routes to ProcAgent (worker procs) or HostAgent (service proc).",
+                    "parameters": [{
+                        "name": "proc_reference",
+                        "in": "path",
+                        "required": true,
+                        "description": "URL-encoded proc reference (ProcId)",
+                        "schema": { "type": "string" }
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "PySpyResult — one of Ok, BinaryNotFound, or Failed",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/PySpyResult" }
+                                }
+                            }
+                        },
+                        "400": error_response("Bad request (malformed proc reference)"),
+                        "404": error_response("Proc not found or handler not reachable"),
+                        "500": error_response("Internal error"),
+                        "504": error_response("Gateway timeout")
+                    }
+                }
             }
         },
         "components": {
@@ -1755,6 +1797,10 @@ async fn pyspy_bridge(
 
     let port = hyperactor_reference::PortRef::<PySpyDump>::attest_message_port(&agent_id);
     let (reply_handle, reply_rx) = open_once_port::<PySpyResult>(cx);
+    // Mark the reply port non-returnable. Same rationale as config_bridge:
+    // a timed-out admin client must not crash the observed actor.
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
     // Native frames are essential for diagnosing hangs in C
     // extensions and CUDA calls — the primary py-spy use case in
     // Monarch. These defaults match the old hyperactor_multiprocess
@@ -1762,11 +1808,13 @@ async fn pyspy_bridge(
     port.send(
         cx,
         PySpyDump {
-            threads: false,
-            native: true,
-            native_all: true,
-            nonblocking: false,
-            result: reply_handle.bind(),
+            opts: PySpyOpts {
+                threads: false,
+                native: true,
+                native_all: true,
+                nonblocking: false,
+            },
+            result: reply_ref,
         },
     )
     .map_err(|e| ApiError {
@@ -1819,59 +1867,52 @@ async fn config_bridge(
         proc_id.actor_id(PROC_AGENT_ACTOR_NAME, 0)
     };
 
-    // Defensive probe — verify the target actor is reachable.
+    // No preflight probe. The previous probe_actor() call used
+    // MESH_ADMIN_QUERY_CHILD_TIMEOUT (100ms) and mapped timeout to 404
+    // "not_found", which misclassifies a live but busy actor as absent.
+    // The ConfigDump send and its own bridge timeout handle both the
+    // absent and busy cases correctly.
     let cx = &state.bridge_cx;
-    if !probe_actor(cx, &agent_id).await? {
-        return Err(ApiError::not_found(
-            format!(
-                "proc {} does not have a reachable config handler (expected {} actor)",
-                proc_reference,
-                if proc_id.base_name() == SERVICE_PROC_NAME {
-                    HOST_MESH_AGENT_ACTOR_NAME
-                } else {
-                    PROC_AGENT_ACTOR_NAME
-                },
-            ),
-            None,
-        ));
-    }
 
     let port = hyperactor_reference::PortRef::<ConfigDump>::attest_message_port(&agent_id);
     let (reply_handle, reply_rx) = open_once_port::<ConfigDumpResult>(cx);
-    port.send(
-        cx,
-        ConfigDump {
-            result: reply_handle.bind(),
-        },
-    )
-    .map_err(|e| ApiError {
-        code: "internal_error".to_string(),
-        message: format!("failed to send ConfigDump: {}", e),
-        details: None,
-    })?;
+    // Mark the reply port non-returnable. If the bridge times out and
+    // drops the receiver, the late reply from HostAgent/ProcAgent is
+    // silently dropped instead of bouncing an Undeliverable back to
+    // the observed actor (which would crash it via the default fatal
+    // handle_undeliverable_message).
+    let mut reply_ref = reply_handle.bind();
+    reply_ref.return_undeliverable(false);
 
-    // Short timeout — config_entries() is instantaneous.
-    let wire_result = tokio::time::timeout(
-        hyperactor_config::global::get(crate::config::MESH_ADMIN_QUERY_CHILD_TIMEOUT),
-        reply_rx.recv(),
-    )
-    .await
-    .map_err(|_| {
-        tracing::warn!(
-            proc_reference = %proc_reference,
-            "mesh admin: config dump timed out (gateway_timeout)",
-        );
-        ApiError {
-            code: "gateway_timeout".to_string(),
-            message: format!("timed out waiting for config dump from {}", proc_reference),
+    port.send(cx, ConfigDump { result: reply_ref })
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to send ConfigDump: {}", e),
             details: None,
-        }
-    })?
-    .map_err(|e| ApiError {
-        code: "internal_error".to_string(),
-        message: format!("failed to receive ConfigDumpResult: {}", e),
-        details: None,
-    })?;
+        })?;
+
+    // Config dumps go through the actor message queue (not the introspection
+    // callback path). Use the dedicated bridge timeout.
+    let bridge_timeout =
+        hyperactor_config::global::get(crate::config::MESH_ADMIN_CONFIG_DUMP_BRIDGE_TIMEOUT);
+    let wire_result = tokio::time::timeout(bridge_timeout, reply_rx.recv())
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                proc_reference = %proc_reference,
+                "mesh admin: config dump timed out (gateway_timeout)",
+            );
+            ApiError {
+                code: "gateway_timeout".to_string(),
+                message: format!("timed out waiting for config dump from {}", proc_reference),
+                details: None,
+            }
+        })?
+        .map_err(|e| ApiError {
+            code: "internal_error".to_string(),
+            message: format!("failed to receive ConfigDumpResult: {}", e),
+            details: None,
+        })?;
 
     Ok(Json(wire_result))
 }
