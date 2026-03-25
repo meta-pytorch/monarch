@@ -1147,6 +1147,109 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     hosts.shutdown().get()
 
 
+@pytest.mark.timeout(60)
+def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
+    """Store a py-spy dump via actor endpoint, query it back via SQL."""
+    engine = start_telemetry(include_dashboard=False)
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 1234,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 1234,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 100,
+                        "active": True,
+                        "owns_gil": True,
+                        "frames": [
+                            {
+                                "name": "stalling_fn",
+                                "filename": "app.py",
+                                "module": "app",
+                                "short_filename": "app.py",
+                                "line": 10,
+                                "locals": [
+                                    {
+                                        "name": "x",
+                                        "addr": 100,
+                                        "arg": True,
+                                        "repr": "42",
+                                    },
+                                    {
+                                        "name": "y",
+                                        "addr": 200,
+                                        "arg": False,
+                                        "repr": None,
+                                    },
+                                ],
+                                "is_entry": False,
+                            },
+                            {
+                                "name": "main",
+                                "filename": "app.py",
+                                "module": "app",
+                                "short_filename": "app.py",
+                                "line": 5,
+                                "locals": [
+                                    {
+                                        "name": "z",
+                                        "addr": 300,
+                                        "arg": True,
+                                        "repr": "'hello'",
+                                    },
+                                ],
+                                "is_entry": True,
+                            },
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    engine._actor.store_pyspy_dump.call("dump-1", "proc[0]", pyspy_json).get()
+
+    result = engine.query(
+        "SELECT name, line FROM pyspy_frames "
+        "WHERE dump_id = 'dump-1' ORDER BY frame_depth"
+    )
+    result_dict = result.to_pydict()
+    assert len(result_dict["name"]) == 2
+    assert result_dict["name"] == ["stalling_fn", "main"]
+
+    # Query local variables
+    locals_result = engine.query(
+        "SELECT name, addr, arg, repr, frame_depth FROM pyspy_local_variables "
+        "WHERE dump_id = 'dump-1' ORDER BY frame_depth, name"
+    )
+    locals_dict = locals_result.to_pydict()
+    assert len(locals_dict["name"]) == 3
+    assert locals_dict["name"] == ["x", "y", "z"]
+    assert locals_dict["addr"] == [100, 200, 300]
+    assert locals_dict["arg"] == [True, False, True]
+    assert locals_dict["repr"] == ["42", None, "'hello'"]
+    assert locals_dict["frame_depth"] == [0, 0, 1]
+
+
+@pytest.mark.timeout(60)
+def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
+    """py-spy tables are visible in information_schema."""
+    engine = start_telemetry(include_dashboard=False)
+    result = engine.query(
+        "SELECT table_name FROM information_schema.tables ORDER BY table_name"
+    )
+    table_names = result.to_pydict().get("table_name", [])
+    assert "pyspy_dumps" in table_names
+    assert "pyspy_stack_traces" in table_names
+    assert "pyspy_frames" in table_names
+    assert "pyspy_local_variables" in table_names
+
+
 @pytest.mark.timeout(120)
 def test_per_table_row_retention(cleanup_callbacks) -> None:
     """Test that time-based retention deletes old rows from message tables."""
