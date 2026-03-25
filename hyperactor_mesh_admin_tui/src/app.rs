@@ -27,7 +27,6 @@ use tokio::sync::oneshot;
 
 use crate::ActiveJob;
 use crate::ActiveJobEvent;
-use crate::Args;
 use crate::ColorScheme;
 use crate::Cursor;
 use crate::FetchState;
@@ -1273,15 +1272,14 @@ async fn recv_active_job(job: &mut Option<ActiveJob>) -> ActiveJobEvent {
 /// each tick, and processes keyboard input until the user exits.
 pub(crate) async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    args: &Args,
+    refresh_ms: u64,
     mut app: App,
 ) -> io::Result<()> {
-    let mut refresh_interval = tokio::time::interval(Duration::from_millis(args.refresh_ms));
-    app.refresh_interval_label = if args.refresh_ms >= 1000 && args.refresh_ms.is_multiple_of(1000)
-    {
-        format!("{}s", args.refresh_ms / 1000)
+    let mut refresh_interval = tokio::time::interval(Duration::from_millis(refresh_ms));
+    app.refresh_interval_label = if refresh_ms >= 1000 && refresh_ms.is_multiple_of(1000) {
+        format!("{}s", refresh_ms / 1000)
     } else {
-        format!("{}ms", args.refresh_ms)
+        format!("{}ms", refresh_ms)
     };
     let mut events = EventStream::new();
 

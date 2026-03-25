@@ -6,7 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use clap::Parser;
 use clap::ValueEnum;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -16,7 +15,7 @@ use crate::model::NodeType;
 
 /// Selectable color theme.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub(crate) enum ThemeName {
+pub enum ThemeName {
     /// Nord — an arctic, north-bluish color palette.
     #[default]
     Nord,
@@ -35,7 +34,7 @@ impl std::fmt::Display for ThemeName {
 
 /// Selectable display language.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub(crate) enum LangName {
+pub enum LangName {
     /// English (default).
     #[default]
     En,
@@ -50,69 +49,6 @@ impl std::fmt::Display for LangName {
             LangName::Zh => write!(f, "zh"),
         }
     }
-}
-
-/// Command-line arguments for the admin TUI.
-#[derive(Debug, Parser)]
-#[command(name = "admin-tui", about = "TUI client for hyperactor admin API")]
-pub(crate) struct Args {
-    /// Admin server address.
-    ///
-    /// Accepts `host:port` (scheme auto-detected), an explicit URL
-    /// like `https://host:port`, or a MAST job handle like
-    /// `mast_conda:///<job-name>` (Meta-internal only).
-    #[arg(long, short)]
-    pub(crate) addr: String,
-
-    /// Admin port override for MAST job resolution. When not set,
-    /// reads from `MESH_ADMIN_ADDR` config.
-    #[arg(long)]
-    pub(crate) admin_port: Option<u16>,
-
-    /// MAST resolution strategy: "thrift" (default at Meta) or
-    /// "cli" (MR-1).
-    #[arg(long)]
-    pub(crate) mast_resolver: Option<String>,
-
-    /// Refresh interval in milliseconds
-    #[arg(long, default_value_t = 2000)]
-    pub(crate) refresh_ms: u64,
-
-    /// Color theme
-    #[arg(long, default_value_t = ThemeName::Nord, value_enum)]
-    pub(crate) theme: ThemeName,
-
-    /// Display language
-    #[arg(long, default_value_t = LangName::En, value_enum)]
-    pub(crate) lang: LangName,
-
-    /// Path to a PEM CA certificate for TLS server verification.
-    ///
-    /// On Meta infrastructure, `/var/facebook/rootcanal/ca.pem` is
-    /// auto-detected when present. OSS users should supply this
-    /// explicitly.
-    #[arg(long)]
-    pub(crate) tls_ca: Option<String>,
-
-    /// Path to a PEM client certificate for mutual TLS.
-    ///
-    /// On Meta infrastructure, the `THRIFT_TLS_CL_CERT_PATH` env var
-    /// is checked automatically. OSS users requiring mutual TLS
-    /// should supply both `--tls-cert` and `--tls-key`.
-    #[arg(long)]
-    pub(crate) tls_cert: Option<String>,
-
-    /// Path to a PEM client private key for mutual TLS.
-    #[arg(long)]
-    pub(crate) tls_key: Option<String>,
-
-    /// Run diagnostics and print a JSON report to stdout, then exit.
-    ///
-    /// Walks the full resolution graph (root → hosts → service proc
-    /// actors → user procs → user actors) and probes each node.
-    /// Exits 0 when all checks pass, 1 when any fail.
-    #[arg(long)]
-    pub(crate) diagnose: bool,
 }
 
 /// All user-visible text in the TUI.

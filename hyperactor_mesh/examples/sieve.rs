@@ -161,7 +161,7 @@ async fn main() -> Result<ExitCode> {
         mtls_flags, mesh_admin_url
     );
     println!(
-        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh --bin hyperactor_mesh_admin_tui -- --addr {}",
+        "  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {}\n                   cargo run -p hyperactor_mesh_admin_tui_lib --bin hyperactor_mesh_admin_tui -- --addr {}",
         mesh_admin_url, mesh_admin_url
     );
     println!();
