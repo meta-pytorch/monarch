@@ -174,7 +174,7 @@ def _get_worker_addr(scheduler: str, hostname: str) -> str:
 def _get_channel_transport(scheduler: str) -> ChannelTransport:
     """Get channel transport for the given scheduler."""
     if scheduler.startswith("mast"):
-        return ChannelTransport.MetaTlsWithHostname
+        return ChannelTransport.MetaTls
     else:
         return ChannelTransport.TcpWithHostname
 

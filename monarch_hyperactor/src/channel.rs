@@ -33,6 +33,7 @@ use pyo3::prelude::*;
 pub enum PyChannelTransport {
     TcpWithLocalhost,
     TcpWithHostname,
+    MetaTls,
     MetaTlsWithHostname,
     MetaTlsWithIpV6,
     Tls,
@@ -52,6 +53,7 @@ impl PyChannelTransport {
         let variant_name = match self {
             PyChannelTransport::TcpWithLocalhost => "TcpWithLocalhost",
             PyChannelTransport::TcpWithHostname => "TcpWithHostname",
+            PyChannelTransport::MetaTls => "MetaTls",
             PyChannelTransport::MetaTlsWithHostname => "MetaTlsWithHostname",
             PyChannelTransport::MetaTlsWithIpV6 => "MetaTlsWithIpV6",
             PyChannelTransport::Tls => "Tls",
@@ -73,6 +75,7 @@ impl TryFrom<ChannelTransport> for PyChannelTransport {
         match transport {
             ChannelTransport::Tcp(TcpMode::Localhost) => Ok(PyChannelTransport::TcpWithLocalhost),
             ChannelTransport::Tcp(TcpMode::Hostname) => Ok(PyChannelTransport::TcpWithHostname),
+            ChannelTransport::MetaTls(TlsMode::Auto) => Ok(PyChannelTransport::MetaTls),
             ChannelTransport::MetaTls(TlsMode::Hostname) => {
                 Ok(PyChannelTransport::MetaTlsWithHostname)
             }
@@ -214,6 +217,7 @@ impl PyChannelAddr {
                 TcpMode::Hostname => Ok(PyChannelTransport::TcpWithHostname),
             },
             ChannelTransport::MetaTls(mode) => match mode {
+                TlsMode::Auto => Ok(PyChannelTransport::MetaTls),
                 TlsMode::Hostname => Ok(PyChannelTransport::MetaTlsWithHostname),
                 TlsMode::IpV6 => Ok(PyChannelTransport::MetaTlsWithIpV6),
             },
@@ -229,6 +233,7 @@ impl From<PyChannelTransport> for ChannelTransport {
         match val {
             PyChannelTransport::TcpWithLocalhost => ChannelTransport::Tcp(TcpMode::Localhost),
             PyChannelTransport::TcpWithHostname => ChannelTransport::Tcp(TcpMode::Hostname),
+            PyChannelTransport::MetaTls => ChannelTransport::MetaTls(TlsMode::Auto),
             PyChannelTransport::MetaTlsWithHostname => ChannelTransport::MetaTls(TlsMode::Hostname),
             PyChannelTransport::MetaTlsWithIpV6 => ChannelTransport::MetaTls(TlsMode::IpV6),
             PyChannelTransport::Tls => ChannelTransport::Tls,
@@ -258,6 +263,7 @@ mod tests {
             PyChannelTransport::TcpWithLocalhost,
             PyChannelTransport::TcpWithHostname,
             PyChannelTransport::Unix,
+            PyChannelTransport::MetaTls,
             PyChannelTransport::MetaTlsWithHostname,
             PyChannelTransport::MetaTlsWithIpV6,
             PyChannelTransport::Tls,
