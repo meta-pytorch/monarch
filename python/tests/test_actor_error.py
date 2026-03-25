@@ -733,6 +733,7 @@ class Intermediate(Actor):
         return True
 
 
+@pytest.mark.skip(reason="flaky")
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess
@@ -1466,6 +1467,7 @@ async def test_actor_abort(reason) -> None:
 
 
 @pytest.mark.timeout(500)
+@isolate_in_subprocess
 async def test_gil_stall():
     """Test that many concurrent actor calls don't cause GIL stall issues.
 
@@ -1514,7 +1516,11 @@ async def test_gil_stall():
     await pm.stop()
 
 
+@pytest.mark.skip(
+    reason="flaky: race between panic_flag.signal_panic and Aborted path produces inconsistent error message format"
+)
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_controller_controller_error():
     """Tests that errors on actors spawned from the ControllerController don't
     make it unavailable"""

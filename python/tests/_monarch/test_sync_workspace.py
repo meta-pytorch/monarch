@@ -13,6 +13,7 @@ from pathlib import Path
 
 from monarch._src.job.process import ProcessJob
 from monarch.tools.config.workspace import Workspace
+from scoped_state import scoped_state
 
 
 class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
@@ -30,23 +31,26 @@ class TestSyncWorkspace(unittest.IsolatedAsyncioTestCase):
         remote_workspace_dir = remote_workspace_root / "torch"
         workspace = Workspace(dirs=[local_workspace_dir])
 
-        job = ProcessJob(
-            {"hosts": 1},
-            env={"WORKSPACE_DIR": str(remote_workspace_root)},
-        )
-        host = job.state(cached_path=None).hosts
+        with scoped_state(
+            ProcessJob(
+                {"hosts": 1},
+                env={"WORKSPACE_DIR": str(remote_workspace_root)},
+            ),
+            cached_path=None,
+        ) as state:
+            host = state.hosts
 
-        # local workspace dir is empty & remote workspace dir hasn't been primed yet
-        self.assertFalse(remote_workspace_dir.is_dir())
+            # local workspace dir is empty & remote workspace dir hasn't been primed yet
+            self.assertFalse(remote_workspace_dir.is_dir())
 
-        # create a README file locally and sync workspace
-        with open(local_workspace_dir / "README.md", mode="w") as f:
-            f.write("hello world")
+            # create a README file locally and sync workspace
+            with open(local_workspace_dir / "README.md", mode="w") as f:
+                f.write("hello world")
 
-        await host.sync_workspace(workspace)
+            await host.sync_workspace(workspace)
 
-        # validate README has been created remotely
-        with open(remote_workspace_dir / "README.md", mode="r") as f:
-            self.assertListEqual(["hello world"], f.readlines())
+            # validate README has been created remotely
+            with open(remote_workspace_dir / "README.md", mode="r") as f:
+                self.assertListEqual(["hello world"], f.readlines())
 
-        host.shutdown().get()
+            host.shutdown().get()
