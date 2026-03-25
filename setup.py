@@ -16,7 +16,7 @@ from setuptools import Command, setup
 from setuptools.command.build_ext import build_ext as _build_ext
 from setuptools.command.build_py import build_py
 from setuptools.extension import Extension
-from setuptools_rust import Binding, RustExtension
+from setuptools_rust import Binding, RustBin, RustExtension
 
 
 # Helper functions for finding paths on installed packages
@@ -347,6 +347,16 @@ rust_extensions.append(
         features=rust_features,
         args=[] if build_tensor_engine else ["--no-default-features"],
         rustc_flags=rust_link_flags,
+    )
+)
+
+# Mesh Admin TUI — standalone Rust binary bundled into the wheel so that
+# `pip install torchmonarch` places `monarch-tui` on PATH.
+rust_extensions.append(
+    RustBin(
+        {"hyperactor_mesh_admin_tui": "monarch-tui"},
+        path="hyperactor_mesh_admin_tui/Cargo.toml",
+        debug=False,
     )
 )
 

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'docs/**'
   pull_request:
   workflow_dispatch:
 
@@ -12,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy Documentation
+  build:
+    name: Build Documentation
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
       timeout: 120
@@ -75,8 +76,8 @@ jobs:
         cp -r docs/build/html ${RUNNER_ARTIFACT_DIR}/docs-html
 
   deploy:
-    needs: build-and-deploy
-    if: github.ref == 'refs/heads/main'
+    needs: build
+    if: startsWith(github.ref, 'refs/heads/docs/')
     permissions:
       pages: write
       id-token: write

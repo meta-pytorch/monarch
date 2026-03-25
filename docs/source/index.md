@@ -62,6 +62,7 @@ installation
 api/index
 rust-api
 actors
+admin-tui
 ```
 
 ## License

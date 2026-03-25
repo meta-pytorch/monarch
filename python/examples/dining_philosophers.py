@@ -24,7 +24,7 @@ Usage::
 
 Then, in another terminal::
 
-    buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr <addr>
+    buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr <addr>
 
 where ``<addr>`` is the address printed by the example.
 
@@ -177,7 +177,7 @@ async def async_main(
     print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print(
-        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
+        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
     if dashboard:
         dashboard_url = os.environ.get(

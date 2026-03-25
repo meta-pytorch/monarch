@@ -9,6 +9,7 @@ members = [
     "hyperactor_config_macros",
     "hyperactor_macros",
     "hyperactor_mesh",
+    "hyperactor_mesh_admin_tui",
     "hyperactor_mesh_macros",
     "typeuri",
     "typeuri_macros",
