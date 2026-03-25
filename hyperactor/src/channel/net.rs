@@ -314,6 +314,11 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             match result {
                 Ok(()) => {
                     // EOF — connection closed normally, reconnect.
+                    tracing::info!(
+                        dest = %dest,
+                        session_id = session_id.0,
+                        "send_connected returned EOF, reconnecting"
+                    );
                 }
                 Err(ref e) => {
                     if log_send_error(e, &dest, session_id.0, "simplex") {
@@ -1416,6 +1421,11 @@ pub(crate) mod tls {
                             .connect(server_name.clone(), stream)
                             .await
                             .map_err(|err| {
+                                tracing::info!(
+                                    dest = %self.dest(),
+                                    error = %err,
+                                    "TLS handshake failed"
+                                );
                                 ClientError::Connect(
                                     self.dest(),
                                     err,

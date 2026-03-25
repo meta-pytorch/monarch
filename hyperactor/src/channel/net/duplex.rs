@@ -309,17 +309,45 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                         };
 
                         let terminal = match &result {
-                            Ok(()) => false,
+                            Ok(()) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    "duplex recv_connected returned EOF, awaiting reconnect"
+                                );
+                                false
+                            }
                             Err(Either::Send(session::SendLoopError::Io(err))) => {
                                 tracing::info!(
                                     session_id = session_id.0,
                                     error = %err,
-                                    "duplex send/recv error",
+                                    "duplex send error (recoverable)",
                                 );
                                 false
                             }
-                            Err(Either::Recv(session::RecvLoopError::Io(_))) => false,
-                            _ => true,
+                            Err(Either::Recv(session::RecvLoopError::Io(err))) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %err,
+                                    "duplex recv error (recoverable)",
+                                );
+                                false
+                            }
+                            Err(Either::Send(e)) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %e,
+                                    "duplex send terminal error"
+                                );
+                                true
+                            }
+                            Err(Either::Recv(e)) => {
+                                tracing::info!(
+                                    session_id = session_id.0,
+                                    error = %e,
+                                    "duplex recv terminal error"
+                                );
+                                true
+                            }
                         };
                         session = connected.release();
                         if terminal {
@@ -401,7 +429,14 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             };
 
             let terminal = match &result {
-                Ok(()) => false, // EOF — reconnect
+                Ok(()) => {
+                    tracing::info!(
+                        dest = %dest,
+                        session_id = session_id.0,
+                        "duplex send_connected returned EOF, reconnecting"
+                    );
+                    false
+                }
                 Err(Either::Send(e)) => log_send_error(e, &dest, session_id.0, "duplex"),
                 Err(Either::Recv(session::RecvLoopError::Io(err))) => {
                     tracing::info!(
@@ -409,7 +444,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                         session_id = session_id.0,
                         error = %err,
                         mode = "duplex",
-                        "recv error",
+                        "recv error (recoverable)",
                     );
                     metrics::CHANNEL_ERRORS.add(
                         1,
@@ -422,7 +457,15 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
                     );
                     false
                 }
-                _ => true, // terminal
+                Err(Either::Recv(e)) => {
+                    tracing::info!(
+                        dest = %dest,
+                        session_id = session_id.0,
+                        error = %e,
+                        "duplex recv terminal error"
+                    );
+                    true
+                }
             };
             session = connected.release();
             if terminal {
