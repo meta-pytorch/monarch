@@ -1244,6 +1244,192 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
+    """try_store_pyspy_dump routes to the correct child proc via _proc_id_index."""
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="pyspy_route_procs")
+    workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
+    workers.initialized.get()
+
+    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+
+    # Discover child proc_ids by querying ProcAgent actors from the actors table.
+    # ProcAgent full_name = "{proc_id},proc_agent[0]"
+    proc_agents = engine.query(
+        "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
+    )
+    child_proc_refs = [
+        row.rsplit(",proc_agent[0]", 1)[0]
+        for row in proc_agents.to_pydict()["full_name"]
+        if row.rsplit(",proc_agent[0]", 1)[0] != coordinator_proc_id
+    ]
+    assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
+    child_proc_ref = child_proc_refs[0]
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 9999,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 9999,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 200,
+                        "active": True,
+                        "owns_gil": True,
+                        "frames": [
+                            {
+                                "name": "child_fn",
+                                "filename": "child.py",
+                                "module": "child",
+                                "short_filename": "child.py",
+                                "line": 42,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    # Store a pyspy dump targeting the child proc_ref.
+    # Use 'try_store_pyspy_dump' to avoid fallback to root coordinator.
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "child-dump-1", child_proc_ref, pyspy_json
+    ).get()
+    assert result
+
+    # The dump should be queryable via distributed scan.
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["child_fn"]
+    assert frames_dict["line"] == [42]
+
+    # Verify the dump's proc_ref is stored correctly.
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores on root coordinator when proc_ref matches no child."""
+    engine = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 2}, name="pyspy_fallback_procs"
+    )
+    workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Trigger child spawning.
+    engine.query("SELECT COUNT(*) AS cnt FROM actors")
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 7777,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 7777,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 300,
+                        "active": True,
+                        "owns_gil": False,
+                        "frames": [
+                            {
+                                "name": "orphan_fn",
+                                "filename": "orphan.py",
+                                "module": "orphan",
+                                "short_filename": "orphan.py",
+                                "line": 99,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    # Store with a proc_ref that doesn't exist in the tree.
+    result = engine._actor.store_pyspy_dump.call_one(
+        "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
+    ).get()
+    assert result
+
+    # The dump should be queryable (stored on root).
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["orphan_fn"]
+    assert frames_dict["line"] == [99]
+
+    # Verify proc_ref is preserved even though it didn't match any proc.
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(60)
+def test_store_pyspy_dump_returns_true(cleanup_callbacks) -> None:
+    """try_store_pyspy_dump returns True for match and False for unknown proc."""
+    engine = start_telemetry(include_dashboard=False)
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 1,
+                "binary": "python3",
+                "stack_traces": [],
+                "warnings": [],
+            }
+        }
+    )
+
+    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "ret-local", coordinator_proc_id, pyspy_json
+    ).get()
+    assert result
+
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "ret-unknown", "does.not.exist[0]", pyspy_json
+    ).get()
+    assert not result
+
+    result = engine._actor.store_pyspy_dump.call_one(
+        "ret-unknown", "does.not.exist[0]", pyspy_json
+    ).get()
+    assert result
+
+
+@pytest.mark.timeout(120)
 def test_per_table_row_retention(cleanup_callbacks) -> None:
     """Test that time-based retention deletes old rows from message tables."""
     import time

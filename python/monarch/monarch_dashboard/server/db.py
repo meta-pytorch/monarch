@@ -48,6 +48,12 @@ class DBAdapter(ABC):
         rows = self.query(sql)
         return rows[0] if rows else None
 
+    def store_pyspy_dump(  # noqa: B027
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> None:
+        """Store a py-spy dump result. No-op by default."""
+        pass
+
 
 # ---------------------------------------------------------------------------
 # SQLite adapter — local dev/testing
@@ -109,6 +115,16 @@ def _get_adapter() -> DBAdapter:
     if _adapter is None:
         raise RuntimeError("db.init() or db.set_adapter() must be called first")
     return _adapter
+
+
+def raw_query(sql: str) -> list[dict[str, Any]]:
+    """Execute a raw SQL query (no placeholder substitution)."""
+    return _get_adapter().query(sql)
+
+
+def store_pyspy_dump(dump_id: str, proc_ref: str, pyspy_result_json: str) -> None:
+    """Store a py-spy dump result via the current adapter."""
+    _get_adapter().store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
 
 
 def _sql_literal(value: Any) -> str:

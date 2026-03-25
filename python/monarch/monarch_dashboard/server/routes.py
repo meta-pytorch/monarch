@@ -201,3 +201,47 @@ def list_sent_messages():
     """List sent messages.  Optional: ?sender_actor_id=1"""
     sender_id = request.args.get("sender_actor_id", type=int)
     return jsonify(_sanitize_for_js(db.list_sent_messages(sender_id)))
+
+
+# ---------------------------------------------------------------------------
+# SQL query
+# ---------------------------------------------------------------------------
+
+
+@api.route("/query", methods=["POST"])
+def query():
+    """Execute an arbitrary SQL query against the DataFusion engine."""
+    data = request.get_json()
+    if not data or "sql" not in data:
+        return jsonify({"error": "missing 'sql' in request body"}), 400
+    sql = data["sql"]
+    try:
+        rows = db.raw_query(sql)
+        return jsonify({"rows": rows})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+# ---------------------------------------------------------------------------
+# Py-spy dump storage
+# ---------------------------------------------------------------------------
+
+
+@api.route("/pyspy_dump", methods=["POST"])
+def pyspy_dump():
+    """Store a py-spy dump result in the DataFusion pyspy tables."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "missing request body"}), 400
+    dump_id = data.get("dump_id")
+    proc_ref = data.get("proc_ref")
+    pyspy_result_json = data.get("pyspy_result_json")
+    if not all([dump_id, proc_ref, pyspy_result_json]):
+        return jsonify(
+            {"error": "missing dump_id, proc_ref, or pyspy_result_json"}
+        ), 400
+    try:
+        db.store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
+        return jsonify({"status": "ok"})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
