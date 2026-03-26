@@ -421,7 +421,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 mesh_id: host_mesh_id,
                 rank: 0,
                 full_name: host_agent_id.to_string(),
-                display_name: None,
+                display_name: Some("Host Unit Rank 0".into()),
             });
 
             let proc_name_str = proc_mesh.name().to_string();
@@ -444,7 +444,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 mesh_id: proc_mesh_id,
                 rank: 0,
                 full_name: proc_agent_id.to_string(),
-                display_name: None,
+                display_name: Some("Proc Unit Rank 0".into()),
             });
 
             let client_mesh_name = format!("{}/client", proc_mesh.name());

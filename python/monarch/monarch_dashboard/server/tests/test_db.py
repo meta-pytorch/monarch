@@ -145,6 +145,7 @@ class GetActorTest(_DbTestBase):
             "mesh_id",
             "rank",
             "full_name",
+            "display_name",
         }
         self.assertTrue(expected_keys.issubset(set(actor.keys())))
 

@@ -112,6 +112,7 @@ export interface Summary {
     failed_actors: Array<{
       actor_id: EntityId;
       full_name: string;
+      display_name?: string | null;
       reason: string | null;
       timestamp_us: number;
       mesh_id: EntityId;
@@ -119,6 +120,7 @@ export interface Summary {
     stopped_actors: Array<{
       actor_id: EntityId;
       full_name: string;
+      display_name?: string | null;
       reason: string | null;
       timestamp_us: number;
       mesh_id: EntityId;

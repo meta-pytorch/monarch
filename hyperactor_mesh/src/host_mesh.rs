@@ -287,7 +287,7 @@ impl HostMesh {
                 mesh_id: mesh_id_hash,
                 rank: rank as u64,
                 full_name: actor.actor_id().to_string(),
-                display_name: None,
+                display_name: Some(format!("Host Unit Rank {rank}")),
             });
         }
     }

@@ -114,7 +114,7 @@ export function DagView() {
 
   const handleNodeHover = useCallback((node: DagNode | null) => {
     if (!node) { setTooltip(null); return; }
-    setTooltip({ node, x: node.x, y: node.y - node.radius - 14 });
+    setTooltip({ node, x: node.x, y: node.y + node.radius + 10 });
   }, []);
 
   if (loading) return <div className="loading-state">Loading DAG data...</div>;
@@ -159,12 +159,6 @@ export function DagView() {
             ))}
           </g>
         </svg>
-        {tooltip && !selectedNode && (
-          <div className="dag-tooltip" style={{ left: `${((tooltip.x - viewBox.x) / viewBox.w) * 100}%`, top: `${((tooltip.y - viewBox.y) / viewBox.h) * 100}%` }}>
-            <div className="dag-tooltip-name">{tooltip.node.label}</div>
-            <div className="dag-tooltip-info">{tooltip.node.subtitle} &middot; {tooltip.node.status}</div>
-          </div>
-        )}
         <DagLegend />
       </div>
       {selectedNode && <NodeDetail node={selectedNode} onClose={() => setSelectedNode(null)} />}
