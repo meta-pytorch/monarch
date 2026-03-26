@@ -244,14 +244,13 @@ impl ProcMesh {
             let now = std::time::SystemTime::now();
             for rank in current_ref.ranks.iter() {
                 let actor_id = rank.agent.actor_id();
-
                 hyperactor_telemetry::notify_actor_created(hyperactor_telemetry::ActorEvent {
                     id: hyperactor_telemetry::hash_to_u64(actor_id),
                     timestamp: now,
                     mesh_id: mesh_id_hash,
                     rank: rank.create_rank as u64,
                     full_name: actor_id.to_string(),
-                    display_name: None,
+                    display_name: Some(format!("Proc Unit Rank {}", rank.create_rank)),
                 });
             }
         }

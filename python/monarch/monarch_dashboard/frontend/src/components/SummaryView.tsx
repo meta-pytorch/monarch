@@ -99,7 +99,7 @@ function ActorErrorGroup({
       {actors.map((a) => (
         <div key={a.actor_id} className="summary-error-item">
           <div className="summary-error-name">
-            {a.full_name.split("/").pop()}
+            {a.display_name ?? a.full_name.split("/").pop()}
           </div>
           <div className="summary-error-detail">
             <span className="summary-error-reason-wrap">
@@ -237,8 +237,8 @@ function TimelineBar({
   const duration = timeline.end_us - timeline.start_us;
 
   // Collect error events with their position on the timeline.
-  const toNotch = (a: { full_name: string; timestamp_us: number }, status: string) => {
-    const name = a.full_name.split("/").pop() ?? "actor";
+  const toNotch = (a: { full_name: string; display_name?: string | null; timestamp_us: number }, status: string) => {
+    const name = a.display_name ?? a.full_name.split("/").pop() ?? "actor";
     return {
       pct: ((a.timestamp_us - timeline.start_us) / duration) * 100,
       status,

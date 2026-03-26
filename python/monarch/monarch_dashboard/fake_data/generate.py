@@ -266,6 +266,7 @@ def _generate_hierarchy() -> tuple[
                 "mesh_id": host_mesh_id,
                 "rank": 0,
                 "full_name": hma_full,
+                "display_name": f"Host Unit Rank {h_idx}",
             }
         )
         actor_to_host_mesh[hma_id] = host_mesh_id
@@ -310,6 +311,7 @@ def _generate_hierarchy() -> tuple[
                     "mesh_id": proc_mesh_id,
                     "rank": 0,
                     "full_name": pma_full,
+                    "display_name": f"Proc Unit Rank {pm_idx}",
                 }
             )
             actor_to_host_mesh[pma_id] = host_mesh_id
@@ -357,6 +359,7 @@ def _generate_hierarchy() -> tuple[
                             "mesh_id": actor_mesh_id,
                             "rank": rank,
                             "full_name": actor_full,
+                            "display_name": None,
                         }
                     )
                     actor_to_host_mesh[aid] = host_mesh_id

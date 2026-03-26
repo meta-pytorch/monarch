@@ -545,9 +545,10 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"host_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "host_unit",
-                    "label": _leaf_name(agent["full_name"]),
+                    "label": agent.get("display_name") or _leaf_name(agent["full_name"]),
                     "subtitle": "Host",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -570,9 +571,10 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"proc_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "proc_unit",
-                    "label": _leaf_name(agent["full_name"]),
+                    "label": agent.get("display_name") or _leaf_name(agent["full_name"]),
                     "subtitle": "Proc",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -597,6 +599,7 @@ def get_dag_data() -> dict[str, Any]:
                 "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
                 "status": actor_statuses.get(a["id"], "unknown"),
+                "rank": a["rank"],
             }
         )
 
@@ -778,7 +781,7 @@ def get_summary() -> dict[str, Any]:
     # -- Error details --
     # Use LOWER() so both fake data ("failed") and real telemetry ("Failed") match.
     _error_actor_sql = (
-        "SELECT ase.actor_id, a.full_name, ase.reason, ase.timestamp_us, a.mesh_id"
+        "SELECT ase.actor_id, a.full_name, a.display_name, ase.reason, ase.timestamp_us, a.mesh_id"
         " FROM actor_status_events ase"
         " JOIN actors a ON ase.actor_id = a.id"
         f" INNER JOIN ({_LATEST_ACTOR_STATUS_SQL}) latest"
