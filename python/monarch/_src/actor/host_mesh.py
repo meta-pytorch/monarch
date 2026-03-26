@@ -89,6 +89,7 @@ class HostMesh(MeshTrait):
         self._is_fake_in_process = is_fake_in_process
         self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
         self._pending_spawns: list[Shared[HyProcMesh]] = []
+        self._proc_meshes: list["ProcMesh"] = []
 
     @classmethod
     def _allocate_nonblocking(
@@ -227,7 +228,7 @@ class HostMesh(MeshTrait):
         spawn_shared = PythonTask.from_coroutine(task()).spawn()
         self._pending_spawns.append(spawn_shared)
 
-        return ProcMesh.from_host_mesh(
+        pm = ProcMesh.from_host_mesh(
             self,
             spawn_shared,
             Extent(
@@ -237,6 +238,8 @@ class HostMesh(MeshTrait):
             setup,
             _attach_controller_controller,
         )
+        self._proc_meshes.append(pm)
+        return pm
 
     @property
     def _ndslice(self) -> NDSlice:
@@ -370,6 +373,8 @@ class HostMesh(MeshTrait):
             except Exception:
                 pass
         self._pending_spawns.clear()
+        for pm in self._proc_meshes:
+            await pm._flush_pending_actor_spawns()
 
     def shutdown(self) -> Future[None]:
         """
