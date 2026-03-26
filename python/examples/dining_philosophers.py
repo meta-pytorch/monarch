@@ -159,7 +159,10 @@ async def async_main(
     kill_waiter_after: float | None = None,
 ) -> None:
     if dashboard:
-        start_telemetry(include_dashboard=True, dashboard_port=dashboard_port)
+        _, telemetry_url = start_telemetry(
+            include_dashboard=True, dashboard_port=dashboard_port
+        )
+        print(f"  - Dashboard:     {telemetry_url}")
 
     host = this_host()
 
@@ -179,11 +182,6 @@ async def async_main(
     print(
         f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
-    if dashboard:
-        dashboard_url = os.environ.get(
-            "MONARCH_DASHBOARD_URL", f"http://localhost:{dashboard_port}"
-        )
-        print(f"  - Dashboard:     {dashboard_url}")
     print("\nPress Ctrl+C to stop.\n", flush=True)
 
     # Spawn philosopher processes and actors.

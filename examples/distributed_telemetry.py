@@ -471,7 +471,7 @@ def run_workload(job, summary=False, interactive=False):
     print("=" * 50)
     print()
 
-    engine = start_telemetry()
+    engine, _ = start_telemetry()
 
     hosts = job.state(cached_path=None).hosts
 

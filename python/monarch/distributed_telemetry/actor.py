@@ -21,7 +21,6 @@ variable and used by the DistributedTelemetryActor when it initializes.
 
 import functools
 import logging
-import os
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
@@ -342,9 +341,9 @@ def start_telemetry(
     retention_secs: int = 600,
     include_dashboard: bool = True,
     dashboard_port: int = 8265,
-) -> QueryEngine:
+) -> "tuple[QueryEngine, str | None]":
     """
-    Start the distributed telemetry system and return a QueryEngine.
+    Start the distributed telemetry system.
 
     Message tables (sent_messages, messages, message_status_events) retain
     only the last ``retention_secs`` seconds of data (default 10 minutes).
@@ -358,21 +357,24 @@ def start_telemetry(
         dashboard_port: Preferred port for the dashboard (default 8265).
 
     Returns:
-        The QueryEngine for executing SQL queries.
+        A tuple of (QueryEngine, telemetry_url). ``telemetry_url`` is the
+        base URL of the dashboard server (e.g. ``"http://localhost:8265"``)
+        when ``include_dashboard`` is True, otherwise None. Pass it to
+        ``host_mesh._spawn_admin(telemetry_url=...)`` to enable proxy routes.
     """
     _register_scanner(batch_size, retention_secs=retention_secs)
     coordinator = this_proc().spawn("telemetry_coordinator", DistributedTelemetryActor)
     query_engine = QueryEngine(coordinator)
 
+    telemetry_url: str | None = None
     if include_dashboard:
         adapter = QueryEngineAdapter(query_engine)
         info = start_dashboard(
             adapter=adapter,
             port=dashboard_port,
         )
-        dashboard_url = info["url"]
-        os.environ["MONARCH_DASHBOARD_URL"] = dashboard_url
-        logger.info("Monarch Dashboard: %s", dashboard_url)
-        print(f"Monarch Dashboard: {dashboard_url}", flush=True)
+        telemetry_url = info["url"]
+        logger.info("Monarch Dashboard: %s", telemetry_url)
+        print(f"Monarch Dashboard: {telemetry_url}", flush=True)
 
-    return query_engine
+    return query_engine, telemetry_url
