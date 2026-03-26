@@ -726,9 +726,12 @@ fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
         Some(ProcStatus::Stopped { exit_code: 0, .. }) => {
             ActorStatus::Stopped("process exited cleanly".to_string())
         }
-        Some(ProcStatus::Stopped { exit_code, .. }) => ActorStatus::Failed(
-            ActorErrorKind::Generic(format!("process exited with non-zero code {}", exit_code)),
-        ),
+        Some(ProcStatus::Stopped { exit_code, .. }) => {
+            ActorStatus::Failed(ActorErrorKind::Generic(format!(
+                "the process this actor was running on exited with non-zero code {}",
+                exit_code
+            )))
+        }
         // Stopping is a transient state during graceful shutdown. Treat it the
         // same as a clean stop rather than a failure.
         Some(ProcStatus::Stopping { .. }) => {
@@ -737,7 +740,7 @@ fn proc_status_to_actor_status(proc_status: Option<ProcStatus>) -> ActorStatus {
         // Conservatively treat lack of status as stopped
         None => ActorStatus::Stopped("no status received from process".to_string()),
         Some(status) => ActorStatus::Failed(ActorErrorKind::Generic(format!(
-            "process failure: {}",
+            "the process this actor was running on failed: {}",
             status
         ))),
     }
@@ -878,7 +881,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                         // Attribute this to the monitored actor, even if the underlying
                         // cause is a proc_failure. We propagate the cause explicitly.
                         mesh.get(point.rank()).unwrap().actor_id().clone(),
-                        Some(format!("{} was running on a process which", display_name)),
+                        Some(display_name),
                         actor_status,
                         None,
                     ),

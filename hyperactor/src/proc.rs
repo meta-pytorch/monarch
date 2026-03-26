@@ -3903,7 +3903,7 @@ mod tests {
         assert_eq!(event.actor_id, actor_id);
         assert!(event.actor_status.is_failed());
         // Originated here, not propagated.
-        assert_eq!(event.actually_failing_actor().actor_id, actor_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, actor_id);
     }
 
     // Exercises FI-2 (see introspect.rs module-scope comment).
@@ -4024,7 +4024,7 @@ mod tests {
         );
         let event = event.unwrap();
         // Root cause is the child, not the parent.
-        assert_eq!(event.actually_failing_actor().actor_id, child_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, child_id);
     }
 
     // Exercises S11 (see introspect.rs module doc).
