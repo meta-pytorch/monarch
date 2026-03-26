@@ -333,6 +333,7 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
     async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
         time.sleep(15)
