@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["export","forward","instrument","instrument_infallible","observe_async","observe_result"],"derive":["Bind","HandleClient","Handler","RefClient","Unbind"],"macro":["behavior"]};

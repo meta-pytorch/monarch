@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="A monoid: a semigroup with an identity element."><title>Monoid in algebra - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="algebra" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.0-nightly (02c7b1a7a 2025-09-13)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc trait"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Monoid</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../algebra/index.html">algebra</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Monoid</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#example" title="Example">Example</a></li></ul><h3><a href="#required-methods">Required Methods</a></h3><ul class="block"><li><a href="#tymethod.empty" title="empty">empty</a></li></ul><h3><a href="#provided-methods">Provided Methods</a></h3><ul class="block"><li><a href="#method.concat" title="concat">concat</a></li></ul><h3><a href="#dyn-compatibility">Dyn Compatibility</a></h3><h3><a href="#implementors">Implementors</a></h3></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate algebra</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">algebra</a></div><h1>Trait <span class="trait">Monoid</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/algebra/lib.rs.html#200-212">Source</a> </span></div><pre class="rust item-decl"><code>pub trait Monoid: <a class="trait" href="trait.Semigroup.html" title="trait algebra::Semigroup">Semigroup</a> {
+    // Required method
+    fn <a href="#tymethod.empty" class="fn">empty</a>() -&gt; Self;
+
+    // Provided method
+    fn <a href="#method.concat" class="fn">concat</a>&lt;I&gt;(iter: I) -&gt; Self
+       <span class="where">where I: <a class="trait" href="https://doc.rust-lang.org/nightly/core/iter/traits/collect/trait.IntoIterator.html" title="trait core::iter::traits::collect::IntoIterator">IntoIterator</a>&lt;Item = Self&gt;</span> { ... }
+}</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>A <strong>monoid</strong>: a semigroup with an identity element.</p>
+<p>Laws (not enforced by type system):</p>
+<ul>
+<li><strong>Associative</strong>:
+<code>a.combine(b).combine(c) == a.combine(b.combine(c))</code></li>
+<li><strong>Left identity</strong>: <code>empty().combine(a) == a</code></li>
+<li><strong>Right identity</strong>: <code>a.combine(empty()) == a</code></li>
+</ul>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>algebra::Monoid;
+<span class="kw">use </span>algebra::Semigroup;
+
+<span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+</span><span class="kw">struct </span>Product(i32);
+
+<span class="kw">impl </span>Semigroup <span class="kw">for </span>Product {
+    <span class="kw">fn </span>combine(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; <span class="self">Self </span>{
+        Product(<span class="self">self</span>.<span class="number">0 </span>* other.<span class="number">0</span>)
+    }
+}
+
+<span class="kw">impl </span>Monoid <span class="kw">for </span>Product {
+    <span class="kw">fn </span>empty() -&gt; <span class="self">Self </span>{
+        Product(<span class="number">1</span>)
+    }
+}
+
+<span class="kw">let </span>x = Product(<span class="number">3</span>);
+<span class="kw">let </span>y = Product(<span class="number">5</span>);
+<span class="macro">assert_eq!</span>(x.combine(<span class="kw-2">&amp;</span>y), Product(<span class="number">15</span>));
+<span class="macro">assert_eq!</span>(Product::empty().combine(<span class="kw-2">&amp;</span>x), x);
+<span class="macro">assert_eq!</span>(x.combine(<span class="kw-2">&amp;</span>Product::empty()), x);</code></pre></div></div></details><h2 id="required-methods" class="section-header">Required Methods<a href="#required-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="tymethod.empty" class="method"><a class="src rightside" href="../src/algebra/lib.rs.html#202">Source</a><h4 class="code-header">fn <a href="#tymethod.empty" class="fn">empty</a>() -&gt; Self</h4></section></summary><div class="docblock"><p>The identity element.</p>
+</div></details></div><h2 id="provided-methods" class="section-header">Provided Methods<a href="#provided-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="method.concat" class="method"><a class="src rightside" href="../src/algebra/lib.rs.html#205-211">Source</a><h4 class="code-header">fn <a href="#method.concat" class="fn">concat</a>&lt;I&gt;(iter: I) -&gt; Self<div class="where">where
+    I: <a class="trait" href="https://doc.rust-lang.org/nightly/core/iter/traits/collect/trait.IntoIterator.html" title="trait core::iter::traits::collect::IntoIterator">IntoIterator</a>&lt;Item = Self&gt;,</div></h4></section></summary><div class="docblock"><p>Fold an iterator using combine, starting from empty.</p>
+</div></details></div><h2 id="dyn-compatibility" class="section-header">Dyn Compatibility<a href="#dyn-compatibility" class="anchor">§</a></h2><div class="dyn-compatibility-info"><p>This trait is <b>not</b> <a href="https://doc.rust-lang.org/nightly/reference/items/traits.html#dyn-compatibility">dyn compatible</a>.</p><p><i>In older versions of Rust, dyn compatibility was called "object safety", so this trait is not object safe.</i></p></div><h2 id="implementors" class="section-header">Implementors<a href="#implementors" class="anchor">§</a></h2><div id="implementors-list"><section id="impl-Monoid-for-T" class="impl"><a class="src rightside" href="../src/algebra/lib.rs.html#539-550">Source</a><a href="#impl-Monoid-for-T" class="anchor">§</a><h3 class="code-header">impl&lt;T: <a class="trait" href="trait.BoundedJoinSemilattice.html" title="trait algebra::BoundedJoinSemilattice">BoundedJoinSemilattice</a>&gt; <a class="trait" href="trait.Monoid.html" title="trait algebra::Monoid">Monoid</a> for T</h3></section></div><script src="../trait.impl/algebra/trait.Monoid.js" async></script></section></div></main></body></html>

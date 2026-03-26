@@ -1,0 +1,1261 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Host & agents (control plane & mux)" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-mesh-book/src/meshes/host-and-agents.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="In the runtime, a host is the thing that owns “all the procs on this machine” and gives them a single front door. The Rust type looks like this: Visually, you can think of it like this:* is the hos..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="In the runtime, a host is the thing that owns “all the procs on this machine” and gives them a single front door. The Rust type looks like this: Visually, you can think of it like this:* is the hos..." />
+
+    <title>Host &amp; agents (control plane &amp; mux) &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/host-and-agents';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/host-and-agents.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Host &amp;...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="Host &amp; agents (control plane &amp; mux)">
+        <meta itemprop="position" content="1">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="host-agents-control-plane-mux">
+<h1>Host &amp; agents (control plane &amp; mux)<a class="headerlink" href="#host-agents-control-plane-mux" title="Link to this heading">#</a></h1>
+<p>In the runtime, a <strong>host</strong> is the thing that owns “all the procs on this machine” <em>and</em> gives them a single front door. The Rust type looks like this:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor/src/host.rs</span>
+
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">Host</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">procs</span><span class="p">:</span><span class="w"> </span><span class="nc">HashSet</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">frontend_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="p">,</span>
+<span class="w">    </span><span class="n">backend_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="p">,</span>
+<span class="w">    </span><span class="n">router</span><span class="p">:</span><span class="w"> </span><span class="nc">DialMailboxRouter</span><span class="p">,</span>
+<span class="w">    </span><span class="n">manager</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">,</span>
+<span class="w">    </span><span class="n">service_proc</span><span class="p">:</span><span class="w"> </span><span class="nc">Proc</span><span class="p">,</span>
+<span class="w">    </span><span class="n">local_proc</span><span class="p">:</span><span class="w"> </span><span class="nc">Proc</span><span class="p">,</span>
+<span class="w">    </span><span class="n">frontend_rx</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">ChannelRx</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Visually, you can think of it like this:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>                      ┌────────────┐
+                  ┌───▶  proc *,1  │
+                  │ #1└────────────┘
+                  │
+  ┌──────────┐    │   ┌────────────┐
+  │   Host   │◀───┼───▶  proc *,2  │
+ *└──────────┘#   │ #2└────────────┘
+                  │
+                  │   ┌────────────┐
+                  └───▶  proc *,3  │
+                    #3└────────────┘
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">*</span></code> is the host’s frontend address (<code class="docutils literal notranslate"><span class="pre">frontend_addr</span></code>). This is the address other mesh participants know.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">#</span></code> is the host’s backend address (<code class="docutils literal notranslate"><span class="pre">backend_addr</span></code>). Procs talk to the host here.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">#1</span></code>, <code class="docutils literal notranslate"><span class="pre">#2</span></code>, <code class="docutils literal notranslate"><span class="pre">#3</span></code> are the per-proc backend channels the host records in <code class="docutils literal notranslate"><span class="pre">router:</span> <span class="pre">DialMailboxRouter</span></code></p></li>
+<li><p>Each box <code class="docutils literal notranslate"><span class="pre">proc</span> <span class="pre">*,N</span></code> is a proc that is direct-addressed via the host — its id is essentially “proc at <code class="docutils literal notranslate"><span class="pre">*</span></code> named <code class="docutils literal notranslate"><span class="pre">N</span></code>”.</p></li>
+</ul>
+<section id="what-the-fields-mean">
+<h2>What the fields mean<a class="headerlink" href="#what-the-fields-mean" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">frontend_addr</span></code></strong>: the single, public entry point. Messages from the rest of the mesh arrive here.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">procs</span></code></strong>: a set of proc names managed by this host.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">router:</span> <span class="pre">DialMailboxRouter</span></code></strong>: the machinery that actually multiplexes/demultiplexes between <code class="docutils literal notranslate"><span class="pre">*</span></code> and the per-proc channels.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">manager:</span> <span class="pre">M</span></code></strong>: the thing that can create and destroy procs on this host. In the real bootstrapped case this is a <code class="docutils literal notranslate"><span class="pre">BootstrapProcManager</span></code>; in tests it can be a local manager.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">service_proc</span></code></strong>: the host’s system proc handle, so the host can participate in the same message world it is hosting.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">local_proc</span></code></strong>: an additional local proc for in-process operations.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">frontend_rx</span></code></strong>: the optional channel receiver for the frontend address (consumed when serving starts).</p></li>
+</ul>
+</section>
+<section id="why-this-matters-for-bootstrapping">
+<h2>Why this matters for bootstrapping<a class="headerlink" href="#why-this-matters-for-bootstrapping" title="Link to this heading">#</a></h2>
+<p>When, in chapter 4, we say “now ask each host to spawn a proc,” this is the piece that makes it possible. The host already has:</p>
+<ol class="arabic simple">
+<li><p>a public address (<code class="docutils literal notranslate"><span class="pre">*</span></code>),</p></li>
+<li><p>a routing table for its existing procs,</p></li>
+<li><p>and a manager capable of creating new ones.</p></li>
+</ol>
+<p>So the host-mesh agent can receive a “create proc” request over the mesh protocol and hand it to the host, and the host will add another box to the diagram above.</p>
+</section>
+<hr class="docutils" />
+<section id="code-level-view">
+<h2>Code-level view<a class="headerlink" href="#code-level-view" title="Link to this heading">#</a></h2>
+<p>At the control plane we have the mesh-facing actor:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">HostMeshAgent</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">host</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">HostAgentMode</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">  </span><span class="n">created</span><span class="p">:</span><span class="w"> </span><span class="nc">HashMap</span><span class="o">&lt;</span><span class="n">Name</span><span class="p">,</span><span class="w"> </span><span class="n">ProcCreationState</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The reason it’s an <code class="docutils literal notranslate"><span class="pre">Option</span></code> is that the agent can exist before (or after) the host is actually running.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">host</span></code> field is one of two shapes:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// &quot;How are we running this host?&quot;</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">HostAgentMode</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Real OS process, uses BootstrapProcManager underneath.</span>
+<span class="w">    </span><span class="n">Process</span><span class="p">(</span><span class="n">Host</span><span class="o">&lt;</span><span class="n">BootstrapProcManager</span><span class="o">&gt;</span><span class="p">),</span>
+
+<span class="w">    </span><span class="c1">// In-process/testing host, uses a local proc manager.</span>
+<span class="w">    </span><span class="n">Local</span><span class="p">(</span><span class="n">Host</span><span class="o">&lt;</span><span class="n">LocalProcManager</span><span class="o">&lt;</span><span class="n">ProcManagerSpawnFn</span><span class="o">&gt;&gt;</span><span class="p">),</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Both variants wrap a <code class="docutils literal notranslate"><span class="pre">Host&lt;…&gt;</span></code>, and that <code class="docutils literal notranslate"><span class="pre">Host</span></code> is the thing we drew earlier as the mux:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// hyperactor/src/host.rs (simplified)</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">Host</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">procs</span><span class="p">:</span><span class="w"> </span><span class="nc">HashSet</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">frontend_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="p">,</span>
+<span class="w">    </span><span class="n">backend_addr</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="p">,</span>
+<span class="w">    </span><span class="n">router</span><span class="p">:</span><span class="w"> </span><span class="nc">DialMailboxRouter</span><span class="p">,</span>
+<span class="w">    </span><span class="n">manager</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">,</span><span class="w">             </span><span class="c1">// e.g. BootstrapProcManager</span>
+<span class="w">    </span><span class="n">service_proc</span><span class="p">:</span><span class="w"> </span><span class="nc">Proc</span><span class="p">,</span>
+<span class="w">    </span><span class="n">local_proc</span><span class="p">:</span><span class="w"> </span><span class="nc">Proc</span><span class="p">,</span>
+<span class="w">    </span><span class="n">frontend_rx</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">ChannelRx</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>So the layering from the code’s point of view is:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">HostMeshAgent</span></code> (actor you message over v1)</p></li>
+<li><p>→ maybe a <code class="docutils literal notranslate"><span class="pre">HostAgentMode</span></code></p></li>
+<li><p>→ definitely a <code class="docutils literal notranslate"><span class="pre">Host&lt;...&gt;</span></code> once materialized</p></li>
+<li><p>→ which, through its manager (e.g. <code class="docutils literal notranslate"><span class="pre">BootstrapProcManager</span></code>), owns/spawns the procs and does the <code class="docutils literal notranslate"><span class="pre">*</span></code>/<code class="docutils literal notranslate"><span class="pre">#n</span></code> routing.</p></li>
+</ol>
+</section>
+<section id="hostmeshagent-message-handling">
+<h2>HostMeshAgent message handling<a class="headerlink" href="#hostmeshagent-message-handling" title="Link to this heading">#</a></h2>
+<p>The agent is exported with exactly these handlers:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[hyperactor::export(</span>
+<span class="cp">    handlers = [</span>
+<span class="cp">        resource::CreateOrUpdate&lt;ProcSpec&gt;,</span>
+<span class="cp">        resource::Stop,</span>
+<span class="cp">        resource::GetState&lt;ProcState&gt;,</span>
+<span class="cp">        resource::GetRankStatus { cast = true },</span>
+<span class="cp">        resource::List,</span>
+<span class="cp">        ShutdownHost,</span>
+<span class="cp">    ]</span>
+<span class="cp">)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">HostMeshAgent</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">host</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">HostAgentMode</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">created</span><span class="p">:</span><span class="w"> </span><span class="nc">HashMap</span><span class="o">&lt;</span><span class="n">Name</span><span class="p">,</span><span class="w"> </span><span class="n">ProcCreationState</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">local_mesh_agent</span><span class="p">:</span><span class="w"> </span><span class="nc">OnceCell</span><span class="o">&lt;</span><span class="n">anyhow</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ActorHandle</span><span class="o">&lt;</span><span class="n">ProcMeshAgent</span><span class="o">&gt;&gt;&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>So everything it does is one of those 6 messages.</p>
+<section id="createorupdate">
+<h3>1. CreateOrUpdate<ProcSpec><a class="headerlink" href="#createorupdate" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>If we already have <code class="docutils literal notranslate"><span class="pre">created[name]</span></code>, do nothing (idempotent).</p></li>
+<li><p>Otherwise call <code class="docutils literal notranslate"><span class="pre">host.spawn(name,</span> <span class="pre">...)</span></code> — process-backed hosts get a <code class="docutils literal notranslate"><span class="pre">BootstrapProcConfig</span></code>, local hosts get <code class="docutils literal notranslate"><span class="pre">()</span></code>.</p></li>
+<li><p>Store <code class="docutils literal notranslate"><span class="pre">{</span> <span class="pre">rank,</span> <span class="pre">created_result,</span> <span class="pre">stopped:</span> <span class="pre">false</span> <span class="pre">}</span></code> in <code class="docutils literal notranslate"><span class="pre">created</span></code>.</p></li>
+</ul>
+</section>
+<section id="stop">
+<h3>2. Stop<a class="headerlink" href="#stop" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Look up <code class="docutils literal notranslate"><span class="pre">created[name]</span></code>.</p></li>
+<li><p>If it was successfully created, call <code class="docutils literal notranslate"><span class="pre">host.terminate_proc(...,</span> <span class="pre">timeout)</span></code> and mark it <code class="docutils literal notranslate"><span class="pre">stopped</span> <span class="pre">=</span> <span class="pre">true</span></code>.</p></li>
+<li><p>Reply with a <code class="docutils literal notranslate"><span class="pre">StatusOverlay</span></code> for that rank (or empty if we never had it).</p></li>
+</ul>
+</section>
+<section id="getrankstatus">
+<h3>3. GetRankStatus<a class="headerlink" href="#getrankstatus" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Look up <code class="docutils literal notranslate"><span class="pre">created[name]</span></code>.</p></li>
+<li><p>If present, return that rank with <code class="docutils literal notranslate"><span class="pre">Running</span></code> / <code class="docutils literal notranslate"><span class="pre">Stopped</span></code> / <code class="docutils literal notranslate"><span class="pre">Failed</span></code> (depending on what we know).</p></li>
+<li><p>Otherwise return <code class="docutils literal notranslate"><span class="pre">NotExist</span></code>.</p></li>
+</ul>
+</section>
+<section id="getstate">
+<h3>4. GetState<ProcState><a class="headerlink" href="#getstate" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Same lookup, but return the richer state:</p>
+<ul>
+<li><p>the proc’s direct id at the host,</p></li>
+<li><p>the rank we used,</p></li>
+<li><p>the proc’s own <code class="docutils literal notranslate"><span class="pre">ProcMeshAgent</span></code> ref,</p></li>
+<li><p>and any bootstrap/process status the host’s manager could provide.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="list">
+<h3>5. List<a class="headerlink" href="#list" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Return all the proc names that have been created on this host (the keys from the <code class="docutils literal notranslate"><span class="pre">created</span></code> map).</p></li>
+</ul>
+</section>
+<section id="shutdownhost">
+<h3>6. ShutdownHost<a class="headerlink" href="#shutdownhost" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Ack first so the caller can await.</p></li>
+<li><p>Take the host out of <code class="docutils literal notranslate"><span class="pre">self</span></code>.</p></li>
+<li><p>Call <code class="docutils literal notranslate"><span class="pre">host.terminate_children(...)</span></code> (process vs local path) with the provided timeout and concurrency.</p></li>
+</ul>
+</section>
+</section>
+<section id="why-this-exists">
+<h2>Why this exists<a class="headerlink" href="#why-this-exists" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">Host</span></code> is local; <code class="docutils literal notranslate"><span class="pre">HostMeshAgent</span></code> is the remote handle for it. Bootstrap code just sends <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate/Stop/GetState</span></code> to the agent; the agent is the one that actually owns the <code class="docutils literal notranslate"><span class="pre">Host</span></code> and can spawn/stop procs. That’s why all handlers use the shared <code class="docutils literal notranslate"><span class="pre">resource</span></code> messages.</p>
+</section>
+<section id="procspec-what-we-tell-the-host-to-run">
+<h2>1. <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> (what we tell the host to run)<a class="headerlink" href="#procspec-what-we-tell-the-host-to-run" title="Link to this heading">#</a></h2>
+<p>In all the examples above we sent <code class="docutils literal notranslate"><span class="pre">resource::CreateOrUpdate&lt;ProcSpec&gt;</span></code>, and in the code that really is what’s happening — but the current <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> is intentionally very thin.</p>
+<p>From <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/resource.rs</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="sd">/// Spec for a host mesh agent to use when spawning a new proc.</span>
+<span class="cp">#[derive(Clone, Debug, Serialize, Deserialize, Named, Default)]</span>
+<span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">ProcSpec</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="sd">/// Config values to set on the spawned proc&#39;s global config,</span>
+<span class="w">    </span><span class="sd">/// at the `ClientOverride` layer.</span>
+<span class="w">    </span><span class="k">pub</span><span class="p">(</span><span class="k">crate</span><span class="p">)</span><span class="w"> </span><span class="n">client_config_override</span><span class="p">:</span><span class="w"> </span><span class="nc">Attrs</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>So right now:</p>
+<ul class="simple">
+<li><p>the spec is private (<code class="docutils literal notranslate"><span class="pre">pub(crate)</span></code>) and has exactly one field: <code class="docutils literal notranslate"><span class="pre">client_config_override:</span> <span class="pre">Attrs</span></code>;</p></li>
+<li><p>the rank is not here — it’s on the outer message:</p></li>
+</ul>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">CreateOrUpdate</span><span class="o">&lt;</span><span class="n">S</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="nc">Name</span><span class="p">,</span>
+<span class="w">    </span><span class="cp">#[binding(include)]</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">rank</span><span class="p">:</span><span class="w"> </span><span class="nc">Rank</span><span class="p">,</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">spec</span><span class="p">:</span><span class="w"> </span><span class="nc">S</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>What the <code class="docutils literal notranslate"><span class="pre">HostMeshAgent</span></code> actually does matches this shape:</p>
+<ul class="simple">
+<li><p>if the host is process-backed (<code class="docutils literal notranslate"><span class="pre">HostAgentMode::Process(...)</span></code>), it builds a <code class="docutils literal notranslate"><span class="pre">BootstrapProcConfig</span></code> using</p></li>
+<li><p>the rank from <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate::&lt;ProcSpec&gt;</span></code>, and</p></li>
+<li><p>the <code class="docutils literal notranslate"><span class="pre">client_config_override</span></code> from <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code>, and passes that to <code class="docutils literal notranslate"><span class="pre">host.spawn(...);</span></code></p></li>
+<li><p>if the host is local (<code class="docutils literal notranslate"><span class="pre">HostAgentMode::Local(...)</span></code>), it just calls <code class="docutils literal notranslate"><span class="pre">host.spawn(name,</span> <span class="pre">())</span></code> and ignores the override.</p></li>
+</ul>
+<p>Here is the bit of real code that does exactly that (abridged to just the decision):</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs (`impl Handler&lt;resource::CreateOrUpdate&lt;ProcSpec&gt;&gt; for HostMeshAgent`)</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">created</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">host</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">HostAgentMode</span><span class="p">::</span><span class="n">Process</span><span class="p">(</span><span class="n">host</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">host</span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span>
+<span class="w">            </span><span class="n">msg</span><span class="p">.</span><span class="n">name</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">            </span><span class="n">BootstrapProcConfig</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">create_rank</span><span class="p">:</span><span class="w"> </span><span class="nc">msg</span><span class="p">.</span><span class="n">rank</span><span class="p">.</span><span class="n">unwrap</span><span class="p">(),</span>
+<span class="w">                </span><span class="n">client_config_override</span><span class="p">:</span><span class="w"> </span><span class="nc">msg</span><span class="p">.</span><span class="n">spec</span><span class="p">.</span><span class="n">client_config_override</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">            </span><span class="p">},</span>
+<span class="w">        </span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="k">await</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">HostAgentMode</span><span class="p">::</span><span class="n">Local</span><span class="p">(</span><span class="n">host</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">host</span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span><span class="n">msg</span><span class="p">.</span><span class="n">name</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span><span class="w"> </span><span class="p">()).</span><span class="k">await</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">};</span>
+</pre></div>
+</div>
+<p>That’s why the current <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> can stay small: the outer resource message carries the mesh-y things (name, rank), and the spec only has to carry the “what should this proc’s client config look like” part.</p>
+</section>
+<section id="how-the-host-actually-spawns">
+<h2>2. How the host actually spawns<a class="headerlink" href="#how-the-host-actually-spawns" title="Link to this heading">#</a></h2>
+<p>When the agent calls <code class="docutils literal notranslate"><span class="pre">host.spawn(name,</span> <span class="pre">…)</span></code>, the <strong>host itself</strong> is not doing the OS-level work. The host delegates to its configured <em>proc manager</em>:</p>
+<ul class="simple">
+<li><p>process-backed host → <code class="docutils literal notranslate"><span class="pre">Host&lt;BootstrapProcManager&gt;</span></code></p></li>
+<li><p>in-proc/test host → <code class="docutils literal notranslate"><span class="pre">Host&lt;LocalProcManager&lt;...&gt;&gt;</span></code></p></li>
+</ul>
+<p>The manager is the thing that can “make a proc real” (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the <code class="docutils literal notranslate"><span class="pre">procs:</span> <span class="pre">HashSet&lt;String&gt;</span></code> table and expose it as <code class="docutils literal notranslate"><span class="pre">ProcId::Direct(frontend_addr,</span> <span class="pre">name)</span></code>.</p>
+<p>We’re not going to unpack the process-backed path here — that lives in <strong>“BootstrapProcManager (process-backed hosts)”</strong> where we can talk about commands, ready signals, and termination.</p>
+</section>
+<section id="v1-bootstrap-in-one-pass">
+<h2>v1 bootstrap in one pass<a class="headerlink" href="#v1-bootstrap-in-one-pass" title="Link to this heading">#</a></h2>
+<p>The reason the <code class="docutils literal notranslate"><span class="pre">HostMeshAgent</span></code> has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats “things on a host” as <strong>resources</strong>. A typical sequence is:</p>
+<ol class="arabic simple">
+<li><p><strong>Coordinator → hosts:</strong> send <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;ProcSpec&gt;</span></code> to every host agent in the mesh (“each of you should have a proc called <code class="docutils literal notranslate"><span class="pre">p0</span></code> with this rank/config”).</p></li>
+<li><p><strong>Coordinator → hosts (later):</strong> send <code class="docutils literal notranslate"><span class="pre">GetState&lt;ProcState&gt;</span></code> (or <code class="docutils literal notranslate"><span class="pre">GetRankStatus</span></code>) to see which hosts actually brought that proc up and what address/command it got.</p></li>
+<li><p><strong>Coordinator → hosts (teardown):</strong> send <code class="docutils literal notranslate"><span class="pre">ShutdownHost</span></code> to have each agent tell its host to terminate all children and drop the host.</p></li>
+</ol>
+<p>Because everyone speaks this same resource shape — <code class="docutils literal notranslate"><span class="pre">CreateOrUpdate&lt;T&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">GetState&lt;T&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">Stop</span></code>, <code class="docutils literal notranslate"><span class="pre">StopAll</span></code>/<code class="docutils literal notranslate"><span class="pre">ShutdownHost</span></code> — the handlers on <code class="docutils literal notranslate"><span class="pre">HostMeshAgent</span></code> all look the same, and the coordinator can fan the same message out to N hosts.</p>
+</section>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-fields-mean">What the fields mean</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-this-matters-for-bootstrapping">Why this matters for bootstrapping</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-level-view">Code-level view</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hostmeshagent-message-handling">HostMeshAgent message handling</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#createorupdate">1. CreateOrUpdate<procspec></procspec></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stop">2. Stop</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#getrankstatus">3. GetRankStatus</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#getstate">4. GetState<procstate></procstate></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list">5. List</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shutdownhost">6. ShutdownHost</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-this-exists">Why this exists</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#procspec-what-we-tell-the-host-to-run">1. <code class="docutils literal notranslate"><span class="pre">ProcSpec</span></code> (what we tell the host to run)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-the-host-actually-spawns">2. How the host actually spawns</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#v1-bootstrap-in-one-pass">v1 bootstrap in one pass</a></li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-mesh-book/src/meshes/host-and-agents.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-mesh-book/src/meshes/host-and-agents.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Host \u0026 agents (control plane \u0026 mux)",
+       "headline": "Host \u0026 agents (control plane \u0026 mux)",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/books/hyperactor-mesh-book/src/meshes/host-and-agents.html",
+       "articleBody": "Host \u0026 agents (control plane \u0026 mux)# In the runtime, a host is the thing that owns \u201call the procs on this machine\u201d and gives them a single front door. The Rust type looks like this: // from hyperactor/src/host.rs pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } Visually, you can think of it like this: \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u25b6 proc *,1 \u2502 \u2502 #1\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Host \u2502\u25c0\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u25b6 proc *,2 \u2502 *\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518# \u2502 #2\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2514\u2500\u2500\u2500\u25b6 proc *,3 \u2502 #3\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 * is the host\u2019s frontend address (frontend_addr). This is the address other mesh participants know. # is the host\u2019s backend address (backend_addr). Procs talk to the host here. #1, #2, #3 are the per-proc backend channels the host records in router: DialMailboxRouter Each box proc *,N is a proc that is direct-addressed via the host \u2014 its id is essentially \u201cproc at * named N\u201d. What the fields mean# frontend_addr: the single, public entry point. Messages from the rest of the mesh arrive here. procs: a set of proc names managed by this host. router: DialMailboxRouter: the machinery that actually multiplexes/demultiplexes between * and the per-proc channels. manager: M: the thing that can create and destroy procs on this host. In the real bootstrapped case this is a BootstrapProcManager; in tests it can be a local manager. service_proc: the host\u2019s system proc handle, so the host can participate in the same message world it is hosting. local_proc: an additional local proc for in-process operations. frontend_rx: the optional channel receiver for the frontend address (consumed when serving starts). Why this matters for bootstrapping# When, in chapter 4, we say \u201cnow ask each host to spawn a proc,\u201d this is the piece that makes it possible. The host already has: a public address (*), a routing table for its existing procs, and a manager capable of creating new ones. So the host-mesh agent can receive a \u201ccreate proc\u201d request over the mesh protocol and hand it to the host, and the host will add another box to the diagram above. Code-level view# At the control plane we have the mesh-facing actor: // hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs pub struct HostMeshAgent { host: Option\u003cHostAgentMode\u003e, created: HashMap\u003cName, ProcCreationState\u003e, } The reason it\u2019s an Option is that the agent can exist before (or after) the host is actually running. The host field is one of two shapes: // \"How are we running this host?\" pub enum HostAgentMode { // Real OS process, uses BootstrapProcManager underneath. Process(Host\u003cBootstrapProcManager\u003e), // In-process/testing host, uses a local proc manager. Local(Host\u003cLocalProcManager\u003cProcManagerSpawnFn\u003e\u003e), } Both variants wrap a Host\u003c\u2026\u003e, and that Host is the thing we drew earlier as the mux: // hyperactor/src/host.rs (simplified) pub struct Host\u003cM\u003e { procs: HashSet\u003cString\u003e, frontend_addr: ChannelAddr, backend_addr: ChannelAddr, router: DialMailboxRouter, manager: M, // e.g. BootstrapProcManager service_proc: Proc, local_proc: Proc, frontend_rx: Option\u003cChannelRx\u003cMessageEnvelope\u003e\u003e, } So the layering from the code\u2019s point of view is: HostMeshAgent (actor you message over v1) \u2192 maybe a HostAgentMode \u2192 definitely a Host\u003c...\u003e once materialized \u2192 which, through its manager (e.g. BootstrapProcManager), owns/spawns the procs and does the */#n routing. HostMeshAgent message handling# The agent is exported with exactly these handlers: #[hyperactor::export( handlers = [ resource::CreateOrUpdate\u003cProcSpec\u003e, resource::Stop, resource::GetState\u003cProcState\u003e, resource::GetRankStatus { cast = true }, resource::List, ShutdownHost, ] )] pub struct HostMeshAgent { host: Option\u003cHostAgentMode\u003e, created: HashMap\u003cName, ProcCreationState\u003e, local_mesh_agent: OnceCell\u003canyhow::Result\u003cActorHandle\u003cProcMeshAgent\u003e\u003e\u003e, } So everything it does is one of those 6 messages. 1. CreateOrUpdate# If we already have created[name], do nothing (idempotent). Otherwise call host.spawn(name, ...) \u2014 process-backed hosts get a BootstrapProcConfig, local hosts get (). Store { rank, created_result, stopped: false } in created. 2. Stop# Look up created[name]. If it was successfully created, call host.terminate_proc(..., timeout) and mark it stopped = true. Reply with a StatusOverlay for that rank (or empty if we never had it). 3. GetRankStatus# Look up created[name]. If present, return that rank with Running / Stopped / Failed (depending on what we know). Otherwise return NotExist. 4. GetState# Same lookup, but return the richer state: the proc\u2019s direct id at the host, the rank we used, the proc\u2019s own ProcMeshAgent ref, and any bootstrap/process status the host\u2019s manager could provide. 5. List# Return all the proc names that have been created on this host (the keys from the created map). 6. ShutdownHost# Ack first so the caller can await. Take the host out of self. Call host.terminate_children(...) (process vs local path) with the provided timeout and concurrency. Why this exists# Host is local; HostMeshAgent is the remote handle for it. Bootstrap code just sends CreateOrUpdate/Stop/GetState to the agent; the agent is the one that actually owns the Host and can spawn/stop procs. That\u2019s why all handlers use the shared resource messages. 1. ProcSpec (what we tell the host to run)# In all the examples above we sent resource::CreateOrUpdate\u003cProcSpec\u003e, and in the code that really is what\u2019s happening \u2014 but the current ProcSpec is intentionally very thin. From hyperactor_mesh/src/resource.rs: /// Spec for a host mesh agent to use when spawning a new proc. #[derive(Clone, Debug, Serialize, Deserialize, Named, Default)] pub(crate) struct ProcSpec { /// Config values to set on the spawned proc\u0027s global config, /// at the `ClientOverride` layer. pub(crate) client_config_override: Attrs, } So right now: the spec is private (pub(crate)) and has exactly one field: client_config_override: Attrs; the rank is not here \u2014 it\u2019s on the outer message: pub struct CreateOrUpdate\u003cS\u003e { pub name: Name, #[binding(include)] pub rank: Rank, pub spec: S, } What the HostMeshAgent actually does matches this shape: if the host is process-backed (HostAgentMode::Process(...)), it builds a BootstrapProcConfig using the rank from CreateOrUpdate::\u003cProcSpec\u003e, and the client_config_override from ProcSpec, and passes that to host.spawn(...); if the host is local (HostAgentMode::Local(...)), it just calls host.spawn(name, ()) and ignores the override. Here is the bit of real code that does exactly that (abridged to just the decision): // from hyperactor_mesh/src/v1/host_mesh/mesh_agent.rs (`impl Handler\u003cresource::CreateOrUpdate\u003cProcSpec\u003e\u003e for HostMeshAgent`) let created = match host { HostAgentMode::Process(host) =\u003e { host.spawn( msg.name.to_string(), BootstrapProcConfig { create_rank: msg.rank.unwrap(), client_config_override: msg.spec.client_config_override.clone(), }, ) .await } HostAgentMode::Local(host) =\u003e { host.spawn(msg.name.to_string(), ()).await } }; That\u2019s why the current ProcSpec can stay small: the outer resource message carries the mesh-y things (name, rank), and the spec only has to carry the \u201cwhat should this proc\u2019s client config look like\u201d part. 2. How the host actually spawns# When the agent calls host.spawn(name, \u2026), the host itself is not doing the OS-level work. The host delegates to its configured proc manager: process-backed host \u2192 Host\u003cBootstrapProcManager\u003e in-proc/test host \u2192 Host\u003cLocalProcManager\u003c...\u003e\u003e The manager is the thing that can \u201cmake a proc real\u201d (fork/spawn, run the bootstrap command, wire the backchannel) and hand the host the proc name so the host can add it to the procs: HashSet\u003cString\u003e table and expose it as ProcId::Direct(frontend_addr, name). We\u2019re not going to unpack the process-backed path here \u2014 that lives in \u201cBootstrapProcManager (process-backed hosts)\u201d where we can talk about commands, ready signals, and termination. v1 bootstrap in one pass# The reason the HostMeshAgent has those five messages (create, stop, get-state, get-rank-status, shutdown) is that the v1 protocol treats \u201cthings on a host\u201d as resources. A typical sequence is: Coordinator \u2192 hosts: send CreateOrUpdate\u003cProcSpec\u003e to every host agent in the mesh (\u201ceach of you should have a proc called p0 with this rank/config\u201d). Coordinator \u2192 hosts (later): send GetState\u003cProcState\u003e (or GetRankStatus) to see which hosts actually brought that proc up and what address/command it got. Coordinator \u2192 hosts (teardown): send ShutdownHost to have each agent tell its host to terminate all children and drop the host. Because everyone speaks this same resource shape \u2014 CreateOrUpdate\u003cT\u003e, GetState\u003cT\u003e, Stop, StopAll/ShutdownHost \u2014 the handlers on HostMeshAgent all look the same, and the coordinator can fan the same message out to N hosts.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-mesh-book/src/meshes/host-and-agents.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

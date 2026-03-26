@@ -1,0 +1,1158 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Transmits and Receives" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/channels/tx_rx.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="Transmit ( Tx) and receive ( Rx) ends define the basic channel interface. Tx can post or send messages, Rx can asynchronously receive them. Overview: Channels provide one-way, typed communication b..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="Transmit ( Tx) and receive ( Rx) ends define the basic channel interface. Tx can post or send messages, Rx can asynchronously receive them. Overview: Channels provide one-way, typed communication b..." />
+
+    <title>Transmits and Receives &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/channels/tx_rx';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/channels/tx_rx.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Transmits...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="Transmits and Receives">
+        <meta itemprop="position" content="1">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="transmits-and-receives">
+<h1>Transmits and Receives<a class="headerlink" href="#transmits-and-receives" title="Link to this heading">#</a></h1>
+<p>Transmit (<code class="docutils literal notranslate"><span class="pre">Tx</span></code>) and receive (<code class="docutils literal notranslate"><span class="pre">Rx</span></code>) ends define the basic channel interface. <code class="docutils literal notranslate"><span class="pre">Tx</span></code> can post or send messages, <code class="docutils literal notranslate"><span class="pre">Rx</span></code> can asynchronously receive them.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Channels provide one-way, typed communication between processes.</p>
+<p>The public API is:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Tx&lt;M&gt;</span></code>: enqueue (<code class="docutils literal notranslate"><span class="pre">try_post</span></code>), fire-and-forget (<code class="docutils literal notranslate"><span class="pre">post</span></code>), or synchronous (<code class="docutils literal notranslate"><span class="pre">send</span></code>) sends; monitor health with <code class="docutils literal notranslate"><span class="pre">status()</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Rx&lt;M&gt;</span></code>: <code class="docutils literal notranslate"><span class="pre">recv()</span></code> the next message.</p></li>
+</ul>
+<p>Under the hood, network transports use a length-prefixed, multipart frame with cancel-safe I/O. Delivery preserves <strong>per-sender order</strong> and deduplicates retransmits; across different senders there is no global ordering guarantee.</p>
+<blockquote>
+<div><p>Request/response is done at the actor/mailbox layer by carrying a <strong>reply port reference</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">PortRef&lt;Reply&gt;</span></code>) inside the message. Channels only move bytes.</p>
+</div></blockquote>
+</section>
+<section id="semantics">
+<h2>Semantics<a class="headerlink" href="#semantics" title="Link to this heading">#</a></h2>
+<section id="tx-m-remotemessage-transmit-end">
+<h3><code class="docutils literal notranslate"><span class="pre">Tx&lt;M:</span> <span class="pre">RemoteMessage&gt;</span></code> (transmit end)<a class="headerlink" href="#tx-m-remotemessage-transmit-end" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Tx</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">do_post</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">,</span><span class="w"> </span><span class="n">return_channel</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">oneshot</span><span class="p">::</span><span class="n">Sender</span><span class="o">&lt;</span><span class="n">SendError</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;&gt;&gt;</span><span class="p">);</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">try_post</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">,</span><span class="w"> </span><span class="n">return_channel</span><span class="p">:</span><span class="w"> </span><span class="nc">oneshot</span><span class="p">::</span><span class="n">Sender</span><span class="o">&lt;</span><span class="n">SendError</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;&gt;</span><span class="p">);</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">);</span>
+<span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">send</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">:</span><span class="w"> </span><span class="nc">M</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">SendError</span><span class="o">&lt;</span><span class="n">M</span><span class="o">&gt;&gt;</span><span class="p">;</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">addr</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="p">;</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">status</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">watch</span><span class="p">::</span><span class="n">Receiver</span><span class="o">&lt;</span><span class="n">TxStatus</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">do_post(message,</span> <span class="pre">return_channel)</span></code></strong>
+Internal method used by <code class="docutils literal notranslate"><span class="pre">try_post</span></code> and <code class="docutils literal notranslate"><span class="pre">post</span></code>. Posts a message with an optional return channel for failures.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">try_post(message,</span> <span class="pre">return_channel)</span></code></strong>
+Enqueues locally.</p>
+<ul>
+<li><p>If delivery later fails, the original message is sent back on <code class="docutils literal notranslate"><span class="pre">return_channel</span></code> as SendError.</p></li>
+</ul>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">post(message)</span></code></strong>
+Fire-and-forget wrapper around <code class="docutils literal notranslate"><span class="pre">try_post</span></code>. The caller should monitor <code class="docutils literal notranslate"><span class="pre">status()</span></code> for health instead of relying on return values.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">send(message)</span></code></strong>
+Convenience over <code class="docutils literal notranslate"><span class="pre">try_post</span></code>.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">Ok(())</span></code> when the message is enqueued on the remote end.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Err(SendError(ChannelError::Closed,</span> <span class="pre">message))</span></code> if the channel closes and the message is returned.</p></li>
+</ul>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">addr()</span></code></strong>
+The destination <code class="docutils literal notranslate"><span class="pre">ChannelAddr</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">status()</span></code></strong>
+A <code class="docutils literal notranslate"><span class="pre">watch::Receiver&lt;TxStatus&gt;</span></code> that flips to <code class="docutils literal notranslate"><span class="pre">Closed</span></code> when the receive side is gone.</p></li>
+</ul>
+<p><strong>Note:</strong> <code class="docutils literal notranslate"><span class="pre">SendError&lt;M&gt;</span></code> carries both the error and the original <code class="docutils literal notranslate"><span class="pre">M</span></code> for retry or inspection.</p>
+</section>
+<section id="rx-m-remotemessage-receive-end">
+<h3>Rx&lt;M: RemoteMessage&gt; (receive end)<a class="headerlink" href="#rx-m-remotemessage-receive-end" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[async_trait]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">trait</span><span class="w"> </span><span class="n">Rx</span><span class="o">&lt;</span><span class="n">M</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteMessage</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">recv</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">M</span><span class="p">,</span><span class="w"> </span><span class="n">ChannelError</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">addr</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">ChannelAddr</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">recv()</span></code></strong>
+Asynchronously yields the next message.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">Ok(message)</span></code> when a message is available.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Err(ChannelError::Closed)</span></code> when the channel is closed and no more messages will arrive.</p></li>
+</ul>
+</li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">addr()</span></code></strong>
+The source <code class="docutils literal notranslate"><span class="pre">ChannelAddr</span></code> from which this <code class="docutils literal notranslate"><span class="pre">Rx</span></code> is receiving.</p></li>
+</ul>
+</section>
+</section>
+<section id="guarantees-and-limits">
+<h2>Guarantees and Limits<a class="headerlink" href="#guarantees-and-limits" title="Link to this heading">#</a></h2>
+<section id="delivery-ordering">
+<h3>Delivery &amp; ordering<a class="headerlink" href="#delivery-ordering" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Per-sender FIFO.</strong> Messages posted from a single <code class="docutils literal notranslate"><span class="pre">Tx</span></code> are delivered in order.
+(Network transports tag each message with a monotonically increasing <code class="docutils literal notranslate"><span class="pre">seq</span></code>; the server enforces in-order delivery and ignores retransmits with lower <code class="docutils literal notranslate"><span class="pre">seq</span></code>.)</p></li>
+<li><p><strong>No global ordering across different <code class="docutils literal notranslate"><span class="pre">Tx</span></code>es.</strong> When multiple transmitters send to one receiver, relative order between different senders is unspecified.</p></li>
+</ul>
+</section>
+<section id="acknowledgement-exactly-once-at-the-channel-boundary">
+<h3>Acknowledgement &amp; exactly-once at the channel boundary<a class="headerlink" href="#acknowledgement-exactly-once-at-the-channel-boundary" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Network transports (TCP/Unix/MetaTLS):</strong> delivery is confirmed by explicit acks from the server (<code class="docutils literal notranslate"><span class="pre">NetRxResponse::Ack</span></code>). The server enforces <em>no duplicates and no reordering</em> per session (<code class="docutils literal notranslate"><span class="pre">seq</span></code>/<code class="docutils literal notranslate"><span class="pre">ack</span></code>) <strong>for delivery into the server’s bounded queue</strong>.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">Tx::send</span></code> resolves <strong><code class="docutils literal notranslate"><span class="pre">Ok(())</span></code> when the ack is observed</strong> (which implies the message was enqueued on the server’s <code class="docutils literal notranslate"><span class="pre">mpsc</span></code>), not when the remote handler processes it.</p></li>
+</ul>
+</li>
+<li><p><strong>Local transport:</strong> in-process MPSC handoff; <strong>no network acks</strong> involved.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">Tx::send</span></code> returns <strong>immediately</strong> after <code class="docutils literal notranslate"><span class="pre">try_post</span></code> succeeds (the oneshot sender is dropped right away).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="backpressure-buffering">
+<h3>Backpressure &amp; buffering<a class="headerlink" href="#backpressure-buffering" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Server-side buffer (network):</strong> incoming messages are relayed into a bounded <code class="docutils literal notranslate"><span class="pre">mpsc</span></code> (default capacity <strong>1024</strong>). If full, the server’s forwarding task uses <code class="docutils literal notranslate"><span class="pre">reserve()</span></code> in a retry loop, logging and incrementing a metric until space frees. This can delay acks.</p></li>
+<li><p><strong>Client outbox (network):</strong> each <code class="docutils literal notranslate"><span class="pre">Tx</span></code> maintains an outbox + unacked queue. On reconnect, all unacked messages are requeued in order and retransmitted; the server deduplicates them by <code class="docutils literal notranslate"><span class="pre">seq</span></code>.</p></li>
+</ul>
+</section>
+<section id="cancellation-safety">
+<h3>Cancellation safety<a class="headerlink" href="#cancellation-safety" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Cancelling a task awaiting <code class="docutils literal notranslate"><span class="pre">recv()</span></code> or a network frame read/write does <strong>not</strong> corrupt channel state; progress resumes on the next poll.</p></li>
+<li><p>Cancelling <code class="docutils literal notranslate"><span class="pre">Tx::send(message)</span></code> only cancels your await; it doesn’t “unsend” the message. The message may still be in-flight or already delivered. Use <code class="docutils literal notranslate"><span class="pre">status()</span></code> to monitor liveness.</p></li>
+</ul>
+</section>
+<section id="failure-semantics">
+<h3>Failure semantics<a class="headerlink" href="#failure-semantics" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Closed receiver:</strong> <code class="docutils literal notranslate"><span class="pre">recv()</span></code> returns <code class="docutils literal notranslate"><span class="pre">Err(ChannelError::Closed)</span></code>.</p></li>
+<li><p><strong>Network transports:</strong> disconnects trigger exponential backoff reconnects; unacked messages are retried. If recovery ultimately fails (e.g., connection cannot be re-established within the delivery timeout window), the client closes and returns all undelivered/unacked messages via their <code class="docutils literal notranslate"><span class="pre">return_channel</span></code>. <code class="docutils literal notranslate"><span class="pre">status()</span></code> flips to <code class="docutils literal notranslate"><span class="pre">Closed</span></code>.</p></li>
+<li><p><strong>Local transport:</strong> no delayed return path.</p></li>
+<li><p><strong>Network disconnects (EOF/I/O error/temporary break):</strong> the client reconnects with exponential backoff and resends any unacked messages; the server deduplicates by <code class="docutils literal notranslate"><span class="pre">seq</span></code>.</p></li>
+<li><p><strong>Delivery timeout:</strong> see <a class="reference internal" href="#size-time-limits">Size &amp; time limits</a>.</p></li>
+</ul>
+</section>
+<section id="size-time-limits">
+<h3>Size &amp; time limits<a class="headerlink" href="#size-time-limits" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Max frame size:</strong> frames larger than <code class="docutils literal notranslate"><span class="pre">config::CODEC_MAX_FRAME_LENGTH</span></code> are rejected.</p></li>
+<li><p><strong>Ack policy:</strong> acks are sent every <code class="docutils literal notranslate"><span class="pre">config::MESSAGE_ACK_EVERY_N_MESSAGES</span></code> or after <code class="docutils literal notranslate"><span class="pre">config::MESSAGE_ACK_TIME_INTERVAL</span></code> (whichever comes first).</p></li>
+<li><p><strong>Delivery timeout (network):</strong> if the oldest pending message (unsent or unacked) exceeds <code class="docutils literal notranslate"><span class="pre">config::MESSAGE_DELIVERY_TIMEOUT</span></code> without being acked, the link is deemed irrecoverable.  The client closes the channel, returns all queued and unacked messages via their <code class="docutils literal notranslate"><span class="pre">return_channel</span></code>, and <code class="docutils literal notranslate"><span class="pre">Tx</span></code> transitions to <code class="docutils literal notranslate"><span class="pre">Closed</span></code>.</p></li>
+</ul>
+</section>
+</section>
+<section id="implementations">
+<h2>Implementations<a class="headerlink" href="#implementations" title="Link to this heading">#</a></h2>
+<p>Concrete channel implementations that satisfy <code class="docutils literal notranslate"><span class="pre">Tx&lt;M&gt;</span></code> / <code class="docutils literal notranslate"><span class="pre">Rx&lt;M&gt;</span></code>:</p>
+<ul class="simple">
+<li><p><strong>Local</strong> — in-process only; uses <code class="docutils literal notranslate"><span class="pre">tokio::sync::mpsc</span></code>. No network framing/acks.
+<em>Dial/serve:</em> <code class="docutils literal notranslate"><span class="pre">serve_local::&lt;M&gt;()</span></code>, <code class="docutils literal notranslate"><span class="pre">ChannelAddr::Local(_)</span></code>.</p></li>
+<li><p><strong>TCP</strong> — <code class="docutils literal notranslate"><span class="pre">tokio::net::TcpStream</span></code> with 8-byte BE length-prefixed frames; <code class="docutils literal notranslate"><span class="pre">seq</span></code>/<code class="docutils literal notranslate"><span class="pre">ack</span></code> for exactly-once into the server queue; reconnects with backoff.
+<em>Dial/serve:</em> <code class="docutils literal notranslate"><span class="pre">tcp:HOST:PORT</span></code>.</p></li>
+<li><p><strong>Unix</strong> — Unix domain sockets; same framing/ack semantics as TCP.
+<em>Dial/serve:</em> <code class="docutils literal notranslate"><span class="pre">unix:/path</span></code> or abstract names (Linux) <code class="docutils literal notranslate"><span class="pre">unix:&#64;name</span></code>.</p></li>
+<li><p><strong>MetaTLS</strong> — TCP wrapped in TLS via <code class="docutils literal notranslate"><span class="pre">tokio-rustls</span></code>; same framing/ack semantics; Meta cert plumbing.
+<em>Dial/serve:</em> <code class="docutils literal notranslate"><span class="pre">metatls:HOST:PORT</span></code>.</p></li>
+<li><p><strong>Sim</strong> — simulation transport for tests; exercises the same channel semantics without real sockets.
+<em>Dial/serve:</em> <code class="docutils literal notranslate"><span class="pre">sim:&lt;inner-addr&gt;</span></code>.</p></li>
+</ul>
+<!-- ## Integration with Transports -->
+</section>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#semantics">Semantics</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tx-m-remotemessage-transmit-end"><code class="docutils literal notranslate"><span class="pre">Tx&lt;M:</span> <span class="pre">RemoteMessage&gt;</span></code> (transmit end)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rx-m-remotemessage-receive-end">Rx&lt;M: RemoteMessage&gt; (receive end)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guarantees-and-limits">Guarantees and Limits</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#delivery-ordering">Delivery &amp; ordering</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#acknowledgement-exactly-once-at-the-channel-boundary">Acknowledgement &amp; exactly-once at the channel boundary</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#backpressure-buffering">Backpressure &amp; buffering</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cancellation-safety">Cancellation safety</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#failure-semantics">Failure semantics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#size-time-limits">Size &amp; time limits</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#implementations">Implementations</a></li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/channels/tx_rx.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-book/src/channels/tx_rx.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Transmits and Receives",
+       "headline": "Transmits and Receives",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/books/hyperactor-book/src/channels/tx_rx.html",
+       "articleBody": "Transmits and Receives# Transmit (Tx) and receive (Rx) ends define the basic channel interface. Tx can post or send messages, Rx can asynchronously receive them. Overview# Channels provide one-way, typed communication between processes. The public API is: Tx\u003cM\u003e: enqueue (try_post), fire-and-forget (post), or synchronous (send) sends; monitor health with status(). Rx\u003cM\u003e: recv() the next message. Under the hood, network transports use a length-prefixed, multipart frame with cancel-safe I/O. Delivery preserves per-sender order and deduplicates retransmits; across different senders there is no global ordering guarantee. Request/response is done at the actor/mailbox layer by carrying a reply port reference (e.g., PortRef\u003cReply\u003e) inside the message. Channels only move bytes. Semantics# Tx\u003cM: RemoteMessage\u003e (transmit end)# #[async_trait] pub trait Tx\u003cM: RemoteMessage\u003e { fn do_post(\u0026self, message: M, return_channel: Option\u003coneshot::Sender\u003cSendError\u003cM\u003e\u003e\u003e); fn try_post(\u0026self, message: M, return_channel: oneshot::Sender\u003cSendError\u003cM\u003e\u003e); fn post(\u0026self, message: M); async fn send(\u0026self, message: M) -\u003e Result\u003c(), SendError\u003cM\u003e\u003e; fn addr(\u0026self) -\u003e ChannelAddr; fn status(\u0026self) -\u003e \u0026watch::Receiver\u003cTxStatus\u003e; } do_post(message, return_channel) Internal method used by try_post and post. Posts a message with an optional return channel for failures. try_post(message, return_channel) Enqueues locally. If delivery later fails, the original message is sent back on return_channel as SendError. post(message) Fire-and-forget wrapper around try_post. The caller should monitor status() for health instead of relying on return values. send(message) Convenience over try_post. Ok(()) when the message is enqueued on the remote end. Err(SendError(ChannelError::Closed, message)) if the channel closes and the message is returned. addr() The destination ChannelAddr. status() A watch::Receiver\u003cTxStatus\u003e that flips to Closed when the receive side is gone. Note: SendError\u003cM\u003e carries both the error and the original M for retry or inspection. Rx\u003cM: RemoteMessage\u003e (receive end)# #[async_trait] pub trait Rx\u003cM: RemoteMessage\u003e { async fn recv(\u0026mut self) -\u003e Result\u003cM, ChannelError\u003e; fn addr(\u0026self) -\u003e ChannelAddr; } recv() Asynchronously yields the next message. Ok(message) when a message is available. Err(ChannelError::Closed) when the channel is closed and no more messages will arrive. addr() The source ChannelAddr from which this Rx is receiving. Guarantees and Limits# Delivery \u0026 ordering# Per-sender FIFO. Messages posted from a single Tx are delivered in order. (Network transports tag each message with a monotonically increasing seq; the server enforces in-order delivery and ignores retransmits with lower seq.) No global ordering across different Txes. When multiple transmitters send to one receiver, relative order between different senders is unspecified. Acknowledgement \u0026 exactly-once at the channel boundary# Network transports (TCP/Unix/MetaTLS): delivery is confirmed by explicit acks from the server (NetRxResponse::Ack). The server enforces no duplicates and no reordering per session (seq/ack) for delivery into the server\u2019s bounded queue. Tx::send resolves Ok(()) when the ack is observed (which implies the message was enqueued on the server\u2019s mpsc), not when the remote handler processes it. Local transport: in-process MPSC handoff; no network acks involved. Tx::send returns immediately after try_post succeeds (the oneshot sender is dropped right away). Backpressure \u0026 buffering# Server-side buffer (network): incoming messages are relayed into a bounded mpsc (default capacity 1024). If full, the server\u2019s forwarding task uses reserve() in a retry loop, logging and incrementing a metric until space frees. This can delay acks. Client outbox (network): each Tx maintains an outbox + unacked queue. On reconnect, all unacked messages are requeued in order and retransmitted; the server deduplicates them by seq. Cancellation safety# Cancelling a task awaiting recv() or a network frame read/write does not corrupt channel state; progress resumes on the next poll. Cancelling Tx::send(message) only cancels your await; it doesn\u2019t \u201cunsend\u201d the message. The message may still be in-flight or already delivered. Use status() to monitor liveness. Failure semantics# Closed receiver: recv() returns Err(ChannelError::Closed). Network transports: disconnects trigger exponential backoff reconnects; unacked messages are retried. If recovery ultimately fails (e.g., connection cannot be re-established within the delivery timeout window), the client closes and returns all undelivered/unacked messages via their return_channel. status() flips to Closed. Local transport: no delayed return path. Network disconnects (EOF/I/O error/temporary break): the client reconnects with exponential backoff and resends any unacked messages; the server deduplicates by seq. Delivery timeout: see Size \u0026 time limits. Size \u0026 time limits# Max frame size: frames larger than config::CODEC_MAX_FRAME_LENGTH are rejected. Ack policy: acks are sent every config::MESSAGE_ACK_EVERY_N_MESSAGES or after config::MESSAGE_ACK_TIME_INTERVAL (whichever comes first). Delivery timeout (network): if the oldest pending message (unsent or unacked) exceeds config::MESSAGE_DELIVERY_TIMEOUT without being acked, the link is deemed irrecoverable. The client closes the channel, returns all queued and unacked messages via their return_channel, and Tx transitions to Closed. Implementations# Concrete channel implementations that satisfy Tx\u003cM\u003e / Rx\u003cM\u003e: Local \u2014 in-process only; uses tokio::sync::mpsc. No network framing/acks. Dial/serve: serve_local::\u003cM\u003e(), ChannelAddr::Local(_). TCP \u2014 tokio::net::TcpStream with 8-byte BE length-prefixed frames; seq/ack for exactly-once into the server queue; reconnects with backoff. Dial/serve: tcp:HOST:PORT. Unix \u2014 Unix domain sockets; same framing/ack semantics as TCP. Dial/serve: unix:/path or abstract names (Linux) unix:@name. MetaTLS \u2014 TCP wrapped in TLS via tokio-rustls; same framing/ack semantics; Meta cert plumbing. Dial/serve: metatls:HOST:PORT. Sim \u2014 simulation transport for tests; exercises the same channel semantics without real sockets. Dial/serve: sim:\u003cinner-addr\u003e.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-book/src/channels/tx_rx.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

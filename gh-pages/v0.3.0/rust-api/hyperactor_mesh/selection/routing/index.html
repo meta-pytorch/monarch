@@ -1,0 +1,59 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Shape navigation guided by `Selection` expressions."><title>hyperactor_mesh::selection::routing - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="hyperactor_mesh" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.0-nightly (02c7b1a7a 2025-09-13)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module routing</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../hyperactor_mesh/index.html">hyperactor_<wbr>mesh</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module routing</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#routing" title="Routing">Routing</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="../index.html">In hyperactor_<wbr>mesh::<wbr>selection</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">hyperactor_mesh</a>::<wbr><a href="../index.html">selection</a></div><h1>Module <span>routing</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/ndslice/selection.rs.html#94">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Shape navigation guided by <a href="../enum.Selection.html" title="enum hyperactor_mesh::selection::Selection"><code>Selection</code></a> expressions.</p>
+<h2 id="routing"><a class="doc-anchor" href="#routing">§</a>Routing</h2>
+<p>This module defines [<code>RoutingFrame</code>] and its [<code>next_steps</code>]
+method, which model how messages propagate through a
+multidimensional mesh based on a <a href="../enum.Selection.html" title="enum hyperactor_mesh::selection::Selection"><code>Selection</code></a> expression.</p>
+<p>A [<code>RoutingFrame</code>] represents the state of routing at a particular
+point in the mesh. It tracks the current coordinate (<code>here</code>), the
+remaining selection to apply (<code>selection</code>), the mesh layout
+(<code>slice</code>), and the current dimension of traversal (<code>dim</code>).</p>
+<p>[<code>next_steps</code>] defines a routing-specific evaluation
+strategy for <code>Selection</code>. Unlike <a href="../enum.Selection.html#method.eval" title="method hyperactor_mesh::selection::Selection::eval"><code>Selection::eval</code></a>, which
+produces flat indices that match a selection, this method produces
+intermediate routing states — new frames or deferred steps to
+continue traversing.</p>
+<p>Rather than returning raw frames directly, [<code>next_steps</code>]
+produces a stream of [<code>RoutingStep</code>]s via a callback — each
+representing a distinct kind of routing progression:</p>
+<ul>
+<li>
+<p>[<code>RoutingStep::Forward</code>] indicates that routing proceeds
+deterministically to a new [<code>RoutingFrame</code>] — the next
+coordinate is fully determined by the current selection and
+frame state.</p>
+</li>
+<li>
+<p>[<code>RoutingStep::Choice</code>] represents a deferred decision: it
+returns a set of admissible indices, and <strong>the caller must
+select one</strong> (e.g., for load balancing or policy-based routing)
+<strong>before routing can proceed</strong>.</p>
+</li>
+</ul>
+<p>In this way, non-determinism is treated as a <strong>first-class,
+policy-driven</strong> aspect of the routing system — enabling
+inspection, customization, and future extensions without
+complicating the core traversal logic.</p>
+<p>A frame is considered a delivery target if its selection is
+<a href="../enum.Selection.html#variant.True" title="variant hyperactor_mesh::selection::Selection::True"><code>Selection::True</code></a> and all dimensions have been traversed, as
+determined by [<code>RoutingFrame::deliver_here</code>]. All other frames are
+forwarded further using [<code>RoutingFrame::should_route</code>].</p>
+<p>This design enables <strong>compositional</strong>, <strong>local</strong>, and <strong>scalable</strong>
+routing:</p>
+<ul>
+<li><strong>Compositional</strong>: complex selection expressions decompose into
+simpler, independently evaluated sub-selections.</li>
+<li><strong>Local</strong>: each frame carries exactly the state needed for its
+next step — no global coordination or lookahead is required.</li>
+<li><strong>Scalable</strong>: routing unfolds recursively, one hop at a time,
+allowing for efficient traversal even in high-dimensional spaces.</li>
+</ul>
+<p>This module provides the foundation for building structured,
+recursive routing logic over multidimensional coordinate spaces.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Choice.html" title="struct hyperactor_mesh::selection::routing::Choice">Choice</a></dt><dd>A deferred routing decision as contained in a
+<a href="enum.RoutingStep.html#variant.Choice" title="variant hyperactor_mesh::selection::routing::RoutingStep::Choice"><code>RoutingStep::Choice</code></a>.</dd><dt><a class="struct" href="struct.RoutingFrame.html" title="struct hyperactor_mesh::selection::routing::RoutingFrame">Routing<wbr>Frame</a></dt><dd><code>RoutingFrame</code> captures the state of a selection being evaluated:
+the current coordinate (<code>here</code>), the remaining selection to apply,
+the shape and layout information (<code>slice</code>), and the current
+dimension (<code>dim</code>).</dd><dt><a class="struct" href="struct.RoutingFrameKey.html" title="struct hyperactor_mesh::selection::routing::RoutingFrameKey">Routing<wbr>Frame<wbr>Key</a></dt><dd>Key used to deduplicate routing frames.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.RoutingAction.html" title="enum hyperactor_mesh::selection::routing::RoutingAction">Routing<wbr>Action</a></dt><dd>Represents the outcome of evaluating a routing step.</dd><dt><a class="enum" href="enum.RoutingStep.html" title="enum hyperactor_mesh::selection::routing::RoutingStep">Routing<wbr>Step</a></dt><dd>A <code>RoutingStep</code> represents a unit of progress in the routing
+process.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.format_route.html" title="fn hyperactor_mesh::selection::routing::format_route">format_<wbr>route</a></dt><dd>Formats a routing path as a string, showing each hop in order.</dd><dt><a class="fn" href="fn.format_routing_tree.html" title="fn hyperactor_mesh::selection::routing::format_routing_tree">format_<wbr>routing_<wbr>tree</a></dt><dd>Formats a routing tree as an indented string.</dd><dt><a class="fn" href="fn.print_route.html" title="fn hyperactor_mesh::selection::routing::print_route">print_<wbr>route</a></dt><dt><a class="fn" href="fn.print_routing_tree.html" title="fn hyperactor_mesh::selection::routing::print_routing_tree">print_<wbr>routing_<wbr>tree</a></dt><dd>Prints the routing tree for a selection over a slice.</dd><dt><a class="fn" href="fn.resolve_routing.html" title="fn hyperactor_mesh::selection::routing::resolve_routing">resolve_<wbr>routing</a></dt><dd>Resolves the current set of routing frames (<code>dests</code>) to determine
+whether the message should be delivered at this rank, and which
+routing frames should be forwarded to peer ranks.</dd></dl></section></div></main></body></html>

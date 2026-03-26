@@ -1,0 +1,1185 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="MailboxClient" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/mailboxes/mailbox_client.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="A MailboxClient is the sending counterpart to a MailboxServer. It owns a buffer of outgoing messages and transmits them over a channel::Tx interface to a remote server. The client handles undeliver..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="A MailboxClient is the sending counterpart to a MailboxServer. It owns a buffer of outgoing messages and transmits them over a channel::Tx interface to a remote server. The client handles undeliver..." />
+
+    <title>MailboxClient &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/mailbox_client';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/mailbox_client.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">MailboxClient</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="MailboxClient">
+        <meta itemprop="position" content="1">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="mailboxclient">
+<h1>MailboxClient<a class="headerlink" href="#mailboxclient" title="Link to this heading">#</a></h1>
+<p>A <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> is the sending counterpart to a <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code>. It owns a buffer of outgoing messages and transmits them over a <code class="docutils literal notranslate"><span class="pre">channel::Tx</span></code> interface to a remote server.</p>
+<p>The client handles undeliverable returns, maintains a background task for monitoring channel health, and implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> for compatibility.</p>
+<p>Topics in this section:</p>
+<ul class="simple">
+<li><p>The <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> struct and its <code class="docutils literal notranslate"><span class="pre">new</span></code> constructor</p></li>
+<li><p>The use of <code class="docutils literal notranslate"><span class="pre">Buffer&lt;MessageEnvelope&gt;</span></code> for decoupled delivery</p></li>
+<li><p>Delivery error handling and monitoring</p></li>
+</ul>
+<section id="internal-buffering">
+<h2>Internal Buffering<a class="headerlink" href="#internal-buffering" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> uses a <code class="docutils literal notranslate"><span class="pre">Buffer&lt;MessageEnvelope&gt;</span></code> internally to decouple message submission from actual transmission. This buffer ensures ordered, asynchronous delivery while preserving undeliverable routing guarantees.</p>
+<p>This is a foundational buffer abstraction used in several types in the remainder of the program. It’s a concurrency-safe buffered message processor, parameterized on the message type <code class="docutils literal notranslate"><span class="pre">T</span></code>.</p>
+<p>The buffer:</p>
+<ul class="simple">
+<li><p>accepts messages of type <code class="docutils literal notranslate"><span class="pre">T</span></code></p></li>
+<li><p>spawns an internal background task to process messages asynchronously</p></li>
+<li><p>tracks how many messages have been processed via a <code class="docutils literal notranslate"><span class="pre">watch</span></code> channel + <code class="docutils literal notranslate"><span class="pre">AtomicUsize</span></code>:</p></li>
+</ul>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">struct</span><span class="w"> </span><span class="nc">Buffer</span><span class="o">&lt;</span><span class="n">T</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">queue</span><span class="p">:</span><span class="w"> </span><span class="nc">mpsc</span><span class="p">::</span><span class="n">UnboundedSender</span><span class="o">&lt;</span><span class="p">(</span><span class="n">T</span><span class="p">,</span><span class="w"> </span><span class="n">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">processed</span><span class="p">:</span><span class="w"> </span><span class="nc">watch</span><span class="p">::</span><span class="n">Receiver</span><span class="o">&lt;</span><span class="kt">usize</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">seq</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicUsize</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>For functions of type <code class="docutils literal notranslate"><span class="pre">Fn(T)</span> <span class="pre">-&gt;</span> <span class="pre">impl</span> <span class="pre">Future&lt;Output</span> <span class="pre">=</span> <span class="pre">()&gt;</span></code>, a new <code class="docutils literal notranslate"><span class="pre">Buffer&lt;T&gt;</span></code> can be constructed:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="o">&lt;</span><span class="n">T</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="o">&gt;</span><span class="w"> </span><span class="n">Buffer</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="o">&lt;</span><span class="n">Fut</span><span class="o">&gt;</span><span class="p">(</span>
+<span class="w">        </span><span class="n">process</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="nb">Fn</span><span class="p">(</span><span class="n">T</span><span class="p">,</span><span class="w"> </span><span class="n">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Fut</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span>
+<span class="w">    </span><span class="k">where</span>
+<span class="w">        </span><span class="n">Fut</span><span class="p">:</span><span class="w"> </span><span class="nc">Future</span><span class="o">&lt;</span><span class="n">Output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">,</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">queue</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">next</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mpsc</span><span class="p">::</span><span class="n">unbounded_channel</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">last_processed</span><span class="p">,</span><span class="w"> </span><span class="n">processed</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">watch</span><span class="p">::</span><span class="n">channel</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span>
+<span class="w">        </span><span class="k">crate</span><span class="p">::</span><span class="n">init</span><span class="p">::</span><span class="n">RUNTIME</span><span class="p">.</span><span class="n">spawn</span><span class="p">(</span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">seq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">            </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">((</span><span class="n">msg</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">))</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">next</span><span class="p">.</span><span class="n">recv</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">process</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">).</span><span class="k">await</span><span class="p">;</span>
+<span class="w">                </span><span class="n">seq</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">last_processed</span><span class="p">.</span><span class="n">send</span><span class="p">(</span><span class="n">seq</span><span class="p">);</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">});</span>
+<span class="w">        </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">queue</span><span class="p">,</span>
+<span class="w">            </span><span class="n">processed</span><span class="p">,</span>
+<span class="w">            </span><span class="n">seq</span><span class="p">:</span><span class="w"> </span><span class="nc">AtomicUsize</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">Buffer&lt;T&gt;</span></code> type is constructed by providing a user-supplied asynchronous processing function. This function accepts incoming messages of type <code class="docutils literal notranslate"><span class="pre">T</span></code> together with a return handle for undeliverable messages. Each time a message is enqueued into the buffer, it is delivered to the processing function in the order received.</p>
+<p>Internally, the buffer maintains an unbounded channel for queued messages and spawns a background task responsible for processing messages sequentially. As each message is handled, the buffer advances an internal sequence counter and updates a watch channel, allowing external components to monitor processing progress if needed. The processing function is fully asynchronous: the buffer awaits its completion before proceeding to the next message, ensuring that processing remains ordered and that no work is dropped or skipped.</p>
+<p>This design decouples message submission from processing, allowing producers to enqueue messages immediately while processing occurs concurrently in the background.</p>
+<p>We can write a <code class="docutils literal notranslate"><span class="pre">send</span></code> function for <code class="docutils literal notranslate"><span class="pre">Buffer&lt;T&gt;</span></code>. It is not <code class="docutils literal notranslate"><span class="pre">async</span></code> since it just enqueues the incoming <code class="docutils literal notranslate"><span class="pre">T</span></code> for processing:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="o">&lt;</span><span class="n">T</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="o">&gt;</span><span class="w"> </span><span class="n">Buffer</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">send</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">item</span><span class="p">:</span><span class="w"> </span><span class="p">(</span><span class="n">T</span><span class="p">,</span><span class="w"> </span><span class="n">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;&gt;</span><span class="p">),</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">mpsc</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">SendError</span><span class="o">&lt;</span><span class="p">(</span><span class="n">T</span><span class="p">,</span><span class="w"> </span><span class="n">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">seq</span><span class="p">.</span><span class="n">fetch_add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">Ordering</span><span class="p">::</span><span class="n">SeqCst</span><span class="p">);</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">queue</span><span class="p">.</span><span class="n">send</span><span class="p">(</span><span class="n">item</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="nb">Ok</span><span class="p">(())</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The buffer maintains two separate counters: one tracking the number of messages submitted for processing, and another tracking the number of messages fully processed. The submission counter (<code class="docutils literal notranslate"><span class="pre">seq</span></code>) is updated atomically each time a message is enqueued. This allows external components to observe the current backlog of unprocessed messages by comparing the two counters.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">flush</span></code> operation however is <code class="docutils literal notranslate"><span class="pre">async</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="o">&lt;</span><span class="n">T</span><span class="p">:</span><span class="w"> </span><span class="nc">Message</span><span class="o">&gt;</span><span class="w"> </span><span class="n">Buffer</span><span class="o">&lt;</span><span class="n">T</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">flush</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">watch</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">RecvError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">seq</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">seq</span><span class="p">.</span><span class="n">load</span><span class="p">(</span><span class="n">Ordering</span><span class="p">::</span><span class="n">SeqCst</span><span class="p">);</span>
+<span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="o">*</span><span class="bp">self</span><span class="p">.</span><span class="n">processed</span><span class="p">.</span><span class="n">borrow_and_update</span><span class="p">()</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">seq</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">processed</span><span class="p">.</span><span class="n">changed</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="nb">Ok</span><span class="p">(())</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This function allows callers to await the completion of all previously submitted messages. When invoked, the current submission sequence number is read to capture the total number of messages that have been enqueued at that point. The function then asynchronously waits until the processing counter reaches or exceeds this value, indicating that all submitted messages have been fully processed.</p>
+<p>Internally, <code class="docutils literal notranslate"><span class="pre">flush(</span></code>) uses the buffer’s watch channel to observe updates as message processing advances. Each time a message completes processing, the background task updates the watch channel, allowing<code class="docutils literal notranslate"> <span class="pre">flush()</span></code> to efficiently wait without busy-waiting or polling.</p>
+</section>
+<section id="role-and-behavior-of-mailboxclient">
+<h2>Role and Behavior of <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code><a class="headerlink" href="#role-and-behavior-of-mailboxclient" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code> listens for incoming messages on a channel and delivers them to the system. The <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> acts as the sender, enqueueing messages for transmission to the server.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> is the <strong>dual</strong> of a <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code>. It:</p>
+<ul class="simple">
+<li><p>owns a <code class="docutils literal notranslate"><span class="pre">Buffer&lt;MessageEnvelope&gt;</span></code> that decouples senders from actual delivery;</p></li>
+<li><p>transmits messages asynchronously over a <code class="docutils literal notranslate"><span class="pre">channel::Tx&lt;MessageEnvelope&gt;</span></code>;</p></li>
+<li><p>reports undeliverable messages via a <code class="docutils literal notranslate"><span class="pre">PortHandle&lt;Undeliverable&lt;MessageEnvelope&gt;&gt;</span></code>;</p></li>
+<li><p>monitors the transmission channel for health and shuts down approriately.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code> is a trait defining the receiving side of a message channel; <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> is a concrete sender that buffers and transmits messages to it:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">MailboxClient</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">buffer</span><span class="p">:</span><span class="w"> </span><span class="nc">Buffer</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">_tx_monitoring</span><span class="p">:</span><span class="w"> </span><span class="nc">CancellationToken</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">MailboxClient::new</span></code> constructor creates a buffered client capable of sending <code class="docutils literal notranslate"><span class="pre">MessageEnvelope</span></code>s over a <code class="docutils literal notranslate"><span class="pre">channel::Tx</span></code>. This channel represents the transmission path to a remote <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code>.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxClient</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">tx</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="n">channel</span><span class="p">::</span><span class="n">Tx</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tx</span><span class="p">.</span><span class="n">addr</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">tx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">tx</span><span class="p">);</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">tx_status</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tx</span><span class="p">.</span><span class="n">status</span><span class="p">().</span><span class="n">clone</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">tx_monitoring</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CancellationToken</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">buffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Buffer</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="k">move</span><span class="w"> </span><span class="o">|</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="o">|</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">tx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">clone</span><span class="p">(</span><span class="o">&amp;</span><span class="n">tx</span><span class="p">);</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">return_channel</span><span class="p">,</span><span class="w"> </span><span class="n">return_receiver</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">oneshot</span><span class="p">::</span><span class="n">channel</span><span class="p">();</span>
+<span class="w">            </span><span class="c1">// Set up for delivery failure.</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">return_handle_0</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">return_handle</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+<span class="w">            </span><span class="n">tokio</span><span class="p">::</span><span class="n">spawn</span><span class="p">(</span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">return_receiver</span><span class="p">.</span><span class="k">await</span><span class="p">;</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Ok</span><span class="p">(</span><span class="n">SendError</span><span class="p">{</span><span class="n">error</span><span class="p">:</span><span class="w"> </span><span class="nc">e</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">})</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="n">message</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span>
+<span class="w">                        </span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">BrokenLink</span><span class="p">(</span><span class="fm">format!</span><span class="p">(</span>
+<span class="w">                            </span><span class="s">&quot;failed to enqueue in MailboxClient when processing buffer: {e}&quot;</span>
+<span class="w">                        </span><span class="p">)),</span>
+<span class="w">                        </span><span class="n">return_handle_0</span><span class="p">,</span>
+<span class="w">                    </span><span class="p">);</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">            </span><span class="p">});</span>
+<span class="w">            </span><span class="c1">// Send the message for transmission.</span>
+<span class="w">            </span><span class="n">tx</span><span class="p">.</span><span class="n">try_post</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_channel</span><span class="p">);</span>
+<span class="w">            </span><span class="n">future</span><span class="p">::</span><span class="n">ready</span><span class="p">(())</span>
+<span class="w">        </span><span class="p">});</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">this</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">buffer</span><span class="p">,</span>
+<span class="w">            </span><span class="n">_tx_monitoring</span><span class="p">:</span><span class="w"> </span><span class="nc">tx_monitoring</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">        </span><span class="p">};</span>
+<span class="w">        </span><span class="bp">Self</span><span class="p">::</span><span class="n">monitor_tx_health</span><span class="p">(</span><span class="n">tx_status</span><span class="p">,</span><span class="w"> </span><span class="n">tx_monitoring</span><span class="p">,</span><span class="w"> </span><span class="n">addr</span><span class="p">);</span>
+<span class="w">        </span><span class="n">this</span>
+<span class="w">    </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>Constructing a <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> sets up a buffer that attempts to transmit messages over a <code class="docutils literal notranslate"><span class="pre">channel::Tx</span></code>, returning them to the sender via the return handle if delivery fails.</p>
+<p>The client internally maintains a <code class="docutils literal notranslate"><span class="pre">Buffer&lt;MessageEnvelope&gt;</span></code> that decouples the enqueueing of messages from their actual delivery. This allows producers to send messages immediately without blocking on network or delivery latency.</p>
+<p>To construct the client:</p>
+<ul>
+<li><p>The provided <code class="docutils literal notranslate"><span class="pre">tx</span></code> (a <code class="docutils literal notranslate"><span class="pre">channel::Tx&lt;MessageEnvelope&gt;</span></code>) is wrapped in an <code class="docutils literal notranslate"><span class="pre">Arc</span></code> so it can be shared safely across tasks.</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">CancellationToken</span></code> is created to coordinate shutdown or monitoring cancellation.</p></li>
+<li><p>A new <code class="docutils literal notranslate"><span class="pre">Buffer</span></code> is initialized, with a closure defining how each buffered message should be processed.</p>
+<p>This closure is passed <code class="docutils literal notranslate"><span class="pre">(envelope,</span> <span class="pre">return_handle)</span></code>:</p>
+<ol class="arabic simple">
+<li><p>A fresh one-shot channel is created for each message, to support delivery-failure return paths.</p></li>
+<li><p>A background task is spawned that awaits the outcome of the one-shot channel.</p>
+<ul class="simple">
+<li><p>If the <code class="docutils literal notranslate"><span class="pre">channel::Tx</span></code> reports delivery failure by sending the message back on the one-shot channel, the task uses the return handle to report it as undeliverable.</p></li>
+</ul>
+</li>
+<li><p>The closure returns an <code class="docutils literal notranslate"><span class="pre">async</span> <span class="pre">move</span></code> block that attempts to send the envelope using <code class="docutils literal notranslate"><span class="pre">tx.try_post(</span></code>…).</p>
+<ul class="simple">
+<li><p>If the send fails (e.g., due to a broken channel), the envelope is marked as undeliverable and returned via the return handle.</p></li>
+</ul>
+</li>
+</ol>
+</li>
+<li><p>Finally, the constructor installs a monitoring task using <code class="docutils literal notranslate"><span class="pre">monitor_tx_health</span></code>, allowing the client to detect when the transmission channel becomes unhealthy.</p></li>
+</ul>
+<p>The resulting <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> consists of the constructed <code class="docutils literal notranslate"><span class="pre">Buffer</span></code> and the cancellation token used to coordinate monitoring.</p>
+<section id="mailboxclient-implements-mailboxsender">
+<h3><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#mailboxclient-implements-mailboxsender" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> itself implements the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait. This is made possible by delegating its <code class="docutils literal notranslate"><span class="pre">post</span></code> method to the underlying <code class="docutils literal notranslate"><span class="pre">Buffer</span></code> (by calling <code class="docutils literal notranslate"><span class="pre">send</span></code> on it). As a result, any component expecting a <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> can use a <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> transparently:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">MailboxClient</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">envelope</span><span class="p">:</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="p">,</span>
+<span class="w">        </span><span class="n">return_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">tracing</span><span class="p">::</span><span class="n">trace</span><span class="o">!</span><span class="p">(</span><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;post&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;posting message to {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">);</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">mpsc</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">SendError</span><span class="p">((</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">)))</span><span class="w"> </span><span class="o">=</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">buffer</span><span class="p">.</span><span class="n">send</span><span class="p">((</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">))</span>
+<span class="w">        </span><span class="p">{</span>
+<span class="w">            </span><span class="c1">// Failed to enqueue.</span>
+<span class="w">            </span><span class="n">envelope</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span>
+<span class="w">                </span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">BrokenLink</span><span class="p">(</span><span class="s">&quot;failed to enqueue in MailboxClient&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()),</span>
+<span class="w">                </span><span class="n">return_handle</span><span class="p">,</span>
+<span class="w">            </span><span class="p">);</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Although <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> and <code class="docutils literal notranslate"><span class="pre">MailboxServer</span></code> play dual roles (one sends, the other receives) both implement the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait.</p>
+<p>In the client’s case, implementing <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> allows it to participate in code paths that post messages, by enqueueing them into its internal buffer. For the server, <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> reflects its ability to post directly into the system after receiving a message from a channel.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#internal-buffering">Internal Buffering</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#role-and-behavior-of-mailboxclient">Role and Behavior of <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mailboxclient-implements-mailboxsender"><code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/mailboxes/mailbox_client.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-book/src/mailboxes/mailbox_client.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "MailboxClient",
+       "headline": "MailboxClient",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/books/hyperactor-book/src/mailboxes/mailbox_client.html",
+       "articleBody": "MailboxClient# A MailboxClient is the sending counterpart to a MailboxServer. It owns a buffer of outgoing messages and transmits them over a channel::Tx interface to a remote server. The client handles undeliverable returns, maintains a background task for monitoring channel health, and implements MailboxSender for compatibility. Topics in this section: The MailboxClient struct and its new constructor The use of Buffer\u003cMessageEnvelope\u003e for decoupled delivery Delivery error handling and monitoring Internal Buffering# MailboxClient uses a Buffer\u003cMessageEnvelope\u003e internally to decouple message submission from actual transmission. This buffer ensures ordered, asynchronous delivery while preserving undeliverable routing guarantees. This is a foundational buffer abstraction used in several types in the remainder of the program. It\u2019s a concurrency-safe buffered message processor, parameterized on the message type T. The buffer: accepts messages of type T spawns an internal background task to process messages asynchronously tracks how many messages have been processed via a watch channel + AtomicUsize: struct Buffer\u003cT: Message\u003e { queue: mpsc::UnboundedSender\u003c(T, PortHandle\u003cUndeliverable\u003cT\u003e\u003e)\u003e, processed: watch::Receiver\u003cusize\u003e, seq: AtomicUsize, } For functions of type Fn(T) -\u003e impl Future\u003cOutput = ()\u003e, a new Buffer\u003cT\u003e can be constructed: impl\u003cT: Message\u003e Buffer\u003cT\u003e { fn new\u003cFut\u003e( process: impl Fn(T, PortHandle\u003cUndeliverable\u003cT\u003e\u003e) -\u003e Fut + Send + Sync + \u0027static, ) -\u003e Self where Fut: Future\u003cOutput = ()\u003e + Send + \u0027static, { let (queue, mut next) = mpsc::unbounded_channel(); let (last_processed, processed) = watch::channel(0); crate::init::RUNTIME.spawn(async move { let mut seq = 0; while let Some((msg, return_handle)) = next.recv().await { process(msg, return_handle).await; seq += 1; let _ = last_processed.send(seq); } }); Self { queue, processed, seq: AtomicUsize::new(0), } } } The Buffer\u003cT\u003e type is constructed by providing a user-supplied asynchronous processing function. This function accepts incoming messages of type T together with a return handle for undeliverable messages. Each time a message is enqueued into the buffer, it is delivered to the processing function in the order received. Internally, the buffer maintains an unbounded channel for queued messages and spawns a background task responsible for processing messages sequentially. As each message is handled, the buffer advances an internal sequence counter and updates a watch channel, allowing external components to monitor processing progress if needed. The processing function is fully asynchronous: the buffer awaits its completion before proceeding to the next message, ensuring that processing remains ordered and that no work is dropped or skipped. This design decouples message submission from processing, allowing producers to enqueue messages immediately while processing occurs concurrently in the background. We can write a send function for Buffer\u003cT\u003e. It is not async since it just enqueues the incoming T for processing: impl\u003cT: Message\u003e Buffer\u003cT\u003e { fn send( \u0026self, item: (T, PortHandle\u003cUndeliverable\u003cT\u003e\u003e), ) -\u003e Result\u003c(), mpsc::error::SendError\u003c(T, PortHandle\u003cUndeliverable\u003cT\u003e\u003e)\u003e\u003e { self.seq.fetch_add(1, Ordering::SeqCst); self.queue.send(item)?; Ok(()) } } The buffer maintains two separate counters: one tracking the number of messages submitted for processing, and another tracking the number of messages fully processed. The submission counter (seq) is updated atomically each time a message is enqueued. This allows external components to observe the current backlog of unprocessed messages by comparing the two counters. The flush operation however is async: impl\u003cT: Message\u003e Buffer\u003cT\u003e { async fn flush(\u0026mut self) -\u003e Result\u003c(), watch::error::RecvError\u003e { let seq = self.seq.load(Ordering::SeqCst); while *self.processed.borrow_and_update() \u003c seq { self.processed.changed().await?; } Ok(()) } } This function allows callers to await the completion of all previously submitted messages. When invoked, the current submission sequence number is read to capture the total number of messages that have been enqueued at that point. The function then asynchronously waits until the processing counter reaches or exceeds this value, indicating that all submitted messages have been fully processed. Internally, flush() uses the buffer\u2019s watch channel to observe updates as message processing advances. Each time a message completes processing, the background task updates the watch channel, allowing flush() to efficiently wait without busy-waiting or polling. Role and Behavior of MailboxClient# The MailboxServer listens for incoming messages on a channel and delivers them to the system. The MailboxClient acts as the sender, enqueueing messages for transmission to the server. A MailboxClient is the dual of a MailboxServer. It: owns a Buffer\u003cMessageEnvelope\u003e that decouples senders from actual delivery; transmits messages asynchronously over a channel::Tx\u003cMessageEnvelope\u003e; reports undeliverable messages via a PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e; monitors the transmission channel for health and shuts down approriately. MailboxServer is a trait defining the receiving side of a message channel; MailboxClient is a concrete sender that buffers and transmits messages to it: pub struct MailboxClient { buffer: Buffer\u003cMessageEnvelope\u003e, _tx_monitoring: CancellationToken, } The MailboxClient::new constructor creates a buffered client capable of sending MessageEnvelopes over a channel::Tx. This channel represents the transmission path to a remote MailboxServer. impl MailboxClient { pub fn new(tx: impl channel::Tx\u003cMessageEnvelope\u003e + Send + Sync + \u0027static) -\u003e Self { let addr = tx.addr(); let tx = Arc::new(tx); let tx_status = tx.status().clone(); let tx_monitoring = CancellationToken::new(); let buffer = Buffer::new(move |envelope, return_handle| { let tx = Arc::clone(\u0026tx); let (return_channel, return_receiver) = oneshot::channel(); // Set up for delivery failure. let return_handle_0 = return_handle.clone(); tokio::spawn(async move { let result = return_receiver.await; if let Ok(SendError{error: e, message, ..}) = result { message.undeliverable( DeliveryError::BrokenLink(format!( \"failed to enqueue in MailboxClient when processing buffer: {e}\" )), return_handle_0, ); } }); // Send the message for transmission. tx.try_post(envelope, return_channel); future::ready(()) }); let this = Self { buffer, _tx_monitoring: tx_monitoring.clone(), }; Self::monitor_tx_health(tx_status, tx_monitoring, addr); this } Constructing a MailboxClient sets up a buffer that attempts to transmit messages over a channel::Tx, returning them to the sender via the return handle if delivery fails. The client internally maintains a Buffer\u003cMessageEnvelope\u003e that decouples the enqueueing of messages from their actual delivery. This allows producers to send messages immediately without blocking on network or delivery latency. To construct the client: The provided tx (a channel::Tx\u003cMessageEnvelope\u003e) is wrapped in an Arc so it can be shared safely across tasks. A CancellationToken is created to coordinate shutdown or monitoring cancellation. A new Buffer is initialized, with a closure defining how each buffered message should be processed. This closure is passed (envelope, return_handle): A fresh one-shot channel is created for each message, to support delivery-failure return paths. A background task is spawned that awaits the outcome of the one-shot channel. If the channel::Tx reports delivery failure by sending the message back on the one-shot channel, the task uses the return handle to report it as undeliverable. The closure returns an async move block that attempts to send the envelope using tx.try_post(\u2026). If the send fails (e.g., due to a broken channel), the envelope is marked as undeliverable and returned via the return handle. Finally, the constructor installs a monitoring task using monitor_tx_health, allowing the client to detect when the transmission channel becomes unhealthy. The resulting MailboxClient consists of the constructed Buffer and the cancellation token used to coordinate monitoring. MailboxClient implements MailboxSender# MailboxClient itself implements the MailboxSender trait. This is made possible by delegating its post method to the underlying Buffer (by calling send on it). As a result, any component expecting a MailboxSender can use a MailboxClient transparently: impl MailboxSender for MailboxClient { fn post( \u0026self, envelope: MessageEnvelope, return_handle: PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e, ) { tracing::trace!(name = \"post\", \"posting message to {}\", envelope.dest); if let Err(mpsc::error::SendError((envelope, return_handle))) = self.buffer.send((envelope, return_handle)) { // Failed to enqueue. envelope.undeliverable( DeliveryError::BrokenLink(\"failed to enqueue in MailboxClient\".to_string()), return_handle, ); } } } Although MailboxClient and MailboxServer play dual roles (one sends, the other receives) both implement the MailboxSender trait. In the client\u2019s case, implementing MailboxSender allows it to participate in code paths that post messages, by enqueueing them into its internal buffer. For the server, MailboxSender reflects its ability to post directly into the system after receiving a message from a channel.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-book/src/mailboxes/mailbox_client.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"static":["ACTOR_SPAWN_MAX_IDLE","GET_ACTOR_STATE_MAX_IDLE"],"struct":["ProcMesh","ProcMeshRef","ProcRef"]};

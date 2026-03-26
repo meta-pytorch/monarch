@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["hyperactor_mesh",[["impl <a class=\"trait\" href=\"ndslice/view/trait.Ranked.html\" title=\"trait ndslice::view::Ranked\">Ranked</a> for <a class=\"struct\" href=\"hyperactor_mesh/v1/host_mesh/struct.HostMeshRef.html\" title=\"struct hyperactor_mesh::v1::host_mesh::HostMeshRef\">HostMeshRef</a>"],["impl <a class=\"trait\" href=\"ndslice/view/trait.Ranked.html\" title=\"trait ndslice::view::Ranked\">Ranked</a> for <a class=\"struct\" href=\"hyperactor_mesh/v1/proc_mesh/struct.ProcMeshRef.html\" title=\"struct hyperactor_mesh::v1::proc_mesh::ProcMeshRef\">ProcMeshRef</a>"],["impl&lt;A: <a class=\"trait\" href=\"hyperactor/actor/trait.Referable.html\" title=\"trait hyperactor::actor::Referable\">Referable</a>&gt; <a class=\"trait\" href=\"ndslice/view/trait.Ranked.html\" title=\"trait ndslice::view::Ranked\">Ranked</a> for <a class=\"struct\" href=\"hyperactor_mesh/v1/actor_mesh/struct.ActorMeshRef.html\" title=\"struct hyperactor_mesh::v1::actor_mesh::ActorMeshRef\">ActorMeshRef</a>&lt;A&gt;"],["impl&lt;T: 'static&gt; <a class=\"trait\" href=\"ndslice/view/trait.Ranked.html\" title=\"trait ndslice::view::Ranked\">Ranked</a> for <a class=\"struct\" href=\"hyperactor_mesh/v1/value_mesh/struct.ValueMesh.html\" title=\"struct hyperactor_mesh::v1::value_mesh::ValueMesh\">ValueMesh</a>&lt;T&gt;"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1313]}

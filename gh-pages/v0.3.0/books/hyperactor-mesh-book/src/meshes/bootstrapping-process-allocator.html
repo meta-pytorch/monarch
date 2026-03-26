@@ -1,0 +1,1254 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="§2 Process allocator & v0 bootstrap (get something that can spawn processes)" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="2. Get something that can spawn processes: In the canonical v1 flow we need a thing in the parent that can say “start another OS process that will come up as a hyperactor proc/host and talk back to..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="2. Get something that can spawn processes: In the canonical v1 flow we need a thing in the parent that can say “start another OS process that will come up as a hyperactor proc/host and talk back to..." />
+
+    <title>§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes) &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">§2 Process...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes)">
+        <meta itemprop="position" content="1">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="process-allocator-v0-bootstrap-get-something-that-can-spawn-processes">
+<h1>§2 Process allocator &amp; v0 bootstrap (get something that can spawn processes)<a class="headerlink" href="#process-allocator-v0-bootstrap-get-something-that-can-spawn-processes" title="Link to this heading">#</a></h1>
+<section id="get-something-that-can-spawn-processes">
+<h2>2. Get something that can spawn processes<a class="headerlink" href="#get-something-that-can-spawn-processes" title="Link to this heading">#</a></h2>
+<p>In the canonical v1 flow we need a <em>thing in the parent</em> that can say “start another OS process that will come up as a hyperactor proc/host and talk back to me.” In this codebase that “thing” is the <strong>process allocator</strong>, implemented as <code class="docutils literal notranslate"><span class="pre">hyperactor::alloc::ProcessAllocator</span></code> defined in <code class="docutils literal notranslate"><span class="pre">hyperactor/src/process.rs</span></code>.</p>
+<p>In the unit-test version (<code class="docutils literal notranslate"><span class="pre">bootstrap_canonical_simple</span></code>) it looks like this:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">allocator</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcessAllocator</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">Command</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+<span class="w">    </span><span class="k">crate</span><span class="p">::</span><span class="n">testresource</span><span class="p">::</span><span class="n">get</span><span class="p">(</span><span class="s">&quot;monarch/hyperactor_mesh/bootstrap&quot;</span><span class="p">),</span>
+<span class="p">));</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">alloc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">allocator</span>
+<span class="w">    </span><span class="p">.</span><span class="n">allocate</span><span class="p">(</span><span class="n">AllocSpec</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// v1 usage: 1-D extent</span>
+<span class="w">        </span><span class="n">extent</span><span class="p">:</span><span class="w"> </span><span class="nc">extent</span><span class="o">!</span><span class="p">(</span><span class="n">replicas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">),</span>
+<span class="w">        </span><span class="n">constraints</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+<span class="w">        </span><span class="n">proc_name</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+<span class="w">        </span><span class="n">transport</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelTransport</span><span class="p">::</span><span class="n">Unix</span><span class="p">,</span>
+<span class="w">    </span><span class="p">})</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span>
+<span class="w">    </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
+</pre></div>
+</div>
+<p>That’s the high-level call. Under the covers, <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> does a bit more, and it matters for understanding bootstrapping, so let’s drill in.</p>
+<section id="what-allocate-actually-does">
+<h3>2.1 What <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> actually does<a class="headerlink" href="#what-allocate-actually-does" title="Link to this heading">#</a></h3>
+<p>When you call <code class="docutils literal notranslate"><span class="pre">allocator.allocate(spec)</span></code>, the allocator first creates a <strong>per-allocation bootstrap channel</strong>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">bootstrap_addr</span><span class="p">,</span><span class="w"> </span><span class="n">rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">channel</span><span class="p">::</span><span class="n">serve</span><span class="p">(</span><span class="n">ChannelAddr</span><span class="p">::</span><span class="n">any</span><span class="p">(</span><span class="n">ChannelTransport</span><span class="p">::</span><span class="n">Unix</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>So: every allocation gets its <strong>own</strong> address (<code class="docutils literal notranslate"><span class="pre">bootstrap_addr</span></code>) that children will dial back to, and an <code class="docutils literal notranslate"><span class="pre">rx</span></code> so the allocator can receive messages from those children.</p>
+<p>Then it builds a <code class="docutils literal notranslate"><span class="pre">ProcessAlloc</span></code> that tracks:</p>
+<ul class="simple">
+<li><p>the <code class="docutils literal notranslate"><span class="pre">AllocSpec</span></code> you passed (which includes the extent and the transport),</p></li>
+<li><p>the <code class="docutils literal notranslate"><span class="pre">bootstrap_addr</span></code> it just created,</p></li>
+<li><p>the set of children it will spawn,</p></li>
+<li><p>and the world/rank bookkeeping (<code class="docutils literal notranslate"><span class="pre">Ranks</span></code>) so each child gets a proper ranked <code class="docutils literal notranslate"><span class="pre">ProcId</span></code>.</p></li>
+</ul>
+<p>So far: <strong>no process has been started yet</strong>, we just prepared an allocation.</p>
+</section>
+<section id="spawning-the-child-inside-maybe-spawn">
+<h3>2.2 Spawning the child (inside <code class="docutils literal notranslate"><span class="pre">maybe_spawn()</span></code>)<a class="headerlink" href="#spawning-the-child-inside-maybe-spawn" title="Link to this heading">#</a></h3>
+<p>Later, when the allocation runs its loop (<code class="docutils literal notranslate"><span class="pre">alloc.next().await</span></code>), it will eventually try to spawn a child here:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">cmd</span><span class="p">.</span><span class="n">env</span><span class="p">(</span><span class="n">bootstrap</span><span class="p">::</span><span class="n">BOOTSTRAP_ADDR_ENV</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">bootstrap_addr</span><span class="p">.</span><span class="n">to_string</span><span class="p">());</span>
+<span class="n">cmd</span><span class="p">.</span><span class="n">env</span><span class="p">(</span><span class="n">bootstrap</span><span class="p">::</span><span class="n">CLIENT_TRACE_ID_ENV</span><span class="p">,</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">client_context</span><span class="p">.</span><span class="n">trace_id</span><span class="p">.</span><span class="n">as_str</span><span class="p">());</span>
+<span class="n">cmd</span><span class="p">.</span><span class="n">env</span><span class="p">(</span><span class="n">bootstrap</span><span class="p">::</span><span class="n">BOOTSTRAP_INDEX_ENV</span><span class="p">,</span><span class="w"> </span><span class="n">index</span><span class="p">.</span><span class="n">to_string</span><span class="p">());</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">child</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cmd</span><span class="p">.</span><span class="n">spawn</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Important points:</p>
+<ol class="arabic">
+<li><p><strong>The parent chooses the command.</strong>
+In the unit test we pointed at a small bootstrap helper:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="w"> </span><span class="n">ProcessAllocator</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">Command</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+<span class="w">     </span><span class="k">crate</span><span class="p">::</span><span class="n">testresource</span><span class="p">::</span><span class="n">get</span><span class="p">(</span><span class="s">&quot;monarch/hyperactor_mesh/bootstrap&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>In real deployments this can be “re-exec myself” or “run this Python PAR/XAR with a different entrypoint.” The allocator is just the <em>template</em>.</p>
+</li>
+<li><p><strong>This is where the initial env is attached.</strong>
+From this file we can see the allocator always sets:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_ADDR_ENV</span></code> — “dial this address to talk to the parent allocator”</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_INDEX_ENV</span></code> — “you are child #N in this allocation”</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CLIENT_TRACE_ID_ENV</span></code> — for log correlation
+That’s the <em>actual</em> bootstrap data we can prove from the code.</p></li>
+</ul>
+</li>
+<li><p><strong>The spec’s extent controls how many children we make.</strong>
+The API is N-dimensional, but in the v1 shape we’re describing we just do</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">extent</span><span class="p">:</span><span class="w"> </span><span class="nc">extent</span><span class="o">!</span><span class="p">(</span><span class="n">replicas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>which the allocator interprets as “I need 1 rank in this allocation.” If you asked for more, it would keep spawning until that extent is satisfied.</p>
+</li>
+<li><p><strong>The transport in the spec is what we tell the child later.</strong>
+The <code class="docutils literal notranslate"><span class="pre">AllocSpec</span></code> has <code class="docutils literal notranslate"><span class="pre">transport:</span> <span class="pre">ChannelTransport::Unix</span></code> — that’s what we eventually pass down to the child when we tell it “start a proc.”</p></li>
+</ol>
+</section>
+<section id="what-the-child-actually-does-when-it-starts">
+<h3>2.3 What the child actually does when it starts<a class="headerlink" href="#what-the-child-actually-does-when-it-starts" title="Link to this heading">#</a></h3>
+<p>So far we’ve been on the parent side: we built a <code class="docutils literal notranslate"><span class="pre">ProcessAllocator</span></code>, we called <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code>, and that code spawned <strong>some other executable</strong> (in tests: <code class="docutils literal notranslate"><span class="pre">monarch/hyperactor_mesh/bootstrap</span></code>). Now we need to look at the <strong>child</strong> side of that executable.</p>
+<p>The test bootstrap binary’s <code class="docutils literal notranslate"><span class="pre">main</span></code> is tiny:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor/test/bootstrap.rs</span>
+<span class="cp">#[tokio::main]</span>
+<span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">initialize_with_current_runtime</span><span class="p">();</span>
+<span class="w">    </span><span class="k">unsafe</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">libc</span><span class="p">::</span><span class="n">signal</span><span class="p">(</span><span class="n">libc</span><span class="p">::</span><span class="n">SIGTERM</span><span class="p">,</span><span class="w"> </span><span class="n">libc</span><span class="p">::</span><span class="n">SIG_DFL</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">hyperactor_mesh</span><span class="p">::</span><span class="n">bootstrap_or_die</span><span class="p">().</span><span class="k">await</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>So: every child just calls <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap_or_die()</span></code>. That’s the real entrypoint.</p>
+<section id="bootstrap-or-die-bootstrap-which-mode-am-i-in">
+<h4>2.3.1 <code class="docutils literal notranslate"><span class="pre">bootstrap_or_die</span></code> → <code class="docutils literal notranslate"><span class="pre">bootstrap</span></code> → “which mode am I in?”<a class="headerlink" href="#bootstrap-or-die-bootstrap-which-mode-am-i-in" title="Link to this heading">#</a></h4>
+<p>In bootstrap.rs the entrypoint is:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">bootstrap</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">boot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ok</span><span class="o">!</span><span class="p">(</span><span class="n">Bootstrap</span><span class="p">::</span><span class="n">get_from_env</span><span class="p">()).</span><span class="n">unwrap_or_else</span><span class="p">(</span><span class="n">Bootstrap</span><span class="p">::</span><span class="n">default</span><span class="p">);</span>
+<span class="w">    </span><span class="n">boot</span><span class="p">.</span><span class="n">bootstrap</span><span class="p">().</span><span class="k">await</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Key detail:
+- It first tries to read <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code> from the environment:
+- <code class="docutils literal notranslate"><span class="pre">Bootstrap::get_from_env()</span></code> looks for that env var.
+- If it exists, it decodes a base64 JSON into a <code class="docutils literal notranslate"><span class="pre">Bootstrap</span></code> value.
+- If it doesn’t exist, it returns <code class="docutils literal notranslate"><span class="pre">None</span></code> and we fall back to <code class="docutils literal notranslate"><span class="pre">Bootstrap::default()</span></code>.</p>
+<p>What’s the default?</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs</span>
+<span class="cp">#[derive(Clone, Default, Debug, Serialize, Deserialize)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">Bootstrap</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="err">…</span>
+<span class="w">    </span><span class="cp">#[default]</span>
+<span class="w">    </span><span class="n">V0ProcMesh</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>So: if the parent did not set <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code>, the child runs in <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code> mode.</p>
+<p>This particular <code class="docutils literal notranslate"><span class="pre">ProcessAllocator</span></code> (the v0 one in <code class="docutils literal notranslate"><span class="pre">process.rs</span></code>) does <strong>not</strong> set <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code>. Instead it populates a small, fixed set of environment variables:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_ADDR</span></code>: the allocator’s control channel</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_INDEX</span></code>: the child’s index inside this allocation</p></li>
+<li><p>optionally <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code>: for streaming the child’s stdout/stderr back</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">MONARCH_CLIENT_TRACE_ID</span></code>: for log/trace correlation</p></li>
+</ul>
+<p>Because <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code> is absent, the bootstrap entrypoint in the child falls back to its default and runs the <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code> path. That is what causes the child to come up in the “say hello to the allocator, wait for <code class="docutils literal notranslate"><span class="pre">Allocator2Process</span></code> messages, start procs on demand” mode.</p>
+</section>
+</section>
+<section id="after-the-child-picks-bootstrap-v0procmesh">
+<h3>2.3.2 After the child picks <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code><a class="headerlink" href="#after-the-child-picks-bootstrap-v0procmesh" title="Link to this heading">#</a></h3>
+<p>At this point we are in the child process, running the <code class="docutils literal notranslate"><span class="pre">monarch/hyperactor_mesh/bootstrap</span></code> test binary (the one whose <code class="docutils literal notranslate"><span class="pre">main</span></code> just calls <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap_or_die().await</span></code>).</p>
+<p>Because the parent did <strong>not</strong> set <code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_MODE</span></code>, the call:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">boot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Bootstrap</span><span class="p">::</span><span class="n">get_from_env</span><span class="p">().</span><span class="n">unwrap_or_else</span><span class="p">(</span><span class="n">Bootstrap</span><span class="p">::</span><span class="n">default</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>became <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code>, so the child runs <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh::bootstrap::bootstrap_v0_proc_mesh()</span></code>.</p>
+<p>What that path does (summarizing the code in <code class="docutils literal notranslate"><span class="pre">bootstrap_v0_proc_mesh()</span></code>):</p>
+<ol class="arabic">
+<li><p><strong>Read the two env vars the allocator set</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_BOOTSTRAP_ADDR</span></code> → this is the allocator’s channel address.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HYPERACTOR_MESH_INDEX</span></code> → this is “which child in this allocation am I?”</p></li>
+</ul>
+</li>
+<li><p><strong>Serve a channel for the allocator to talk to</strong>
+It picks a fresh address on the same transport:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">listen_addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ChannelAddr</span><span class="p">::</span><span class="n">any</span><span class="p">(</span><span class="n">bootstrap_addr</span><span class="p">.</span><span class="n">transport</span><span class="p">());</span>
+<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">serve_addr</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">channel</span><span class="p">::</span><span class="n">serve</span><span class="p">(</span><span class="n">listen_addr</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>This is the child saying: “I will listen here for allocator commands.”</p>
+</li>
+<li><p><strong>Dial the allocator and say Hello(index, my_addr)</strong></p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">tx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">channel</span><span class="p">::</span><span class="n">dial</span><span class="p">(</span><span class="n">bootstrap_addr</span><span class="p">.</span><span class="n">clone</span><span class="p">())</span><span class="o">?</span><span class="p">;</span>
+<span class="n">tx</span><span class="p">.</span><span class="n">try_post</span><span class="p">(</span>
+<span class="w">    </span><span class="n">Process2Allocator</span><span class="p">(</span><span class="n">bootstrap_index</span><span class="p">,</span><span class="w"> </span><span class="n">Process2AllocatorMessage</span><span class="p">::</span><span class="n">Hello</span><span class="p">(</span><span class="n">serve_addr</span><span class="p">)),</span>
+<span class="w">    </span><span class="o">..</span><span class="p">.</span>
+<span class="p">)</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>That <code class="docutils literal notranslate"><span class="pre">Process2AllocatorMessage::Hello(...)</span></code> is exactly what your parent side — the <code class="docutils literal notranslate"><span class="pre">ProcessAlloc</span></code> — is waiting for. It ties “child index N” to “this is the address you can send <code class="docutils literal notranslate"><span class="pre">Allocator2Process</span></code> messages to.”</p>
+</li>
+<li><p><strong>Start a heartbeat task</strong>
+The child also spawns a task that periodically sends:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Process2Allocator(index, Process2AllocatorMessage::Heartbeat)
+</pre></div>
+</div>
+<p>back to the allocator. If the allocator goes away or the heartbeat fails, the child exits. This is how the parent gets liveness.</p>
+</li>
+<li><p><strong>Enter the control loop</strong>
+After Hello, the child just sits in:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">rx</span><span class="p">.</span><span class="n">recv</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Allocator2Process</span><span class="p">::</span><span class="n">StartProc</span><span class="p">(</span><span class="n">proc_id</span><span class="p">,</span><span class="w"> </span><span class="n">listen_transport</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="n">Allocator2Process</span><span class="p">::</span><span class="n">StopAndExit</span><span class="p">(</span><span class="n">code</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="n">Allocator2Process</span><span class="p">::</span><span class="n">Exit</span><span class="p">(</span><span class="n">code</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This is the pivot point: the child is now “a remote executor that can start a hyperactor proc when told.”</p>
+</li>
+<li><p><strong>On StartProc(…)</strong>
+When the parent/allocator finally sends:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Allocator2Process::StartProc(proc_id, listen_transport)
+</pre></div>
+</div>
+<p>the child:</p>
+<ul>
+<li><p>boots a real <code class="docutils literal notranslate"><span class="pre">Proc</span></code> <strong>inside this process</strong> via <code class="docutils literal notranslate"><span class="pre">ProcMeshAgent::bootstrap(proc_id.clone())</span></code></p></li>
+<li><p>serves that proc on a fresh address</p></li>
+<li><p>and crucially sends <strong>back</strong> to the allocator:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Process2Allocator::StartedProc(proc_id, agent_ref, proc_addr)
+</pre></div>
+</div>
+<p>so the parent now knows:</p>
+<ul class="simple">
+<li><p>which proc id is alive,</p></li>
+<li><p>where to reach its mailbox (<code class="docutils literal notranslate"><span class="pre">proc_addr</span></code>),</p></li>
+<li><p>and which mesh agent actor to talk to.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ol>
+<p>That’s the full round-trip for the v0 allocator + test bootstrap binary: parent starts OS process → child says “hello, I’m #N, talk to me here” → parent says “start proc X on transport T” → child starts it and reports back.</p>
+<section id="note-who-picks-the-procid">
+<h4>Note: who picks the <code class="docutils literal notranslate"><span class="pre">ProcId</span></code>?<a class="headerlink" href="#note-who-picks-the-procid" title="Link to this heading">#</a></h4>
+<p>When the allocator receives the child’s <code class="docutils literal notranslate"><span class="pre">Hello(...)</span></code> and decides to start a proc, <strong>the allocator chooses the proc id</strong>.</p>
+<ul class="simple">
+<li><p>If <code class="docutils literal notranslate"><span class="pre">AllocSpec.proc_name</span></code> is <strong><code class="docutils literal notranslate"><span class="pre">None</span></code></strong>, the allocator builds a ranked id:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ProcId::Ranked(WorldId(&lt;this</span> <span class="pre">allocation's</span> <span class="pre">uuid&gt;),</span> <span class="pre">&lt;child</span> <span class="pre">index&gt;)</span></code></p></li>
+<li><p>meaning “you are proc #i in this allocation.”</p></li>
+</ul>
+</li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">AllocSpec.proc_name</span></code> is <strong><code class="docutils literal notranslate"><span class="pre">Some(name)</span></code></strong>, the allocator builds a direct id:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ProcId::Direct(&lt;child's</span> <span class="pre">hello</span> <span class="pre">address&gt;,</span> <span class="pre">name)</span></code></p></li>
+</ul>
+</li>
+</ul>
+<p>So: the parent always decides the identity; the child just accepts it.</p>
+</section>
+<section id="driving-the-allocation-where-the-child-actually-starts">
+<h4>2.3.3 Driving the allocation (where the child actually starts)<a class="headerlink" href="#driving-the-allocation-where-the-child-actually-starts" title="Link to this heading">#</a></h4>
+<p>Up to this point we’ve only <em>created</em> an allocation:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`)</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">alloc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">allocator</span>
+<span class="w">    </span><span class="p">.</span><span class="n">allocate</span><span class="p">(</span><span class="n">AllocSpec</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">extent</span><span class="p">:</span><span class="w"> </span><span class="nc">extent</span><span class="o">!</span><span class="p">(</span><span class="n">replicas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">),</span>
+<span class="w">        </span><span class="n">constraints</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+<span class="w">        </span><span class="n">proc_name</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+<span class="w">        </span><span class="n">transport</span><span class="p">:</span><span class="w"> </span><span class="nc">ChannelTransport</span><span class="p">::</span><span class="n">Unix</span><span class="p">,</span>
+<span class="w">    </span><span class="p">})</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span>
+<span class="w">    </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
+</pre></div>
+</div>
+<p>That call sets up the per-allocation state (bootstrap channel, ranks, etc.), but it does <strong>not</strong> by itself run the child’s bootstrap flow. The part where the OS process is actually spawned and sends <code class="docutils literal notranslate"><span class="pre">Process2Allocator::Hello(...)</span></code> happens only when someone <strong>drives</strong> the allocation by pulling events from it (i.e. calling <code class="docutils literal notranslate"><span class="pre">alloc.next().await</span></code> in a loop).</p>
+<p>In the canonical test we don’t write that loop manually. Instead we hand the allocation to the mesh builder:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`)</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">host_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HostMesh</span><span class="p">::</span><span class="n">allocate</span><span class="p">(</span><span class="o">&amp;</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">alloc</span><span class="p">),</span><span class="w"> </span><span class="s">&quot;test&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span>
+<span class="w">    </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> is what actually consumes the allocation: under the hood it waits for the spawned child to say “hello,” sends back the <code class="docutils literal notranslate"><span class="pre">StartProc(...)</span></code> instruction, receives the child’s <code class="docutils literal notranslate"><span class="pre">StartedProc(...)</span></code> (with the host/agent address), and then uses that to assemble the final <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code>. In other words: <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> gives us “a source of hosts,” and <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> is the step that turns that source into an actual running host in the new OS process.</p>
+</section>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-something-that-can-spawn-processes">2. Get something that can spawn processes</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-allocate-actually-does">2.1 What <code class="docutils literal notranslate"><span class="pre">allocate(...)</span></code> actually does</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spawning-the-child-inside-maybe-spawn">2.2 Spawning the child (inside <code class="docutils literal notranslate"><span class="pre">maybe_spawn()</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-child-actually-does-when-it-starts">2.3 What the child actually does when it starts</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#bootstrap-or-die-bootstrap-which-mode-am-i-in">2.3.1 <code class="docutils literal notranslate"><span class="pre">bootstrap_or_die</span></code> → <code class="docutils literal notranslate"><span class="pre">bootstrap</span></code> → “which mode am I in?”</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#after-the-child-picks-bootstrap-v0procmesh">2.3.2 After the child picks <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#note-who-picks-the-procid">Note: who picks the <code class="docutils literal notranslate"><span class="pre">ProcId</span></code>?</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#driving-the-allocation-where-the-child-actually-starts">2.3.3 Driving the allocation (where the child actually starts)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "\u00a72 Process allocator \u0026 v0 bootstrap (get something that can spawn processes)",
+       "headline": "\u00a72 Process allocator \u0026 v0 bootstrap (get something that can spawn processes)",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.html",
+       "articleBody": "\u00a72 Process allocator \u0026 v0 bootstrap (get something that can spawn processes)# 2. Get something that can spawn processes# In the canonical v1 flow we need a thing in the parent that can say \u201cstart another OS process that will come up as a hyperactor proc/host and talk back to me.\u201d In this codebase that \u201cthing\u201d is the process allocator, implemented as hyperactor::alloc::ProcessAllocator defined in hyperactor/src/process.rs. In the unit-test version (bootstrap_canonical_simple) it looks like this: let mut allocator = ProcessAllocator::new(Command::new( crate::testresource::get(\"monarch/hyperactor_mesh/bootstrap\"), )); let alloc = allocator .allocate(AllocSpec { // v1 usage: 1-D extent extent: extent!(replicas = 1), constraints: Default::default(), proc_name: None, transport: ChannelTransport::Unix, }) .await .unwrap(); That\u2019s the high-level call. Under the covers, allocate(...) does a bit more, and it matters for understanding bootstrapping, so let\u2019s drill in. 2.1 What allocate(...) actually does# When you call allocator.allocate(spec), the allocator first creates a per-allocation bootstrap channel: let (bootstrap_addr, rx) = channel::serve(ChannelAddr::any(ChannelTransport::Unix))?; So: every allocation gets its own address (bootstrap_addr) that children will dial back to, and an rx so the allocator can receive messages from those children. Then it builds a ProcessAlloc that tracks: the AllocSpec you passed (which includes the extent and the transport), the bootstrap_addr it just created, the set of children it will spawn, and the world/rank bookkeeping (Ranks) so each child gets a proper ranked ProcId. So far: no process has been started yet, we just prepared an allocation. 2.2 Spawning the child (inside maybe_spawn())# Later, when the allocation runs its loop (alloc.next().await), it will eventually try to spawn a child here: cmd.env(bootstrap::BOOTSTRAP_ADDR_ENV, self.bootstrap_addr.to_string()); cmd.env(bootstrap::CLIENT_TRACE_ID_ENV, self.client_context.trace_id.as_str()); cmd.env(bootstrap::BOOTSTRAP_INDEX_ENV, index.to_string()); let child = cmd.spawn()?; Important points: The parent chooses the command. In the unit test we pointed at a small bootstrap helper: ProcessAllocator::new(Command::new( crate::testresource::get(\"monarch/hyperactor_mesh/bootstrap\") In real deployments this can be \u201cre-exec myself\u201d or \u201crun this Python PAR/XAR with a different entrypoint.\u201d The allocator is just the template. This is where the initial env is attached. From this file we can see the allocator always sets: BOOTSTRAP_ADDR_ENV \u2014 \u201cdial this address to talk to the parent allocator\u201d BOOTSTRAP_INDEX_ENV \u2014 \u201cyou are child #N in this allocation\u201d CLIENT_TRACE_ID_ENV \u2014 for log correlation That\u2019s the actual bootstrap data we can prove from the code. The spec\u2019s extent controls how many children we make. The API is N-dimensional, but in the v1 shape we\u2019re describing we just do extent: extent!(replicas = 1) which the allocator interprets as \u201cI need 1 rank in this allocation.\u201d If you asked for more, it would keep spawning until that extent is satisfied. The transport in the spec is what we tell the child later. The AllocSpec has transport: ChannelTransport::Unix \u2014 that\u2019s what we eventually pass down to the child when we tell it \u201cstart a proc.\u201d 2.3 What the child actually does when it starts# So far we\u2019ve been on the parent side: we built a ProcessAllocator, we called allocate(...), and that code spawned some other executable (in tests: monarch/hyperactor_mesh/bootstrap). Now we need to look at the child side of that executable. The test bootstrap binary\u2019s main is tiny: // from hyperactor/test/bootstrap.rs #[tokio::main] async fn main() { hyperactor::initialize_with_current_runtime(); unsafe { libc::signal(libc::SIGTERM, libc::SIG_DFL); } hyperactor_mesh::bootstrap_or_die().await; } So: every child just calls hyperactor_mesh::bootstrap_or_die(). That\u2019s the real entrypoint. 2.3.1 bootstrap_or_die \u2192 bootstrap \u2192 \u201cwhich mode am I in?\u201d# In bootstrap.rs the entrypoint is: // from hyperactor_mesh/src/bootstrap.rs pub async fn bootstrap() -\u003e anyhow::Error { let boot = ok!(Bootstrap::get_from_env()).unwrap_or_else(Bootstrap::default); boot.bootstrap().await } Key detail: - It first tries to read HYPERACTOR_MESH_BOOTSTRAP_MODE from the environment: - Bootstrap::get_from_env() looks for that env var. - If it exists, it decodes a base64 JSON into a Bootstrap value. - If it doesn\u2019t exist, it returns None and we fall back to Bootstrap::default(). What\u2019s the default? // from hyperactor_mesh/src/bootstrap.rs #[derive(Clone, Default, Debug, Serialize, Deserialize)] pub enum Bootstrap { \u2026 #[default] V0ProcMesh, } So: if the parent did not set HYPERACTOR_MESH_BOOTSTRAP_MODE, the child runs in Bootstrap::V0ProcMesh mode. This particular ProcessAllocator (the v0 one in process.rs) does not set HYPERACTOR_MESH_BOOTSTRAP_MODE. Instead it populates a small, fixed set of environment variables: HYPERACTOR_MESH_BOOTSTRAP_ADDR: the allocator\u2019s control channel HYPERACTOR_MESH_INDEX: the child\u2019s index inside this allocation optionally BOOTSTRAP_LOG_CHANNEL: for streaming the child\u2019s stdout/stderr back MONARCH_CLIENT_TRACE_ID: for log/trace correlation Because HYPERACTOR_MESH_BOOTSTRAP_MODE is absent, the bootstrap entrypoint in the child falls back to its default and runs the Bootstrap::V0ProcMesh path. That is what causes the child to come up in the \u201csay hello to the allocator, wait for Allocator2Process messages, start procs on demand\u201d mode. 2.3.2 After the child picks Bootstrap::V0ProcMesh# At this point we are in the child process, running the monarch/hyperactor_mesh/bootstrap test binary (the one whose main just calls hyperactor_mesh::bootstrap_or_die().await). Because the parent did not set HYPERACTOR_MESH_BOOTSTRAP_MODE, the call: let boot = Bootstrap::get_from_env().unwrap_or_else(Bootstrap::default); became Bootstrap::V0ProcMesh, so the child runs hyperactor_mesh::bootstrap::bootstrap_v0_proc_mesh(). What that path does (summarizing the code in bootstrap_v0_proc_mesh()): Read the two env vars the allocator set HYPERACTOR_MESH_BOOTSTRAP_ADDR \u2192 this is the allocator\u2019s channel address. HYPERACTOR_MESH_INDEX \u2192 this is \u201cwhich child in this allocation am I?\u201d Serve a channel for the allocator to talk to It picks a fresh address on the same transport: let listen_addr = ChannelAddr::any(bootstrap_addr.transport()); let (serve_addr, mut rx) = channel::serve(listen_addr)?; This is the child saying: \u201cI will listen here for allocator commands.\u201d Dial the allocator and say Hello(index, my_addr) let tx = channel::dial(bootstrap_addr.clone())?; tx.try_post( Process2Allocator(bootstrap_index, Process2AllocatorMessage::Hello(serve_addr)), ... )?; That Process2AllocatorMessage::Hello(...) is exactly what your parent side \u2014 the ProcessAlloc \u2014 is waiting for. It ties \u201cchild index N\u201d to \u201cthis is the address you can send Allocator2Process messages to.\u201d Start a heartbeat task The child also spawns a task that periodically sends: Process2Allocator(index, Process2AllocatorMessage::Heartbeat) back to the allocator. If the allocator goes away or the heartbeat fails, the child exits. This is how the parent gets liveness. Enter the control loop After Hello, the child just sits in: match rx.recv().await? { Allocator2Process::StartProc(proc_id, listen_transport) =\u003e { ... } Allocator2Process::StopAndExit(code) =\u003e { ... } Allocator2Process::Exit(code) =\u003e { ... } } This is the pivot point: the child is now \u201ca remote executor that can start a hyperactor proc when told.\u201d On StartProc(\u2026) When the parent/allocator finally sends: Allocator2Process::StartProc(proc_id, listen_transport) the child: boots a real Proc inside this process via ProcMeshAgent::bootstrap(proc_id.clone()) serves that proc on a fresh address and crucially sends back to the allocator: Process2Allocator::StartedProc(proc_id, agent_ref, proc_addr) so the parent now knows: which proc id is alive, where to reach its mailbox (proc_addr), and which mesh agent actor to talk to. That\u2019s the full round-trip for the v0 allocator + test bootstrap binary: parent starts OS process \u2192 child says \u201chello, I\u2019m #N, talk to me here\u201d \u2192 parent says \u201cstart proc X on transport T\u201d \u2192 child starts it and reports back. Note: who picks the ProcId?# When the allocator receives the child\u2019s Hello(...) and decides to start a proc, the allocator chooses the proc id. If AllocSpec.proc_name is None, the allocator builds a ranked id: ProcId::Ranked(WorldId(\u003cthis allocation\u0027s uuid\u003e), \u003cchild index\u003e) meaning \u201cyou are proc #i in this allocation.\u201d If AllocSpec.proc_name is Some(name), the allocator builds a direct id: ProcId::Direct(\u003cchild\u0027s hello address\u003e, name) So: the parent always decides the identity; the child just accepts it. 2.3.3 Driving the allocation (where the child actually starts)# Up to this point we\u2019ve only created an allocation: // from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`) let alloc = allocator .allocate(AllocSpec { extent: extent!(replicas = 1), constraints: Default::default(), proc_name: None, transport: ChannelTransport::Unix, }) .await .unwrap(); That call sets up the per-allocation state (bootstrap channel, ranks, etc.), but it does not by itself run the child\u2019s bootstrap flow. The part where the OS process is actually spawned and sends Process2Allocator::Hello(...) happens only when someone drives the allocation by pulling events from it (i.e. calling alloc.next().await in a loop). In the canonical test we don\u2019t write that loop manually. Instead we hand the allocation to the mesh builder: // from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`) let host_mesh = HostMesh::allocate(\u0026instance, Box::new(alloc), \"test\", None) .await .unwrap(); HostMesh::allocate(...) is what actually consumes the allocation: under the hood it waits for the spawned child to say \u201chello,\u201d sends back the StartProc(...) instruction, receives the child\u2019s StartedProc(...) (with the host/agent address), and then uses that to assemble the final HostMesh. In other words: allocate(...) gives us \u201ca source of hosts,\u201d and HostMesh::allocate(...) is the step that turns that source into an actual running host in the new OS process.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-mesh-book/src/meshes/bootstrapping-process-allocator.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

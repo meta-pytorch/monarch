@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ProcEvent","SupervisionEventState"],"fn":["default_bind_spec","default_transport","global_root_client"],"mod":["mesh_agent"],"static":["DEFAULT_TRANSPORT"],"struct":["GlobalClientActor","ProcEvents","ProcMesh","SlicedProcMesh"],"trait":["SharedSpawnable"]};

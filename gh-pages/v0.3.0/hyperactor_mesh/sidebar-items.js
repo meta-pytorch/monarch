@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"macro":["extent","mesh_id","ok","sel","sel_from_shape","shape"],"mod":["actor_mesh","alloc","bootstrap","comm","config","connect","logging","mesh","mesh_selection","proc_mesh","reference","resource","router","selection","shape","shared_cell","shortuuid","supervision","test_utils","v1"]};

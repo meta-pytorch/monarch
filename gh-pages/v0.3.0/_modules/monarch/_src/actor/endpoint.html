@@ -1,0 +1,1533 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>monarch._src.actor.endpoint &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
+window.addEventListener("load", () => mermaid.run());
+</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/actor/endpoint';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/actor/endpoint.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../../index.html" class="nav-link">Module code</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">monarch._src...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <link itemprop="item" href="../../../index.html">
+        <meta itemprop="name" content="Module code">
+        <meta itemprop="position" content="1">
+      </div>
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="monarch._src.actor.endpoint">
+        <meta itemprop="position" content="2">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <h1>Source code for monarch._src.actor.endpoint</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright (c) Meta Platforms, Inc. and affiliates.</span>
+<span class="c1"># All rights reserved.</span>
+<span class="c1">#</span>
+<span class="c1"># This source code is licensed under the BSD-style license found in the</span>
+<span class="c1"># LICENSE file in the root directory of this source tree.</span>
+
+<span class="c1"># pyre-strict</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">functools</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">ABC</span><span class="p">,</span> <span class="n">abstractmethod</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">Any</span><span class="p">,</span>
+    <span class="n">Awaitable</span><span class="p">,</span>
+    <span class="n">Callable</span><span class="p">,</span>
+    <span class="n">cast</span><span class="p">,</span>
+    <span class="n">Concatenate</span><span class="p">,</span>
+    <span class="n">Coroutine</span><span class="p">,</span>
+    <span class="n">Dict</span><span class="p">,</span>
+    <span class="n">Generator</span><span class="p">,</span>
+    <span class="n">Generic</span><span class="p">,</span>
+    <span class="n">List</span><span class="p">,</span>
+    <span class="n">Literal</span><span class="p">,</span>
+    <span class="n">Optional</span><span class="p">,</span>
+    <span class="n">overload</span><span class="p">,</span>
+    <span class="n">ParamSpec</span><span class="p">,</span>
+    <span class="n">Tuple</span><span class="p">,</span>
+    <span class="n">TYPE_CHECKING</span><span class="p">,</span>
+    <span class="n">TypeVar</span><span class="p">,</span>
+    <span class="n">Union</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">MethodSpecifier</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.shape</span><span class="w"> </span><span class="kn">import</span> <span class="n">Extent</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.telemetry</span><span class="w"> </span><span class="kn">import</span> <span class="n">instant_event</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.future</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">endpoint_broadcast_error_counter</span><span class="p">,</span>
+    <span class="n">endpoint_broadcast_throughput_counter</span><span class="p">,</span>
+    <span class="n">endpoint_call_error_counter</span><span class="p">,</span>
+    <span class="n">endpoint_call_latency_histogram</span><span class="p">,</span>
+    <span class="n">endpoint_call_one_error_counter</span><span class="p">,</span>
+    <span class="n">endpoint_call_one_latency_histogram</span><span class="p">,</span>
+    <span class="n">endpoint_call_one_throughput_counter</span><span class="p">,</span>
+    <span class="n">endpoint_call_throughput_counter</span><span class="p">,</span>
+    <span class="n">endpoint_choose_error_counter</span><span class="p">,</span>
+    <span class="n">endpoint_choose_latency_histogram</span><span class="p">,</span>
+    <span class="n">endpoint_choose_throughput_counter</span><span class="p">,</span>
+    <span class="n">endpoint_stream_latency_histogram</span><span class="p">,</span>
+    <span class="n">endpoint_stream_throughput_counter</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.tensor_engine_shim</span><span class="w"> </span><span class="kn">import</span> <span class="n">_cached_propagation</span><span class="p">,</span> <span class="n">fake_call</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">opentelemetry.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">Counter</span><span class="p">,</span> <span class="n">Histogram</span>
+
+<span class="n">T</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;T&quot;</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_observe_latency_and_error</span><span class="p">(</span>
+    <span class="n">coro</span><span class="p">:</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">T</span><span class="p">],</span>
+    <span class="n">start_time_ns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">histogram</span><span class="p">:</span> <span class="n">Histogram</span><span class="p">,</span>
+    <span class="n">error_counter</span><span class="p">:</span> <span class="n">Counter</span><span class="p">,</span>
+    <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">actor_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Coroutine</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">T</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Observe and record latency and errors of an async operation.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        coro: The coroutine to observe</span>
+<span class="sd">        histogram: The histogram to record latency metrics to</span>
+<span class="sd">        error_counter: The counter to record error metrics to</span>
+<span class="sd">        method_name: Name of the method being called</span>
+<span class="sd">        actor_count: Number of actors involved in the call</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        A wrapped coroutine that records error and latency metrics</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_wrapper</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">T</span><span class="p">:</span>
+        <span class="n">error_occurred</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="k">await</span> <span class="n">coro</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="n">error_occurred</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">raise</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">duration_us</span> <span class="o">=</span> <span class="nb">int</span><span class="p">((</span><span class="n">time</span><span class="o">.</span><span class="n">monotonic_ns</span><span class="p">()</span> <span class="o">-</span> <span class="n">start_time_ns</span><span class="p">)</span> <span class="o">/</span> <span class="mi">1_000</span><span class="p">)</span>
+            <span class="n">attributes</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="n">method_name</span><span class="p">,</span>
+                <span class="s2">&quot;actor_count&quot;</span><span class="p">:</span> <span class="n">actor_count</span><span class="p">,</span>
+            <span class="p">}</span>
+            <span class="n">histogram</span><span class="o">.</span><span class="n">record</span><span class="p">(</span><span class="n">duration_us</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="n">attributes</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">error_occurred</span><span class="p">:</span>
+                <span class="n">error_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="n">attributes</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">_wrapper</span><span class="p">()</span>
+
+
+<span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.mailbox</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+        <span class="n">OncePortReceiver</span> <span class="k">as</span> <span class="n">HyOncePortReceiver</span><span class="p">,</span>
+        <span class="n">PortReceiver</span> <span class="k">as</span> <span class="n">HyPortReceiver</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.actor_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">ActorMesh</span><span class="p">,</span> <span class="n">Port</span><span class="p">,</span> <span class="n">PortReceiver</span><span class="p">,</span> <span class="n">ValueMesh</span>
+
+<span class="n">P</span> <span class="o">=</span> <span class="n">ParamSpec</span><span class="p">(</span><span class="s2">&quot;P&quot;</span><span class="p">)</span>
+<span class="n">R</span> <span class="o">=</span> <span class="n">TypeVar</span><span class="p">(</span><span class="s2">&quot;R&quot;</span><span class="p">)</span>
+
+<span class="n">Selection</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">,</span> <span class="s2">&quot;choose&quot;</span><span class="p">]</span>
+
+
+<span class="n">Propagator</span> <span class="o">=</span> <span class="n">Union</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;cached&quot;</span><span class="p">,</span> <span class="s2">&quot;inspect&quot;</span><span class="p">,</span> <span class="s2">&quot;mocked&quot;</span><span class="p">],</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>
+
+
+<div class="viewcode-block" id="Endpoint">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">Endpoint</span><span class="p">(</span><span class="n">ABC</span><span class="p">,</span> <span class="n">Generic</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">propagator</span><span class="p">:</span> <span class="n">Propagator</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span> <span class="o">=</span> <span class="n">propagator</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_method_name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Extract method name from this endpoint&#39;s method specifier.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            The method name, or &quot;unknown&quot; if not available</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">call_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_call_name</span><span class="p">()</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">call_name</span><span class="p">,</span> <span class="n">MethodSpecifier</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">call_name</span><span class="o">.</span><span class="n">name</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># could happen for class Remote https://fburl.com/code/4ny98bul</span>
+            <span class="k">return</span> <span class="s2">&quot;unknown&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_with_telemetry</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">start_time_ns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+        <span class="n">histogram</span><span class="p">:</span> <span class="n">Histogram</span><span class="p">,</span>
+        <span class="n">error_counter</span><span class="p">:</span> <span class="n">Counter</span><span class="p">,</span>
+        <span class="n">actor_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Decorator factory to add telemetry (latency and error tracking) to async functions.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            histogram: The histogram to record latency metrics to</span>
+<span class="sd">            error_counter: The counter to record error metrics to</span>
+<span class="sd">            actor_count: Number of actors involved in the operation</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            A decorator that wraps async functions with telemetry measurement</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_method_name</span><span class="p">()</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">decorator</span><span class="p">(</span><span class="n">func</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+            <span class="nd">@functools</span><span class="o">.</span><span class="n">wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+            <span class="k">def</span><span class="w"> </span><span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+                <span class="n">coro</span> <span class="o">=</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">_observe_latency_and_error</span><span class="p">(</span>
+                    <span class="n">coro</span><span class="p">,</span>
+                    <span class="n">start_time_ns</span><span class="p">,</span>
+                    <span class="n">histogram</span><span class="p">,</span>
+                    <span class="n">error_counter</span><span class="p">,</span>
+                    <span class="n">method_name</span><span class="p">,</span>
+                    <span class="n">actor_count</span><span class="p">,</span>
+                <span class="p">)</span>
+
+            <span class="k">return</span> <span class="n">wrapper</span>
+
+        <span class="k">return</span> <span class="n">decorator</span>
+
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_send</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+        <span class="n">port</span><span class="p">:</span> <span class="s2">&quot;Optional[Port[R]]&quot;</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">selection</span><span class="p">:</span> <span class="n">Selection</span> <span class="o">=</span> <span class="s2">&quot;all&quot;</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Extent</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Implements sending a message to the endpoint. The return value of the endpoint will</span>
+<span class="sd">        be sent to port if provided. If port is not provided, the return will be dropped,</span>
+<span class="sd">        and any exception will cause the actor to fail.</span>
+
+<span class="sd">        The return value is the (multi-dimension) size of the actors that were sent a message.</span>
+<span class="sd">        For ActorEndpoints this will be the actor_meshes size. For free-function endpoints,</span>
+<span class="sd">        this will be the size of the currently active proc_mesh.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_port</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">once</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Tuple[Port[R], PortReceiver[R]]&quot;</span><span class="p">:</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.actor_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">Channel</span>
+
+        <span class="k">return</span> <span class="n">Channel</span><span class="p">[</span><span class="n">R</span><span class="p">]</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">once</span><span class="p">)</span>
+
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_call_name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MethodSpecifier</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Something to use in InputChecker to represent calling this thingy.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_supervise</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">r</span><span class="p">:</span> <span class="s2">&quot;HyPortReceiver | HyOncePortReceiver&quot;</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;HyPortReceiver | HyOncePortReceiver&quot;</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">r</span>
+
+    <span class="c1"># the following are all &#39;adverbs&#39; or different ways to handle the</span>
+    <span class="c1"># return values of this endpoint. Adverbs should only ever take *args, **kwargs</span>
+    <span class="c1"># of the original call. If we want to add syntax sugar for something that needs additional</span>
+    <span class="c1"># arguments, it should be implemented as function indepdendent of endpoint like `send`</span>
+    <span class="c1"># and `Accumulator`</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">choose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Load balanced sends a message to one chosen actor and awaits a result.</span>
+
+<span class="sd">        Load balanced RPC-style entrypoint for request/response messaging.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Track throughput at method entry</span>
+        <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_method_name</span><span class="p">()</span>
+        <span class="n">endpoint_choose_throughput_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="n">method_name</span><span class="p">})</span>
+
+        <span class="n">p</span><span class="p">,</span> <span class="n">r_port</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="p">(</span><span class="n">once</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">r</span><span class="p">:</span> <span class="s2">&quot;PortReceiver[R]&quot;</span> <span class="o">=</span> <span class="n">r_port</span>
+        <span class="n">start_time</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic_ns</span><span class="p">()</span>
+        <span class="c1"># pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_send</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="n">p</span><span class="p">,</span> <span class="n">selection</span><span class="o">=</span><span class="s2">&quot;choose&quot;</span><span class="p">)</span>
+
+        <span class="nd">@self</span><span class="o">.</span><span class="n">_with_telemetry</span><span class="p">(</span>
+            <span class="n">start_time</span><span class="p">,</span>
+            <span class="n">endpoint_choose_latency_histogram</span><span class="p">,</span>
+            <span class="n">endpoint_choose_error_counter</span><span class="p">,</span>
+            <span class="mi">1</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">recv</span><span class="p">()</span>
+            <span class="k">return</span> <span class="n">result</span>
+
+        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">process</span><span class="p">())</span>
+
+<div class="viewcode-block" id="Endpoint.call_one">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.call_one">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">call_one</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">]:</span>
+        <span class="c1"># Track throughput at method entry</span>
+        <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_method_name</span><span class="p">()</span>
+        <span class="n">endpoint_call_one_throughput_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="n">method_name</span><span class="p">})</span>
+
+        <span class="n">p</span><span class="p">,</span> <span class="n">r_port</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="p">(</span><span class="n">once</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">r</span><span class="p">:</span> <span class="n">PortReceiver</span><span class="p">[</span><span class="n">R</span><span class="p">]</span> <span class="o">=</span> <span class="n">r_port</span>
+        <span class="n">start_time</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic_ns</span><span class="p">()</span>
+        <span class="c1"># pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]</span>
+        <span class="n">extent</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_send</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="n">p</span><span class="p">,</span> <span class="n">selection</span><span class="o">=</span><span class="s2">&quot;choose&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">extent</span><span class="o">.</span><span class="n">nelements</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Can only use &#39;call_one&#39; on a single Actor but this actor has shape </span><span class="si">{</span><span class="n">extent</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+
+        <span class="nd">@self</span><span class="o">.</span><span class="n">_with_telemetry</span><span class="p">(</span>
+            <span class="n">start_time</span><span class="p">,</span>
+            <span class="n">endpoint_call_one_latency_histogram</span><span class="p">,</span>
+            <span class="n">endpoint_call_one_error_counter</span><span class="p">,</span>
+            <span class="mi">1</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">recv</span><span class="p">()</span>
+            <span class="k">return</span> <span class="n">result</span>
+
+        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">process</span><span class="p">())</span></div>
+
+
+<div class="viewcode-block" id="Endpoint.call">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.call">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;Future[ValueMesh[R]]&quot;</span><span class="p">:</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.actor_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankedPortReceiver</span><span class="p">,</span> <span class="n">ValueMesh</span>
+
+        <span class="n">start_time</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic_ns</span><span class="p">()</span>
+        <span class="c1"># Track throughput at method entry</span>
+        <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_method_name</span><span class="p">()</span>
+        <span class="n">instant_event</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;calling </span><span class="si">{</span><span class="n">method_name</span><span class="si">}</span><span class="s2"> message&quot;</span><span class="p">)</span>
+        <span class="n">endpoint_call_throughput_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="n">method_name</span><span class="p">})</span>
+        <span class="n">p</span><span class="p">,</span> <span class="n">unranked</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="p">()</span>
+        <span class="n">r</span><span class="p">:</span> <span class="n">RankedPortReceiver</span><span class="p">[</span><span class="n">R</span><span class="p">]</span> <span class="o">=</span> <span class="n">unranked</span><span class="o">.</span><span class="n">ranked</span><span class="p">()</span>
+        <span class="c1"># pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]</span>
+        <span class="n">extent</span><span class="p">:</span> <span class="n">Extent</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_send</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="n">p</span><span class="p">)</span>
+
+        <span class="nd">@self</span><span class="o">.</span><span class="n">_with_telemetry</span><span class="p">(</span>
+            <span class="n">start_time</span><span class="p">,</span>
+            <span class="n">endpoint_call_latency_histogram</span><span class="p">,</span>
+            <span class="n">endpoint_call_error_counter</span><span class="p">,</span>
+            <span class="n">extent</span><span class="o">.</span><span class="n">nelements</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">process</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="s2">&quot;ValueMesh[R]&quot;</span><span class="p">:</span>
+            <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.shape</span><span class="w"> </span><span class="kn">import</span> <span class="n">Shape</span>
+            <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.shape</span><span class="w"> </span><span class="kn">import</span> <span class="n">NDSlice</span>
+
+            <span class="n">results</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">R</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">extent</span><span class="o">.</span><span class="n">nelements</span>  <span class="c1"># pyre-fixme[9]</span>
+            <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">extent</span><span class="o">.</span><span class="n">nelements</span><span class="p">):</span>
+                <span class="n">rank</span><span class="p">,</span> <span class="n">value</span> <span class="o">=</span> <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">_recv</span><span class="p">()</span>
+                <span class="n">results</span><span class="p">[</span><span class="n">rank</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+            <span class="n">call_shape</span> <span class="o">=</span> <span class="n">Shape</span><span class="p">(</span>
+                <span class="n">extent</span><span class="o">.</span><span class="n">labels</span><span class="p">,</span>
+                <span class="n">NDSlice</span><span class="o">.</span><span class="n">new_row_major</span><span class="p">(</span><span class="n">extent</span><span class="o">.</span><span class="n">sizes</span><span class="p">),</span>
+            <span class="p">)</span>
+            <span class="n">instant_event</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">method_name</span><span class="si">}</span><span class="s2"> response received&quot;</span><span class="p">)</span>
+
+            <span class="k">return</span> <span class="n">ValueMesh</span><span class="p">(</span><span class="n">call_shape</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">process</span><span class="p">())</span></div>
+
+
+<div class="viewcode-block" id="Endpoint.stream">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.stream">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">stream</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">],</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Broadcasts to all actors and yields their responses as a stream / generator.</span>
+
+<span class="sd">        This enables processing results from multiple actors incrementally as</span>
+<span class="sd">        they become available. Returns an async generator of response values.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Track throughput at method entry</span>
+        <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_method_name</span><span class="p">()</span>
+        <span class="n">endpoint_stream_throughput_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="n">method_name</span><span class="p">})</span>
+
+        <span class="n">p</span><span class="p">,</span> <span class="n">r_port</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_port</span><span class="p">()</span>
+        <span class="n">start_time</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic_ns</span><span class="p">()</span>
+        <span class="c1"># pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]</span>
+        <span class="n">extent</span><span class="p">:</span> <span class="n">Extent</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_send</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="n">p</span><span class="p">)</span>
+        <span class="n">r</span><span class="p">:</span> <span class="s2">&quot;PortReceiver[R]&quot;</span> <span class="o">=</span> <span class="n">r_port</span>
+
+        <span class="c1"># Note: stream doesn&#39;t track errors per-yield since errors propagate to caller</span>
+        <span class="n">latency_decorator</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_with_telemetry</span><span class="p">(</span>
+            <span class="n">start_time</span><span class="p">,</span>
+            <span class="n">endpoint_stream_latency_histogram</span><span class="p">,</span>
+            <span class="n">endpoint_broadcast_error_counter</span><span class="p">,</span>  <span class="c1"># Placeholder, errors not tracked per-yield</span>
+            <span class="n">extent</span><span class="o">.</span><span class="n">nelements</span><span class="p">,</span>
+        <span class="p">)</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">_stream</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="n">Future</span><span class="p">[</span><span class="n">R</span><span class="p">],</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
+            <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">extent</span><span class="o">.</span><span class="n">nelements</span><span class="p">):</span>
+
+                <span class="nd">@latency_decorator</span>
+                <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">receive</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="k">await</span> <span class="n">r</span><span class="o">.</span><span class="n">_recv</span><span class="p">()</span>
+
+                <span class="k">yield</span> <span class="n">Future</span><span class="p">(</span><span class="n">coro</span><span class="o">=</span><span class="n">receive</span><span class="p">())</span>
+
+        <span class="k">return</span> <span class="n">_stream</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="Endpoint.broadcast">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.broadcast">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">broadcast</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Fire-and-forget broadcast to all actors without waiting for actors to</span>
+<span class="sd">        acknowledge receipt.</span>
+
+<span class="sd">        In other words, the return of this method does not guarrantee the</span>
+<span class="sd">        delivery of the message.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.actor_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">send</span>
+
+        <span class="n">method_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_method_name</span><span class="p">()</span>
+        <span class="n">instant_event</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;broadcasting </span><span class="si">{</span><span class="n">method_name</span><span class="si">}</span><span class="s2"> message&quot;</span><span class="p">)</span>
+        <span class="n">attributes</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s2">&quot;method&quot;</span><span class="p">:</span> <span class="n">method_name</span><span class="p">,</span>
+            <span class="s2">&quot;actor_count&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>  <span class="c1"># broadcast doesn&#39;t track specific count</span>
+        <span class="p">}</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]</span>
+            <span class="n">send</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
+            <span class="n">endpoint_broadcast_throughput_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="n">attributes</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="n">endpoint_broadcast_error_counter</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">attributes</span><span class="o">=</span><span class="n">attributes</span><span class="p">)</span>
+            <span class="k">raise</span></div>
+
+
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_rref</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="n">kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span> <span class="o">...</span>
+
+<div class="viewcode-block" id="Endpoint.rref">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.Endpoint.rref">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">rref</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">P</span><span class="o">.</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">R</span><span class="p">:</span>
+        <span class="c1"># pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any]</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rref</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_propagate</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+        <span class="n">fake_args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">fake_kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span> <span class="o">==</span> <span class="s2">&quot;cached&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="n">resolvable</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">&quot;_resolvable&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">resolvable</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span>
+                    <span class="s2">&quot;Cached propagation is not implemented for actor endpoints.&quot;</span>
+                <span class="p">)</span>
+            <span class="k">return</span> <span class="n">_cached_propagation</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="p">,</span> <span class="n">resolvable</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span> <span class="o">==</span> <span class="s2">&quot;inspect&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span> <span class="o">==</span> <span class="s2">&quot;mocked&quot;</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;mocked propagation&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">fake_call</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span><span class="p">,</span> <span class="o">*</span><span class="n">fake_args</span><span class="p">,</span> <span class="o">**</span><span class="n">fake_kwargs</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_fetch_propagate</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+        <span class="n">fake_args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">fake_kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>  <span class="c1"># no propgator provided, so we just assume no mutations</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagate</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">fake_args</span><span class="p">,</span> <span class="n">fake_kwargs</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_pipe_propagate</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+        <span class="n">fake_args</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+        <span class="n">fake_kwargs</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">callable</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_propagator_arg</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Must specify explicit callable for pipe&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_propagate</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">,</span> <span class="n">fake_args</span><span class="p">,</span> <span class="n">fake_kwargs</span><span class="p">)</span></div>
+
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">EndpointProperty</span><span class="p">(</span><span class="n">Generic</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]):</span>
+    <span class="nd">@overload</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">method</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">R</span><span class="p">]],</span>
+        <span class="n">propagator</span><span class="p">:</span> <span class="n">Propagator</span><span class="p">,</span>
+        <span class="n">explicit_response_port</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="nd">@overload</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">method</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">R</span><span class="p">],</span>
+        <span class="n">propagator</span><span class="p">:</span> <span class="n">Propagator</span><span class="p">,</span>
+        <span class="n">explicit_response_port</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">method</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
+        <span class="n">propagator</span><span class="p">:</span> <span class="n">Propagator</span><span class="p">,</span>
+        <span class="n">explicit_response_port</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_method</span> <span class="o">=</span> <span class="n">method</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_propagator</span> <span class="o">=</span> <span class="n">propagator</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_explicit_response_port</span> <span class="o">=</span> <span class="n">explicit_response_port</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_instrument</span> <span class="o">=</span> <span class="n">instrument</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__get__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">instance</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="n">owner</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Endpoint</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span>
+        <span class="c1"># this is a total lie, but we have to actually</span>
+        <span class="c1"># recognize this was defined as an endpoint,</span>
+        <span class="c1"># and also lookup the method</span>
+        <span class="k">return</span> <span class="n">cast</span><span class="p">(</span><span class="n">Endpoint</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">],</span> <span class="bp">self</span><span class="p">)</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">NotAnEndpoint</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Used as the dynamic value of functions on an ActorMesh that were not marked as endpoints.</span>
+<span class="sd">    This is used both to give a better error message (since we cannot prevent the type system from thinking they are methods),</span>
+<span class="sd">    and to provide the oppurtunity for someone to do endpoint(x.foo) on something that wasn&#39;t marked as an endpoint.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ref</span><span class="p">:</span> <span class="s2">&quot;ActorMesh[Any]&quot;</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ref</span> <span class="o">=</span> <span class="n">ref</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_name</span> <span class="o">=</span> <span class="n">name</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;Actor </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_ref</span><span class="o">.</span><span class="n">_class</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="si">}</span><span class="s2"> is not annotated as an endpoint. To call it as one, add a @endpoint decorator to it, or directly wrap it in one as_endpoint(obj.method).call(...)&quot;</span>
+        <span class="p">)</span>
+
+
+<span class="c1"># This can&#39;t just be Callable because otherwise we are not</span>
+<span class="c1"># allowed to use type arguments in the return value.</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EndpointIfy</span><span class="p">:</span>
+    <span class="nd">@overload</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">R</span><span class="p">]]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Endpoint</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+    <span class="nd">@overload</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">R</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Endpoint</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">function</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+        <span class="k">pass</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">PortedEndpointIfy</span><span class="p">:</span>
+    <span class="nd">@overload</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="s2">&quot;Port[R]&quot;</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="kc">None</span><span class="p">]],</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Endpoint</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+    <span class="nd">@overload</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">function</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="s2">&quot;Port[R]&quot;</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="kc">None</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Endpoint</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">function</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+        <span class="k">pass</span>
+
+
+<span class="nd">@overload</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="n">R</span><span class="p">]],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EndpointProperty</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+
+<span class="nd">@overload</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">R</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EndpointProperty</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+
+<span class="nd">@overload</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EndpointIfy</span><span class="p">:</span> <span class="o">...</span>
+
+
+<span class="nd">@overload</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="s2">&quot;Port[R]&quot;</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="n">Awaitable</span><span class="p">[</span><span class="kc">None</span><span class="p">]],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EndpointProperty</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+
+<span class="nd">@overload</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="n">Concatenate</span><span class="p">[</span><span class="n">Any</span><span class="p">,</span> <span class="s2">&quot;Port[R]&quot;</span><span class="p">,</span> <span class="n">P</span><span class="p">],</span> <span class="kc">None</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">EndpointProperty</span><span class="p">[</span><span class="n">P</span><span class="p">,</span> <span class="n">R</span><span class="p">]:</span> <span class="o">...</span>
+
+
+<span class="nd">@overload</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Propagator</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PortedEndpointIfy</span><span class="p">:</span> <span class="o">...</span>
+
+
+<div class="viewcode-block" id="endpoint">
+<a class="viewcode-back" href="../../../../api/monarch.actor.html#monarch.actor.endpoint">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">endpoint</span><span class="p">(</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">propagate</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">explicit_response_port</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">instrument</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span>
+            <span class="n">endpoint</span><span class="p">,</span>
+            <span class="n">propagate</span><span class="o">=</span><span class="n">propagate</span><span class="p">,</span>
+            <span class="n">explicit_response_port</span><span class="o">=</span><span class="n">explicit_response_port</span><span class="p">,</span>
+            <span class="n">instrument</span><span class="o">=</span><span class="n">instrument</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">EndpointProperty</span><span class="p">(</span>
+        <span class="n">method</span><span class="p">,</span>
+        <span class="n">propagator</span><span class="o">=</span><span class="n">propagate</span><span class="p">,</span>
+        <span class="n">explicit_response_port</span><span class="o">=</span><span class="n">explicit_response_port</span><span class="p">,</span>
+        <span class="n">instrument</span><span class="o">=</span><span class="n">instrument</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+</pre></div>
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "monarch._src.actor.endpoint",
+       "headline": "monarch._src.actor.endpoint",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/_modules/monarch/_src/actor/endpoint.html",
+       "articleBody": "Source code for monarch._src.actor.endpoint # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-strict import functools import time from abc import ABC, abstractmethod from typing import ( Any, Awaitable, Callable, cast, Concatenate, Coroutine, Dict, Generator, Generic, List, Literal, Optional, overload, ParamSpec, Tuple, TYPE_CHECKING, TypeVar, Union, ) from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier from monarch._rust_bindings.monarch_hyperactor.shape import Extent from monarch._rust_bindings.monarch_hyperactor.telemetry import instant_event from monarch._src.actor.future import Future from monarch._src.actor.metrics import ( endpoint_broadcast_error_counter, endpoint_broadcast_throughput_counter, endpoint_call_error_counter, endpoint_call_latency_histogram, endpoint_call_one_error_counter, endpoint_call_one_latency_histogram, endpoint_call_one_throughput_counter, endpoint_call_throughput_counter, endpoint_choose_error_counter, endpoint_choose_latency_histogram, endpoint_choose_throughput_counter, endpoint_stream_latency_histogram, endpoint_stream_throughput_counter, ) from monarch._src.actor.tensor_engine_shim import _cached_propagation, fake_call from opentelemetry.metrics import Counter, Histogram T = TypeVar(\"T\") def _observe_latency_and_error( coro: Coroutine[Any, Any, T], start_time_ns: int, histogram: Histogram, error_counter: Counter, method_name: str, actor_count: int, ) -\u003e Coroutine[Any, Any, T]: \"\"\" Observe and record latency and errors of an async operation. Args: coro: The coroutine to observe histogram: The histogram to record latency metrics to error_counter: The counter to record error metrics to method_name: Name of the method being called actor_count: Number of actors involved in the call Returns: A wrapped coroutine that records error and latency metrics \"\"\" async def _wrapper() -\u003e T: error_occurred = False try: return await coro except Exception: error_occurred = True raise finally: duration_us = int((time.monotonic_ns() - start_time_ns) / 1_000) attributes = { \"method\": method_name, \"actor_count\": actor_count, } histogram.record(duration_us, attributes=attributes) if error_occurred: error_counter.add(1, attributes=attributes) return _wrapper() if TYPE_CHECKING: from monarch._rust_bindings.monarch_hyperactor.mailbox import ( OncePortReceiver as HyOncePortReceiver, PortReceiver as HyPortReceiver, ) from monarch._src.actor.actor_mesh import ActorMesh, Port, PortReceiver, ValueMesh P = ParamSpec(\"P\") R = TypeVar(\"R\") Selection = Literal[\"all\", \"choose\"] Propagator = Union[None, Literal[\"cached\", \"inspect\", \"mocked\"], Callable[..., Any]] [docs] class Endpoint(ABC, Generic[P, R]): def __init__(self, propagator: Propagator) -\u003e None: self._propagator_arg = propagator self._cache: Optional[Dict[Any, Any]] = None def _get_method_name(self) -\u003e str: \"\"\" Extract method name from this endpoint\u0027s method specifier. Returns: The method name, or \"unknown\" if not available \"\"\" call_name = self._call_name() if isinstance(call_name, MethodSpecifier): return call_name.name else: # could happen for class Remote https://fburl.com/code/4ny98bul return \"unknown\" def _with_telemetry( self, start_time_ns: int, histogram: Histogram, error_counter: Counter, actor_count: int, ) -\u003e Any: \"\"\" Decorator factory to add telemetry (latency and error tracking) to async functions. Args: histogram: The histogram to record latency metrics to error_counter: The counter to record error metrics to actor_count: Number of actors involved in the operation Returns: A decorator that wraps async functions with telemetry measurement \"\"\" method_name: str = self._get_method_name() def decorator(func: Any) -\u003e Any: @functools.wraps(func) def wrapper(*args: Any, **kwargs: Any) -\u003e Any: coro = func(*args, **kwargs) return _observe_latency_and_error( coro, start_time_ns, histogram, error_counter, method_name, actor_count, ) return wrapper return decorator @abstractmethod def _send( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], port: \"Optional[Port[R]]\" = None, selection: Selection = \"all\", ) -\u003e Extent: \"\"\" Implements sending a message to the endpoint. The return value of the endpoint will be sent to port if provided. If port is not provided, the return will be dropped, and any exception will cause the actor to fail. The return value is the (multi-dimension) size of the actors that were sent a message. For ActorEndpoints this will be the actor_meshes size. For free-function endpoints, this will be the size of the currently active proc_mesh. \"\"\" pass def _port(self, once: bool = False) -\u003e \"Tuple[Port[R], PortReceiver[R]]\": from monarch._src.actor.actor_mesh import Channel return Channel[R].open(once) @abstractmethod def _call_name(self) -\u003e MethodSpecifier: \"\"\" Something to use in InputChecker to represent calling this thingy. \"\"\" pass def _supervise( self, r: \"HyPortReceiver | HyOncePortReceiver\" ) -\u003e \"HyPortReceiver | HyOncePortReceiver\": return r # the following are all \u0027adverbs\u0027 or different ways to handle the # return values of this endpoint. Adverbs should only ever take *args, **kwargs # of the original call. If we want to add syntax sugar for something that needs additional # arguments, it should be implemented as function indepdendent of endpoint like `send` # and `Accumulator` def choose(self, *args: P.args, **kwargs: P.kwargs) -\u003e Future[R]: \"\"\" Load balanced sends a message to one chosen actor and awaits a result. Load balanced RPC-style entrypoint for request/response messaging. \"\"\" # Track throughput at method entry method_name: str = self._get_method_name() endpoint_choose_throughput_counter.add(1, attributes={\"method\": method_name}) p, r_port = self._port(once=True) r: \"PortReceiver[R]\" = r_port start_time: int = time.monotonic_ns() # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any] self._send(args, kwargs, port=p, selection=\"choose\") @self._with_telemetry( start_time, endpoint_choose_latency_histogram, endpoint_choose_error_counter, 1, ) async def process() -\u003e R: result = await r.recv() return result return Future(coro=process()) [docs] def call_one(self, *args: P.args, **kwargs: P.kwargs) -\u003e Future[R]: # Track throughput at method entry method_name: str = self._get_method_name() endpoint_call_one_throughput_counter.add(1, attributes={\"method\": method_name}) p, r_port = self._port(once=True) r: PortReceiver[R] = r_port start_time: int = time.monotonic_ns() # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any] extent = self._send(args, kwargs, port=p, selection=\"choose\") if extent.nelements != 1: raise ValueError( f\"Can only use \u0027call_one\u0027 on a single Actor but this actor has shape {extent}\" ) @self._with_telemetry( start_time, endpoint_call_one_latency_histogram, endpoint_call_one_error_counter, 1, ) async def process() -\u003e R: result = await r.recv() return result return Future(coro=process()) [docs] def call(self, *args: P.args, **kwargs: P.kwargs) -\u003e \"Future[ValueMesh[R]]\": from monarch._src.actor.actor_mesh import RankedPortReceiver, ValueMesh start_time: int = time.monotonic_ns() # Track throughput at method entry method_name: str = self._get_method_name() instant_event(f\"calling {method_name} message\") endpoint_call_throughput_counter.add(1, attributes={\"method\": method_name}) p, unranked = self._port() r: RankedPortReceiver[R] = unranked.ranked() # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any] extent: Extent = self._send(args, kwargs, port=p) @self._with_telemetry( start_time, endpoint_call_latency_histogram, endpoint_call_error_counter, extent.nelements, ) async def process() -\u003e \"ValueMesh[R]\": from monarch._rust_bindings.monarch_hyperactor.shape import Shape from monarch._src.actor.shape import NDSlice results: List[R] = [None] * extent.nelements # pyre-fixme[9] for _ in range(extent.nelements): rank, value = await r._recv() results[rank] = value call_shape = Shape( extent.labels, NDSlice.new_row_major(extent.sizes), ) instant_event(f\"{method_name} response received\") return ValueMesh(call_shape, results) return Future(coro=process()) [docs] def stream( self, *args: P.args, **kwargs: P.kwargs ) -\u003e Generator[Future[R], None, None]: \"\"\" Broadcasts to all actors and yields their responses as a stream / generator. This enables processing results from multiple actors incrementally as they become available. Returns an async generator of response values. \"\"\" # Track throughput at method entry method_name: str = self._get_method_name() endpoint_stream_throughput_counter.add(1, attributes={\"method\": method_name}) p, r_port = self._port() start_time: int = time.monotonic_ns() # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any] extent: Extent = self._send(args, kwargs, port=p) r: \"PortReceiver[R]\" = r_port # Note: stream doesn\u0027t track errors per-yield since errors propagate to caller latency_decorator: Any = self._with_telemetry( start_time, endpoint_stream_latency_histogram, endpoint_broadcast_error_counter, # Placeholder, errors not tracked per-yield extent.nelements, ) def _stream() -\u003e Generator[Future[R], None, None]: for _ in range(extent.nelements): @latency_decorator async def receive() -\u003e R: return await r._recv() yield Future(coro=receive()) return _stream() [docs] def broadcast(self, *args: P.args, **kwargs: P.kwargs) -\u003e None: \"\"\" Fire-and-forget broadcast to all actors without waiting for actors to acknowledge receipt. In other words, the return of this method does not guarrantee the delivery of the message. \"\"\" from monarch._src.actor.actor_mesh import send method_name: str = self._get_method_name() instant_event(f\"broadcasting {method_name} message\") attributes = { \"method\": method_name, \"actor_count\": 0, # broadcast doesn\u0027t track specific count } try: # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any] send(self, args, kwargs) endpoint_broadcast_throughput_counter.add(1, attributes=attributes) except Exception: endpoint_broadcast_error_counter.add(1, attributes=attributes) raise @abstractmethod def _rref(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -\u003e R: ... [docs] def rref(self, *args: P.args, **kwargs: P.kwargs) -\u003e R: # pyre-ignore[6]: ParamSpec kwargs is compatible with Dict[str, Any] return self._rref(args, kwargs) def _propagate( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], fake_args: Tuple[Any, ...], fake_kwargs: Dict[str, Any], ) -\u003e Any: if self._propagator_arg is None or self._propagator_arg == \"cached\": if self._cache is None: self._cache = {} resolvable = getattr(self, \"_resolvable\", None) if resolvable is None: raise NotImplementedError( \"Cached propagation is not implemented for actor endpoints.\" ) return _cached_propagation(self._cache, resolvable, args, kwargs) elif self._propagator_arg == \"inspect\": return None elif self._propagator_arg == \"mocked\": raise NotImplementedError(\"mocked propagation\") else: return fake_call(self._propagator_arg, *fake_args, **fake_kwargs) def _fetch_propagate( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], fake_args: Tuple[Any, ...], fake_kwargs: Dict[str, Any], ) -\u003e Any: if self._propagator_arg is None: return # no propgator provided, so we just assume no mutations return self._propagate(args, kwargs, fake_args, fake_kwargs) def _pipe_propagate( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], fake_args: Tuple[Any, ...], fake_kwargs: Dict[str, Any], ) -\u003e Any: if not callable(self._propagator_arg): raise ValueError(\"Must specify explicit callable for pipe\") return self._propagate(args, kwargs, fake_args, fake_kwargs) class EndpointProperty(Generic[P, R]): @overload def __init__( self, method: Callable[Concatenate[Any, P], Awaitable[R]], propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: ... @overload def __init__( self, method: Callable[Concatenate[Any, P], R], propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: ... def __init__( self, method: Any, propagator: Propagator, explicit_response_port: bool, instrument: bool = True, ) -\u003e None: self._method = method self._propagator = propagator self._explicit_response_port = explicit_response_port self._instrument = instrument def __get__(self, instance: Any, owner: Any) -\u003e Endpoint[P, R]: # this is a total lie, but we have to actually # recognize this was defined as an endpoint, # and also lookup the method return cast(Endpoint[P, R], self) class NotAnEndpoint: \"\"\" Used as the dynamic value of functions on an ActorMesh that were not marked as endpoints. This is used both to give a better error message (since we cannot prevent the type system from thinking they are methods), and to provide the oppurtunity for someone to do endpoint(x.foo) on something that wasn\u0027t marked as an endpoint. \"\"\" def __init__(self, ref: \"ActorMesh[Any]\", name: str) -\u003e None: self._ref = ref self._name = name def __call__(self, *args: Any, **kwargs: Any) -\u003e None: raise RuntimeError( f\"Actor {self._ref._class}.{self._name} is not annotated as an endpoint. To call it as one, add a @endpoint decorator to it, or directly wrap it in one as_endpoint(obj.method).call(...)\" ) # This can\u0027t just be Callable because otherwise we are not # allowed to use type arguments in the return value. class EndpointIfy: @overload def __call__( self, function: Callable[Concatenate[Any, P], Awaitable[R]] ) -\u003e Endpoint[P, R]: ... @overload def __call__( self, function: Callable[Concatenate[Any, P], R] ) -\u003e Endpoint[P, R]: ... def __call__(self, function: Any) -\u003e Any: pass class PortedEndpointIfy: @overload def __call__( self, function: Callable[Concatenate[Any, \"Port[R]\", P], Awaitable[None]], ) -\u003e Endpoint[P, R]: ... @overload def __call__( self, function: Callable[Concatenate[Any, \"Port[R]\", P], None] ) -\u003e Endpoint[P, R]: ... def __call__(self, function: Any) -\u003e Any: pass @overload def endpoint( method: Callable[Concatenate[Any, P], Awaitable[R]], *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( method: Callable[Concatenate[Any, P], R], *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( *, propagate: Propagator = None, explicit_response_port: Literal[False] = False, instrument: bool = True, ) -\u003e EndpointIfy: ... @overload def endpoint( method: Callable[Concatenate[Any, \"Port[R]\", P], Awaitable[None]], *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( method: Callable[Concatenate[Any, \"Port[R]\", P], None], *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e EndpointProperty[P, R]: ... @overload def endpoint( *, propagate: Propagator = None, explicit_response_port: Literal[True], instrument: bool = True, ) -\u003e PortedEndpointIfy: ... [docs] def endpoint( method: Any = None, *, propagate: Any = None, explicit_response_port: bool = False, instrument: bool = True, ) -\u003e Any: if method is None: return functools.partial( endpoint, propagate=propagate, explicit_response_port=explicit_response_port, instrument=instrument, ) return EndpointProperty( method, propagator=propagate, explicit_response_port=explicit_response_port, instrument=instrument, )",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/_modules/monarch/_src/actor/endpoint.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

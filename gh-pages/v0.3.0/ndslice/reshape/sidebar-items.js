@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ReshapeError"],"fn":["expand_labels","reshape_selection","reshape_shape","reshape_with_limit","to_original_coord","to_reshaped_coord"],"mod":["prelude"],"struct":["Limit","ReshapedShape"],"trait":["ReshapeShapeExt","ReshapeSliceExt"],"type":["Coord"]};

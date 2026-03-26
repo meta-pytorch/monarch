@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PyMeshKind"],"fn":["register_python_bindings"],"struct":["PyNamespace"]};

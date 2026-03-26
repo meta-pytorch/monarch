@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["HostError","ReadyError","ReadyProcError","TerminateError","WaitError"],"fn":["spawn_proc"],"mod":["testing"],"struct":["Host","LocalHandle","LocalProcManager","ProcessHandle","ProcessProcManager","ReadyProc","TerminateSummary"],"trait":["BulkTerminate","ProcHandle","ProcManager","SingleTerminate"],"type":["ManagerAgent"]};

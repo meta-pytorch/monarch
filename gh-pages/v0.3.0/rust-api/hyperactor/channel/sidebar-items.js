@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BindSpec","ChannelAddr","ChannelError","ChannelTransport","MetaTlsAddr","TcpMode","TlsMode","TxStatus"],"fn":["dial","serve","serve_local"],"mod":["sim"],"struct":["ChannelRx","ChannelTx","SendError","TcpModeIter","TlsModeIter"],"trait":["Rx","Tx"],"type":["Hostname","Port"]};
