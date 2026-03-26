@@ -372,6 +372,17 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_actor_spawn_then_immediate_shutdown() -> None:
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        proc_mesh = state.hosts.spawn_procs(name="test")
+        await proc_mesh.initialized
+        # spawn actor but do NOT await initialized — immediately exit scoped_state
+        proc_mesh.spawn("test_actor", TestActor, 42)
+    # scoped_state calls host_mesh.shutdown() — should not panic
+
+
+@pytest.mark.timeout(60)
 def test_proc_mesh_spawn_callback() -> None:
     """Test that registered callbacks are invoked when a ProcMesh is spawned."""
     spawned_meshes: list[ProcMesh] = []
