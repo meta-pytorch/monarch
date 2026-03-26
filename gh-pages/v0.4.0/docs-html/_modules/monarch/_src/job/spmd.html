@@ -1,0 +1,1907 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>monarch._src.job.spmd &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
+window.addEventListener("load", () => mermaid.run());
+</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/spmd';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/spmd.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch._src.job.spmd - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../../../index.html" class="nav-link">Module code</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">monarch._src...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../../../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
+    </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch._src.job.spmd">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <h1>Source code for monarch._src.job.spmd</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright (c) Meta Platforms, Inc. and affiliates.</span>
+<span class="c1"># All rights reserved.</span>
+<span class="c1">#</span>
+<span class="c1"># This source code is licensed under the BSD-style license found in the</span>
+<span class="c1"># LICENSE file in the root directory of this source tree.</span>
+
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">Internal implementation of SPMD job primitives.</span>
+
+<span class="sd">Provides the :func:`serve` function and :class:`SPMDJob` class for launching</span>
+<span class="sd">torchrun-style SPMD training jobs. Parses torchrun arguments and creates a Monarch</span>
+<span class="sd">mesh to run the training script, replicating torchrun behavior.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.channel</span><span class="w"> </span><span class="kn">import</span> <span class="n">ChannelTransport</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._rust_bindings.monarch_hyperactor.config</span><span class="w"> </span><span class="kn">import</span> <span class="n">configure</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.bootstrap</span><span class="w"> </span><span class="kn">import</span> <span class="n">attach_to_workers</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.actor.host_mesh</span><span class="w"> </span><span class="kn">import</span> <span class="n">this_host</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.job</span><span class="w"> </span><span class="kn">import</span> <span class="n">JobState</span><span class="p">,</span> <span class="n">JobTrait</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.spmd.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">SPMDActor</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.tools.commands</span><span class="w"> </span><span class="kn">import</span> <span class="n">torchx_runner</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchx.runner</span><span class="w"> </span><span class="kn">import</span> <span class="n">Runner</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchx.specs</span><span class="w"> </span><span class="kn">import</span> <span class="n">AppDef</span><span class="p">,</span> <span class="n">AppState</span><span class="p">,</span> <span class="n">Role</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_torchrun_parser</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Build argparse parser for torchrun torch/distributed/run.py arguments.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">(</span><span class="n">add_help</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--nnodes&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;1:1&quot;</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--nproc-per-node&quot;</span><span class="p">,</span> <span class="s2">&quot;--nproc_per_node&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;1&quot;</span><span class="p">)</span>
+
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--rdzv-backend&quot;</span><span class="p">,</span> <span class="s2">&quot;--rdzv_backend&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--rdzv-endpoint&quot;</span><span class="p">,</span> <span class="s2">&quot;--rdzv_endpoint&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--rdzv-id&quot;</span><span class="p">,</span> <span class="s2">&quot;--rdzv_id&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--rdzv-conf&quot;</span><span class="p">,</span> <span class="s2">&quot;--rdzv_conf&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--standalone&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;store_true&quot;</span><span class="p">)</span>
+
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--max-restarts&quot;</span><span class="p">,</span> <span class="s2">&quot;--max_restarts&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--monitor-interval&quot;</span><span class="p">,</span> <span class="s2">&quot;--monitor_interval&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">float</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--start-method&quot;</span><span class="p">,</span> <span class="s2">&quot;--start_method&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--role&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-m&quot;</span><span class="p">,</span> <span class="s2">&quot;--module&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;store_true&quot;</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--no-python&quot;</span><span class="p">,</span> <span class="s2">&quot;--no_python&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;store_true&quot;</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--run-path&quot;</span><span class="p">,</span> <span class="s2">&quot;--run_path&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s2">&quot;store_true&quot;</span><span class="p">)</span>
+
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--log-dir&quot;</span><span class="p">,</span> <span class="s2">&quot;--log_dir&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-r&quot;</span><span class="p">,</span> <span class="s2">&quot;--redirects&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-t&quot;</span><span class="p">,</span> <span class="s2">&quot;--tee&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--local-ranks-filter&quot;</span><span class="p">,</span> <span class="s2">&quot;--local_ranks_filter&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--node-rank&quot;</span><span class="p">,</span> <span class="s2">&quot;--node_rank&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--master-addr&quot;</span><span class="p">,</span> <span class="s2">&quot;--master_addr&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--master-port&quot;</span><span class="p">,</span> <span class="s2">&quot;--master_port&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--local-addr&quot;</span><span class="p">,</span> <span class="s2">&quot;--local_addr&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">)</span>
+
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;training_script&quot;</span><span class="p">,</span> <span class="n">nargs</span><span class="o">=</span><span class="s2">&quot;?&quot;</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;training_script_args&quot;</span><span class="p">,</span> <span class="n">nargs</span><span class="o">=</span><span class="n">argparse</span><span class="o">.</span><span class="n">REMAINDER</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">parser</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_parse_torchrun</span><span class="p">(</span>
+    <span class="n">original_roles</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Parse torchrun args using argparse to match real torchrun torch/distributed/run.py behavior.</span>
+
+<span class="sd">    The original role structure looks like:</span>
+<span class="sd">    {</span>
+<span class="sd">        &#39;entrypoint&#39;: &#39;workspace/entrypoint.sh&#39;,</span>
+<span class="sd">        &#39;args&#39;: [&#39;torchrun&#39;, &#39;--nnodes=1&#39;, &#39;--nproc-per-node=8&#39;, &#39;-m&#39;, &#39;train&#39;, &#39;--lr&#39;, &#39;0.001&#39;]</span>
+<span class="sd">    }</span>
+
+<span class="sd">    Supports:</span>
+<span class="sd">        - [&#39;torchrun&#39;, &#39;--nproc-per-node=8&#39;, &#39;-m&#39;, &#39;train&#39;, ...]</span>
+<span class="sd">        - [&#39;python&#39;, &#39;-m&#39;, &#39;torch.distributed.run&#39;, &#39;--nproc-per-node=8&#39;, &#39;-m&#39;, &#39;train&#39;, ...]</span>
+<span class="sd">        - [&#39;python&#39;, &#39;-m&#39;, &#39;torchrun&#39;, &#39;--nproc-per-node=8&#39;, &#39;-m&#39;, &#39;train&#39;, ...]</span>
+<span class="sd">        - [&#39;python&#39;, &#39;train.py&#39;, ...] (single proc)</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        (script_args, nproc_per_node) tuple</span>
+<span class="sd">        e.g., ([&#39;-m&#39;, &#39;train&#39;, &#39;--lr&#39;, &#39;0.001&#39;], 8)</span>
+
+<span class="sd">    Raises:</span>
+<span class="sd">        ValueError: If args format is not recognized</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">original_roles</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No roles provided&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">original_roles</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">&quot;Multiple roles provided. monarch.spmd supports single-role SPMD jobs&quot;</span>
+        <span class="p">)</span>
+
+    <span class="n">role</span> <span class="o">=</span> <span class="n">original_roles</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="n">full_args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">role</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;args&quot;</span><span class="p">,</span> <span class="p">[]))</span>
+    <span class="n">entrypoint</span> <span class="o">=</span> <span class="n">role</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;entrypoint&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Prepend entrypoint if it&#39;s a recognized command</span>
+    <span class="n">recognized_commands</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;torchrun&quot;</span><span class="p">,</span> <span class="s2">&quot;torch.distributed.run&quot;</span><span class="p">,</span> <span class="s2">&quot;python&quot;</span><span class="p">,</span> <span class="s2">&quot;python3&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">entrypoint</span> <span class="ow">in</span> <span class="n">recognized_commands</span><span class="p">:</span>
+        <span class="n">full_args</span> <span class="o">=</span> <span class="p">[</span><span class="n">entrypoint</span><span class="p">]</span> <span class="o">+</span> <span class="n">full_args</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">full_args</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Role has no args&quot;</span><span class="p">)</span>
+
+    <span class="c1"># Determine where torchrun args start</span>
+    <span class="n">torchrun_modules</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;torch.distributed.run&quot;</span><span class="p">,</span> <span class="s2">&quot;torchrun&quot;</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">full_args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;torchrun&quot;</span><span class="p">,</span> <span class="s2">&quot;torch.distributed.run&quot;</span><span class="p">):</span>
+        <span class="n">args_to_parse</span> <span class="o">=</span> <span class="n">full_args</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+    <span class="k">elif</span> <span class="n">full_args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;python&quot;</span><span class="p">,</span> <span class="s2">&quot;python3&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="nb">len</span><span class="p">(</span><span class="n">full_args</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">3</span>
+            <span class="ow">and</span> <span class="n">full_args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;-m&quot;</span>
+            <span class="ow">and</span> <span class="n">full_args</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="ow">in</span> <span class="n">torchrun_modules</span>
+        <span class="p">):</span>
+            <span class="n">args_to_parse</span> <span class="o">=</span> <span class="n">full_args</span><span class="p">[</span><span class="mi">3</span><span class="p">:]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Plain python script - return script and args, nproc=1</span>
+            <span class="k">return</span> <span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">full_args</span><span class="p">[</span><span class="mi">1</span><span class="p">:]),</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;Expected args to start with torchrun, torch.distributed.run, &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;python, or python3, got: </span><span class="si">{</span><span class="n">full_args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
+
+    <span class="c1"># Parse using argparse</span>
+    <span class="n">parser</span> <span class="o">=</span> <span class="n">_get_torchrun_parser</span><span class="p">()</span>
+    <span class="n">args</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_known_args</span><span class="p">(</span><span class="n">args_to_parse</span><span class="p">)</span>
+
+    <span class="c1"># Extract nproc_per_node</span>
+    <span class="n">nproc_per_node</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">nproc_str</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="s2">&quot;nproc_per_node&quot;</span><span class="p">,</span> <span class="s2">&quot;1&quot;</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">nproc_per_node</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">nproc_str</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;--nproc-per-node=</span><span class="si">{</span><span class="n">nproc_str</span><span class="si">}</span><span class="s2"> is not an integer, defaulting to 1. &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;Use an explicit integer value instead of &#39;</span><span class="si">{</span><span class="n">nproc_str</span><span class="si">}</span><span class="s2">&#39;.&quot;</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="c1"># Build script_args</span>
+    <span class="n">script_args</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">module</span><span class="p">:</span>
+        <span class="n">script_args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;-m&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">training_script</span><span class="p">:</span>
+        <span class="n">script_args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">training_script</span><span class="p">)</span>
+    <span class="n">script_args</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">training_script_args</span> <span class="ow">or</span> <span class="p">[])</span>
+
+    <span class="k">return</span> <span class="p">(</span><span class="n">script_args</span><span class="p">,</span> <span class="n">nproc_per_node</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_worker_addr</span><span class="p">(</span><span class="n">scheduler</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">hostname</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build worker address for the given scheduler and hostname.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;mast&quot;</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">hostname</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;.facebook.com&quot;</span><span class="p">):</span>
+            <span class="n">hostname</span> <span class="o">=</span> <span class="n">hostname</span> <span class="o">+</span> <span class="s2">&quot;.facebook.com&quot;</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;metatls://</span><span class="si">{</span><span class="n">hostname</span><span class="si">}</span><span class="s2">:26600&quot;</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;tcp://</span><span class="si">{</span><span class="n">hostname</span><span class="si">}</span><span class="s2">:26600&quot;</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_get_channel_transport</span><span class="p">(</span><span class="n">scheduler</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ChannelTransport</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Get channel transport for the given scheduler.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;mast&quot;</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">ChannelTransport</span><span class="o">.</span><span class="n">MetaTlsWithHostname</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ChannelTransport</span><span class="o">.</span><span class="n">TcpWithHostname</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_validate_single_node_command</span><span class="p">(</span><span class="n">command</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">(</span><span class="n">add_help</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--nnodes&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+    <span class="n">args</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_known_args</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">nnodes</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="n">nnodes_str</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">nnodes</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">nnodes_str</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;1&quot;</span><span class="p">,</span> <span class="s2">&quot;1:1&quot;</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;Multi-node torchrun commands are not supported with serve(). &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;Got --nnodes=</span><span class="si">{</span><span class="n">nnodes_str</span><span class="si">}</span><span class="s2">. When passing a command list, only &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;single-node (--nnodes=1 or --standalone) is valid. For multi-node &quot;</span>
+            <span class="sa">f</span><span class="s2">&quot;training, use an AppDef with a scheduler that manages node allocation.&quot;</span>
+        <span class="p">)</span>
+
+
+<div class="viewcode-block" id="serve">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.spmd.serve">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">serve</span><span class="p">(</span>
+    <span class="n">appdef</span><span class="p">:</span> <span class="n">AppDef</span> <span class="o">|</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+    <span class="n">scheduler</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;mast_conda&quot;</span><span class="p">,</span>
+    <span class="n">scheduler_cfg</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="s2">&quot;SPMDJob&quot;</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Launch SPMD job using an AppDef or a single-node torchrun command.</span>
+
+<span class="sd">    This function launches monarch workers, then allows running SPMD training</span>
+<span class="sd">    via run_spmd().</span>
+
+<span class="sd">    Assumptions:</span>
+<span class="sd">        - When using an AppDef, the role&#39;s entrypoint is a script (e.g.,</span>
+<span class="sd">          &quot;workspace/entrypoint.sh&quot;) that sets up the environment (activates</span>
+<span class="sd">          conda, sets WORKSPACE_DIR, etc.) and runs its arguments.</span>
+<span class="sd">        - The role&#39;s args contains a torchrun command with the training script,</span>
+<span class="sd">          e.g., [&quot;torchrun&quot;, &quot;--nnodes=1&quot;, &quot;-m&quot;, &quot;train&quot;, &quot;--lr&quot;, &quot;0.001&quot;].</span>
+<span class="sd">        - The role&#39;s workspace defines which files to upload to workers.</span>
+<span class="sd">        - When using a command list, it should be a torchrun command, e.g.,</span>
+<span class="sd">          [&quot;torchrun&quot;, &quot;--nproc-per-node=4&quot;, &quot;--standalone&quot;, &quot;train.py&quot;].</span>
+
+<span class="sd">    Note:</span>
+<span class="sd">        When passing a command list, only single-node torchrun is supported</span>
+<span class="sd">        (``--standalone`` or ``--nnodes=1``). For multi-node training, use an</span>
+<span class="sd">        ``AppDef`` with a scheduler that manages node allocation.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        appdef: Either a torchx ``AppDef`` instance, or a torchrun command as</span>
+<span class="sd">            a list of strings (e.g., ``[&quot;torchrun&quot;, &quot;--nproc-per-node=4&quot;,</span>
+<span class="sd">            &quot;train.py&quot;]``). When a list is provided, the first element is the</span>
+<span class="sd">            entrypoint and the rest are arguments.</span>
+<span class="sd">        scheduler: Scheduler name (e.g., &#39;mast_conda&#39;, &#39;local_cwd&#39;)</span>
+<span class="sd">        scheduler_cfg: Scheduler configuration dict</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        SPMDJob instance</span>
+
+<span class="sd">    Raises:</span>
+<span class="sd">        ValueError: If command list specifies multi-node (--nnodes &gt; 1).</span>
+
+<span class="sd">    Example:</span>
+<span class="sd">        Using a torchrun command list (single-node only)::</span>
+
+<span class="sd">            from monarch.job.spmd import serve</span>
+
+<span class="sd">            job = serve(</span>
+<span class="sd">                [&quot;torchrun&quot;, &quot;--nproc-per-node=4&quot;, &quot;--standalone&quot;, &quot;train.py&quot;],</span>
+<span class="sd">                scheduler=&quot;local_cwd&quot;,</span>
+<span class="sd">            )</span>
+<span class="sd">            job.run_spmd()</span>
+
+<span class="sd">        Using an AppDef (supports multi-node)::</span>
+
+<span class="sd">            from monarch.job.spmd import serve</span>
+<span class="sd">            from torchx import specs</span>
+
+<span class="sd">            app = specs.AppDef(</span>
+<span class="sd">                name=&quot;my-training&quot;,</span>
+<span class="sd">                roles=[</span>
+<span class="sd">                    specs.Role(</span>
+<span class="sd">                        name=&quot;trainer&quot;,</span>
+<span class="sd">                        image=&quot;my_workspace:latest&quot;,</span>
+<span class="sd">                        entrypoint=&quot;workspace/entrypoint.sh&quot;,</span>
+<span class="sd">                        args=[&quot;torchrun&quot;, &quot;--nnodes=2&quot;, &quot;--nproc-per-node=8&quot;,</span>
+<span class="sd">                              &quot;-m&quot;, &quot;train&quot;],</span>
+<span class="sd">                        num_replicas=2,</span>
+<span class="sd">                        resource=specs.resource(h=&quot;gtt_any&quot;),</span>
+<span class="sd">                    ),</span>
+<span class="sd">                ],</span>
+<span class="sd">            )</span>
+<span class="sd">            job = serve(</span>
+<span class="sd">                app,</span>
+<span class="sd">                scheduler=&quot;mast_conda&quot;,</span>
+<span class="sd">                scheduler_cfg={</span>
+<span class="sd">                    &quot;hpcClusterUuid&quot;: &quot;MastGenAICluster&quot;,</span>
+<span class="sd">                    &quot;hpcIdentity&quot;: &quot;my_identity&quot;,</span>
+<span class="sd">                    &quot;localityConstraints&quot;: [&quot;region&quot;, &quot;pci&quot;],</span>
+<span class="sd">                },</span>
+<span class="sd">            )</span>
+<span class="sd">            job.run_spmd()</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">appdef</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="n">appdef</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">command</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;command cannot be empty&quot;</span><span class="p">)</span>
+        <span class="n">_validate_single_node_command</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>
+
+        <span class="n">entrypoint</span> <span class="o">=</span> <span class="n">command</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">command</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span> <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">command</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span> <span class="k">else</span> <span class="p">[]</span>
+
+        <span class="n">appdef</span> <span class="o">=</span> <span class="n">AppDef</span><span class="p">(</span>
+            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;spmd-job&quot;</span><span class="p">,</span>
+            <span class="n">roles</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">Role</span><span class="p">(</span>
+                    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;trainer&quot;</span><span class="p">,</span>
+                    <span class="n">image</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span>
+                    <span class="n">entrypoint</span><span class="o">=</span><span class="n">entrypoint</span><span class="p">,</span>
+                    <span class="n">args</span><span class="o">=</span><span class="n">args</span><span class="p">,</span>
+                    <span class="n">num_replicas</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                <span class="p">),</span>
+            <span class="p">],</span>
+        <span class="p">)</span>
+
+    <span class="c1"># Clean up stale job state file</span>
+    <span class="n">job_state_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;.monarch&quot;</span><span class="p">,</span> <span class="s2">&quot;job_state.pkl&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">job_state_path</span><span class="p">):</span>
+        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;Removing stale job state file: </span><span class="si">{</span><span class="n">job_state_path</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">job_state_path</span><span class="p">)</span>
+
+    <span class="c1"># Extract workspace from appdef&#39;s first role</span>
+    <span class="n">workspace</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">appdef</span><span class="o">.</span><span class="n">roles</span><span class="p">:</span>
+        <span class="n">role_workspace</span> <span class="o">=</span> <span class="n">appdef</span><span class="o">.</span><span class="n">roles</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">workspace</span>
+        <span class="k">if</span> <span class="n">role_workspace</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">role_workspace</span><span class="o">.</span><span class="n">projects</span><span class="p">:</span>
+            <span class="c1"># Get the first project directory as the workspace</span>
+            <span class="n">workspace</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="nb">iter</span><span class="p">(</span><span class="n">role_workspace</span><span class="o">.</span><span class="n">projects</span><span class="o">.</span><span class="n">keys</span><span class="p">()),</span> <span class="kc">None</span><span class="p">)</span>
+
+    <span class="c1"># Cache original entrypoints before modifying</span>
+    <span class="n">original_roles</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">scheme</span> <span class="o">=</span> <span class="s2">&quot;metatls&quot;</span> <span class="k">if</span> <span class="n">scheduler</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;mast&quot;</span><span class="p">)</span> <span class="k">else</span> <span class="s2">&quot;tcp&quot;</span>
+    <span class="k">for</span> <span class="n">role</span> <span class="ow">in</span> <span class="n">appdef</span><span class="o">.</span><span class="n">roles</span><span class="p">:</span>
+        <span class="n">original_roles</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+            <span class="p">{</span>
+                <span class="s2">&quot;entrypoint&quot;</span><span class="p">:</span> <span class="n">role</span><span class="o">.</span><span class="n">entrypoint</span><span class="p">,</span>
+                <span class="s2">&quot;args&quot;</span><span class="p">:</span> <span class="n">role</span><span class="o">.</span><span class="n">args</span><span class="p">,</span>
+            <span class="p">}</span>
+        <span class="p">)</span>
+
+        <span class="n">role</span><span class="o">.</span><span class="n">args</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">&quot;python&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;-X&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;faulthandler&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;-c&quot;</span><span class="p">,</span>
+            <span class="sa">f</span><span class="s1">&#39;import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca=&quot;trust_all_connections&quot;, address=f&quot;</span><span class="si">{</span><span class="n">scheme</span><span class="si">}</span><span class="s1">://</span><span class="se">{{</span><span class="s1">socket.getfqdn()</span><span class="se">}}</span><span class="s1">:26600&quot;)&#39;</span><span class="p">,</span>
+        <span class="p">]</span>
+
+    <span class="c1"># Fall back to cwd if no workspace defined in appdef</span>
+    <span class="k">if</span> <span class="n">workspace</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">workspace</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
+    <span class="n">scheduler_cfg</span> <span class="o">=</span> <span class="n">scheduler_cfg</span> <span class="ow">or</span> <span class="p">{}</span>
+
+    <span class="n">runner</span> <span class="o">=</span> <span class="n">torchx_runner</span><span class="p">()</span>
+
+    <span class="c1"># Dryrun + schedule</span>
+    <span class="n">dryrun_info</span> <span class="o">=</span> <span class="n">runner</span><span class="o">.</span><span class="n">dryrun</span><span class="p">(</span>
+        <span class="n">app</span><span class="o">=</span><span class="n">appdef</span><span class="p">,</span>
+        <span class="n">scheduler</span><span class="o">=</span><span class="n">scheduler</span><span class="p">,</span>
+        <span class="n">cfg</span><span class="o">=</span><span class="n">scheduler_cfg</span><span class="p">,</span>
+        <span class="n">workspace</span><span class="o">=</span><span class="n">workspace</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">handle</span> <span class="o">=</span> <span class="n">runner</span><span class="o">.</span><span class="n">schedule</span><span class="p">(</span><span class="n">dryrun_info</span><span class="p">)</span>
+    <span class="n">status</span> <span class="o">=</span> <span class="n">runner</span><span class="o">.</span><span class="n">status</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Launched: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">ui_url</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="n">handle</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="n">job</span> <span class="o">=</span> <span class="n">SPMDJob</span><span class="p">(</span>
+        <span class="n">handle</span><span class="o">=</span><span class="n">handle</span><span class="p">,</span>
+        <span class="n">scheduler</span><span class="o">=</span><span class="n">scheduler</span><span class="p">,</span>
+        <span class="n">workspace</span><span class="o">=</span><span class="n">workspace</span><span class="p">,</span>
+        <span class="n">original_roles</span><span class="o">=</span><span class="n">original_roles</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">job</span></div>
+
+
+
+<div class="viewcode-block" id="SPMDJob">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.spmd.SPMDJob">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">SPMDJob</span><span class="p">(</span><span class="n">JobTrait</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    SPMD (Single Program Multiple Data) job that uses torchx directly.</span>
+
+<span class="sd">    This job type wraps a torchx Runner and job handle, providing monarch job tracking.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">handle</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">scheduler</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">workspace</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">original_roles</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span> <span class="o">=</span> <span class="n">handle</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_scheduler</span> <span class="o">=</span> <span class="n">scheduler</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_workspace</span> <span class="o">=</span> <span class="n">workspace</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_original_roles</span> <span class="o">=</span> <span class="n">original_roles</span> <span class="ow">or</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hostnames</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_get_runner</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Runner</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Lazily create runner when needed (not pickle-friendly).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">torchx_runner</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_create</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client_script</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Job is already created in serve(), this is a no-op.&quot;&quot;&quot;</span>
+        <span class="k">pass</span>
+
+<div class="viewcode-block" id="SPMDJob.can_run">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.spmd.SPMDJob.can_run">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">can_run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">spec</span><span class="p">:</span> <span class="s2">&quot;JobTrait&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">SPMDJob</span><span class="p">):</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+
+        <span class="c1"># Check if job is still running</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_runner</span><span class="p">()</span><span class="o">.</span><span class="n">status</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">status</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">status</span><span class="o">.</span><span class="n">is_terminal</span><span class="p">()</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_check_job_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span> <span class="o">|</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Check if job is ready (running with replicas).</span>
+<span class="sd">        Returns True if ready, error message string if not ready, raises ValueError if failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_runner</span><span class="p">()</span><span class="o">.</span><span class="n">status</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Job not found&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">status</span><span class="o">.</span><span class="n">state</span> <span class="ow">in</span> <span class="p">[</span><span class="n">AppState</span><span class="o">.</span><span class="n">FAILED</span><span class="p">,</span> <span class="n">AppState</span><span class="o">.</span><span class="n">CANCELLED</span><span class="p">]:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Job failed with state: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">state</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">status</span><span class="o">.</span><span class="n">state</span> <span class="o">&lt;</span> <span class="n">AppState</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">:</span>
+            <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Waiting for job to be RUNNING (current: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">state</span><span class="si">}</span><span class="s2">)&quot;</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">status</span><span class="o">.</span><span class="n">roles</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">status</span><span class="o">.</span><span class="n">roles</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">replicas</span><span class="p">:</span>
+            <span class="k">return</span> <span class="s2">&quot;Job is RUNNING but waiting for replicas to be available&quot;</span>
+
+        <span class="c1"># Check that all replicas are running (use min to find least progressive)</span>
+        <span class="n">replica_state</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">state</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">status</span><span class="o">.</span><span class="n">roles</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">replicas</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">replica_state</span> <span class="o">&lt;</span> <span class="n">AppState</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">:</span>
+            <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Waiting for replicas to be RUNNING (current: </span><span class="si">{</span><span class="n">replica_state</span><span class="si">}</span><span class="s2">)&quot;</span>
+        <span class="k">if</span> <span class="n">replica_state</span> <span class="o">&gt;</span> <span class="n">AppState</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Replica in terminal state: </span><span class="si">{</span><span class="n">replica_state</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_wait_for_job_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">check_interval_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Wait for job to be ready, polling at check_interval_seconds.&quot;&quot;&quot;</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">ready_status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_job_ready</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">ready_status</span> <span class="ow">is</span> <span class="kc">True</span><span class="p">:</span>
+                <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Job is ready. Total wait time: </span><span class="si">{</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">break</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="nb">print</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">ready_status</span><span class="si">}</span><span class="s2">; will check again in </span><span class="si">{</span><span class="n">check_interval_seconds</span><span class="si">}</span><span class="s2"> seconds. Total wait time: </span><span class="si">{</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">start</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                    <span class="n">end</span><span class="o">=</span><span class="s2">&quot;</span><span class="se">\r</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">check_interval_seconds</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_state</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">JobState</span><span class="p">:</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scheduler</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;local&quot;</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">JobState</span><span class="p">({</span><span class="s2">&quot;workers&quot;</span><span class="p">:</span> <span class="n">this_host</span><span class="p">()})</span>
+
+        <span class="c1"># Remote scheduler - poll for job readiness via torchx</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_job_ready</span><span class="p">()</span>
+
+        <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_runner</span><span class="p">()</span><span class="o">.</span><span class="n">status</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span><span class="p">)</span>
+        <span class="k">assert</span> <span class="n">status</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">status</span><span class="o">.</span><span class="n">roles</span> <span class="ow">and</span> <span class="n">status</span><span class="o">.</span><span class="n">roles</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">replicas</span>
+
+        <span class="c1"># Extract hostnames from status</span>
+        <span class="n">hostnames</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">replica</span><span class="o">.</span><span class="n">hostname</span>
+            <span class="k">for</span> <span class="n">replica</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">status</span><span class="o">.</span><span class="n">roles</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">replicas</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">r</span><span class="p">:</span> <span class="n">r</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+        <span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hostnames</span> <span class="o">=</span> <span class="n">hostnames</span>
+
+        <span class="n">configure</span><span class="p">(</span><span class="n">default_transport</span><span class="o">=</span><span class="n">_get_channel_transport</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_scheduler</span><span class="p">))</span>
+        <span class="n">workers</span> <span class="o">=</span> <span class="n">attach_to_workers</span><span class="p">(</span>
+            <span class="n">ca</span><span class="o">=</span><span class="s2">&quot;trust_all_connections&quot;</span><span class="p">,</span>
+            <span class="n">workers</span><span class="o">=</span><span class="p">[</span><span class="n">_get_worker_addr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_scheduler</span><span class="p">,</span> <span class="n">h</span><span class="p">)</span> <span class="k">for</span> <span class="n">h</span> <span class="ow">in</span> <span class="n">hostnames</span><span class="p">],</span>
+        <span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">JobState</span><span class="p">({</span><span class="s2">&quot;workers&quot;</span><span class="p">:</span> <span class="n">workers</span><span class="p">})</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_kill</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_get_runner</span><span class="p">()</span><span class="o">.</span><span class="n">cancel</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_app_handle</span><span class="p">)</span>
+
+<div class="viewcode-block" id="SPMDJob.run_spmd">
+<a class="viewcode-back" href="../../../../api/monarch.job.html#monarch.job.spmd.SPMDJob.run_spmd">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">run_spmd</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_state</span><span class="p">()</span>
+        <span class="n">workers</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">workers</span>
+
+        <span class="n">script_args</span><span class="p">,</span> <span class="n">nproc_per_node</span> <span class="o">=</span> <span class="n">_parse_torchrun</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_original_roles</span><span class="p">)</span>
+
+        <span class="n">procs</span> <span class="o">=</span> <span class="n">workers</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="n">nproc_per_node</span><span class="p">})</span>
+        <span class="n">am</span> <span class="o">=</span> <span class="n">procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;_SPMDActor&quot;</span><span class="p">,</span> <span class="n">SPMDActor</span><span class="p">)</span>
+
+        <span class="c1"># Get master addr/port from first actor</span>
+        <span class="n">first_values</span> <span class="o">=</span> <span class="nb">dict</span><span class="o">.</span><span class="n">fromkeys</span><span class="p">(</span><span class="n">procs</span><span class="o">.</span><span class="n">_labels</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="n">master_addr</span><span class="p">,</span> <span class="n">master_port</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">am</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="o">**</span><span class="n">first_values</span><span class="p">)</span><span class="o">.</span><span class="n">get_host_port</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="kc">None</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="p">)</span>
+
+        <span class="n">am</span><span class="o">.</span><span class="n">main</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">master_addr</span><span class="p">,</span> <span class="n">master_port</span><span class="p">,</span> <span class="n">script_args</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span></div>
+</div>
+
+</pre></div>
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "monarch._src.job.spmd",
+       "headline": "monarch._src.job.spmd",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/_modules/monarch/_src/job/spmd.html",
+       "articleBody": "Source code for monarch._src.job.spmd # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. \"\"\" Internal implementation of SPMD job primitives. Provides the :func:`serve` function and :class:`SPMDJob` class for launching torchrun-style SPMD training jobs. Parses torchrun arguments and creates a Monarch mesh to run the training script, replicating torchrun behavior. \"\"\" import argparse import os import time import warnings from datetime import datetime from typing import Any, Dict, List, Optional, Tuple from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import configure from monarch._src.actor.bootstrap import attach_to_workers from monarch._src.actor.host_mesh import this_host from monarch._src.job.job import JobState, JobTrait from monarch._src.spmd.actor import SPMDActor from monarch._src.tools.commands import torchx_runner from torchx.runner import Runner from torchx.specs import AppDef, AppState, Role def _get_torchrun_parser() -\u003e argparse.ArgumentParser: \"\"\" Build argparse parser for torchrun torch/distributed/run.py arguments. \"\"\" parser = argparse.ArgumentParser(add_help=False) parser.add_argument(\"--nnodes\", type=str, default=\"1:1\") parser.add_argument(\"--nproc-per-node\", \"--nproc_per_node\", type=str, default=\"1\") parser.add_argument(\"--rdzv-backend\", \"--rdzv_backend\", type=str) parser.add_argument(\"--rdzv-endpoint\", \"--rdzv_endpoint\", type=str) parser.add_argument(\"--rdzv-id\", \"--rdzv_id\", type=str) parser.add_argument(\"--rdzv-conf\", \"--rdzv_conf\", type=str) parser.add_argument(\"--standalone\", action=\"store_true\") parser.add_argument(\"--max-restarts\", \"--max_restarts\", type=int) parser.add_argument(\"--monitor-interval\", \"--monitor_interval\", type=float) parser.add_argument(\"--start-method\", \"--start_method\", type=str) parser.add_argument(\"--role\", type=str) parser.add_argument(\"-m\", \"--module\", action=\"store_true\") parser.add_argument(\"--no-python\", \"--no_python\", action=\"store_true\") parser.add_argument(\"--run-path\", \"--run_path\", action=\"store_true\") parser.add_argument(\"--log-dir\", \"--log_dir\", type=str) parser.add_argument(\"-r\", \"--redirects\", type=str) parser.add_argument(\"-t\", \"--tee\", type=str) parser.add_argument(\"--local-ranks-filter\", \"--local_ranks_filter\", type=str) parser.add_argument(\"--node-rank\", \"--node_rank\", type=int) parser.add_argument(\"--master-addr\", \"--master_addr\", type=str) parser.add_argument(\"--master-port\", \"--master_port\", type=int) parser.add_argument(\"--local-addr\", \"--local_addr\", type=str) parser.add_argument(\"training_script\", nargs=\"?\") parser.add_argument(\"training_script_args\", nargs=argparse.REMAINDER) return parser def _parse_torchrun( original_roles: List[Dict[str, Any]], ) -\u003e Tuple[List[str], int]: \"\"\" Parse torchrun args using argparse to match real torchrun torch/distributed/run.py behavior. The original role structure looks like: { \u0027entrypoint\u0027: \u0027workspace/entrypoint.sh\u0027, \u0027args\u0027: [\u0027torchrun\u0027, \u0027--nnodes=1\u0027, \u0027--nproc-per-node=8\u0027, \u0027-m\u0027, \u0027train\u0027, \u0027--lr\u0027, \u00270.001\u0027] } Supports: - [\u0027torchrun\u0027, \u0027--nproc-per-node=8\u0027, \u0027-m\u0027, \u0027train\u0027, ...] - [\u0027python\u0027, \u0027-m\u0027, \u0027torch.distributed.run\u0027, \u0027--nproc-per-node=8\u0027, \u0027-m\u0027, \u0027train\u0027, ...] - [\u0027python\u0027, \u0027-m\u0027, \u0027torchrun\u0027, \u0027--nproc-per-node=8\u0027, \u0027-m\u0027, \u0027train\u0027, ...] - [\u0027python\u0027, \u0027train.py\u0027, ...] (single proc) Returns: (script_args, nproc_per_node) tuple e.g., ([\u0027-m\u0027, \u0027train\u0027, \u0027--lr\u0027, \u00270.001\u0027], 8) Raises: ValueError: If args format is not recognized \"\"\" if not original_roles: raise ValueError(\"No roles provided\") if len(original_roles) \u003e 1: raise ValueError( \"Multiple roles provided. monarch.spmd supports single-role SPMD jobs\" ) role = original_roles[0] full_args = list(role.get(\"args\", [])) entrypoint = role.get(\"entrypoint\", \"\") # Prepend entrypoint if it\u0027s a recognized command recognized_commands = (\"torchrun\", \"torch.distributed.run\", \"python\", \"python3\") if entrypoint in recognized_commands: full_args = [entrypoint] + full_args if not full_args: raise ValueError(\"Role has no args\") # Determine where torchrun args start torchrun_modules = (\"torch.distributed.run\", \"torchrun\") if full_args[0] in (\"torchrun\", \"torch.distributed.run\"): args_to_parse = full_args[1:] elif full_args[0] in (\"python\", \"python3\"): if ( len(full_args) \u003e= 3 and full_args[1] == \"-m\" and full_args[2] in torchrun_modules ): args_to_parse = full_args[3:] else: # Plain python script - return script and args, nproc=1 return (list(full_args[1:]), 1) else: raise ValueError( f\"Expected args to start with torchrun, torch.distributed.run, \" f\"python, or python3, got: {full_args[0]}\" ) # Parse using argparse parser = _get_torchrun_parser() args, _ = parser.parse_known_args(args_to_parse) # Extract nproc_per_node nproc_per_node = 1 nproc_str = getattr(args, \"nproc_per_node\", \"1\") try: nproc_per_node = int(nproc_str) except ValueError: warnings.warn( f\"--nproc-per-node={nproc_str} is not an integer, defaulting to 1. \" f\"Use an explicit integer value instead of \u0027{nproc_str}\u0027.\", stacklevel=2, ) # Build script_args script_args: List[str] = [] if args.module: script_args.append(\"-m\") if args.training_script: script_args.append(args.training_script) script_args.extend(args.training_script_args or []) return (script_args, nproc_per_node) def _get_worker_addr(scheduler: str, hostname: str) -\u003e str: \"\"\"Build worker address for the given scheduler and hostname.\"\"\" if scheduler.startswith(\"mast\"): if not hostname.endswith(\".facebook.com\"): hostname = hostname + \".facebook.com\" return f\"metatls://{hostname}:26600\" else: return f\"tcp://{hostname}:26600\" def _get_channel_transport(scheduler: str) -\u003e ChannelTransport: \"\"\"Get channel transport for the given scheduler.\"\"\" if scheduler.startswith(\"mast\"): return ChannelTransport.MetaTlsWithHostname else: return ChannelTransport.TcpWithHostname def _validate_single_node_command(command: List[str]) -\u003e None: parser = argparse.ArgumentParser(add_help=False) parser.add_argument(\"--nnodes\", type=str, default=None) args, _ = parser.parse_known_args(command) if args.nnodes is None: return nnodes_str = args.nnodes.strip() if nnodes_str not in (\"1\", \"1:1\"): raise ValueError( f\"Multi-node torchrun commands are not supported with serve(). \" f\"Got --nnodes={nnodes_str}. When passing a command list, only \" f\"single-node (--nnodes=1 or --standalone) is valid. For multi-node \" f\"training, use an AppDef with a scheduler that manages node allocation.\" ) [docs] def serve( appdef: AppDef | List[str], scheduler: str = \"mast_conda\", scheduler_cfg: Optional[Dict[str, Any]] = None, ) -\u003e \"SPMDJob\": \"\"\" Launch SPMD job using an AppDef or a single-node torchrun command. This function launches monarch workers, then allows running SPMD training via run_spmd(). Assumptions: - When using an AppDef, the role\u0027s entrypoint is a script (e.g., \"workspace/entrypoint.sh\") that sets up the environment (activates conda, sets WORKSPACE_DIR, etc.) and runs its arguments. - The role\u0027s args contains a torchrun command with the training script, e.g., [\"torchrun\", \"--nnodes=1\", \"-m\", \"train\", \"--lr\", \"0.001\"]. - The role\u0027s workspace defines which files to upload to workers. - When using a command list, it should be a torchrun command, e.g., [\"torchrun\", \"--nproc-per-node=4\", \"--standalone\", \"train.py\"]. Note: When passing a command list, only single-node torchrun is supported (``--standalone`` or ``--nnodes=1``). For multi-node training, use an ``AppDef`` with a scheduler that manages node allocation. Args: appdef: Either a torchx ``AppDef`` instance, or a torchrun command as a list of strings (e.g., ``[\"torchrun\", \"--nproc-per-node=4\", \"train.py\"]``). When a list is provided, the first element is the entrypoint and the rest are arguments. scheduler: Scheduler name (e.g., \u0027mast_conda\u0027, \u0027local_cwd\u0027) scheduler_cfg: Scheduler configuration dict Returns: SPMDJob instance Raises: ValueError: If command list specifies multi-node (--nnodes \u003e 1). Example: Using a torchrun command list (single-node only):: from monarch.job.spmd import serve job = serve( [\"torchrun\", \"--nproc-per-node=4\", \"--standalone\", \"train.py\"], scheduler=\"local_cwd\", ) job.run_spmd() Using an AppDef (supports multi-node):: from monarch.job.spmd import serve from torchx import specs app = specs.AppDef( name=\"my-training\", roles=[ specs.Role( name=\"trainer\", image=\"my_workspace:latest\", entrypoint=\"workspace/entrypoint.sh\", args=[\"torchrun\", \"--nnodes=2\", \"--nproc-per-node=8\", \"-m\", \"train\"], num_replicas=2, resource=specs.resource(h=\"gtt_any\"), ), ], ) job = serve( app, scheduler=\"mast_conda\", scheduler_cfg={ \"hpcClusterUuid\": \"MastGenAICluster\", \"hpcIdentity\": \"my_identity\", \"localityConstraints\": [\"region\", \"pci\"], }, ) job.run_spmd() \"\"\" if isinstance(appdef, list): command = appdef if not command: raise ValueError(\"command cannot be empty\") _validate_single_node_command(command) entrypoint = command[0] args = list(command[1:]) if len(command) \u003e 1 else [] appdef = AppDef( name=\"spmd-job\", roles=[ Role( name=\"trainer\", image=\"\", entrypoint=entrypoint, args=args, num_replicas=1, ), ], ) # Clean up stale job state file job_state_path = os.path.join(os.getcwd(), \".monarch\", \"job_state.pkl\") if os.path.exists(job_state_path): warnings.warn( f\"Removing stale job state file: {job_state_path}\", stacklevel=2, ) os.remove(job_state_path) # Extract workspace from appdef\u0027s first role workspace = None if appdef.roles: role_workspace = appdef.roles[0].workspace if role_workspace is not None and role_workspace.projects: # Get the first project directory as the workspace workspace = next(iter(role_workspace.projects.keys()), None) # Cache original entrypoints before modifying original_roles = [] scheme = \"metatls\" if scheduler.startswith(\"mast\") else \"tcp\" for role in appdef.roles: original_roles.append( { \"entrypoint\": role.entrypoint, \"args\": role.args, } ) role.args = [ \"python\", \"-X\", \"faulthandler\", \"-c\", f\u0027import socket; from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(ca=\"trust_all_connections\", address=f\"{scheme}://{{socket.getfqdn()}}:26600\")\u0027, ] # Fall back to cwd if no workspace defined in appdef if workspace is None: workspace = os.getcwd() scheduler_cfg = scheduler_cfg or {} runner = torchx_runner() # Dryrun + schedule dryrun_info = runner.dryrun( app=appdef, scheduler=scheduler, cfg=scheduler_cfg, workspace=workspace, ) handle = runner.schedule(dryrun_info) status = runner.status(handle) print(f\"Launched: {status.ui_url if status else handle}\") job = SPMDJob( handle=handle, scheduler=scheduler, workspace=workspace, original_roles=original_roles, ) return job [docs] class SPMDJob(JobTrait): \"\"\" SPMD (Single Program Multiple Data) job that uses torchx directly. This job type wraps a torchx Runner and job handle, providing monarch job tracking. \"\"\" def __init__( self, handle: str, scheduler: str, workspace: Optional[str] = None, original_roles: Optional[List[Dict[str, Any]]] = None, ): super().__init__() self._app_handle = handle self._scheduler = scheduler self._workspace = workspace self._original_roles = original_roles or [] self._hostnames: Optional[List[str]] = None def _get_runner(self) -\u003e Runner: \"\"\"Lazily create runner when needed (not pickle-friendly).\"\"\" return torchx_runner() def _create(self, client_script: Optional[str] = None): \"\"\"Job is already created in serve(), this is a no-op.\"\"\" pass [docs] def can_run(self, spec: \"JobTrait\") -\u003e bool: if not isinstance(spec, SPMDJob): return False if self._app_handle is None: return False # Check if job is still running status = self._get_runner().status(self._app_handle) return status is not None and not status.is_terminal() def _check_job_ready(self) -\u003e bool | str: \"\"\" Check if job is ready (running with replicas). Returns True if ready, error message string if not ready, raises ValueError if failed. \"\"\" status = self._get_runner().status(self._app_handle) if status is None: raise ValueError(\"Job not found\") if status.state in [AppState.FAILED, AppState.CANCELLED]: raise ValueError(f\"Job failed with state: {status.state}\") if status.state \u003c AppState.RUNNING: return f\"Waiting for job to be RUNNING (current: {status.state})\" if not status.roles or not status.roles[0].replicas: return \"Job is RUNNING but waiting for replicas to be available\" # Check that all replicas are running (use min to find least progressive) replica_state = min(r.state for r in status.roles[0].replicas) if replica_state \u003c AppState.RUNNING: return f\"Waiting for replicas to be RUNNING (current: {replica_state})\" if replica_state \u003e AppState.RUNNING: raise ValueError(f\"Replica in terminal state: {replica_state}\") return True def _wait_for_job_ready(self, check_interval_seconds: float = 5.0) -\u003e None: \"\"\"Wait for job to be ready, polling at check_interval_seconds.\"\"\" start = datetime.now() while True: ready_status = self._check_job_ready() if ready_status is True: print(f\"\\nJob is ready. Total wait time: {datetime.now() - start}\") break else: print( f\"{ready_status}; will check again in {check_interval_seconds} seconds. Total wait time: {datetime.now() - start}\", end=\"\\r\", ) time.sleep(check_interval_seconds) def _state(self) -\u003e JobState: assert self._app_handle is not None if self._scheduler.startswith(\"local\"): return JobState({\"workers\": this_host()}) # Remote scheduler - poll for job readiness via torchx self._wait_for_job_ready() status = self._get_runner().status(self._app_handle) assert status is not None and status.roles and status.roles[0].replicas # Extract hostnames from status hostnames = [ replica.hostname for replica in sorted(status.roles[0].replicas, key=lambda r: r.id) ] self._hostnames = hostnames configure(default_transport=_get_channel_transport(self._scheduler)) workers = attach_to_workers( ca=\"trust_all_connections\", workers=[_get_worker_addr(self._scheduler, h) for h in hostnames], ) return JobState({\"workers\": workers}) def _kill(self): if self._app_handle is not None: self._get_runner().cancel(self._app_handle) [docs] def run_spmd(self): state = self._state() workers = state.workers script_args, nproc_per_node = _parse_torchrun(self._original_roles) procs = workers.spawn_procs(per_host={\"gpus\": nproc_per_node}) am = procs.spawn(\"_SPMDActor\", SPMDActor) # Get master addr/port from first actor first_values = dict.fromkeys(procs._labels, 0) master_addr, master_port = ( am.slice(**first_values).get_host_port.call_one(None).get() ) am.main.call(master_addr, master_port, script_args).get()",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/_modules/monarch/_src/job/spmd.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

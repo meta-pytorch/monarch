@@ -1,0 +1,1605 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Getting Started" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/generated/examples/getting_started.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We’ll cover: Defining actors with endpoint functions, Spawning actors loca..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We’ll cover: Defining actors with endpoint functions, Spawning actors loca..." />
+
+    <title>Getting Started &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/getting_started';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/getting_started.html" />
+    <link rel="icon" href="../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Examples" href="index.html" />
+    <link rel="prev" title="Installation" href="../../installation.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Getting Started</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="Getting Started">
+        <meta itemprop="position" content="1">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <div class="sphx-glr-download-link-note admonition note">
+<p class="admonition-title">Note</p>
+<p><a class="reference internal" href="#sphx-glr-download-generated-examples-getting-started-py"><span class="std std-ref">Go to the end</span></a>
+to download the full example code</p>
+</div>
+<section class="sphx-glr-example-title" id="getting-started">
+<span id="sphx-glr-generated-examples-getting-started-py"></span><h1>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">#</a></h1>
+<p>This guide introduces the core concepts of Monarch, a framework for building
+multi-machine training programs using actors. We’ll cover:</p>
+<ul class="simple">
+<li><p>Defining actors with endpoint functions</p></li>
+<li><p>Spawning actors locally and across multiple hosts and processes</p></li>
+<li><p>Sending messages and organizing actors into meshes</p></li>
+<li><p>The supervision tree for fault tolerance</p></li>
+<li><p>Distributed tensors and RDMA capabilities</p></li>
+</ul>
+<section id="defining-an-actor">
+<h2>Defining an Actor<a class="headerlink" href="#defining-an-actor" title="Link to this heading">#</a></h2>
+<p>At its core, Monarch uses actors as a way to create multi-machine training programs.
+Actors are Python objects that expose a number of endpoint functions. These functions
+can be called by other actors in the system and their responses gathered asynchronously.</p>
+<p>Let’s start by defining a simple actor:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">this_proc</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Counter</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">initial_value</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">initial_value</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">increment</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_value</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
+</pre></div>
+</div>
+<p>The decorator <cite>endpoint</cite> specifies functions of the Actor that can be called remotely
+from other actors. We do it this way to ensure that IDE can offer autocompletions of
+actor calls with correct types.</p>
+</section>
+</section>
+<section id="spawning-an-actor-in-the-local-process">
+<h1>Spawning An Actor In The Local Process<a class="headerlink" href="#spawning-an-actor-in-the-local-process" title="Link to this heading">#</a></h1>
+<p>We can then spawn an actor in the currently running process like so:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counter</span><span class="p">:</span> <span class="n">Counter</span> <span class="o">=</span> <span class="n">this_proc</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;counter&quot;</span><span class="p">,</span> <span class="n">Counter</span><span class="p">,</span> <span class="n">initial_value</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">this_proc()</span></code> is a handle to a process and lets us directly control where an actor runs.
+Monarch is very literal about where things run so that code can be written in the most
+efficient way. For instance, two actors in the same proc can rely on the fact that they
+have the same memory space. Two actors on the same host can communicate through /dev/shm, etc.
+Note that passing messages between two actors (even if they are on the same proc) currently
+always implies serialization.</p>
+</section>
+<section id="sending-a-simple-message">
+<h1>Sending A Simple Message<a class="headerlink" href="#sending-a-simple-message" title="Link to this heading">#</a></h1>
+<p>Once spawned we can send messages to the actor:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Future</span>
+
+<span class="n">fut</span><span class="p">:</span> <span class="n">Future</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="n">counter</span><span class="o">.</span><span class="n">get_value</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
+<span class="n">value</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">fut</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Counter value: </span><span class="si">{</span><span class="n">value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Here we invoked the get_value message, returning 0, the current value of the Counter.
+We refer to the <code class="docutils literal notranslate"><span class="pre">call_one</span></code> method as an ‘adverb’ because it modifies how results of the
+endpoint are handled. <code class="docutils literal notranslate"><span class="pre">call_one</span></code> just invokes a single actor and gets its value.</p>
+<p>Notice the return value is a Future[int] – the message is sent asynchronously, letting
+the sender do other things before it needs the reply. <code class="docutils literal notranslate"><span class="pre">get()</span></code> waits on the result.
+Futures can also be awaited if you are in an asyncio context.</p>
+</section>
+<section id="multiple-actors-at-once">
+<h1>Multiple Actors at Once<a class="headerlink" href="#multiple-actors-at-once" title="Link to this heading">#</a></h1>
+<p>Monarch scales to thousands of machines because of its ability to broadcast a single
+message to many actors at once rather than send many point-to-point messages. By
+organizing communication into trees, monarch can multicast messages to thousands of
+machines in a scalable way with good latency.</p>
+<p>We express broadcasted communication by organizing actors into a <strong>Mesh</strong> – a
+multidimensional container with named dimensions. For instance a cluster might have
+dimensions {“hosts”: 32, “gpus”: 8}. Dimension names are normally things like “hosts”,
+indexing across the hosts in a cluster, or “gpus”, indexing across things in a machine.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">ProcMesh</span><span class="p">,</span> <span class="n">this_host</span>
+</pre></div>
+</div>
+<p>To create a mesh of actors, we first create a mesh of processes, and spawn an actor on them:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">procs</span><span class="p">:</span> <span class="n">ProcMesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">})</span>
+<span class="n">counters</span><span class="p">:</span> <span class="n">Counter</span> <span class="o">=</span> <span class="n">procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;counters&quot;</span><span class="p">,</span> <span class="n">Counter</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="broadcasting-messages">
+<h2>Broadcasting Messages<a class="headerlink" href="#broadcasting-messages" title="Link to this heading">#</a></h2>
+<p>Now messages can be sent to all the actors in the mesh:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counters</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The <cite>broadcast</cite> adverb means that we are sending a message to all members of the mesh.
+<cite>broadcast</cite> is inherently asynchronous: it does not return a future that you can wait on.
+Note however that all messages (including broadcasts) are delivered in the order sent by
+the client (about which more later).</p>
+</section>
+<section id="slicing-meshes">
+<h2>Slicing Meshes<a class="headerlink" href="#slicing-meshes" title="Link to this heading">#</a></h2>
+<p>We can also slice up the mesh and send to only some of it (gpus 0 through 4):</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">counters</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="n">gpus</span><span class="o">=</span><span class="nb">slice</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span><span class="o">.</span><span class="n">increment</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">call</span></code> adverb lets us broadcast a message to a group of actors, and then aggregate
+their responses back:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="n">counters</span><span class="o">.</span><span class="n">get_value</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">broadcast</span></code> and <code class="docutils literal notranslate"><span class="pre">call</span></code> are the most commonly used adverbs. The <code class="docutils literal notranslate"><span class="pre">call_one</span></code> adverb we used
+earlier is actually just a special case of <code class="docutils literal notranslate"><span class="pre">call</span></code>, asserting that you know there is only
+a single actor being messaged.</p>
+</section>
+</section>
+<section id="multiple-hosts">
+<h1>Multiple Hosts<a class="headerlink" href="#multiple-hosts" title="Link to this heading">#</a></h1>
+<p>When we created our processes before, we spawned them on <cite>this_host()</cite> – the machine
+running the top-level script. For larger jobs, monarch controls many machines. How these
+machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.),
+but these schedulers are typically encapsulated in a config file.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">context</span><span class="p">,</span> <span class="n">HostMesh</span><span class="p">,</span> <span class="n">hosts_from_config</span>
+</pre></div>
+</div>
+<p>We obtain the mesh of hosts for the job by loading that config:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">hosts</span><span class="p">:</span> <span class="n">HostMesh</span> <span class="o">=</span> <span class="n">hosts_from_config</span><span class="p">(</span><span class="s2">&quot;MONARCH_HOSTS&quot;</span><span class="p">)</span>  <span class="c1"># NYI: hosts_from_config</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">hosts</span><span class="o">.</span><span class="n">extent</span><span class="p">)</span>
+
+<span class="c1"># An extent is the logical shape of a mesh. It is an ordered map, specifying the size of</span>
+<span class="c1"># each dimension in the mesh.</span>
+</pre></div>
+</div>
+<p>Let’s imagine we are writing a trainer across multiple hosts:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">Trainer</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">my_point</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">message_rank</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Trainer </span><span class="si">{</span><span class="n">my_point</span><span class="si">}</span><span class="s2"> taking a step.&quot;</span>
+
+
+<span class="n">trainer_procs</span><span class="p">:</span> <span class="n">ProcMesh</span> <span class="o">=</span> <span class="n">hosts</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">})</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Process mesh extent: </span><span class="si">{</span><span class="n">trainer_procs</span><span class="o">.</span><span class="n">extent</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Spawn the trainers</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">trainers</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;trainer&quot;</span><span class="p">,</span> <span class="n">Trainer</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Do one training step and wait for all to finish it</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="n">trainers</span><span class="o">.</span><span class="n">step</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<section id="logging">
+<h2>Logging<a class="headerlink" href="#logging" title="Link to this heading">#</a></h2>
+<p>Since we’re talking about having multiple hosts now, it’s worth briefly covering how Monarch handles distributed logging.
+User logs from a Monarch job are routed to stdout and stderr of the corresponding process.
+In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">procs</span><span class="o">.</span><span class="n">logging_option</span><span class="p">(</span><span class="n">stream_to_client</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">aggregate_window_sec</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>With stream_to_client=True, Monarch forwards logs from all processes (best effort)
+and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job.</p>
+<p>If you wish to inspect Monarch system logs, you can find them at <code class="docutils literal notranslate"><span class="pre">/tmp/$USER/monarch*</span></code> on the servers running the client and the other Monarch processes.
+You can override the log levels by setting <code class="docutils literal notranslate"><span class="pre">MONARCH_FILE_LOG</span></code> (stdout), and <code class="docutils literal notranslate"><span class="pre">MONARCH_STDERR_LOG</span></code> (stderr).  Valid values
+include <code class="docutils literal notranslate"><span class="pre">[&quot;TRACE&quot;,</span> <span class="pre">&quot;DEBUG&quot;,</span> <span class="pre">&quot;INFO&quot;,</span> <span class="pre">&quot;WARN&quot;,</span> <span class="pre">&quot;ERROR&quot;]</span></code>.</p>
+</section>
+</section>
+<section id="actor-and-process-references">
+<h1>Actor and Process References<a class="headerlink" href="#actor-and-process-references" title="Link to this heading">#</a></h1>
+<p>Actors, processes, and hosts can be sent between actors as arguments to messages.
+This lets programs establish more complicated messaging patterns or establish point-to-point
+connectivity between actors. For instance, we can launch DataLoader actors and Trainer actors
+then pass the dataloaders to the trainers. The nice part of doing it this way instead of having
+the trainers launch the data loaders is that we can relocate the data loader to live on another host
+without the trainer needing to be modified.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">DataLoader</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">i</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">example</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">i</span> <span class="o">+=</span> <span class="mi">1</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;&lt;fake data </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">i</span><span class="si">}</span><span class="s2">&gt;&quot;</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Trainer</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">dataloader</span><span class="p">:</span> <span class="n">DataLoader</span><span class="p">):</span>
+        <span class="n">my_rank</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">rank</span>
+        <span class="c1"># select or single corresponding data loader to work with.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">dataloader</span> <span class="o">=</span> <span class="n">dataloader</span><span class="o">.</span><span class="n">slice</span><span class="p">(</span><span class="o">**</span><span class="n">my_rank</span><span class="p">)</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">input</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">dataloader</span><span class="o">.</span><span class="n">example</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Step with data </span><span class="si">{</span><span class="n">data</span><span class="si">}</span><span class="s2"> and input = </span><span class="si">{</span><span class="nb">input</span><span class="si">}</span><span class="s2">&quot;</span>
+
+
+<span class="n">dataloaders</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;dataloader&quot;</span><span class="p">,</span> <span class="n">DataLoader</span><span class="p">)</span>
+<span class="n">dtrainers</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;dtrainers&quot;</span><span class="p">,</span> <span class="n">Trainer</span><span class="p">,</span> <span class="n">dataloaders</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">dtrainers</span><span class="o">.</span><span class="n">step</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="the-supervision-tree">
+<h1>The Supervision Tree<a class="headerlink" href="#the-supervision-tree" title="Link to this heading">#</a></h1>
+<p>Large scale training will run into issues with faulty hardware, flaky networks, and
+software bugs. Monarch is designed to provide good behaviors for errors and faults by
+default with the option to define more sophisticated behavior for faster recovery or
+fault tolerance.</p>
+<p>We borrow from Erlang the idea of a tree of supervision. Each process, and each actor
+has a parent that launched it and is responsible for its health.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">Errorful</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">say_hello</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">Exception</span><span class="p">(</span><span class="s2">&quot;I don&#39;t want to&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>If we are calling the endpoint and expecting a response, the error will get routed to the caller:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">e</span> <span class="o">=</span> <span class="n">this_proc</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;errorful&quot;</span><span class="p">,</span> <span class="n">Errorful</span><span class="p">)</span>
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">e</span><span class="o">.</span><span class="n">say_hello</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+<span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;It didn&#39;t say hello&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="broadcasting-without-response">
+<h2>Broadcasting Without Response<a class="headerlink" href="#broadcasting-without-response" title="Link to this heading">#</a></h2>
+<p>We also might call something and provide it no way to respond.
+In this case, the error will not show up as an exception, but will be delivered
+to the owner of “e”.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="kc">False</span><span class="p">:</span>
+    <span class="n">e</span><span class="o">.</span><span class="n">say_hello</span><span class="o">.</span><span class="n">broadcast</span><span class="p">()</span>  <span class="c1"># do not expect a response</span>
+</pre></div>
+</div>
+<p>The default behavior of the supervision tree means that an error at any level of process
+or actor creation will not go unreported. This can prevent a lot of accidental deadlocks
+compared to the standard unix-style defaults where threads and processes exiting do not
+stop the spawning processes.</p>
+</section>
+</section>
+<section id="fine-grained-supervision">
+<h1>Fine-grained Supervision<a class="headerlink" href="#fine-grained-supervision" title="Link to this heading">#</a></h1>
+<p>Sometimes fine-grained recovery is possible. For instance, if a data loader failed to
+read a URL, perhaps it would work to just restart it. In these cases, we also offer a
+different API. If an actor defines a <cite>__supervise__</cite> special method, then it will get
+called to handle supervision events for meshes owned by the actor.
+If an error happens on an ActorMesh that is a reference, such as a slice, or
+a mesh that is sent to another actor, then the recovery is done on the original
+creator of that mesh, not the holder of the reference. There is currently
+no way to transfer the ownership from the original creator, this way we ensure
+every actor has a single owner to report errors to.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">MeshFailure</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">SupervisorActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">__supervise__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">failure</span><span class="p">:</span> <span class="n">MeshFailure</span><span class="p">):</span>
+        <span class="c1"># The failure message will include the id of the actor that failed and</span>
+        <span class="c1"># the reason why.</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Failure received: </span><span class="si">{</span><span class="n">failure</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="c1"># Logic to handle failures and potentially restart failed actors</span>
+
+        <span class="c1"># If a truthy value is returned, the supervision event is considered handled</span>
+        <span class="c1"># and will not be propagated further.</span>
+        <span class="c1"># Otherwise, the event will be propagated to the creator of this actor.</span>
+        <span class="c1"># That will be the Actor (or client) which called the spawn() method.</span>
+        <span class="k">return</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<p>If a MeshFailure is not handled by any __supervise__ in the supervision tree,
+it will reach the client, where monarch.actor.unhandled_fault_hook will be
+called with the MeshFailure object. By default, this function crashes the
+client process with exit code 1.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># You can overwrite the global unhandled_fault_hook function to customize this</span>
+<span class="c1"># behavior.</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">monarch.actor</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">my_unhandled_fault_hook</span><span class="p">(</span><span class="n">failure</span><span class="p">:</span> <span class="n">MeshFailure</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="c1"># Log it, add metrics, etc.</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Mesh failure was not handled: </span><span class="si">{</span><span class="n">failure</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="c1"># The failure will be ignored unless this hook returns an exception.</span>
+
+
+<span class="c1"># pyre-ignore[9]: Callable is compatible.</span>
+<span class="n">monarch</span><span class="o">.</span><span class="n">actor</span><span class="o">.</span><span class="n">unhandled_fault_hook</span> <span class="o">=</span> <span class="n">my_unhandled_fault_hook</span>
+</pre></div>
+</div>
+</section>
+<section id="point-to-point-rdma">
+<h1>Point-to-Point RDMA<a class="headerlink" href="#point-to-point-rdma" title="Link to this heading">#</a></h1>
+<p>Monarch provides first-class RDMA support through the RDMABuffer API. This lets
+you separate data references from data movement - instead of sending large tensors
+through your messaging patterns, you pass lightweight buffer references anywhere
+in your system, then explicitly transfer the actual data only when and where you need it.
+This approach lets you design your service’s coordination patterns based on your application
+logic rather than being constrained by when the framework forces data transfers.</p>
+<p>RDMA transfers use libibverbs to transfer data over infiniband or RoCE.
+Unlike traditional NCCL collectives where a send must be matched to a receive,
+once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.rdma</span><span class="w"> </span><span class="kn">import</span> <span class="n">RDMABuffer</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">ParameterServer</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">weights</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.rand.html#torch.rand" title="torch.rand" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">rand</span></a><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span>  <span class="c1"># Large model weights</span>
+
+        <span class="c1"># RDMABuffer does not copy the data. It just</span>
+        <span class="c1"># creates a view of the data that can be passed to</span>
+        <span class="c1"># other processes.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">weight_buffer</span> <span class="o">=</span> <span class="n">RDMABuffer</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">weights</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_weights</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">RDMABuffer</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">weight_buffer</span>  <span class="c1"># Small message: just a reference!</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Worker</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">local_weights</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.zeros.html#torch.zeros" title="torch.zeros" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">zeros</span></a><span class="p">(</span><span class="mi">1000</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">sync_weights</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">:</span> <span class="n">ParameterServer</span><span class="p">):</span>
+        <span class="c1"># Control plane: get lightweight reference</span>
+        <span class="n">weight_ref</span> <span class="o">=</span> <span class="n">server</span><span class="o">.</span><span class="n">get_weights</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+
+        <span class="c1"># Data plane: explicit bulk transfer when needed</span>
+        <span class="n">weight_ref</span><span class="o">.</span><span class="n">read_into</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">local_weights</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+
+
+<span class="n">server_proc</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">})</span>
+<span class="n">worker_proc</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">})</span>
+
+<span class="n">server</span> <span class="o">=</span> <span class="n">server_proc</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;server&quot;</span><span class="p">,</span> <span class="n">ParameterServer</span><span class="p">)</span>
+<span class="n">worker</span> <span class="o">=</span> <span class="n">worker_proc</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span> <span class="n">Worker</span><span class="p">)</span>
+
+<span class="n">worker</span><span class="o">.</span><span class="n">sync_weights</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="n">server</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>RDMABuffers are intentionally low-level: they do just the data movement when requested. It is up
+to the caller to ensure that the data is not modified until the movement is complete. We intend to
+build higher-level libraries for transferring tensors or implementing collective operations
+on top of these primitives.</p>
+</section>
+<section id="distributed-tensors">
+<h1>Distributed Tensors<a class="headerlink" href="#distributed-tensors" title="Link to this heading">#</a></h1>
+<p>Monarch also comes with a ‘tensor engine’ that provides distributed torch tensors.
+This lets a single actor directly compute with tensors distributed across a mesh of processes.</p>
+<p>We can use distributed features by ‘activating’ a ProcMesh:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">activate</span><span class="p">():</span>
+    <span class="n">t</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.rand.html#torch.rand" title="torch.rand" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">rand</span></a><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The tensor <cite>t</cite> is now a distributed tensor with a unique value across each process in the mesh.
+we can examine the values on each proc using built in functions:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="w"> </span><span class="kn">import</span> <span class="n">fetch_shard</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;one&quot;</span><span class="p">,</span> <span class="n">fetch_shard</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">hosts</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;two&quot;</span><span class="p">,</span> <span class="n">fetch_shard</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">hosts</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">gpus</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>and compute with the tensors using any torch function:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">activate</span><span class="p">():</span>
+    <span class="n">dist_compute</span> <span class="o">=</span> <span class="n">t</span> <span class="o">@</span> <span class="n">t</span><span class="o">.</span><span class="n">T</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;dist&quot;</span><span class="p">,</span> <span class="n">fetch_shard</span><span class="p">(</span><span class="n">dist_compute</span><span class="p">,</span> <span class="n">hosts</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">gpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>A distributed tensor can be passed to any mesh of actors that is located on the same mesh
+of processes as the tensors. Each actor will receive the shard of the distributed tensor
+that is on the same process as the actor:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="n">dtrainers</span><span class="o">.</span><span class="n">step</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">dist_compute</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>And actors themselves can define their own distributed tensors with the <cite>rref</cite> adverb:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">LinearActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">w</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.rand.html#torch.rand" title="torch.rand" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">rand</span></a><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
+
+    <span class="c1"># The propagation function is like a type signature: it computes the</span>
+    <span class="c1"># shape of the output, given an input of a particular shape. It is used</span>
+    <span class="c1"># by the tensor engine to correctly create the (local) returned distributed</span>
+    <span class="c1"># tensor references; this way local references can be created and used</span>
+    <span class="c1"># immediately, without needing to synchronize the calls with the actors.</span>
+    <span class="nd">@endpoint</span><span class="p">(</span><span class="n">propagate</span><span class="o">=</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">input</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">input</span> <span class="o">@</span> <span class="bp">self</span><span class="o">.</span><span class="n">w</span>
+
+
+<span class="n">linear</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;linear&quot;</span><span class="p">,</span> <span class="n">LinearActor</span><span class="p">)</span>
+
+<span class="n">o</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="n">linear</span><span class="o">.</span><span class="n">forward</span><span class="o">.</span><span class="n">rref</span><span class="p">(</span><span class="n">t</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">rref</span></code> adverb invokes the endpoint and then makes the output of the endpoint into a distributed tensor that can be used in
+further distributed computation.</p>
+<p>Distributed tensors also include ways of doing reductions and gathers across shards and moving tensors between processes.
+See <a class="reference internal" href="distributed_tensors.html"><span class="doc">Distributed Tensors in Monarch</span></a> for more information including reductions across shards and moving tensors between processes.
+We eventually want it to be possible for an entirely training framework to be written in terms of distributed tensors.
+However, currently the performance of messaging for distributed tensors is not optimized enough to make this practice. They are
+still useful for interactive debugging.</p>
+</section>
+<section id="summary">
+<h1>Summary<a class="headerlink" href="#summary" title="Link to this heading">#</a></h1>
+<p>We have now seen all four major features of Monarch:</p>
+<ol class="arabic simple">
+<li><p><strong>Scalable messaging</strong> using multidimensional meshes of actors</p></li>
+<li><p><strong>Fault tolerance</strong> through supervision trees and __supervise__</p></li>
+<li><p><strong>Point-to-point low-level RDMA</strong></p></li>
+<li><p><strong>Built-in distributed tensors</strong></p></li>
+</ol>
+<p>This foundation enables building sophisticated multi-machine training programs with
+clear semantics for distribution, fault tolerance, and communication patterns.</p>
+<p>The remaining sections fill in more details about how to accomplish common patterns
+with the above features.</p>
+</section>
+<section id="actor-context">
+<h1>Actor Context<a class="headerlink" href="#actor-context" title="Link to this heading">#</a></h1>
+<p>At any point, code might need to know ‘what’ it is and ‘where’ it is. For instance,
+when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch, the
+‘what’ is always what actor is currently running the code. The ‘where’ can be
+looked up using the <cite>context()</cite> API:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">ContextAwareActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_context_info</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">actor_instance</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">actor_instance</span>
+        <span class="c1"># `context().message_rank` returns the coordinates in the message. This isn&#39;t always the</span>
+        <span class="c1"># same as the actor&#39;s rank because messages can be sent to a slice of actors rather than</span>
+        <span class="c1"># the whole thing.</span>
+        <span class="n">message_rank</span> <span class="o">=</span> <span class="n">context</span><span class="p">()</span><span class="o">.</span><span class="n">message_rank</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Actor rank: </span><span class="si">{</span><span class="n">actor_instance</span><span class="o">.</span><span class="n">rank</span><span class="si">}</span><span class="s2">, message rank: </span><span class="si">{</span><span class="n">message_rank</span><span class="si">}</span><span class="s2">&quot;</span>
+
+
+<span class="n">c</span> <span class="o">=</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;context_actor&quot;</span><span class="p">,</span> <span class="n">ContextAwareActor</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">get_context_info</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>ranks are always multidimension and reported as dictionaries of the dimension names
+and the point within that dimension.</p>
+</section>
+<section id="free-remote-functions">
+<h1>Free Remote Functions<a class="headerlink" href="#free-remote-functions" title="Link to this heading">#</a></h1>
+<p>It is possible to run functions on a process mesh that are not associated with any actor.
+These can be useful to set up state on a process, or perform pre-post processing of
+data before sending it to an actor:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch</span><span class="w"> </span><span class="kn">import</span> <span class="n">remote</span>
+
+
+<span class="nd">@remote</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">check_memory</span><span class="p">():</span>
+    <span class="kn">import</span><span class="w"> </span><span class="nn">psutil</span>
+
+    <span class="k">return</span> <span class="n">psutil</span><span class="o">.</span><span class="n">Process</span><span class="p">()</span><span class="o">.</span><span class="n">memory_info</span><span class="p">()</span>
+
+
+<span class="k">with</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">activate</span><span class="p">():</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">check_memory</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="channels-and-low-level-messaging">
+<h1>Channels and Low-level messaging<a class="headerlink" href="#channels-and-low-level-messaging" title="Link to this heading">#</a></h1>
+<p>It is sometimes useful to establish direct channels between two points,
+or forward the handling of some messages from one actor to another.
+To enable this, all messaging in monarch is build out of port objects.</p>
+<p>An actor can create a new channel, which provides a Port for sending and
+a PortReceiver for receiving messages. The Port object can then be send
+to any endpoint.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Channel</span><span class="p">,</span> <span class="n">Port</span>
+
+<span class="n">port</span><span class="p">,</span> <span class="n">recv</span> <span class="o">=</span> <span class="n">Channel</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
+
+<span class="n">port</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">recv</span><span class="o">.</span><span class="n">recv</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>Ports can be passed as arguments to actors and sent a response
+remotely. We can also directly ask an endpoint to send its response to a port using
+the  <code class="docutils literal notranslate"><span class="pre">send</span></code> messaging primitive.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">send</span>
+
+<span class="k">with</span> <span class="n">trainer_procs</span><span class="o">.</span><span class="n">activate</span><span class="p">():</span>
+    <span class="n">send</span><span class="p">(</span><span class="n">check_memory</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="p">(),</span> <span class="n">kwargs</span><span class="o">=</span><span class="p">{},</span> <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The port will receive a response from each actor send the message:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">recv</span><span class="o">.</span><span class="n">recv</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>The other adverbs like <code class="docutils literal notranslate"><span class="pre">call</span></code>, <code class="docutils literal notranslate"><span class="pre">stream</span></code>, and <code class="docutils literal notranslate"><span class="pre">broadcast</span></code> are just
+implemented in terms of ports and send.</p>
+</section>
+<section id="message-ordering">
+<h1>Message Ordering<a class="headerlink" href="#message-ordering" title="Link to this heading">#</a></h1>
+<p>Messages from an actor are delivered to the destination actor in order in which they are sent.
+In particular, if actor A sends a message M0 to actor B, and then
+later A sends another message M1 to B, then actor B will receive M0 before M1.
+Messages in monarch are sent to a mesh of multiple actor instances at once. For
+the purpose of message ordering, this bulk send behaves as if it sent each message
+individually to each destination.</p>
+<p>Each actor handles its messages sequentially. It must finish the handling of a message
+before the next message on the actor is called.</p>
+<p>Different actors in the same process handle messages concurrently.</p>
+</section>
+<section id="responding-out-of-order">
+<h1>Responding Out of Order<a class="headerlink" href="#responding-out-of-order" title="Link to this heading">#</a></h1>
+<p>Messages to actors are delivered in order, but sometimes an actor might want to
+respond to later messages first. The normal way of defining an endpoint does not
+allow for this since it must return the response before future messages are delivered.</p>
+<p>Instead, an endpoint can request an explicit port object on which to deliver a response.</p>
+<p>Here is an example of an inference engine
+where we use an explicit reponse port for the <cite>infer</cite> endpoint
+so that we can make sure that we always use the most recent version of the weights
+even if update_weights was called after infer:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">queue</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/queue.html#queue.Queue" title="queue.Queue" class="sphx-glr-backref-module-queue sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Queue</span></a>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">InferenceEngine</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">q</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/queue.html#queue.Queue" title="queue.Queue" class="sphx-glr-backref-module-queue sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Queue</span></a><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">new_weights</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">worker</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/threading.html#threading.Thread" title="threading.Thread" class="sphx-glr-backref-module-threading sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span></a><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">run</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">worker</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">update_weights</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_weights</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">new_weights</span> <span class="o">=</span> <span class="n">new_weights</span>
+
+    <span class="nd">@endpoint</span><span class="p">(</span><span class="n">explicit_response_port</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">infer</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">port</span><span class="p">:</span> <span class="n">Port</span><span class="p">[</span><span class="nb">int</span><span class="p">]):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">port</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">q</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+            <span class="c1"># always use the most recent weight version we have:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;inferred with: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">new_weights</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="c1"># pretend to take time</span>
+            <a href="https://docs.python.org/3/library/time.html#time.sleep" title="time.sleep" class="sphx-glr-backref-module-time sphx-glr-backref-type-py-function"><span class="n">time</span><span class="o">.</span><span class="n">sleep</span></a><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+            <span class="c1"># process request, send response</span>
+            <span class="n">request</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+
+
+<span class="n">engine</span> <span class="o">=</span> <span class="n">this_proc</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;engine&quot;</span><span class="p">,</span> <span class="n">InferenceEngine</span><span class="p">)</span>
+
+<span class="n">engine</span><span class="o">.</span><span class="n">update_weights</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+<span class="n">first</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">infer</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
+<span class="n">second</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">infer</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
+<span class="n">engine</span><span class="o">.</span><span class="n">update_weights</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">first</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">second</span><span class="o">.</span><span class="n">get</span><span class="p">())</span>  <span class="c1"># still uses newest weights</span>
+</pre></div>
+</div>
+<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
+<div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-getting-started-py">
+<div class="sphx-glr-download sphx-glr-download-python docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/46ebc7415ed514e209c980b12bb07df6/getting_started.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">getting_started.py</span></code></a></p>
+</div>
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/e5af8f5bba9f9831fdc76b4fcc8253b6/getting_started.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">getting_started.ipynb</span></code></a></p>
+</div>
+</div>
+<p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../../installation.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Installation</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="index.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Examples</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../../installation.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Installation</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="index.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Examples</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">Getting Started</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defining-an-actor">Defining an Actor</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#spawning-an-actor-in-the-local-process">Spawning An Actor In The Local Process</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#sending-a-simple-message">Sending A Simple Message</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#multiple-actors-at-once">Multiple Actors at Once</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#broadcasting-messages">Broadcasting Messages</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#slicing-meshes">Slicing Meshes</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#multiple-hosts">Multiple Hosts</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#logging">Logging</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#actor-and-process-references">Actor and Process References</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#the-supervision-tree">The Supervision Tree</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#broadcasting-without-response">Broadcasting Without Response</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#fine-grained-supervision">Fine-grained Supervision</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#point-to-point-rdma">Point-to-Point RDMA</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#distributed-tensors">Distributed Tensors</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#summary">Summary</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#actor-context">Actor Context</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#free-remote-functions">Free Remote Functions</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#channels-and-low-level-messaging">Channels and Low-level messaging</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#message-ordering">Message Ordering</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#responding-out-of-order">Responding Out of Order</a></li>
+</ul>
+
+  </nav></div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Getting Started",
+       "headline": "Getting Started",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/generated/examples/getting_started.html",
+       "articleBody": "Note Go to the end to download the full example code Getting Started# This guide introduces the core concepts of Monarch, a framework for building multi-machine training programs using actors. We\u2019ll cover: Defining actors with endpoint functions Spawning actors locally and across multiple hosts and processes Sending messages and organizing actors into meshes The supervision tree for fault tolerance Distributed tensors and RDMA capabilities Defining an Actor# At its core, Monarch uses actors as a way to create multi-machine training programs. Actors are Python objects that expose a number of endpoint functions. These functions can be called by other actors in the system and their responses gathered asynchronously. Let\u2019s start by defining a simple actor: from monarch.actor import Actor, endpoint, this_proc class Counter(Actor): def __init__(self, initial_value: int): self.value = initial_value @endpoint def increment(self) -\u003e None: self.value += 1 @endpoint def get_value(self) -\u003e int: return self.value The decorator endpoint specifies functions of the Actor that can be called remotely from other actors. We do it this way to ensure that IDE can offer autocompletions of actor calls with correct types. Spawning An Actor In The Local Process# We can then spawn an actor in the currently running process like so: counter: Counter = this_proc().spawn(\"counter\", Counter, initial_value=0) this_proc() is a handle to a process and lets us directly control where an actor runs. Monarch is very literal about where things run so that code can be written in the most efficient way. For instance, two actors in the same proc can rely on the fact that they have the same memory space. Two actors on the same host can communicate through /dev/shm, etc. Note that passing messages between two actors (even if they are on the same proc) currently always implies serialization. Sending A Simple Message# Once spawned we can send messages to the actor: from monarch.actor import Future fut: Future[int] = counter.get_value.call_one() value: int = fut.get() print(f\"Counter value: {value}\") Here we invoked the get_value message, returning 0, the current value of the Counter. We refer to the call_one method as an \u2018adverb\u2019 because it modifies how results of the endpoint are handled. call_one just invokes a single actor and gets its value. Notice the return value is a Future[int] \u2013 the message is sent asynchronously, letting the sender do other things before it needs the reply. get() waits on the result. Futures can also be awaited if you are in an asyncio context. Multiple Actors at Once# Monarch scales to thousands of machines because of its ability to broadcast a single message to many actors at once rather than send many point-to-point messages. By organizing communication into trees, monarch can multicast messages to thousands of machines in a scalable way with good latency. We express broadcasted communication by organizing actors into a Mesh \u2013 a multidimensional container with named dimensions. For instance a cluster might have dimensions {\u201chosts\u201d: 32, \u201cgpus\u201d: 8}. Dimension names are normally things like \u201chosts\u201d, indexing across the hosts in a cluster, or \u201cgpus\u201d, indexing across things in a machine. from monarch.actor import ProcMesh, this_host To create a mesh of actors, we first create a mesh of processes, and spawn an actor on them: procs: ProcMesh = this_host().spawn_procs(per_host={\"gpus\": 8}) counters: Counter = procs.spawn(\"counters\", Counter, 0) Broadcasting Messages# Now messages can be sent to all the actors in the mesh: counters.increment.broadcast() The broadcast adverb means that we are sending a message to all members of the mesh. broadcast is inherently asynchronous: it does not return a future that you can wait on. Note however that all messages (including broadcasts) are delivered in the order sent by the client (about which more later). Slicing Meshes# We can also slice up the mesh and send to only some of it (gpus 0 through 4): counters.slice(gpus=slice(0, 4)).increment.broadcast() The call adverb lets us broadcast a message to a group of actors, and then aggregate their responses back: print(counters.get_value.call().get()) broadcast and call are the most commonly used adverbs. The call_one adverb we used earlier is actually just a special case of call, asserting that you know there is only a single actor being messaged. Multiple Hosts# When we created our processes before, we spawned them on this_host() \u2013 the machine running the top-level script. For larger jobs, monarch controls many machines. How these machines are obtained depends on the scheduling system (Slurm, Kubernetes, SkyPilot, etc.), but these schedulers are typically encapsulated in a config file. from monarch.actor import context, HostMesh, hosts_from_config We obtain the mesh of hosts for the job by loading that config: hosts: HostMesh = hosts_from_config(\"MONARCH_HOSTS\") # NYI: hosts_from_config print(hosts.extent) # An extent is the logical shape of a mesh. It is an ordered map, specifying the size of # each dimension in the mesh. Let\u2019s imagine we are writing a trainer across multiple hosts: class Trainer(Actor): @endpoint def step(self): my_point = context().message_rank return f\"Trainer {my_point} taking a step.\" trainer_procs: ProcMesh = hosts.spawn_procs(per_host={\"gpus\": 4}) print(f\"Process mesh extent: {trainer_procs.extent}\") Spawn the trainers trainers = trainer_procs.spawn(\"trainer\", Trainer) Do one training step and wait for all to finish it print(trainers.step.call().get()) Logging# Since we\u2019re talking about having multiple hosts now, it\u2019s worth briefly covering how Monarch handles distributed logging. User logs from a Monarch job are routed to stdout and stderr of the corresponding process. In distributed runs, you can stream all worker logs to the client and aggregate them to reduce verbosity: procs.logging_option(stream_to_client=True, aggregate_window_sec=3) With stream_to_client=True, Monarch forwards logs from all processes (best effort) and applies a windowed aggregator that collapses similar lines and emits summaries that allow to get a holistic view of the job. If you wish to inspect Monarch system logs, you can find them at /tmp/$USER/monarch* on the servers running the client and the other Monarch processes. You can override the log levels by setting MONARCH_FILE_LOG (stdout), and MONARCH_STDERR_LOG (stderr). Valid values include [\"TRACE\", \"DEBUG\", \"INFO\", \"WARN\", \"ERROR\"]. Actor and Process References# Actors, processes, and hosts can be sent between actors as arguments to messages. This lets programs establish more complicated messaging patterns or establish point-to-point connectivity between actors. For instance, we can launch DataLoader actors and Trainer actors then pass the dataloaders to the trainers. The nice part of doing it this way instead of having the trainers launch the data loaders is that we can relocate the data loader to live on another host without the trainer needing to be modified. class DataLoader(Actor): def __init__(self): self.i = 0 @endpoint def example(self): self.i += 1 return f\"\u003cfake data {self.i}\u003e\" class Trainer(Actor): def __init__(self, dataloader: DataLoader): my_rank = context().actor_instance.rank # select or single corresponding data loader to work with. self.dataloader = dataloader.slice(**my_rank) @endpoint def step(self, input=None): data = self.dataloader.example.call_one().get() return f\"Step with data {data} and input = {input}\" dataloaders = trainer_procs.spawn(\"dataloader\", DataLoader) dtrainers = trainer_procs.spawn(\"dtrainers\", Trainer, dataloaders) print(dtrainers.step.call().get()) The Supervision Tree# Large scale training will run into issues with faulty hardware, flaky networks, and software bugs. Monarch is designed to provide good behaviors for errors and faults by default with the option to define more sophisticated behavior for faster recovery or fault tolerance. We borrow from Erlang the idea of a tree of supervision. Each process, and each actor has a parent that launched it and is responsible for its health. class Errorful(Actor): @endpoint def say_hello(self): raise Exception(\"I don\u0027t want to\") If we are calling the endpoint and expecting a response, the error will get routed to the caller: e = this_proc().spawn(\"errorful\", Errorful) try: e.say_hello.call_one().get() except Exception: print(\"It didn\u0027t say hello\") Broadcasting Without Response# We also might call something and provide it no way to respond. In this case, the error will not show up as an exception, but will be delivered to the owner of \u201ce\u201d. if False: e.say_hello.broadcast() # do not expect a response The default behavior of the supervision tree means that an error at any level of process or actor creation will not go unreported. This can prevent a lot of accidental deadlocks compared to the standard unix-style defaults where threads and processes exiting do not stop the spawning processes. Fine-grained Supervision# Sometimes fine-grained recovery is possible. For instance, if a data loader failed to read a URL, perhaps it would work to just restart it. In these cases, we also offer a different API. If an actor defines a __supervise__ special method, then it will get called to handle supervision events for meshes owned by the actor. If an error happens on an ActorMesh that is a reference, such as a slice, or a mesh that is sent to another actor, then the recovery is done on the original creator of that mesh, not the holder of the reference. There is currently no way to transfer the ownership from the original creator, this way we ensure every actor has a single owner to report errors to. from monarch.actor import MeshFailure class SupervisorActor(Actor): def __supervise__(self, failure: MeshFailure): # The failure message will include the id of the actor that failed and # the reason why. print(f\"Failure received: {failure}\") # Logic to handle failures and potentially restart failed actors # If a truthy value is returned, the supervision event is considered handled # and will not be propagated further. # Otherwise, the event will be propagated to the creator of this actor. # That will be the Actor (or client) which called the spawn() method. return True If a MeshFailure is not handled by any __supervise__ in the supervision tree, it will reach the client, where monarch.actor.unhandled_fault_hook will be called with the MeshFailure object. By default, this function crashes the client process with exit code 1. # You can overwrite the global unhandled_fault_hook function to customize this # behavior. import monarch.actor def my_unhandled_fault_hook(failure: MeshFailure) -\u003e None: # Log it, add metrics, etc. print(f\"Mesh failure was not handled: {failure}\") # The failure will be ignored unless this hook returns an exception. # pyre-ignore[9]: Callable is compatible. monarch.actor.unhandled_fault_hook = my_unhandled_fault_hook Point-to-Point RDMA# Monarch provides first-class RDMA support through the RDMABuffer API. This lets you separate data references from data movement - instead of sending large tensors through your messaging patterns, you pass lightweight buffer references anywhere in your system, then explicitly transfer the actual data only when and where you need it. This approach lets you design your service\u2019s coordination patterns based on your application logic rather than being constrained by when the framework forces data transfers. RDMA transfers use libibverbs to transfer data over infiniband or RoCE. Unlike traditional NCCL collectives where a send must be matched to a receive, once an actor has a handle to a buffer, it can read or write to the buffer without the owner of the buffer. import torch from monarch.rdma import RDMABuffer class ParameterServer(Actor): def __init__(self): self.weights = torch.rand(1000, 1000) # Large model weights # RDMABuffer does not copy the data. It just # creates a view of the data that can be passed to # other processes. self.weight_buffer = RDMABuffer(self.weights.view(torch.uint8).flatten()) @endpoint def get_weights(self) -\u003e RDMABuffer: return self.weight_buffer # Small message: just a reference! class Worker(Actor): def __init__(self): self.local_weights = torch.zeros(1000, 1000) @endpoint def sync_weights(self, server: ParameterServer): # Control plane: get lightweight reference weight_ref = server.get_weights.call_one().get() # Data plane: explicit bulk transfer when needed weight_ref.read_into(self.local_weights.view(torch.uint8).flatten()).get() server_proc = this_host().spawn_procs(per_host={\"gpus\": 1}) worker_proc = this_host().spawn_procs(per_host={\"gpus\": 1}) server = server_proc.spawn(\"server\", ParameterServer) worker = worker_proc.spawn(\"worker\", Worker) worker.sync_weights.call_one(server).get() RDMABuffers are intentionally low-level: they do just the data movement when requested. It is up to the caller to ensure that the data is not modified until the movement is complete. We intend to build higher-level libraries for transferring tensors or implementing collective operations on top of these primitives. Distributed Tensors# Monarch also comes with a \u2018tensor engine\u2019 that provides distributed torch tensors. This lets a single actor directly compute with tensors distributed across a mesh of processes. We can use distributed features by \u2018activating\u2019 a ProcMesh: with trainer_procs.activate(): t = torch.rand(3, 4) print(t) The tensor t is now a distributed tensor with a unique value across each process in the mesh. we can examine the values on each proc using built in functions: from monarch import fetch_shard print(\"one\", fetch_shard(t, hosts=0, gpus=0).get()) print(\"two\", fetch_shard(t, hosts=0, gpus=1).get()) and compute with the tensors using any torch function: with trainer_procs.activate(): dist_compute = t @ t.T print(\"dist\", fetch_shard(dist_compute, hosts=0, gpus=0).get()) A distributed tensor can be passed to any mesh of actors that is located on the same mesh of processes as the tensors. Each actor will receive the shard of the distributed tensor that is on the same process as the actor: print(dtrainers.step.call(dist_compute[0]).get()) And actors themselves can define their own distributed tensors with the rref adverb: class LinearActor(Actor): def __init__(self): self.w = torch.rand(3, 3) # The propagation function is like a type signature: it computes the # shape of the output, given an input of a particular shape. It is used # by the tensor engine to correctly create the (local) returned distributed # tensor references; this way local references can be created and used # immediately, without needing to synchronize the calls with the actors. @endpoint(propagate=lambda x: x) def forward(self, input): return input @ self.w linear = trainer_procs.spawn(\"linear\", LinearActor) o = torch.relu(linear.forward.rref(t)) The rref adverb invokes the endpoint and then makes the output of the endpoint into a distributed tensor that can be used in further distributed computation. Distributed tensors also include ways of doing reductions and gathers across shards and moving tensors between processes. See Distributed Tensors in Monarch for more information including reductions across shards and moving tensors between processes. We eventually want it to be possible for an entirely training framework to be written in terms of distributed tensors. However, currently the performance of messaging for distributed tensors is not optimized enough to make this practice. They are still useful for interactive debugging. Summary# We have now seen all four major features of Monarch: Scalable messaging using multidimensional meshes of actors Fault tolerance through supervision trees and __supervise__ Point-to-point low-level RDMA Built-in distributed tensors This foundation enables building sophisticated multi-machine training programs with clear semantics for distribution, fault tolerance, and communication patterns. The remaining sections fill in more details about how to accomplish common patterns with the above features. Actor Context# At any point, code might need to know \u2018what\u2019 it is and \u2018where\u2019 it is. For instance, when initializing torch.distributed, it will need a RANK/WORLD_SIZE. In monarch, the \u2018what\u2019 is always what actor is currently running the code. The \u2018where\u2019 can be looked up using the context() API: class ContextAwareActor(Actor): @endpoint def get_context_info(self): actor_instance = context().actor_instance # `context().message_rank` returns the coordinates in the message. This isn\u0027t always the # same as the actor\u0027s rank because messages can be sent to a slice of actors rather than # the whole thing. message_rank = context().message_rank return f\"Actor rank: {actor_instance.rank}, message rank: {message_rank}\" c = trainer_procs.spawn(\"context_actor\", ContextAwareActor) print(c.get_context_info.call().get()) ranks are always multidimension and reported as dictionaries of the dimension names and the point within that dimension. Free Remote Functions# It is possible to run functions on a process mesh that are not associated with any actor. These can be useful to set up state on a process, or perform pre-post processing of data before sending it to an actor: from monarch import remote @remote def check_memory(): import psutil return psutil.Process().memory_info() with trainer_procs.activate(): print(check_memory.call().get()) Channels and Low-level messaging# It is sometimes useful to establish direct channels between two points, or forward the handling of some messages from one actor to another. To enable this, all messaging in monarch is build out of port objects. An actor can create a new channel, which provides a Port for sending and a PortReceiver for receiving messages. The Port object can then be send to any endpoint. from monarch.actor import Channel, Port port, recv = Channel.open() port.send(3) print(recv.recv().get()) Ports can be passed as arguments to actors and sent a response remotely. We can also directly ask an endpoint to send its response to a port using the send messaging primitive. from monarch.actor import send with trainer_procs.activate(): send(check_memory, args=(), kwargs={}, port=port) The port will receive a response from each actor send the message: for _ in range(4): print(recv.recv().get()) The other adverbs like call, stream, and broadcast are just implemented in terms of ports and send. Message Ordering# Messages from an actor are delivered to the destination actor in order in which they are sent. In particular, if actor A sends a message M0 to actor B, and then later A sends another message M1 to B, then actor B will receive M0 before M1. Messages in monarch are sent to a mesh of multiple actor instances at once. For the purpose of message ordering, this bulk send behaves as if it sent each message individually to each destination. Each actor handles its messages sequentially. It must finish the handling of a message before the next message on the actor is called. Different actors in the same process handle messages concurrently. Responding Out of Order# Messages to actors are delivered in order, but sometimes an actor might want to respond to later messages first. The normal way of defining an endpoint does not allow for this since it must return the response before future messages are delivered. Instead, an endpoint can request an explicit port object on which to deliver a response. Here is an example of an inference engine where we use an explicit reponse port for the infer endpoint so that we can make sure that we always use the most recent version of the weights even if update_weights was called after infer: import threading import time from queue import Queue class InferenceEngine(Actor): def __init__(self): self.q = Queue() self.new_weights = None self.worker = threading.Thread(target=self.run) self.worker.start() @endpoint def update_weights(self, new_weights): self.new_weights = new_weights @endpoint(explicit_response_port=True) def infer(self, port: Port[int]): self.q.put(port) def run(self): while True: request = self.q.get() # always use the most recent weight version we have: result = f\"inferred with: {self.new_weights}\" # pretend to take time time.sleep(1) # process request, send response request.send(result) engine = this_proc().spawn(\"engine\", InferenceEngine) engine.update_weights.broadcast(0) first = engine.infer.call_one() second = engine.infer.call_one() engine.update_weights.broadcast(1) print(first.get()) print(second.get()) # still uses newest weights Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: getting_started.py Download Jupyter notebook: getting_started.ipynb Gallery generated by Sphinx-Gallery",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/generated/examples/getting_started.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

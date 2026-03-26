@@ -1,0 +1,1809 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="monarch" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/api/monarch.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="These API functions define monarch’s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. Types: Distributed Computing: Simulation: Builtins: Builtins for Monarch..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="These API functions define monarch’s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. Types: Distributed Computing: Simulation: Builtins: Builtins for Monarch..." />
+
+    <title>monarch &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=888ff710"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'api/monarch';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/api/monarch.html" />
+    <link rel="icon" href="../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="monarch.rdma" href="monarch.rdma.html" />
+    <link rel="prev" title="monarch.job" href="monarch.job.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../generated/examples/getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../generated/examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="monarch.actor.html">monarch.actor</a></li>
+
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="monarch.config.html">monarch.config</a></li>
+
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="monarch.job.html">monarch.job</a></li>
+
+
+
+
+
+
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">monarch</a></li>
+
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="monarch.rdma.html">monarch.rdma</a></li>
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="monarch.spmd.html">monarch.spmd</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Python API</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">monarch</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <link itemprop="item" href="index.html">
+        <meta itemprop="name" content="Python API">
+        <meta itemprop="position" content="1">
+      </div>
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="monarch">
+        <meta itemprop="position" content="2">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="monarch">
+<h1>monarch<a class="headerlink" href="#monarch" title="Link to this heading">#</a></h1>
+<p>These API functions define monarch’s distributed tensor computation API. See <a class="reference internal" href="../generated/examples/distributed_tensors.html"><span class="doc">Distributed Tensors in Monarch</span></a> for an overview.</p>
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Tensor">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Tensor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fake</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Referenceable</span></code>, <code class="xref py py-class docutils literal notranslate"><span class="pre">BaseTensor</span></code></p>
+<p>A distributed tensor for distributed computation across device meshes.</p>
+<p>Tensor represents a distributed tensor that spans across multiple devices
+in a device mesh. It provides the same interface as PyTorch tensors but
+enables distributed operations and communication patterns.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Tensor.stream">
+<span class="sig-name descname"><span class="pre">stream</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#monarch.Stream" title="monarch.common.stream.Stream"><span class="pre">Stream</span></a></em><a class="headerlink" href="#monarch.Tensor.stream" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Tensor.mesh">
+<span class="sig-name descname"><span class="pre">mesh</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">DeviceMesh</span></em><a class="headerlink" href="#monarch.Tensor.mesh" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Tensor.ref">
+<span class="sig-name descname"><span class="pre">ref</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#monarch.Tensor.ref" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Tensor.drop">
+<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.drop" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="monarch.Tensor.dropped">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dropped</span></span><a class="headerlink" href="#monarch.Tensor.dropped" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Tensor.to_mesh">
+<span class="sig-name descname"><span class="pre">to_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.to_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.to_mesh" title="Link to this definition">#</a></dt>
+<dd><p>Move data between one device mesh and another. Sizes of named dimensions must match.
+If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions.</p>
+<dl class="simple">
+<dt>broadcast:</dt><dd><p>t.slice_mesh(batch=0).to_mesh(t.mesh)</p>
+</dd>
+</dl>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Tensor.reduce_">
+<span class="sig-name descname"><span class="pre">reduce_</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.reduce_"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.reduce_" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Tensor.reduce">
+<span class="sig-name descname"><span class="pre">reduce</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_inplace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.reduce"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.reduce" title="Link to this definition">#</a></dt>
+<dd><p>Perform a reduction operation along dim, and move the data to mesh. If mesh=None, then mesh=self.mesh
+‘stack’ (gather) will concat the values along dim, and produce a local result tensor with an addition outer dimension of len(dim).
+If scatter=True, the local result tensor will be evenly split across dim.</p>
+<dl>
+<dt>allreduce:</dt><dd><p>t.reduce(dims=’gpu’, reduction=’sum’)</p>
+<p>First reduces dim ‘gpu’ creating a local tensor with the ‘gpu’ dimension, then because output_mesh=input_mesh, and it still has dim ‘gpu’,
+we broadcast the result reduced tensor to all members of gpu.</p>
+</dd>
+<dt>reducescatter:</dt><dd><p>t.reduce(dims=’gpu’, reduction=’sum’, scatter=True)</p>
+<p>Same as above except that scatter=True introduces a new ‘gpu’ dimension that is the result of splitting the local tensor across ‘gpu’</p>
+</dd>
+<dt>allgather:</dt><dd><p>t.reduce(dims=’gpu’, reduction=’stack’)</p>
+<p>First reduces dim ‘gpu’ creating a bigger local tensor, then because output_mesh=input_mesh, and it still has dim ‘gpu’,
+broadcasts the result concatenated tensor to all members of gpu.</p>
+</dd>
+<dt>alltoall:</dt><dd><p>t.reduce(dims=’gpu’, reduction=’stack’, scatter=True)</p>
+<p>First reduces dim ‘gpu’ creating a bigger local tensor, then introduces a new ‘gpu’ dimension that is the result of splitting this
+(bigger) tensor across ‘gpu’. The result is the same dimension as the original tensor, but with each rank sending to all other ranks.</p>
+</dd>
+<dt>gather (to dim 0):</dt><dd><p>t.reduce(dims=’gpu’, reduction=’stack’, mesh=device_mesh(gpu=0))</p>
+<p>First gathers dim ‘gpu’ and then places it on the first rank. t.mesh.gpu[0] doesn’t have a ‘gpu’ dimension, but this is
+ok because we eliminated the ‘gpu’ dim via reduction.</p>
+</dd>
+<dt>reduce:</dt><dd><p>t.reduce(dims=’gpu’, reduction=’sum’, mesh=device_mesh(gpu=0))</p>
+<p>First reduces dim ‘gpu’ and then places it on the first rank. t.mesh.gpu[0] doesn’t have a ‘gpu’ dimension, but this is
+ok because we eliminated the ‘gpu’ dim via reduction.</p>
+</dd>
+</dl>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>dims</strong> (<em>Dims</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – The dimensions along which to perform the reduction.</p></li>
+<li><p><strong>reduction</strong> (<em>_valid_reduce</em>) – The type of reduction to perform. Defaults to “sum”.</p></li>
+<li><p><strong>scatter</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, the local result tensor will be evenly split across dimensions.
+Defaults to False.</p></li>
+<li><p><strong>mesh</strong> (<em>Optional</em><em>[</em><em>&quot;DeviceMesh&quot;</em><em>]</em><em>, </em><em>optional</em>) – The target mesh to move the data to.
+If None, uses self.mesh. Defaults to None.</p></li>
+<li><p><strong>_inplace</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, performs the operation in-place. Defaults to False.
+Note that not all the reduction operations support in-place.</p></li>
+<li><p><strong>out</strong> (<em>Optional</em><em>[</em><em>&quot;Tensor&quot;</em><em>]</em>) – The output tensor to store the result. If None, a new tensor
+will be created on the stream where the reduce operation executes. Defaults to None.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The result of the reduction operation.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#monarch.Tensor" title="monarch.Tensor">Tensor</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Tensor.slice_mesh">
+<span class="sig-name descname"><span class="pre">slice_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.slice_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.slice_mesh" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Tensor.delete_ref">
+<span class="sig-name descname"><span class="pre">delete_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ref</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#Tensor.delete_ref"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Tensor.delete_ref" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Stream">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Stream</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Stream.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Stream.activate">
+<span class="sig-name descname"><span class="pre">activate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.activate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.activate" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Stream.borrow">
+<span class="sig-name descname"><span class="pre">borrow</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">t</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mutable</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#Stream.borrow"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Stream.borrow" title="Link to this definition">#</a></dt>
+<dd><blockquote>
+<div><p>borrowed_tensor, borrow = self.borrow(t)</p>
+</div></blockquote>
+<p>Borrows tensor ‘t’ for use on this stream.
+The memory of t will stay alive until borrow.drop() is called, which will free t and
+and any of its alises on stream <cite>self</cite> and will cause t.stream to wait on self at that point so
+that the memory of t can be reused.</p>
+<p>If <cite>mutable</cite> then self can write to the storage of <cite>t</cite>, but t.stream cannot read or write <cite>t</cite> until,
+the borrow is returned (becomes free and a wait_for has been issued).</p>
+<p>If not <cite>mutable</cite> both <cite>self</cite> and <cite>t.stream</cite> can read from t’s storage but neither can write to it.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.remote">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Callable</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Propagator</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></span><a class="reference internal" href="../_modules/monarch/common/remote.html#remote"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.remote" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Literal</span><span class="p"><span class="pre">[</span></span><span class="s"><span class="pre">'mocked'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'cached'</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="s"><span class="pre">'inspect'</span></span><span class="p"><span class="pre">]</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span></span></span></dt>
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">function</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Callable</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Remote</span><span class="p"><span class="pre">[</span></span><span class="pre">P</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">R</span><span class="p"><span class="pre">]</span></span></span></span></dt>
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">remote</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">propagate</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Propagator</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">RemoteIfy</span></span></span></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.coalescing">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">coalescing</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/_coalescing.html#coalescing"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.coalescing" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.get_active_mesh">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">get_active_mesh</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#get_active_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.get_active_mesh" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.no_mesh">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">no_mesh</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.no_mesh" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.to_mesh">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">to_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stream</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#to_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.to_mesh" title="Link to this definition">#</a></dt>
+<dd><p>Move all tensors in tensors to the given mesh.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.slice_mesh">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">slice_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#slice_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.slice_mesh" title="Link to this definition">#</a></dt>
+<dd><p>Performs the slice_mesh operation for each tensor in tensors.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.get_active_stream">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">get_active_stream</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/stream.html#get_active_stream"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.get_active_stream" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.reduce">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">reduce</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_inplace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#reduce"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.reduce" title="Link to this definition">#</a></dt>
+<dd><p>Performs the tensor reduction operation for each tensor in tensors.
+:param tensors: The pytree of input tensors to reduce.
+:type tensors: pytree[“Tensor”]
+:param dims: The dimensions along which to perform the reduction.
+:type dims: Dims | str
+:param reduction: The type of reduction to perform. Defaults to “sum”.
+:type reduction: _valid_reduce
+:param scatter: If True, the local result tensor will be evenly split across dimensions.</p>
+<blockquote>
+<div><p>Defaults to False.</p>
+</div></blockquote>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>mesh</strong> (<em>Optional</em><em>[</em><em>&quot;DeviceMesh&quot;</em><em>]</em><em>, </em><em>optional</em>) – The target mesh to move the data to.
+If None, uses self.mesh. Defaults to None.</p></li>
+<li><p><strong>_inplace</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, performs the operation in-place. Defaults to False.
+Note that not all the reduction operations support in-place.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.reduce_">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">reduce_</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tensors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sum'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scatter</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/tensor.html#reduce_"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.reduce_" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.call_on_shard_and_fetch">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">call_on_shard_and_fetch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">remote</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/remote.html#call_on_shard_and_fetch"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.call_on_shard_and_fetch" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.fetch_shard">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">fetch_shard</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#fetch_shard"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.fetch_shard" title="Link to this definition">#</a></dt>
+<dd><p>Retrieve the shard at <cite>coordinates</cite> of the current device mesh of each
+tensor in obj. All tensors in <cite>obj</cite> will be fetched to the CPU device.</p>
+<blockquote>
+<div><p>obj - a pytree containing the tensors the fetch
+shard - a dictionary from mesh dimension name to coordinate of the shard</p>
+<blockquote>
+<div><p>If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather)</p>
+</div></blockquote>
+<p>preprocess - a
+<a href="#id1"><span class="problematic" id="id2">**</span></a>kwargs - additional keyword arguments are added as entries to the shard dictionary</p>
+</div></blockquote>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.inspect">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">inspect</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#inspect"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.inspect" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.show">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">show</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">obj</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shard</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/fetch.html#show"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.show" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.grad_function">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_function</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fn</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_function"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_function" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.grad_generator">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">grad_generator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">with_respect_to</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grad_roots</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/gradient_generator.html#grad_generator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.grad_generator" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.timer">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">timer</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.timer" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.world_mesh">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">world_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ctx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hosts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpu_per_host</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_processes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/world_mesh.html#world_mesh"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.world_mesh" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.function_resolvers">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">function_resolvers</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.function_resolvers" title="Link to this definition">#</a></dt>
+<dd><p>Built-in mutable sequence.</p>
+<p>If no argument is given, the constructor creates a new empty list.
+The argument must be an iterable if specified.</p>
+</dd></dl>
+
+</section>
+<section id="types">
+<h1>Types<a class="headerlink" href="#types" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Extent">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Extent</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sizes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Extent.from_bytes">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_bytes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bytes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent.from_bytes" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Extent.keys">
+<span class="sig-name descname"><span class="pre">keys</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Extent.keys" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Extent.labels">
+<span class="sig-name descname"><span class="pre">labels</span></span><a class="headerlink" href="#monarch.Extent.labels" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Extent.nelements">
+<span class="sig-name descname"><span class="pre">nelements</span></span><a class="headerlink" href="#monarch.Extent.nelements" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Extent.region">
+<span class="sig-name descname"><span class="pre">region</span></span><a class="headerlink" href="#monarch.Extent.region" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Extent.sizes">
+<span class="sig-name descname"><span class="pre">sizes</span></span><a class="headerlink" href="#monarch.Extent.sizes" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Shape">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Shape</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">labels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slice</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.at">
+<span class="sig-name descname"><span class="pre">at</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">index</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.at" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.coordinates">
+<span class="sig-name descname"><span class="pre">coordinates</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rank</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.coordinates" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Shape.extent">
+<span class="sig-name descname"><span class="pre">extent</span></span><a class="headerlink" href="#monarch.Shape.extent" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.from_bytes">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">from_bytes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">bytes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.from_bytes" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.index">
+<span class="sig-name descname"><span class="pre">index</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.index" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Shape.labels">
+<span class="sig-name descname"><span class="pre">labels</span></span><a class="headerlink" href="#monarch.Shape.labels" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Shape.ndslice">
+<span class="sig-name descname"><span class="pre">ndslice</span></span><a class="headerlink" href="#monarch.Shape.ndslice" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.ranks">
+<span class="sig-name descname"><span class="pre">ranks</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.ranks" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.Shape.region">
+<span class="sig-name descname"><span class="pre">region</span></span><a class="headerlink" href="#monarch.Shape.region" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.select">
+<span class="sig-name descname"><span class="pre">select</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">label</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slice</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.select" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Shape.unity">
+<em class="property"><span class="pre">static</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">unity</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Shape.unity" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Selection">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Selection</span></span><a class="headerlink" href="#monarch.Selection" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Selection.all">
+<span class="sig-name descname"><span class="pre">all</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.all" title="Link to this definition">#</a></dt>
+<dd><p>Selects all elements in the mesh — use this to mean “route to
+all nodes”.</p>
+<p>The ‘*’ expression is automatically expanded to match the
+dimensionality of the slice. For example, in a 3D slice, the
+selection becomes <cite>*, *, *</cite>.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Selection.any">
+<span class="sig-name descname"><span class="pre">any</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.any" title="Link to this definition">#</a></dt>
+<dd><p>Selects one element nondeterministically — use this to mean
+“route to a single random node”.</p>
+<p>The ‘?’ expression is automatically expanded to match the
+dimensionality of the slice. For example, in a 3D slice, the
+selection becomes <cite>?, ?, ?</cite>.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Selection.from_string">
+<span class="sig-name descname"><span class="pre">from_string</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#monarch.Selection.from_string" title="Link to this definition">#</a></dt>
+<dd><p>Parses a selection expression from a string.</p>
+<p>This allows you to construct a <cite>PySelection</cite> using the
+selection algebra surface syntax, such as <cite>“(*, 0:4, ?)”</cite>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Raises<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><strong>ValueError</strong></a> – If the input string is not a valid selection</p></li>
+<li><p><strong>expression.</strong> – </p></li>
+</ul>
+</dd>
+</dl>
+<p class="rubric">Example</p>
+<p>PySelection.from_string(“(<a href="#id3"><span class="problematic" id="id4">*</span></a>, 1:3, ?)”) # subset of a mesh</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="monarch.NDSlice">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">NDSlice</span></span><a class="headerlink" href="#monarch.NDSlice" title="Link to this definition">#</a></dt>
+<dd><p>alias of <code class="xref py py-class docutils literal notranslate"><span class="pre">Slice</span></code></p>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.OpaqueRef">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">OpaqueRef</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>OpaqueRef is a reference to an object that is only resolvable on the worker
+This is used to pass objects from the controller to the worker across User Defined Functions</p>
+<dl>
+<dt>Example::</dt><dd><dl class="simple">
+<dt>def init_udf_worker():</dt><dd><p>model = nn.Linear(3, 4)
+model_ref = OpaqueRef(model)
+return model_ref</p>
+</dd>
+<dt>def run_step_worker(model_ref: OpaqueRef):</dt><dd><p>model = model_ref.value
+# do something with model (e.g. forward pass</p>
+</dd>
+</dl>
+<p># on Controller
+model_ref = init_udf()
+run_step(model_ref)</p>
+</dd>
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.OpaqueRef.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef.__init__" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="monarch.OpaqueRef.value">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">value</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><span class="pre">Any</span></a></em><a class="headerlink" href="#monarch.OpaqueRef.value" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.OpaqueRef.check_worker">
+<span class="sig-name descname"><span class="pre">check_worker</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">what</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/opaque_ref.html#OpaqueRef.check_worker"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.OpaqueRef.check_worker" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Future">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Future</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">client</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Generic" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">Generic</span></code></a>[<code class="xref py py-obj docutils literal notranslate"><span class="pre">T</span></code>]</p>
+<p>A future object representing the result of an asynchronous computation.</p>
+<p>Future provides a way to access the result of a computation that may not
+have completed yet. It allows for non-blocking execution and provides
+methods to wait for completion and retrieve results.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>client</strong> (<em>Client</em>) – The client connection for handling the future</p>
+</dd>
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Future.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">client</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Future.result">
+<span class="sig-name descname"><span class="pre">result</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.result"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.result" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Future.done">
+<span class="sig-name descname"><span class="pre">done</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.done"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.done" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Future.exception">
+<span class="sig-name descname"><span class="pre">exception</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">timeout</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.exception"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.exception" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.Future.add_callback">
+<span class="sig-name descname"><span class="pre">add_callback</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">callback</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/future.html#Future.add_callback"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Future.add_callback" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="distributed-computing">
+<h1>Distributed Computing<a class="headerlink" href="#distributed-computing" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">RemoteProcessGroup</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device_mesh</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Referenceable</span></code></p>
+<p>Client’s view of a process group.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dims</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device_mesh</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.__init__"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.__init__" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup.ensure_split_comm_remotely">
+<span class="sig-name descname"><span class="pre">ensure_split_comm_remotely</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">stream</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.ensure_split_comm_remotely"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.ensure_split_comm_remotely" title="Link to this definition">#</a></dt>
+<dd><p>If we haven’t already, send a message to the worker to split off a
+communicator for this PG on the given stream.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup.delete_ref">
+<span class="sig-name descname"><span class="pre">delete_ref</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">ref</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.delete_ref"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.delete_ref" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup.drop">
+<span class="sig-name descname"><span class="pre">drop</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.drop"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.drop" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup.size">
+<span class="sig-name descname"><span class="pre">size</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/common/device_mesh.html#RemoteProcessGroup.size"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.RemoteProcessGroup.size" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="monarch.RemoteProcessGroup.dropped">
+<em class="property"><span class="pre">property</span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">dropped</span></span><a class="headerlink" href="#monarch.RemoteProcessGroup.dropped" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+</section>
+<section id="simulation">
+<h1>Simulation<a class="headerlink" href="#simulation" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="monarch.Simulator">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">Simulator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hosts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gpus</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">simulate_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">SimulatorBackendMode.SIMULATE</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_mode</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">SimulatorTraceMode.STREAM_ONLY</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">upload_trace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">trace_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'trace.json'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">command_history_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'command_history.pkl'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">group_workers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">build_ir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/simulator/interface.html#Simulator"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.Simulator" title="Link to this definition">#</a></dt>
+<dd><p>Bases:</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="monarch.set_meta">
+<span class="sig-prename descclassname"><span class="pre">monarch.</span></span><span class="sig-name descname"><span class="pre">set_meta</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">new_value</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/monarch/simulator/config.html#set_meta"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#monarch.set_meta" title="Link to this definition">#</a></dt>
+<dd><p>Context manager that sets metadata for simulator tasks created within its scope.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>new_value</strong> – The metadata value to associate with tasks created in this context.</p>
+</dd>
+</dl>
+<p>Example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">set_meta</span><span class="p">(</span><span class="s2">&quot;training_phase&quot;</span><span class="p">):</span>
+    <span class="c1"># Tasks created here will have &quot;training_phase&quot; metadata</span>
+    <span class="o">...</span>
+</pre></div>
+</div>
+</dd></dl>
+
+</section>
+<section id="module-monarch.builtins">
+<span id="builtins"></span><h1>Builtins<a class="headerlink" href="#module-monarch.builtins" title="Link to this heading">#</a></h1>
+<p>Builtins for Monarch is a set of remote function defintions for PyTorch functions and other utilities.</p>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="monarch.job.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">monarch.job</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="monarch.rdma.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">monarch.rdma</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="monarch.job.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">monarch.job</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="monarch.rdma.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">monarch.rdma</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">monarch</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor"><code class="docutils literal notranslate"><span class="pre">Tensor</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.stream"><code class="docutils literal notranslate"><span class="pre">Tensor.stream</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.mesh"><code class="docutils literal notranslate"><span class="pre">Tensor.mesh</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.ref"><code class="docutils literal notranslate"><span class="pre">Tensor.ref</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.drop"><code class="docutils literal notranslate"><span class="pre">Tensor.drop()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.dropped"><code class="docutils literal notranslate"><span class="pre">Tensor.dropped</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.to_mesh"><code class="docutils literal notranslate"><span class="pre">Tensor.to_mesh()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.reduce_"><code class="docutils literal notranslate"><span class="pre">Tensor.reduce_()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.reduce"><code class="docutils literal notranslate"><span class="pre">Tensor.reduce()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.slice_mesh"><code class="docutils literal notranslate"><span class="pre">Tensor.slice_mesh()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Tensor.delete_ref"><code class="docutils literal notranslate"><span class="pre">Tensor.delete_ref()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Stream"><code class="docutils literal notranslate"><span class="pre">Stream</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Stream.__init__"><code class="docutils literal notranslate"><span class="pre">Stream.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Stream.activate"><code class="docutils literal notranslate"><span class="pre">Stream.activate()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Stream.borrow"><code class="docutils literal notranslate"><span class="pre">Stream.borrow()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.remote"><code class="docutils literal notranslate"><span class="pre">remote()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.coalescing"><code class="docutils literal notranslate"><span class="pre">coalescing()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.get_active_mesh"><code class="docutils literal notranslate"><span class="pre">get_active_mesh()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.no_mesh"><code class="docutils literal notranslate"><span class="pre">no_mesh()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.to_mesh"><code class="docutils literal notranslate"><span class="pre">to_mesh()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.slice_mesh"><code class="docutils literal notranslate"><span class="pre">slice_mesh()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.get_active_stream"><code class="docutils literal notranslate"><span class="pre">get_active_stream()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.reduce"><code class="docutils literal notranslate"><span class="pre">reduce()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.reduce_"><code class="docutils literal notranslate"><span class="pre">reduce_()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.call_on_shard_and_fetch"><code class="docutils literal notranslate"><span class="pre">call_on_shard_and_fetch()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.fetch_shard"><code class="docutils literal notranslate"><span class="pre">fetch_shard()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.inspect"><code class="docutils literal notranslate"><span class="pre">inspect()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.show"><code class="docutils literal notranslate"><span class="pre">show()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.grad_function"><code class="docutils literal notranslate"><span class="pre">grad_function()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.grad_generator"><code class="docutils literal notranslate"><span class="pre">grad_generator()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.timer"><code class="docutils literal notranslate"><span class="pre">timer()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.world_mesh"><code class="docutils literal notranslate"><span class="pre">world_mesh()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.function_resolvers"><code class="docutils literal notranslate"><span class="pre">function_resolvers()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#types">Types</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent"><code class="docutils literal notranslate"><span class="pre">Extent</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent.from_bytes"><code class="docutils literal notranslate"><span class="pre">Extent.from_bytes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent.keys"><code class="docutils literal notranslate"><span class="pre">Extent.keys()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent.labels"><code class="docutils literal notranslate"><span class="pre">Extent.labels</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent.nelements"><code class="docutils literal notranslate"><span class="pre">Extent.nelements</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent.region"><code class="docutils literal notranslate"><span class="pre">Extent.region</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Extent.sizes"><code class="docutils literal notranslate"><span class="pre">Extent.sizes</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape"><code class="docutils literal notranslate"><span class="pre">Shape</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.at"><code class="docutils literal notranslate"><span class="pre">Shape.at()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.coordinates"><code class="docutils literal notranslate"><span class="pre">Shape.coordinates()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.extent"><code class="docutils literal notranslate"><span class="pre">Shape.extent</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.from_bytes"><code class="docutils literal notranslate"><span class="pre">Shape.from_bytes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.index"><code class="docutils literal notranslate"><span class="pre">Shape.index()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.labels"><code class="docutils literal notranslate"><span class="pre">Shape.labels</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.ndslice"><code class="docutils literal notranslate"><span class="pre">Shape.ndslice</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.ranks"><code class="docutils literal notranslate"><span class="pre">Shape.ranks()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.region"><code class="docutils literal notranslate"><span class="pre">Shape.region</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.select"><code class="docutils literal notranslate"><span class="pre">Shape.select()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Shape.unity"><code class="docutils literal notranslate"><span class="pre">Shape.unity()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Selection"><code class="docutils literal notranslate"><span class="pre">Selection</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Selection.all"><code class="docutils literal notranslate"><span class="pre">Selection.all()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Selection.any"><code class="docutils literal notranslate"><span class="pre">Selection.any()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Selection.from_string"><code class="docutils literal notranslate"><span class="pre">Selection.from_string()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.NDSlice"><code class="docutils literal notranslate"><span class="pre">NDSlice</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.OpaqueRef"><code class="docutils literal notranslate"><span class="pre">OpaqueRef</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.OpaqueRef.__init__"><code class="docutils literal notranslate"><span class="pre">OpaqueRef.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.OpaqueRef.value"><code class="docutils literal notranslate"><span class="pre">OpaqueRef.value</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.OpaqueRef.check_worker"><code class="docutils literal notranslate"><span class="pre">OpaqueRef.check_worker()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Future"><code class="docutils literal notranslate"><span class="pre">Future</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Future.__init__"><code class="docutils literal notranslate"><span class="pre">Future.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Future.result"><code class="docutils literal notranslate"><span class="pre">Future.result()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Future.done"><code class="docutils literal notranslate"><span class="pre">Future.done()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Future.exception"><code class="docutils literal notranslate"><span class="pre">Future.exception()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Future.add_callback"><code class="docutils literal notranslate"><span class="pre">Future.add_callback()</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#distributed-computing">Distributed Computing</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup.__init__"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup.ensure_split_comm_remotely"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup.ensure_split_comm_remotely()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup.delete_ref"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup.delete_ref()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup.drop"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup.drop()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup.size"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup.size()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.RemoteProcessGroup.dropped"><code class="docutils literal notranslate"><span class="pre">RemoteProcessGroup.dropped</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#simulation">Simulation</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.Simulator"><code class="docutils literal notranslate"><span class="pre">Simulator</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monarch.set_meta"><code class="docutils literal notranslate"><span class="pre">set_meta()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#module-monarch.builtins">Builtins</a></li>
+</ul>
+
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/api/monarch.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../_sources/api/monarch.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "monarch",
+       "headline": "monarch",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/api/monarch.html",
+       "articleBody": "monarch# These API functions define monarch\u2019s distributed tensor computation API. See Distributed Tensors in Monarch for an overview. class monarch.Tensor(fake, mesh, stream)[source]# Bases: Referenceable, BaseTensor A distributed tensor for distributed computation across device meshes. Tensor represents a distributed tensor that spans across multiple devices in a device mesh. It provides the same interface as PyTorch tensors but enables distributed operations and communication patterns. stream: Stream# mesh: DeviceMesh# ref: int | None# drop()[source]# property dropped# to_mesh(mesh, stream=None)[source]# Move data between one device mesh and another. Sizes of named dimensions must match. If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions. broadcast:t.slice_mesh(batch=0).to_mesh(t.mesh) reduce_(dims, reduction=\u0027sum\u0027, scatter=False, mesh=None)[source]# reduce(dims, reduction=\u0027sum\u0027, scatter=False, mesh=None, _inplace=False, out=None)[source]# Perform a reduction operation along dim, and move the data to mesh. If mesh=None, then mesh=self.mesh \u2018stack\u2019 (gather) will concat the values along dim, and produce a local result tensor with an addition outer dimension of len(dim). If scatter=True, the local result tensor will be evenly split across dim. allreduce:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019) First reduces dim \u2018gpu\u2019 creating a local tensor with the \u2018gpu\u2019 dimension, then because output_mesh=input_mesh, and it still has dim \u2018gpu\u2019, we broadcast the result reduced tensor to all members of gpu. reducescatter:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019, scatter=True) Same as above except that scatter=True introduces a new \u2018gpu\u2019 dimension that is the result of splitting the local tensor across \u2018gpu\u2019 allgather:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019) First reduces dim \u2018gpu\u2019 creating a bigger local tensor, then because output_mesh=input_mesh, and it still has dim \u2018gpu\u2019, broadcasts the result concatenated tensor to all members of gpu. alltoall:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019, scatter=True) First reduces dim \u2018gpu\u2019 creating a bigger local tensor, then introduces a new \u2018gpu\u2019 dimension that is the result of splitting this (bigger) tensor across \u2018gpu\u2019. The result is the same dimension as the original tensor, but with each rank sending to all other ranks. gather (to dim 0):t.reduce(dims=\u2019gpu\u2019, reduction=\u2019stack\u2019, mesh=device_mesh(gpu=0)) First gathers dim \u2018gpu\u2019 and then places it on the first rank. t.mesh.gpu[0] doesn\u2019t have a \u2018gpu\u2019 dimension, but this is ok because we eliminated the \u2018gpu\u2019 dim via reduction. reduce:t.reduce(dims=\u2019gpu\u2019, reduction=\u2019sum\u2019, mesh=device_mesh(gpu=0)) First reduces dim \u2018gpu\u2019 and then places it on the first rank. t.mesh.gpu[0] doesn\u2019t have a \u2018gpu\u2019 dimension, but this is ok because we eliminated the \u2018gpu\u2019 dim via reduction. Parameters: dims (Dims | str) \u2013 The dimensions along which to perform the reduction. reduction (_valid_reduce) \u2013 The type of reduction to perform. Defaults to \u201csum\u201d. scatter (bool) \u2013 If True, the local result tensor will be evenly split across dimensions. Defaults to False. mesh (Optional[\"DeviceMesh\"], optional) \u2013 The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool) \u2013 If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. out (Optional[\"Tensor\"]) \u2013 The output tensor to store the result. If None, a new tensor will be created on the stream where the reduce operation executes. Defaults to None. Returns: The result of the reduction operation. Return type: Tensor slice_mesh(**kwargs)[source]# delete_ref(ref)[source]# class monarch.Stream(name, _default=False)[source]# Bases: object __init__(name, _default=False)[source]# activate()[source]# borrow(t, mutable=False)[source]# borrowed_tensor, borrow = self.borrow(t) Borrows tensor \u2018t\u2019 for use on this stream. The memory of t will stay alive until borrow.drop() is called, which will free t and and any of its alises on stream self and will cause t.stream to wait on self at that point so that the memory of t can be reused. If mutable then self can write to the storage of t, but t.stream cannot read or write t until, the borrow is returned (becomes free and a wait_for has been issued). If not mutable both self and t.stream can read from t\u2019s storage but neither can write to it. monarch.remote(function: Callable[P, R], *, propagate: Propagator = None) \u2192 Remote[P, R][source]# monarch.remote(function: str, *, propagate: Literal[\u0027mocked\u0027, \u0027cached\u0027, \u0027inspect\u0027] | None = None) \u2192 Remote monarch.remote(function: str, *, propagate: Callable[P, R]) \u2192 Remote[P, R] monarch.remote(*, propagate: Propagator = None) \u2192 RemoteIfy monarch.coalescing()[source]# monarch.get_active_mesh()[source]# monarch.no_mesh()# monarch.to_mesh(tensors, mesh, stream=None)[source]# Move all tensors in tensors to the given mesh. monarch.slice_mesh(tensors, **kwargs)[source]# Performs the slice_mesh operation for each tensor in tensors. monarch.get_active_stream()[source]# monarch.reduce(tensors, dims, reduction=\u0027sum\u0027, scatter=False, mesh=None, _inplace=False)[source]# Performs the tensor reduction operation for each tensor in tensors. :param tensors: The pytree of input tensors to reduce. :type tensors: pytree[\u201cTensor\u201d] :param dims: The dimensions along which to perform the reduction. :type dims: Dims | str :param reduction: The type of reduction to perform. Defaults to \u201csum\u201d. :type reduction: _valid_reduce :param scatter: If True, the local result tensor will be evenly split across dimensions. Defaults to False. Parameters: mesh (Optional[\"DeviceMesh\"], optional) \u2013 The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool) \u2013 If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. monarch.reduce_(tensors, dims, reduction=\u0027sum\u0027, scatter=False, mesh=None)[source]# monarch.call_on_shard_and_fetch(remote, *args, shard=None, **kwargs)[source]# monarch.fetch_shard(obj, shard=None, **kwargs)[source]# Retrieve the shard at coordinates of the current device mesh of each tensor in obj. All tensors in obj will be fetched to the CPU device. obj - a pytree containing the tensors the fetch shard - a dictionary from mesh dimension name to coordinate of the shard If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather) preprocess - a **kwargs - additional keyword arguments are added as entries to the shard dictionary monarch.inspect(obj, shard=None, **kwargs)[source]# monarch.show(obj, shard=None, **kwargs)[source]# monarch.grad_function(fn)[source]# monarch.grad_generator(roots=(), with_respect_to=(), grad_roots=())[source]# monarch.timer()# monarch.world_mesh(ctx, hosts, gpu_per_host, _processes=None)[source]# monarch.function_resolvers()# Built-in mutable sequence. If no argument is given, the constructor creates a new empty list. The argument must be an iterable if specified. Types# class monarch.Extent(labels, sizes)# Bases: object static from_bytes(bytes)# keys()# labels# nelements# region# sizes# class monarch.Shape(labels, slice)# Bases: object at(label, index)# coordinates(rank)# extent# static from_bytes(bytes)# index(**kwargs)# labels# ndslice# ranks()# region# select(label, slice)# static unity()# class monarch.Selection# Bases: object all()# Selects all elements in the mesh \u2014 use this to mean \u201croute to all nodes\u201d. The \u2018*\u2019 expression is automatically expanded to match the dimensionality of the slice. For example, in a 3D slice, the selection becomes *, *, *. any()# Selects one element nondeterministically \u2014 use this to mean \u201croute to a single random node\u201d. The \u2018?\u2019 expression is automatically expanded to match the dimensionality of the slice. For example, in a 3D slice, the selection becomes ?, ?, ?. from_string()# Parses a selection expression from a string. This allows you to construct a PySelection using the selection algebra surface syntax, such as \u201c(*, 0:4, ?)\u201d. Raises: ValueError \u2013 If the input string is not a valid selection expression. \u2013 Example PySelection.from_string(\u201c(*, 1:3, ?)\u201d) # subset of a mesh monarch.NDSlice# alias of Slice class monarch.OpaqueRef(value=None)[source]# Bases: object OpaqueRef is a reference to an object that is only resolvable on the worker This is used to pass objects from the controller to the worker across User Defined Functions Example:: def init_udf_worker():model = nn.Linear(3, 4) model_ref = OpaqueRef(model) return model_ref def run_step_worker(model_ref: OpaqueRef):model = model_ref.value # do something with model (e.g. forward pass # on Controller model_ref = init_udf() run_step(model_ref) __init__(value=None)[source]# property value: Any# check_worker(what)[source]# class monarch.Future(client)[source]# Bases: Generic[T] A future object representing the result of an asynchronous computation. Future provides a way to access the result of a computation that may not have completed yet. It allows for non-blocking execution and provides methods to wait for completion and retrieve results. Parameters: client (Client) \u2013 The client connection for handling the future __init__(client)[source]# result(timeout=None)[source]# done()[source]# exception(timeout=None)[source]# add_callback(callback)[source]# Distributed Computing# class monarch.RemoteProcessGroup(dims, device_mesh)[source]# Bases: Referenceable Client\u2019s view of a process group. __init__(dims, device_mesh)[source]# ensure_split_comm_remotely(stream)[source]# If we haven\u2019t already, send a message to the worker to split off a communicator for this PG on the given stream. delete_ref(ref)[source]# drop()[source]# size()[source]# property dropped# Simulation# class monarch.Simulator(hosts, gpus, *, simulate_mode=SimulatorBackendMode.SIMULATE, trace_mode=SimulatorTraceMode.STREAM_ONLY, upload_trace=False, trace_path=\u0027trace.json\u0027, command_history_path=\u0027command_history.pkl\u0027, group_workers=False, build_ir=False)[source]# Bases: monarch.set_meta(new_value)[source]# Context manager that sets metadata for simulator tasks created within its scope. Parameters: new_value \u2013 The metadata value to associate with tasks created in this context. Example: with set_meta(\"training_phase\"): # Tasks created here will have \"training_phase\" metadata ... Builtins# Builtins for Monarch is a set of remote function defintions for PyTorch functions and other utilities.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/api/monarch.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

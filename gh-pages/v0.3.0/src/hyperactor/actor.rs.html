@@ -1,0 +1,1094 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `hyperactor/src/actor.rs`."><title>actor.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.0-nightly (02c7b1a7a 2025-09-13)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">hyperactor/</div>actor.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">/*
+<a href=#2 id=2 data-nosnippet>2</a> * Copyright (c) Meta Platforms, Inc. and affiliates.
+<a href=#3 id=3 data-nosnippet>3</a> * All rights reserved.
+<a href=#4 id=4 data-nosnippet>4</a> *
+<a href=#5 id=5 data-nosnippet>5</a> * This source code is licensed under the BSD-style license found in the
+<a href=#6 id=6 data-nosnippet>6</a> * LICENSE file in the root directory of this source tree.
+<a href=#7 id=7 data-nosnippet>7</a> */
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a></span><span class="attr">#![allow(dead_code)] </span><span class="comment">// Allow until this is used outside of tests.
+<a href=#10 id=10 data-nosnippet>10</a>
+<a href=#11 id=11 data-nosnippet>11</a></span><span class="doccomment">//! This module contains all the core traits required to define and manage actors.
+<a href=#12 id=12 data-nosnippet>12</a>
+<a href=#13 id=13 data-nosnippet>13</a></span><span class="kw">use </span>std::any::TypeId;
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>std::fmt;
+<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>std::fmt::Debug;
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>std::future::Future;
+<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>std::future::IntoFuture;
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>std::pin::Pin;
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>std::sync::Arc;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>std::time::SystemTime;
+<a href=#21 id=21 data-nosnippet>21</a>
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>async_trait::async_trait;
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>enum_as_inner::EnumAsInner;
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>futures::FutureExt;
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span>futures::future::BoxFuture;
+<a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>serde::Deserialize;
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>serde::Serialize;
+<a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span>tokio::sync::watch;
+<a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span>tokio::task::JoinHandle;
+<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>typeuri::Named;
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">use crate as </span>hyperactor; <span class="comment">// for macros
+<a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">use </span><span class="kw">crate</span>::ActorRef;
+<a href=#34 id=34 data-nosnippet>34</a><span class="kw">use </span><span class="kw">crate</span>::Data;
+<a href=#35 id=35 data-nosnippet>35</a><span class="kw">use </span><span class="kw">crate</span>::Message;
+<a href=#36 id=36 data-nosnippet>36</a><span class="kw">use </span><span class="kw">crate</span>::RemoteMessage;
+<a href=#37 id=37 data-nosnippet>37</a><span class="kw">use </span><span class="kw">crate</span>::checkpoint::CheckpointError;
+<a href=#38 id=38 data-nosnippet>38</a><span class="kw">use </span><span class="kw">crate</span>::checkpoint::Checkpointable;
+<a href=#39 id=39 data-nosnippet>39</a><span class="kw">use </span><span class="kw">crate</span>::clock::Clock;
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span><span class="kw">crate</span>::clock::RealClock;
+<a href=#41 id=41 data-nosnippet>41</a><span class="kw">use </span><span class="kw">crate</span>::context;
+<a href=#42 id=42 data-nosnippet>42</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::MailboxError;
+<a href=#43 id=43 data-nosnippet>43</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::MailboxSenderError;
+<a href=#44 id=44 data-nosnippet>44</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::MessageEnvelope;
+<a href=#45 id=45 data-nosnippet>45</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::PortHandle;
+<a href=#46 id=46 data-nosnippet>46</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::Undeliverable;
+<a href=#47 id=47 data-nosnippet>47</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::UndeliverableMessageError;
+<a href=#48 id=48 data-nosnippet>48</a><span class="kw">use </span><span class="kw">crate</span>::mailbox::log::MessageLogError;
+<a href=#49 id=49 data-nosnippet>49</a><span class="kw">use </span><span class="kw">crate</span>::message::Castable;
+<a href=#50 id=50 data-nosnippet>50</a><span class="kw">use </span><span class="kw">crate</span>::message::IndexedErasedUnbound;
+<a href=#51 id=51 data-nosnippet>51</a><span class="kw">use </span><span class="kw">crate</span>::proc::Context;
+<a href=#52 id=52 data-nosnippet>52</a><span class="kw">use </span><span class="kw">crate</span>::proc::Instance;
+<a href=#53 id=53 data-nosnippet>53</a><span class="kw">use </span><span class="kw">crate</span>::proc::InstanceCell;
+<a href=#54 id=54 data-nosnippet>54</a><span class="kw">use </span><span class="kw">crate</span>::proc::Ports;
+<a href=#55 id=55 data-nosnippet>55</a><span class="kw">use </span><span class="kw">crate</span>::proc::Proc;
+<a href=#56 id=56 data-nosnippet>56</a><span class="kw">use </span><span class="kw">crate</span>::reference::ActorId;
+<a href=#57 id=57 data-nosnippet>57</a><span class="kw">use </span><span class="kw">crate</span>::reference::Index;
+<a href=#58 id=58 data-nosnippet>58</a><span class="kw">use </span><span class="kw">crate</span>::supervision::ActorSupervisionEvent;
+<a href=#59 id=59 data-nosnippet>59</a>
+<a href=#60 id=60 data-nosnippet>60</a><span class="kw">pub mod </span>remote;
+<a href=#61 id=61 data-nosnippet>61</a>
+<a href=#62 id=62 data-nosnippet>62</a><span class="doccomment">/// An Actor is an independent, asynchronous thread of execution. Each
+<a href=#63 id=63 data-nosnippet>63</a>/// actor instance has a mailbox, whose messages are delivered through
+<a href=#64 id=64 data-nosnippet>64</a>/// the method [`Actor::handle`].
+<a href=#65 id=65 data-nosnippet>65</a>///
+<a href=#66 id=66 data-nosnippet>66</a>/// Actors communicate with each other by way of message passing.
+<a href=#67 id=67 data-nosnippet>67</a>/// Actors are assumed to be _deterministic_: that is, the state of an
+<a href=#68 id=68 data-nosnippet>68</a>/// actor is determined by the set (and order) of messages it receives.
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="attr">#[async_trait]
+<a href=#70 id=70 data-nosnippet>70</a></span><span class="kw">pub trait </span>Actor: Sized + Send + <span class="lifetime">'static </span>{
+<a href=#71 id=71 data-nosnippet>71</a>    <span class="doccomment">/// Initialize the actor, after the runtime has been fully initialized.
+<a href=#72 id=72 data-nosnippet>72</a>    /// Init thus provides a mechanism by which an actor can reliably and always
+<a href=#73 id=73 data-nosnippet>73</a>    /// receive some initial event that can be used to kick off further
+<a href=#74 id=74 data-nosnippet>74</a>    /// (potentially delayed) processing.
+<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">async fn </span>init(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _this: <span class="kw-2">&amp;</span>Instance&lt;<span class="self">Self</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#76 id=76 data-nosnippet>76</a>        <span class="comment">// Default implementation: no init.
+<a href=#77 id=77 data-nosnippet>77</a>        </span><span class="prelude-val">Ok</span>(())
+<a href=#78 id=78 data-nosnippet>78</a>    }
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a>    <span class="doccomment">/// Cleanup things used by this actor before shutting down. Notably this function
+<a href=#81 id=81 data-nosnippet>81</a>    /// is async and allows more complex cleanup. Simpler cleanup can be handled
+<a href=#82 id=82 data-nosnippet>82</a>    /// by the impl Drop for this Actor.
+<a href=#83 id=83 data-nosnippet>83</a>    /// If err is not None, it is the error that this actor is failing with. Any
+<a href=#84 id=84 data-nosnippet>84</a>    /// errors returned by this function will be logged and ignored.
+<a href=#85 id=85 data-nosnippet>85</a>    /// If err is None, any errors returned by this function will be propagated
+<a href=#86 id=86 data-nosnippet>86</a>    /// as an ActorError.
+<a href=#87 id=87 data-nosnippet>87</a>    /// This function is not called if there is a panic in the actor, as the
+<a href=#88 id=88 data-nosnippet>88</a>    /// actor may be in an indeterminate state. It is also not called if the
+<a href=#89 id=89 data-nosnippet>89</a>    /// process is killed, there is no atexit handler or signal handler.
+<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">async fn </span>cleanup(
+<a href=#91 id=91 data-nosnippet>91</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#92 id=92 data-nosnippet>92</a>        _this: <span class="kw-2">&amp;</span>Instance&lt;<span class="self">Self</span>&gt;,
+<a href=#93 id=93 data-nosnippet>93</a>        _err: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>ActorError&gt;,
+<a href=#94 id=94 data-nosnippet>94</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#95 id=95 data-nosnippet>95</a>        <span class="comment">// Default implementation: no cleanup.
+<a href=#96 id=96 data-nosnippet>96</a>        </span><span class="prelude-val">Ok</span>(())
+<a href=#97 id=97 data-nosnippet>97</a>    }
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a>    <span class="doccomment">/// Spawn a child actor, given a spawning capability (usually given by [`Instance`]).
+<a href=#100 id=100 data-nosnippet>100</a>    /// The spawned actor will be supervised by the parent (spawning) actor.
+<a href=#101 id=101 data-nosnippet>101</a>    </span><span class="kw">fn </span>spawn(<span class="self">self</span>, cx: <span class="kw-2">&amp;</span><span class="kw">impl </span>context::Actor) -&gt; anyhow::Result&lt;ActorHandle&lt;<span class="self">Self</span>&gt;&gt; {
+<a href=#102 id=102 data-nosnippet>102</a>        cx.instance().spawn(<span class="self">self</span>)
+<a href=#103 id=103 data-nosnippet>103</a>    }
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a>    <span class="doccomment">/// Spawns this actor in a detached state, handling its messages
+<a href=#106 id=106 data-nosnippet>106</a>    /// in a background task. The returned handle is used to control
+<a href=#107 id=107 data-nosnippet>107</a>    /// the actor's lifecycle and to interact with it.
+<a href=#108 id=108 data-nosnippet>108</a>    ///
+<a href=#109 id=109 data-nosnippet>109</a>    /// Actors spawned through `spawn_detached` are not attached to a supervision
+<a href=#110 id=110 data-nosnippet>110</a>    /// hierarchy, and not managed by a [`Proc`].
+<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">fn </span>spawn_detached(<span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;ActorHandle&lt;<span class="self">Self</span>&gt;, anyhow::Error&gt; {
+<a href=#112 id=112 data-nosnippet>112</a>        Proc::local().spawn(<span class="string">"anon"</span>, <span class="self">self</span>)
+<a href=#113 id=113 data-nosnippet>113</a>    }
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="doccomment">/// This method is used by the runtime to spawn the actor server. It can be
+<a href=#116 id=116 data-nosnippet>116</a>    /// used by actors that require customized runtime setups
+<a href=#117 id=117 data-nosnippet>117</a>    /// (e.g., dedicated actor threads), or want to use a custom tokio runtime.
+<a href=#118 id=118 data-nosnippet>118</a>    </span><span class="attr">#[hyperactor::instrument_infallible]
+<a href=#119 id=119 data-nosnippet>119</a>    </span><span class="kw">fn </span>spawn_server_task&lt;F&gt;(future: F) -&gt; JoinHandle&lt;F::Output&gt;
+<a href=#120 id=120 data-nosnippet>120</a>    <span class="kw">where
+<a href=#121 id=121 data-nosnippet>121</a>        </span>F: Future + Send + <span class="lifetime">'static</span>,
+<a href=#122 id=122 data-nosnippet>122</a>        F::Output: Send + <span class="lifetime">'static</span>,
+<a href=#123 id=123 data-nosnippet>123</a>    {
+<a href=#124 id=124 data-nosnippet>124</a>        tokio::spawn(future)
+<a href=#125 id=125 data-nosnippet>125</a>    }
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Handle actor supervision event. Return `Ok(true)`` if the event is handled here.
+<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">async fn </span>handle_supervision_event(
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#130 id=130 data-nosnippet>130</a>        _this: <span class="kw-2">&amp;</span>Instance&lt;<span class="self">Self</span>&gt;,
+<a href=#131 id=131 data-nosnippet>131</a>        _event: <span class="kw-2">&amp;</span>ActorSupervisionEvent,
+<a href=#132 id=132 data-nosnippet>132</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;bool, anyhow::Error&gt; {
+<a href=#133 id=133 data-nosnippet>133</a>        <span class="comment">// By default, the supervision event is not handled, caller is expected to bubble it up.
+<a href=#134 id=134 data-nosnippet>134</a>        </span><span class="prelude-val">Ok</span>(<span class="bool-val">false</span>)
+<a href=#135 id=135 data-nosnippet>135</a>    }
+<a href=#136 id=136 data-nosnippet>136</a>
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="doccomment">/// Default undeliverable message handling behavior.
+<a href=#138 id=138 data-nosnippet>138</a>    </span><span class="kw">async fn </span>handle_undeliverable_message(
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#140 id=140 data-nosnippet>140</a>        cx: <span class="kw-2">&amp;</span>Instance&lt;<span class="self">Self</span>&gt;,
+<a href=#141 id=141 data-nosnippet>141</a>        envelope: Undeliverable&lt;MessageEnvelope&gt;,
+<a href=#142 id=142 data-nosnippet>142</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#143 id=143 data-nosnippet>143</a>        handle_undeliverable_message(cx, envelope)
+<a href=#144 id=144 data-nosnippet>144</a>    }
+<a href=#145 id=145 data-nosnippet>145</a>
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="doccomment">/// If overridden, we will use this name in place of the
+<a href=#147 id=147 data-nosnippet>147</a>    /// ActorId for talking about this actor in supervision error
+<a href=#148 id=148 data-nosnippet>148</a>    /// messages.
+<a href=#149 id=149 data-nosnippet>149</a>    </span><span class="kw">fn </span>display_name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="prelude-val">None
+<a href=#151 id=151 data-nosnippet>151</a>    </span>}
+<a href=#152 id=152 data-nosnippet>152</a>}
+<a href=#153 id=153 data-nosnippet>153</a>
+<a href=#154 id=154 data-nosnippet>154</a><span class="doccomment">/// Default implementation of [`Actor::handle_undeliverable_message`]. Defined
+<a href=#155 id=155 data-nosnippet>155</a>/// as a free function so that `Actor` implementations that override
+<a href=#156 id=156 data-nosnippet>156</a>/// [`Actor::handle_undeliverable_message`] can fallback to this default.
+<a href=#157 id=157 data-nosnippet>157</a></span><span class="kw">pub fn </span>handle_undeliverable_message&lt;A: Actor&gt;(
+<a href=#158 id=158 data-nosnippet>158</a>    cx: <span class="kw-2">&amp;</span>Instance&lt;A&gt;,
+<a href=#159 id=159 data-nosnippet>159</a>    Undeliverable(envelope): Undeliverable&lt;MessageEnvelope&gt;,
+<a href=#160 id=160 data-nosnippet>160</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="macro">assert_eq!</span>(envelope.sender(), cx.self_id());
+<a href=#162 id=162 data-nosnippet>162</a>
+<a href=#163 id=163 data-nosnippet>163</a>    <span class="macro">anyhow::bail!</span>(UndeliverableMessageError::DeliveryFailure { envelope });
+<a href=#164 id=164 data-nosnippet>164</a>}
+<a href=#165 id=165 data-nosnippet>165</a>
+<a href=#166 id=166 data-nosnippet>166</a><span class="doccomment">/// An actor that does nothing. It is used to represent "client only" actors,
+<a href=#167 id=167 data-nosnippet>167</a>/// returned by [`Proc::instance`].
+<a href=#168 id=168 data-nosnippet>168</a></span><span class="attr">#[async_trait]
+<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">impl </span>Actor <span class="kw">for </span>() {}
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a><span class="kw">impl </span>Referable <span class="kw">for </span>() {}
+<a href=#172 id=172 data-nosnippet>172</a>
+<a href=#173 id=173 data-nosnippet>173</a><span class="kw">impl </span>Binds&lt;()&gt; <span class="kw">for </span>() {
+<a href=#174 id=174 data-nosnippet>174</a>    <span class="kw">fn </span>bind(_ports: <span class="kw-2">&amp;</span>Ports&lt;<span class="self">Self</span>&gt;) {
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="comment">// Binds no ports.
+<a href=#176 id=176 data-nosnippet>176</a>    </span>}
+<a href=#177 id=177 data-nosnippet>177</a>}
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a><span class="doccomment">/// A Handler allows an actor to handle a specific message type.
+<a href=#180 id=180 data-nosnippet>180</a></span><span class="attr">#[async_trait]
+<a href=#181 id=181 data-nosnippet>181</a></span><span class="kw">pub trait </span>Handler&lt;M&gt;: Actor {
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="doccomment">/// Handle the next M-typed message.
+<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, message: M) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt;;
+<a href=#184 id=184 data-nosnippet>184</a>}
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a><span class="doccomment">/// We provide this handler to indicate that actors can handle the [`Signal`] message.
+<a href=#187 id=187 data-nosnippet>187</a>/// Its actual handler is implemented by the runtime.
+<a href=#188 id=188 data-nosnippet>188</a></span><span class="attr">#[async_trait]
+<a href=#189 id=189 data-nosnippet>189</a></span><span class="kw">impl</span>&lt;A: Actor&gt; Handler&lt;Signal&gt; <span class="kw">for </span>A {
+<a href=#190 id=190 data-nosnippet>190</a>    <span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, _message: Signal) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#191 id=191 data-nosnippet>191</a>        <span class="macro">unimplemented!</span>(<span class="string">"signal handler should not be called directly"</span>)
+<a href=#192 id=192 data-nosnippet>192</a>    }
+<a href=#193 id=193 data-nosnippet>193</a>}
+<a href=#194 id=194 data-nosnippet>194</a>
+<a href=#195 id=195 data-nosnippet>195</a><span class="doccomment">/// This handler provides a default behavior when a message sent by
+<a href=#196 id=196 data-nosnippet>196</a>/// the actor to another is returned due to delivery failure.
+<a href=#197 id=197 data-nosnippet>197</a></span><span class="attr">#[async_trait]
+<a href=#198 id=198 data-nosnippet>198</a></span><span class="kw">impl</span>&lt;A: Actor&gt; Handler&lt;Undeliverable&lt;MessageEnvelope&gt;&gt; <span class="kw">for </span>A {
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">async fn </span>handle(
+<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#201 id=201 data-nosnippet>201</a>        cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;,
+<a href=#202 id=202 data-nosnippet>202</a>        message: Undeliverable&lt;MessageEnvelope&gt;,
+<a href=#203 id=203 data-nosnippet>203</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#204 id=204 data-nosnippet>204</a>        <span class="self">self</span>.handle_undeliverable_message(cx, message).<span class="kw">await
+<a href=#205 id=205 data-nosnippet>205</a>    </span>}
+<a href=#206 id=206 data-nosnippet>206</a>}
+<a href=#207 id=207 data-nosnippet>207</a>
+<a href=#208 id=208 data-nosnippet>208</a><span class="doccomment">/// This handler enables actors to unbind the [IndexedErasedUnbound]
+<a href=#209 id=209 data-nosnippet>209</a>/// message, and forward the result to corresponding handler.
+<a href=#210 id=210 data-nosnippet>210</a></span><span class="attr">#[async_trait]
+<a href=#211 id=211 data-nosnippet>211</a></span><span class="kw">impl</span>&lt;A, M&gt; Handler&lt;IndexedErasedUnbound&lt;M&gt;&gt; <span class="kw">for </span>A
+<a href=#212 id=212 data-nosnippet>212</a><span class="kw">where
+<a href=#213 id=213 data-nosnippet>213</a>    </span>A: Handler&lt;M&gt;,
+<a href=#214 id=214 data-nosnippet>214</a>    M: Castable,
+<a href=#215 id=215 data-nosnippet>215</a>{
+<a href=#216 id=216 data-nosnippet>216</a>    <span class="kw">async fn </span>handle(
+<a href=#217 id=217 data-nosnippet>217</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#218 id=218 data-nosnippet>218</a>        cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;,
+<a href=#219 id=219 data-nosnippet>219</a>        msg: IndexedErasedUnbound&lt;M&gt;,
+<a href=#220 id=220 data-nosnippet>220</a>    ) -&gt; anyhow::Result&lt;()&gt; {
+<a href=#221 id=221 data-nosnippet>221</a>        <span class="kw">let </span>message = msg.downcast()<span class="question-mark">?</span>.bind()<span class="question-mark">?</span>;
+<a href=#222 id=222 data-nosnippet>222</a>        Handler::handle(<span class="self">self</span>, cx, message).<span class="kw">await
+<a href=#223 id=223 data-nosnippet>223</a>    </span>}
+<a href=#224 id=224 data-nosnippet>224</a>}
+<a href=#225 id=225 data-nosnippet>225</a>
+<a href=#226 id=226 data-nosnippet>226</a><span class="doccomment">/// An `Actor` that can be spawned remotely.
+<a href=#227 id=227 data-nosnippet>227</a>///
+<a href=#228 id=228 data-nosnippet>228</a>/// Bounds explained:
+<a href=#229 id=229 data-nosnippet>229</a>/// - `Actor`: only actors may be remotely spawned.
+<a href=#230 id=230 data-nosnippet>230</a>/// - `Referable`: marks the type as eligible for typed remote
+<a href=#231 id=231 data-nosnippet>231</a>///   references (`ActorRef&lt;A&gt;`); required because remote spawn
+<a href=#232 id=232 data-nosnippet>232</a>///   ultimately hands back an `ActorId` that higher-level APIs may
+<a href=#233 id=233 data-nosnippet>233</a>///   re-type as `ActorRef&lt;A&gt;`.
+<a href=#234 id=234 data-nosnippet>234</a>/// - `Binds&lt;Self&gt;`: lets the runtime wire this actor's message ports
+<a href=#235 id=235 data-nosnippet>235</a>///   when it is spawned (the blanket impl calls `handle.bind::&lt;Self&gt;()`).
+<a href=#236 id=236 data-nosnippet>236</a>///
+<a href=#237 id=237 data-nosnippet>237</a>/// `gspawn` is a type-erased entry point used by the remote
+<a href=#238 id=238 data-nosnippet>238</a>/// spawn/registry machinery. It takes serialized params and returns
+<a href=#239 id=239 data-nosnippet>239</a>/// the new actor's `ActorId`; application code shouldn't call it
+<a href=#240 id=240 data-nosnippet>240</a>/// directly.
+<a href=#241 id=241 data-nosnippet>241</a></span><span class="attr">#[async_trait]
+<a href=#242 id=242 data-nosnippet>242</a></span><span class="kw">pub trait </span>RemoteSpawn: Actor + Referable + Binds&lt;<span class="self">Self</span>&gt; {
+<a href=#243 id=243 data-nosnippet>243</a>    <span class="doccomment">/// The type of parameters used to instantiate the actor remotely.
+<a href=#244 id=244 data-nosnippet>244</a>    </span><span class="kw">type </span>Params: RemoteMessage;
+<a href=#245 id=245 data-nosnippet>245</a>
+<a href=#246 id=246 data-nosnippet>246</a>    <span class="doccomment">/// Creates a new actor instance given its instantiation parameters.
+<a href=#247 id=247 data-nosnippet>247</a>    </span><span class="kw">async fn </span>new(params: <span class="self">Self</span>::Params) -&gt; anyhow::Result&lt;<span class="self">Self</span>&gt;;
+<a href=#248 id=248 data-nosnippet>248</a>
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="doccomment">/// A type-erased entry point to spawn this actor. This is
+<a href=#250 id=250 data-nosnippet>250</a>    /// primarily used by hyperactor's remote actor registration
+<a href=#251 id=251 data-nosnippet>251</a>    /// mechanism.
+<a href=#252 id=252 data-nosnippet>252</a>    </span><span class="comment">// TODO: consider making this 'private' -- by moving it into a non-public trait as in [`cap`].
+<a href=#253 id=253 data-nosnippet>253</a>    </span><span class="kw">fn </span>gspawn(
+<a href=#254 id=254 data-nosnippet>254</a>        proc: <span class="kw-2">&amp;</span>Proc,
+<a href=#255 id=255 data-nosnippet>255</a>        name: <span class="kw-2">&amp;</span>str,
+<a href=#256 id=256 data-nosnippet>256</a>        serialized_params: Data,
+<a href=#257 id=257 data-nosnippet>257</a>    ) -&gt; Pin&lt;Box&lt;<span class="kw">dyn </span>Future&lt;Output = <span class="prelude-ty">Result</span>&lt;ActorId, anyhow::Error&gt;&gt; + Send&gt;&gt; {
+<a href=#258 id=258 data-nosnippet>258</a>        <span class="kw">let </span>proc = proc.clone();
+<a href=#259 id=259 data-nosnippet>259</a>        <span class="kw">let </span>name = name.to_string();
+<a href=#260 id=260 data-nosnippet>260</a>        Box::pin(<span class="kw">async move </span>{
+<a href=#261 id=261 data-nosnippet>261</a>            <span class="kw">let </span>params = bincode::deserialize(<span class="kw-2">&amp;</span>serialized_params)<span class="question-mark">?</span>;
+<a href=#262 id=262 data-nosnippet>262</a>            <span class="kw">let </span>actor = <span class="self">Self</span>::new(params).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#263 id=263 data-nosnippet>263</a>            <span class="kw">let </span>handle = proc.spawn(<span class="kw-2">&amp;</span>name, actor)<span class="question-mark">?</span>;
+<a href=#264 id=264 data-nosnippet>264</a>            <span class="comment">// We return only the ActorId, not a typed ActorRef.
+<a href=#265 id=265 data-nosnippet>265</a>            // Callers that hold this ID can interact with the actor
+<a href=#266 id=266 data-nosnippet>266</a>            // only via the serialized/opaque messaging path, which
+<a href=#267 id=267 data-nosnippet>267</a>            // makes it safe to export across process boundaries.
+<a href=#268 id=268 data-nosnippet>268</a>            //
+<a href=#269 id=269 data-nosnippet>269</a>            // Note: the actor itself is still `A`-typed here; we
+<a href=#270 id=270 data-nosnippet>270</a>            // merely restrict the *capability* we hand out to an
+<a href=#271 id=271 data-nosnippet>271</a>            // untyped identifier.
+<a href=#272 id=272 data-nosnippet>272</a>            //
+<a href=#273 id=273 data-nosnippet>273</a>            // This will be replaced by a proper export/registry
+<a href=#274 id=274 data-nosnippet>274</a>            // mechanism.
+<a href=#275 id=275 data-nosnippet>275</a>            </span><span class="prelude-val">Ok</span>(handle.bind::&lt;<span class="self">Self</span>&gt;().actor_id)
+<a href=#276 id=276 data-nosnippet>276</a>        })
+<a href=#277 id=277 data-nosnippet>277</a>    }
+<a href=#278 id=278 data-nosnippet>278</a>
+<a href=#279 id=279 data-nosnippet>279</a>    <span class="doccomment">/// The type ID of this actor.
+<a href=#280 id=280 data-nosnippet>280</a>    </span><span class="kw">fn </span>get_type_id() -&gt; TypeId {
+<a href=#281 id=281 data-nosnippet>281</a>        TypeId::of::&lt;<span class="self">Self</span>&gt;()
+<a href=#282 id=282 data-nosnippet>282</a>    }
+<a href=#283 id=283 data-nosnippet>283</a>}
+<a href=#284 id=284 data-nosnippet>284</a>
+<a href=#285 id=285 data-nosnippet>285</a><span class="doccomment">/// If an actor implements Default, we use this as the
+<a href=#286 id=286 data-nosnippet>286</a>/// `RemoteSpawn` implementation, too.
+<a href=#287 id=287 data-nosnippet>287</a></span><span class="attr">#[async_trait]
+<a href=#288 id=288 data-nosnippet>288</a></span><span class="kw">impl</span>&lt;A: Actor + Referable + Binds&lt;<span class="self">Self</span>&gt; + Default&gt; RemoteSpawn <span class="kw">for </span>A {
+<a href=#289 id=289 data-nosnippet>289</a>    <span class="kw">type </span>Params = ();
+<a href=#290 id=290 data-nosnippet>290</a>
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="kw">async fn </span>new(_params: <span class="self">Self</span>::Params) -&gt; anyhow::Result&lt;<span class="self">Self</span>&gt; {
+<a href=#292 id=292 data-nosnippet>292</a>        <span class="prelude-val">Ok</span>(Default::default())
+<a href=#293 id=293 data-nosnippet>293</a>    }
+<a href=#294 id=294 data-nosnippet>294</a>}
+<a href=#295 id=295 data-nosnippet>295</a>
+<a href=#296 id=296 data-nosnippet>296</a><span class="attr">#[async_trait]
+<a href=#297 id=297 data-nosnippet>297</a></span><span class="kw">impl</span>&lt;T&gt; Checkpointable <span class="kw">for </span>T
+<a href=#298 id=298 data-nosnippet>298</a><span class="kw">where
+<a href=#299 id=299 data-nosnippet>299</a>    </span>T: RemoteMessage + Clone,
+<a href=#300 id=300 data-nosnippet>300</a>{
+<a href=#301 id=301 data-nosnippet>301</a>    <span class="kw">type </span>State = T;
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="kw">async fn </span>save(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::State, CheckpointError&gt; {
+<a href=#303 id=303 data-nosnippet>303</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>.clone())
+<a href=#304 id=304 data-nosnippet>304</a>    }
+<a href=#305 id=305 data-nosnippet>305</a>
+<a href=#306 id=306 data-nosnippet>306</a>    <span class="kw">async fn </span>load(state: <span class="self">Self</span>::State) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, CheckpointError&gt; {
+<a href=#307 id=307 data-nosnippet>307</a>        <span class="prelude-val">Ok</span>(state)
+<a href=#308 id=308 data-nosnippet>308</a>    }
+<a href=#309 id=309 data-nosnippet>309</a>}
+<a href=#310 id=310 data-nosnippet>310</a>
+<a href=#311 id=311 data-nosnippet>311</a><span class="doccomment">/// Errors that occur while serving actors. Each error is associated
+<a href=#312 id=312 data-nosnippet>312</a>/// with the ID of the actor being served.
+<a href=#313 id=313 data-nosnippet>313</a></span><span class="attr">#[derive(Debug)]
+<a href=#314 id=314 data-nosnippet>314</a></span><span class="kw">pub struct </span>ActorError {
+<a href=#315 id=315 data-nosnippet>315</a>    <span class="doccomment">/// The ActorId for the actor that generated this error.
+<a href=#316 id=316 data-nosnippet>316</a>    </span><span class="kw">pub </span>actor_id: Box&lt;ActorId&gt;,
+<a href=#317 id=317 data-nosnippet>317</a>    <span class="doccomment">/// The kind of error that occurred.
+<a href=#318 id=318 data-nosnippet>318</a>    </span><span class="kw">pub </span>kind: Box&lt;ActorErrorKind&gt;,
+<a href=#319 id=319 data-nosnippet>319</a>}
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a><span class="doccomment">/// The kinds of actor serving errors.
+<a href=#322 id=322 data-nosnippet>322</a></span><span class="attr">#[derive(thiserror::Error, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+<a href=#323 id=323 data-nosnippet>323</a></span><span class="kw">pub enum </span>ActorErrorKind {
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="doccomment">/// Generic error with a formatted message.
+<a href=#325 id=325 data-nosnippet>325</a>    </span><span class="attr">#[error(<span class="string">"{0}"</span>)]
+<a href=#326 id=326 data-nosnippet>326</a>    </span>Generic(String),
+<a href=#327 id=327 data-nosnippet>327</a>
+<a href=#328 id=328 data-nosnippet>328</a>    <span class="doccomment">/// An error that occurred while trying to handle a supervision event.
+<a href=#329 id=329 data-nosnippet>329</a>    </span><span class="attr">#[error(<span class="string">"{0} while handling {1}"</span>)]
+<a href=#330 id=330 data-nosnippet>330</a>    </span>ErrorDuringHandlingSupervision(String, Box&lt;ActorSupervisionEvent&gt;),
+<a href=#331 id=331 data-nosnippet>331</a>
+<a href=#332 id=332 data-nosnippet>332</a>    <span class="doccomment">/// The actor did not attempt to handle
+<a href=#333 id=333 data-nosnippet>333</a>    </span><span class="attr">#[error(<span class="string">"{0}"</span>)]
+<a href=#334 id=334 data-nosnippet>334</a>    </span>UnhandledSupervisionEvent(Box&lt;ActorSupervisionEvent&gt;),
+<a href=#335 id=335 data-nosnippet>335</a>
+<a href=#336 id=336 data-nosnippet>336</a>    <span class="doccomment">/// The actor was explicitly aborted with the provided reason.
+<a href=#337 id=337 data-nosnippet>337</a>    </span><span class="attr">#[error(<span class="string">"actor explicitly aborted due to: {0}"</span>)]
+<a href=#338 id=338 data-nosnippet>338</a>    </span>Aborted(String),
+<a href=#339 id=339 data-nosnippet>339</a>}
+<a href=#340 id=340 data-nosnippet>340</a>
+<a href=#341 id=341 data-nosnippet>341</a><span class="kw">impl </span>ActorErrorKind {
+<a href=#342 id=342 data-nosnippet>342</a>    <span class="doccomment">/// Error while processing actor, i.e., returned by the actor's
+<a href=#343 id=343 data-nosnippet>343</a>    /// processing method.
+<a href=#344 id=344 data-nosnippet>344</a>    </span><span class="kw">pub fn </span>processing(err: anyhow::Error) -&gt; <span class="self">Self </span>{
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="comment">// Unbox err from the anyhow err. Check if it is an ActorErrorKind object.
+<a href=#346 id=346 data-nosnippet>346</a>        // If it is directly use it as the new ActorError's ActorErrorKind.
+<a href=#347 id=347 data-nosnippet>347</a>        // This lets us directly pass the ActorErrorKind::UnhandledSupervisionEvent
+<a href=#348 id=348 data-nosnippet>348</a>        // up the handling infrastructure.
+<a href=#349 id=349 data-nosnippet>349</a>        </span>err.downcast::&lt;ActorErrorKind&gt;()
+<a href=#350 id=350 data-nosnippet>350</a>            .unwrap_or_else(|err| <span class="self">Self</span>::Generic(err.to_string()))
+<a href=#351 id=351 data-nosnippet>351</a>    }
+<a href=#352 id=352 data-nosnippet>352</a>
+<a href=#353 id=353 data-nosnippet>353</a>    <span class="doccomment">/// Unwound stracktrace of a panic.
+<a href=#354 id=354 data-nosnippet>354</a>    </span><span class="kw">pub fn </span>panic(err: anyhow::Error) -&gt; <span class="self">Self </span>{
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="self">Self</span>::Generic(<span class="macro">format!</span>(<span class="string">"panic: {}"</span>, err))
+<a href=#356 id=356 data-nosnippet>356</a>    }
+<a href=#357 id=357 data-nosnippet>357</a>
+<a href=#358 id=358 data-nosnippet>358</a>    <span class="doccomment">/// Error during actor initialization.
+<a href=#359 id=359 data-nosnippet>359</a>    </span><span class="kw">pub fn </span>init(err: anyhow::Error) -&gt; <span class="self">Self </span>{
+<a href=#360 id=360 data-nosnippet>360</a>        <span class="self">Self</span>::Generic(<span class="macro">format!</span>(<span class="string">"initialization error: {}"</span>, err))
+<a href=#361 id=361 data-nosnippet>361</a>    }
+<a href=#362 id=362 data-nosnippet>362</a>
+<a href=#363 id=363 data-nosnippet>363</a>    <span class="doccomment">/// Error during actor cleanup.
+<a href=#364 id=364 data-nosnippet>364</a>    </span><span class="kw">pub fn </span>cleanup(err: anyhow::Error) -&gt; <span class="self">Self </span>{
+<a href=#365 id=365 data-nosnippet>365</a>        <span class="self">Self</span>::Generic(<span class="macro">format!</span>(<span class="string">"cleanup error: {}"</span>, err))
+<a href=#366 id=366 data-nosnippet>366</a>    }
+<a href=#367 id=367 data-nosnippet>367</a>
+<a href=#368 id=368 data-nosnippet>368</a>    <span class="doccomment">/// An underlying mailbox error.
+<a href=#369 id=369 data-nosnippet>369</a>    </span><span class="kw">pub fn </span>mailbox(err: MailboxError) -&gt; <span class="self">Self </span>{
+<a href=#370 id=370 data-nosnippet>370</a>        <span class="self">Self</span>::Generic(err.to_string())
+<a href=#371 id=371 data-nosnippet>371</a>    }
+<a href=#372 id=372 data-nosnippet>372</a>
+<a href=#373 id=373 data-nosnippet>373</a>    <span class="doccomment">/// An underlying mailbox sender error.
+<a href=#374 id=374 data-nosnippet>374</a>    </span><span class="kw">pub fn </span>mailbox_sender(err: MailboxSenderError) -&gt; <span class="self">Self </span>{
+<a href=#375 id=375 data-nosnippet>375</a>        <span class="self">Self</span>::Generic(err.to_string())
+<a href=#376 id=376 data-nosnippet>376</a>    }
+<a href=#377 id=377 data-nosnippet>377</a>
+<a href=#378 id=378 data-nosnippet>378</a>    <span class="doccomment">/// An underlying checkpoint error.
+<a href=#379 id=379 data-nosnippet>379</a>    </span><span class="kw">pub fn </span>checkpoint(err: CheckpointError) -&gt; <span class="self">Self </span>{
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="self">Self</span>::Generic(<span class="macro">format!</span>(<span class="string">"checkpoint error: {}"</span>, err))
+<a href=#381 id=381 data-nosnippet>381</a>    }
+<a href=#382 id=382 data-nosnippet>382</a>
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="doccomment">/// An underlying message log error.
+<a href=#384 id=384 data-nosnippet>384</a>    </span><span class="kw">pub fn </span>message_log(err: MessageLogError) -&gt; <span class="self">Self </span>{
+<a href=#385 id=385 data-nosnippet>385</a>        <span class="self">Self</span>::Generic(<span class="macro">format!</span>(<span class="string">"message log error: {}"</span>, err))
+<a href=#386 id=386 data-nosnippet>386</a>    }
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>    <span class="doccomment">/// The actor's state could not be determined.
+<a href=#389 id=389 data-nosnippet>389</a>    </span><span class="kw">pub fn </span>indeterminate_state() -&gt; <span class="self">Self </span>{
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="self">Self</span>::Generic(<span class="string">"actor is in an indeterminate state"</span>.to_string())
+<a href=#391 id=391 data-nosnippet>391</a>    }
+<a href=#392 id=392 data-nosnippet>392</a>}
+<a href=#393 id=393 data-nosnippet>393</a>
+<a href=#394 id=394 data-nosnippet>394</a><span class="kw">impl </span>ActorError {
+<a href=#395 id=395 data-nosnippet>395</a>    <span class="doccomment">/// Create a new actor server error with the provided id and kind.
+<a href=#396 id=396 data-nosnippet>396</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(actor_id: <span class="kw-2">&amp;</span>ActorId, kind: ActorErrorKind) -&gt; <span class="self">Self </span>{
+<a href=#397 id=397 data-nosnippet>397</a>        <span class="self">Self </span>{
+<a href=#398 id=398 data-nosnippet>398</a>            actor_id: Box::new(actor_id.clone()),
+<a href=#399 id=399 data-nosnippet>399</a>            kind: Box::new(kind),
+<a href=#400 id=400 data-nosnippet>400</a>        }
+<a href=#401 id=401 data-nosnippet>401</a>    }
+<a href=#402 id=402 data-nosnippet>402</a>}
+<a href=#403 id=403 data-nosnippet>403</a>
+<a href=#404 id=404 data-nosnippet>404</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>ActorError {
+<a href=#405 id=405 data-nosnippet>405</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#406 id=406 data-nosnippet>406</a>        <span class="macro">write!</span>(f, <span class="string">"serving {}: "</span>, <span class="self">self</span>.actor_id)<span class="question-mark">?</span>;
+<a href=#407 id=407 data-nosnippet>407</a>        fmt::Display::fmt(<span class="kw-2">&amp;</span><span class="self">self</span>.kind, f)
+<a href=#408 id=408 data-nosnippet>408</a>    }
+<a href=#409 id=409 data-nosnippet>409</a>}
+<a href=#410 id=410 data-nosnippet>410</a>
+<a href=#411 id=411 data-nosnippet>411</a><span class="kw">impl </span>std::error::Error <span class="kw">for </span>ActorError {
+<a href=#412 id=412 data-nosnippet>412</a>    <span class="kw">fn </span>source(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)&gt; {
+<a href=#413 id=413 data-nosnippet>413</a>        <span class="self">self</span>.kind.source()
+<a href=#414 id=414 data-nosnippet>414</a>    }
+<a href=#415 id=415 data-nosnippet>415</a>}
+<a href=#416 id=416 data-nosnippet>416</a>
+<a href=#417 id=417 data-nosnippet>417</a><span class="kw">impl </span>From&lt;MailboxError&gt; <span class="kw">for </span>ActorError {
+<a href=#418 id=418 data-nosnippet>418</a>    <span class="kw">fn </span>from(inner: MailboxError) -&gt; <span class="self">Self </span>{
+<a href=#419 id=419 data-nosnippet>419</a>        <span class="self">Self </span>{
+<a href=#420 id=420 data-nosnippet>420</a>            actor_id: Box::new(inner.actor_id().clone()),
+<a href=#421 id=421 data-nosnippet>421</a>            kind: Box::new(ActorErrorKind::mailbox(inner)),
+<a href=#422 id=422 data-nosnippet>422</a>        }
+<a href=#423 id=423 data-nosnippet>423</a>    }
+<a href=#424 id=424 data-nosnippet>424</a>}
+<a href=#425 id=425 data-nosnippet>425</a>
+<a href=#426 id=426 data-nosnippet>426</a><span class="kw">impl </span>From&lt;MailboxSenderError&gt; <span class="kw">for </span>ActorError {
+<a href=#427 id=427 data-nosnippet>427</a>    <span class="kw">fn </span>from(inner: MailboxSenderError) -&gt; <span class="self">Self </span>{
+<a href=#428 id=428 data-nosnippet>428</a>        <span class="self">Self </span>{
+<a href=#429 id=429 data-nosnippet>429</a>            actor_id: Box::new(inner.location().actor_id().clone()),
+<a href=#430 id=430 data-nosnippet>430</a>            kind: Box::new(ActorErrorKind::mailbox_sender(inner)),
+<a href=#431 id=431 data-nosnippet>431</a>        }
+<a href=#432 id=432 data-nosnippet>432</a>    }
+<a href=#433 id=433 data-nosnippet>433</a>}
+<a href=#434 id=434 data-nosnippet>434</a>
+<a href=#435 id=435 data-nosnippet>435</a><span class="doccomment">/// A collection of signals to control the behavior of the actor.
+<a href=#436 id=436 data-nosnippet>436</a>/// Signals are internal runtime control plane messages and should not be
+<a href=#437 id=437 data-nosnippet>437</a>/// sent outside of the runtime.
+<a href=#438 id=438 data-nosnippet>438</a>///
+<a href=#439 id=439 data-nosnippet>439</a>/// These messages are not handled directly by actors; instead, the runtime
+<a href=#440 id=440 data-nosnippet>440</a>/// handles the various signals.
+<a href=#441 id=441 data-nosnippet>441</a></span><span class="attr">#[derive(Clone, Debug, Serialize, Deserialize, typeuri::Named)]
+<a href=#442 id=442 data-nosnippet>442</a></span><span class="kw">pub enum </span>Signal {
+<a href=#443 id=443 data-nosnippet>443</a>    <span class="doccomment">/// Stop the actor, after draining messages.
+<a href=#444 id=444 data-nosnippet>444</a>    </span>DrainAndStop(String),
+<a href=#445 id=445 data-nosnippet>445</a>
+<a href=#446 id=446 data-nosnippet>446</a>    <span class="doccomment">/// Stop the actor immediately.
+<a href=#447 id=447 data-nosnippet>447</a>    </span>Stop(String),
+<a href=#448 id=448 data-nosnippet>448</a>
+<a href=#449 id=449 data-nosnippet>449</a>    <span class="doccomment">/// The direct child with the given PID was stopped.
+<a href=#450 id=450 data-nosnippet>450</a>    </span>ChildStopped(Index),
+<a href=#451 id=451 data-nosnippet>451</a>
+<a href=#452 id=452 data-nosnippet>452</a>    <span class="doccomment">/// Abort the actor. This will exit the actor loop with an error,
+<a href=#453 id=453 data-nosnippet>453</a>    /// causing a supervision event to propagate up the supervision
+<a href=#454 id=454 data-nosnippet>454</a>    /// hierarchy.
+<a href=#455 id=455 data-nosnippet>455</a>    </span>Abort(String),
+<a href=#456 id=456 data-nosnippet>456</a>}
+<a href=#457 id=457 data-nosnippet>457</a><span class="macro">wirevalue::register_type!</span>(Signal);
+<a href=#458 id=458 data-nosnippet>458</a>
+<a href=#459 id=459 data-nosnippet>459</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>Signal {
+<a href=#460 id=460 data-nosnippet>460</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#462 id=462 data-nosnippet>462</a>            Signal::DrainAndStop(reason) =&gt; <span class="macro">write!</span>(f, <span class="string">"DrainAndStop({})"</span>, reason),
+<a href=#463 id=463 data-nosnippet>463</a>            Signal::Stop(reason) =&gt; <span class="macro">write!</span>(f, <span class="string">"Stop({})"</span>, reason),
+<a href=#464 id=464 data-nosnippet>464</a>            Signal::ChildStopped(index) =&gt; <span class="macro">write!</span>(f, <span class="string">"ChildStopped({})"</span>, index),
+<a href=#465 id=465 data-nosnippet>465</a>            Signal::Abort(reason) =&gt; <span class="macro">write!</span>(f, <span class="string">"Abort({})"</span>, reason),
+<a href=#466 id=466 data-nosnippet>466</a>        }
+<a href=#467 id=467 data-nosnippet>467</a>    }
+<a href=#468 id=468 data-nosnippet>468</a>}
+<a href=#469 id=469 data-nosnippet>469</a>
+<a href=#470 id=470 data-nosnippet>470</a><span class="doccomment">/// The runtime status of an actor.
+<a href=#471 id=471 data-nosnippet>471</a></span><span class="attr">#[derive(
+<a href=#472 id=472 data-nosnippet>472</a>    Debug,
+<a href=#473 id=473 data-nosnippet>473</a>    Serialize,
+<a href=#474 id=474 data-nosnippet>474</a>    Deserialize,
+<a href=#475 id=475 data-nosnippet>475</a>    PartialEq,
+<a href=#476 id=476 data-nosnippet>476</a>    Eq,
+<a href=#477 id=477 data-nosnippet>477</a>    Clone,
+<a href=#478 id=478 data-nosnippet>478</a>    typeuri::Named,
+<a href=#479 id=479 data-nosnippet>479</a>    EnumAsInner
+<a href=#480 id=480 data-nosnippet>480</a>)]
+<a href=#481 id=481 data-nosnippet>481</a></span><span class="kw">pub enum </span>ActorStatus {
+<a href=#482 id=482 data-nosnippet>482</a>    <span class="doccomment">/// The actor status is unknown.
+<a href=#483 id=483 data-nosnippet>483</a>    </span>Unknown,
+<a href=#484 id=484 data-nosnippet>484</a>    <span class="doccomment">/// The actor was created, but not yet started.
+<a href=#485 id=485 data-nosnippet>485</a>    </span>Created,
+<a href=#486 id=486 data-nosnippet>486</a>    <span class="doccomment">/// The actor is initializing. It is not yet ready to receive messages.
+<a href=#487 id=487 data-nosnippet>487</a>    </span>Initializing,
+<a href=#488 id=488 data-nosnippet>488</a>    <span class="doccomment">/// The actor is in "client" state: the user is managing the actor's
+<a href=#489 id=489 data-nosnippet>489</a>    /// mailboxes manually.
+<a href=#490 id=490 data-nosnippet>490</a>    </span>Client,
+<a href=#491 id=491 data-nosnippet>491</a>    <span class="doccomment">/// The actor is ready to receive messages, but is currently idle.
+<a href=#492 id=492 data-nosnippet>492</a>    </span>Idle,
+<a href=#493 id=493 data-nosnippet>493</a>    <span class="doccomment">/// The actor has been processing a message, beginning at the specified
+<a href=#494 id=494 data-nosnippet>494</a>    /// instant. The message handler and arm is included.
+<a href=#495 id=495 data-nosnippet>495</a>    /// TODO: we shoudl use interned representations here, so we don't copy
+<a href=#496 id=496 data-nosnippet>496</a>    /// strings willy-nilly.
+<a href=#497 id=497 data-nosnippet>497</a>    </span>Processing(SystemTime, <span class="prelude-ty">Option</span>&lt;(String, <span class="prelude-ty">Option</span>&lt;String&gt;)&gt;),
+<a href=#498 id=498 data-nosnippet>498</a>    <span class="doccomment">/// The actor has been saving its state.
+<a href=#499 id=499 data-nosnippet>499</a>    </span>Saving(SystemTime),
+<a href=#500 id=500 data-nosnippet>500</a>    <span class="doccomment">/// The actor has been loading its state.
+<a href=#501 id=501 data-nosnippet>501</a>    </span>Loading(SystemTime),
+<a href=#502 id=502 data-nosnippet>502</a>    <span class="doccomment">/// The actor is stopping. It is draining messages.
+<a href=#503 id=503 data-nosnippet>503</a>    </span>Stopping,
+<a href=#504 id=504 data-nosnippet>504</a>    <span class="doccomment">/// The actor is stopped. It is no longer processing messages.
+<a href=#505 id=505 data-nosnippet>505</a>    </span>Stopped,
+<a href=#506 id=506 data-nosnippet>506</a>    <span class="doccomment">/// The actor failed with the provided actor error.
+<a href=#507 id=507 data-nosnippet>507</a>    </span>Failed(ActorErrorKind),
+<a href=#508 id=508 data-nosnippet>508</a>}
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a><span class="kw">impl </span>ActorStatus {
+<a href=#511 id=511 data-nosnippet>511</a>    <span class="doccomment">/// Tells whether the status is a terminal state.
+<a href=#512 id=512 data-nosnippet>512</a>    </span><span class="kw">pub fn </span>is_terminal(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#513 id=513 data-nosnippet>513</a>        <span class="self">self</span>.is_stopped() || <span class="self">self</span>.is_failed()
+<a href=#514 id=514 data-nosnippet>514</a>    }
+<a href=#515 id=515 data-nosnippet>515</a>
+<a href=#516 id=516 data-nosnippet>516</a>    <span class="doccomment">/// Create a generic failure status with the provided error message.
+<a href=#517 id=517 data-nosnippet>517</a>    </span><span class="kw">pub fn </span>generic_failure(message: <span class="kw">impl </span>Into&lt;String&gt;) -&gt; <span class="self">Self </span>{
+<a href=#518 id=518 data-nosnippet>518</a>        <span class="self">Self</span>::Failed(ActorErrorKind::Generic(message.into()))
+<a href=#519 id=519 data-nosnippet>519</a>    }
+<a href=#520 id=520 data-nosnippet>520</a>
+<a href=#521 id=521 data-nosnippet>521</a>    <span class="kw">fn </span>span_string(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#522 id=522 data-nosnippet>522</a>        <span class="self">self</span>.arm().unwrap_or_default()
+<a href=#523 id=523 data-nosnippet>523</a>    }
+<a href=#524 id=524 data-nosnippet>524</a>}
+<a href=#525 id=525 data-nosnippet>525</a>
+<a href=#526 id=526 data-nosnippet>526</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>ActorStatus {
+<a href=#527 id=527 data-nosnippet>527</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#529 id=529 data-nosnippet>529</a>            <span class="self">Self</span>::Unknown =&gt; <span class="macro">write!</span>(f, <span class="string">"unknown"</span>),
+<a href=#530 id=530 data-nosnippet>530</a>            <span class="self">Self</span>::Created =&gt; <span class="macro">write!</span>(f, <span class="string">"created"</span>),
+<a href=#531 id=531 data-nosnippet>531</a>            <span class="self">Self</span>::Initializing =&gt; <span class="macro">write!</span>(f, <span class="string">"initializing"</span>),
+<a href=#532 id=532 data-nosnippet>532</a>            <span class="self">Self</span>::Client =&gt; <span class="macro">write!</span>(f, <span class="string">"client"</span>),
+<a href=#533 id=533 data-nosnippet>533</a>            <span class="self">Self</span>::Idle =&gt; <span class="macro">write!</span>(f, <span class="string">"idle"</span>),
+<a href=#534 id=534 data-nosnippet>534</a>            <span class="self">Self</span>::Processing(instant, <span class="prelude-val">None</span>) =&gt; {
+<a href=#535 id=535 data-nosnippet>535</a>                <span class="macro">write!</span>(
+<a href=#536 id=536 data-nosnippet>536</a>                    f,
+<a href=#537 id=537 data-nosnippet>537</a>                    <span class="string">"processing for {}ms"</span>,
+<a href=#538 id=538 data-nosnippet>538</a>                    RealClock
+<a href=#539 id=539 data-nosnippet>539</a>                        .system_time_now()
+<a href=#540 id=540 data-nosnippet>540</a>                        .duration_since(<span class="kw-2">*</span>instant)
+<a href=#541 id=541 data-nosnippet>541</a>                        .unwrap_or_default()
+<a href=#542 id=542 data-nosnippet>542</a>                        .as_millis()
+<a href=#543 id=543 data-nosnippet>543</a>                )
+<a href=#544 id=544 data-nosnippet>544</a>            }
+<a href=#545 id=545 data-nosnippet>545</a>            <span class="self">Self</span>::Processing(instant, <span class="prelude-val">Some</span>((handler, <span class="prelude-val">None</span>))) =&gt; {
+<a href=#546 id=546 data-nosnippet>546</a>                <span class="macro">write!</span>(
+<a href=#547 id=547 data-nosnippet>547</a>                    f,
+<a href=#548 id=548 data-nosnippet>548</a>                    <span class="string">"{}: processing for {}ms"</span>,
+<a href=#549 id=549 data-nosnippet>549</a>                    handler,
+<a href=#550 id=550 data-nosnippet>550</a>                    RealClock
+<a href=#551 id=551 data-nosnippet>551</a>                        .system_time_now()
+<a href=#552 id=552 data-nosnippet>552</a>                        .duration_since(<span class="kw-2">*</span>instant)
+<a href=#553 id=553 data-nosnippet>553</a>                        .unwrap_or_default()
+<a href=#554 id=554 data-nosnippet>554</a>                        .as_millis()
+<a href=#555 id=555 data-nosnippet>555</a>                )
+<a href=#556 id=556 data-nosnippet>556</a>            }
+<a href=#557 id=557 data-nosnippet>557</a>            <span class="self">Self</span>::Processing(instant, <span class="prelude-val">Some</span>((handler, <span class="prelude-val">Some</span>(arm)))) =&gt; {
+<a href=#558 id=558 data-nosnippet>558</a>                <span class="macro">write!</span>(
+<a href=#559 id=559 data-nosnippet>559</a>                    f,
+<a href=#560 id=560 data-nosnippet>560</a>                    <span class="string">"{},{}: processing for {}ms"</span>,
+<a href=#561 id=561 data-nosnippet>561</a>                    handler,
+<a href=#562 id=562 data-nosnippet>562</a>                    arm,
+<a href=#563 id=563 data-nosnippet>563</a>                    RealClock
+<a href=#564 id=564 data-nosnippet>564</a>                        .system_time_now()
+<a href=#565 id=565 data-nosnippet>565</a>                        .duration_since(<span class="kw-2">*</span>instant)
+<a href=#566 id=566 data-nosnippet>566</a>                        .unwrap_or_default()
+<a href=#567 id=567 data-nosnippet>567</a>                        .as_millis()
+<a href=#568 id=568 data-nosnippet>568</a>                )
+<a href=#569 id=569 data-nosnippet>569</a>            }
+<a href=#570 id=570 data-nosnippet>570</a>            <span class="self">Self</span>::Saving(instant) =&gt; {
+<a href=#571 id=571 data-nosnippet>571</a>                <span class="macro">write!</span>(
+<a href=#572 id=572 data-nosnippet>572</a>                    f,
+<a href=#573 id=573 data-nosnippet>573</a>                    <span class="string">"saving for {}ms"</span>,
+<a href=#574 id=574 data-nosnippet>574</a>                    RealClock
+<a href=#575 id=575 data-nosnippet>575</a>                        .system_time_now()
+<a href=#576 id=576 data-nosnippet>576</a>                        .duration_since(<span class="kw-2">*</span>instant)
+<a href=#577 id=577 data-nosnippet>577</a>                        .unwrap_or_default()
+<a href=#578 id=578 data-nosnippet>578</a>                        .as_millis()
+<a href=#579 id=579 data-nosnippet>579</a>                )
+<a href=#580 id=580 data-nosnippet>580</a>            }
+<a href=#581 id=581 data-nosnippet>581</a>            <span class="self">Self</span>::Loading(instant) =&gt; {
+<a href=#582 id=582 data-nosnippet>582</a>                <span class="macro">write!</span>(
+<a href=#583 id=583 data-nosnippet>583</a>                    f,
+<a href=#584 id=584 data-nosnippet>584</a>                    <span class="string">"loading for {}ms"</span>,
+<a href=#585 id=585 data-nosnippet>585</a>                    RealClock
+<a href=#586 id=586 data-nosnippet>586</a>                        .system_time_now()
+<a href=#587 id=587 data-nosnippet>587</a>                        .duration_since(<span class="kw-2">*</span>instant)
+<a href=#588 id=588 data-nosnippet>588</a>                        .unwrap_or_default()
+<a href=#589 id=589 data-nosnippet>589</a>                        .as_millis()
+<a href=#590 id=590 data-nosnippet>590</a>                )
+<a href=#591 id=591 data-nosnippet>591</a>            }
+<a href=#592 id=592 data-nosnippet>592</a>            <span class="self">Self</span>::Stopping =&gt; <span class="macro">write!</span>(f, <span class="string">"stopping"</span>),
+<a href=#593 id=593 data-nosnippet>593</a>            <span class="self">Self</span>::Stopped =&gt; <span class="macro">write!</span>(f, <span class="string">"stopped"</span>),
+<a href=#594 id=594 data-nosnippet>594</a>            <span class="self">Self</span>::Failed(err) =&gt; <span class="macro">write!</span>(f, <span class="string">"failed: {}"</span>, err),
+<a href=#595 id=595 data-nosnippet>595</a>        }
+<a href=#596 id=596 data-nosnippet>596</a>    }
+<a href=#597 id=597 data-nosnippet>597</a>}
+<a href=#598 id=598 data-nosnippet>598</a>
+<a href=#599 id=599 data-nosnippet>599</a><span class="doccomment">/// ActorHandles represent a (local) serving actor. It is used to access
+<a href=#600 id=600 data-nosnippet>600</a>/// its messaging and signal ports, as well as to synchronize with its
+<a href=#601 id=601 data-nosnippet>601</a>/// lifecycle (e.g., providing joins).  Once dropped, the handle is
+<a href=#602 id=602 data-nosnippet>602</a>/// detached from the underlying actor instance, and there is no longer
+<a href=#603 id=603 data-nosnippet>603</a>/// any way to join it.
+<a href=#604 id=604 data-nosnippet>604</a>///
+<a href=#605 id=605 data-nosnippet>605</a>/// Correspondingly, [`crate::ActorRef`]s refer to (possibly) remote
+<a href=#606 id=606 data-nosnippet>606</a>/// actors.
+<a href=#607 id=607 data-nosnippet>607</a></span><span class="kw">pub struct </span>ActorHandle&lt;A: Actor&gt; {
+<a href=#608 id=608 data-nosnippet>608</a>    cell: InstanceCell,
+<a href=#609 id=609 data-nosnippet>609</a>    ports: Arc&lt;Ports&lt;A&gt;&gt;,
+<a href=#610 id=610 data-nosnippet>610</a>}
+<a href=#611 id=611 data-nosnippet>611</a>
+<a href=#612 id=612 data-nosnippet>612</a><span class="doccomment">/// A handle to a running (local) actor.
+<a href=#613 id=613 data-nosnippet>613</a></span><span class="kw">impl</span>&lt;A: Actor&gt; ActorHandle&lt;A&gt; {
+<a href=#614 id=614 data-nosnippet>614</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(cell: InstanceCell, ports: Arc&lt;Ports&lt;A&gt;&gt;) -&gt; <span class="self">Self </span>{
+<a href=#615 id=615 data-nosnippet>615</a>        <span class="self">Self </span>{ cell, ports }
+<a href=#616 id=616 data-nosnippet>616</a>    }
+<a href=#617 id=617 data-nosnippet>617</a>
+<a href=#618 id=618 data-nosnippet>618</a>    <span class="doccomment">/// The actor's cell. Used primarily for testing.
+<a href=#619 id=619 data-nosnippet>619</a>    /// TODO: this should not be a public API.
+<a href=#620 id=620 data-nosnippet>620</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>cell(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>InstanceCell {
+<a href=#621 id=621 data-nosnippet>621</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.cell
+<a href=#622 id=622 data-nosnippet>622</a>    }
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>    <span class="doccomment">/// The [`ActorId`] of the actor represented by this handle.
+<a href=#625 id=625 data-nosnippet>625</a>    </span><span class="kw">pub fn </span>actor_id(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ActorId {
+<a href=#626 id=626 data-nosnippet>626</a>        <span class="self">self</span>.cell.actor_id()
+<a href=#627 id=627 data-nosnippet>627</a>    }
+<a href=#628 id=628 data-nosnippet>628</a>
+<a href=#629 id=629 data-nosnippet>629</a>    <span class="doccomment">/// Signal the actor to drain its current messages and then stop.
+<a href=#630 id=630 data-nosnippet>630</a>    </span><span class="kw">pub fn </span>drain_and_stop(<span class="kw-2">&amp;</span><span class="self">self</span>, reason: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;(), ActorError&gt; {
+<a href=#631 id=631 data-nosnippet>631</a>        <span class="macro">tracing::info!</span>(<span class="string">"ActorHandle::drain_and_stop called: {}"</span>, <span class="self">self</span>.actor_id());
+<a href=#632 id=632 data-nosnippet>632</a>        <span class="self">self</span>.cell.signal(Signal::DrainAndStop(reason.to_string()))
+<a href=#633 id=633 data-nosnippet>633</a>    }
+<a href=#634 id=634 data-nosnippet>634</a>
+<a href=#635 id=635 data-nosnippet>635</a>    <span class="doccomment">/// A watch that observes the lifecycle state of the actor.
+<a href=#636 id=636 data-nosnippet>636</a>    </span><span class="kw">pub fn </span>status(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; watch::Receiver&lt;ActorStatus&gt; {
+<a href=#637 id=637 data-nosnippet>637</a>        <span class="self">self</span>.cell.status().clone()
+<a href=#638 id=638 data-nosnippet>638</a>    }
+<a href=#639 id=639 data-nosnippet>639</a>
+<a href=#640 id=640 data-nosnippet>640</a>    <span class="doccomment">/// Send a message to the actor. Messages sent through the handle
+<a href=#641 id=641 data-nosnippet>641</a>    /// are always queued in process, and do not require serialization.
+<a href=#642 id=642 data-nosnippet>642</a>    </span><span class="kw">pub fn </span>send&lt;M: Message&gt;(
+<a href=#643 id=643 data-nosnippet>643</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#644 id=644 data-nosnippet>644</a>        cx: <span class="kw-2">&amp;</span><span class="kw">impl </span>context::Actor,
+<a href=#645 id=645 data-nosnippet>645</a>        message: M,
+<a href=#646 id=646 data-nosnippet>646</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;(), MailboxSenderError&gt;
+<a href=#647 id=647 data-nosnippet>647</a>    <span class="kw">where
+<a href=#648 id=648 data-nosnippet>648</a>        </span>A: Handler&lt;M&gt;,
+<a href=#649 id=649 data-nosnippet>649</a>    {
+<a href=#650 id=650 data-nosnippet>650</a>        <span class="self">self</span>.ports.get().send(cx, message)
+<a href=#651 id=651 data-nosnippet>651</a>    }
+<a href=#652 id=652 data-nosnippet>652</a>
+<a href=#653 id=653 data-nosnippet>653</a>    <span class="doccomment">/// Return a port for the provided message type handled by the actor.
+<a href=#654 id=654 data-nosnippet>654</a>    </span><span class="kw">pub fn </span>port&lt;M: Message&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; PortHandle&lt;M&gt;
+<a href=#655 id=655 data-nosnippet>655</a>    <span class="kw">where
+<a href=#656 id=656 data-nosnippet>656</a>        </span>A: Handler&lt;M&gt;,
+<a href=#657 id=657 data-nosnippet>657</a>    {
+<a href=#658 id=658 data-nosnippet>658</a>        <span class="self">self</span>.ports.get()
+<a href=#659 id=659 data-nosnippet>659</a>    }
+<a href=#660 id=660 data-nosnippet>660</a>
+<a href=#661 id=661 data-nosnippet>661</a>    <span class="doccomment">/// TEMPORARY: bind...
+<a href=#662 id=662 data-nosnippet>662</a>    /// TODO: we shoudl also have a default binding(?)
+<a href=#663 id=663 data-nosnippet>663</a>    </span><span class="kw">pub fn </span>bind&lt;R: Binds&lt;A&gt;&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ActorRef&lt;R&gt; {
+<a href=#664 id=664 data-nosnippet>664</a>        <span class="self">self</span>.cell.bind(<span class="self">self</span>.ports.as_ref())
+<a href=#665 id=665 data-nosnippet>665</a>    }
+<a href=#666 id=666 data-nosnippet>666</a>}
+<a href=#667 id=667 data-nosnippet>667</a>
+<a href=#668 id=668 data-nosnippet>668</a><span class="doccomment">/// IntoFuture allows users to await the handle to join it. The future
+<a href=#669 id=669 data-nosnippet>669</a>/// resolves when the actor itself has stopped processing messages.
+<a href=#670 id=670 data-nosnippet>670</a>/// The future resolves to the actor's final status.
+<a href=#671 id=671 data-nosnippet>671</a></span><span class="kw">impl</span>&lt;A: Actor&gt; IntoFuture <span class="kw">for </span>ActorHandle&lt;A&gt; {
+<a href=#672 id=672 data-nosnippet>672</a>    <span class="kw">type </span>Output = ActorStatus;
+<a href=#673 id=673 data-nosnippet>673</a>    <span class="kw">type </span>IntoFuture = BoxFuture&lt;<span class="lifetime">'static</span>, <span class="self">Self</span>::Output&gt;;
+<a href=#674 id=674 data-nosnippet>674</a>
+<a href=#675 id=675 data-nosnippet>675</a>    <span class="kw">fn </span>into_future(<span class="self">self</span>) -&gt; <span class="self">Self</span>::IntoFuture {
+<a href=#676 id=676 data-nosnippet>676</a>        <span class="kw">let </span>future = <span class="kw">async move </span>{
+<a href=#677 id=677 data-nosnippet>677</a>            <span class="kw">let </span><span class="kw-2">mut </span>status_receiver = <span class="self">self</span>.cell.status().clone();
+<a href=#678 id=678 data-nosnippet>678</a>            <span class="kw">let </span>result = status_receiver.wait_for(ActorStatus::is_terminal).<span class="kw">await</span>;
+<a href=#679 id=679 data-nosnippet>679</a>            <span class="kw">match </span>result {
+<a href=#680 id=680 data-nosnippet>680</a>                <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; ActorStatus::Unknown,
+<a href=#681 id=681 data-nosnippet>681</a>                <span class="prelude-val">Ok</span>(status) =&gt; status.clone(),
+<a href=#682 id=682 data-nosnippet>682</a>            }
+<a href=#683 id=683 data-nosnippet>683</a>        };
+<a href=#684 id=684 data-nosnippet>684</a>
+<a href=#685 id=685 data-nosnippet>685</a>        future.boxed()
+<a href=#686 id=686 data-nosnippet>686</a>    }
+<a href=#687 id=687 data-nosnippet>687</a>}
+<a href=#688 id=688 data-nosnippet>688</a>
+<a href=#689 id=689 data-nosnippet>689</a><span class="kw">impl</span>&lt;A: Actor&gt; Debug <span class="kw">for </span>ActorHandle&lt;A&gt; {
+<a href=#690 id=690 data-nosnippet>690</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;(), fmt::Error&gt; {
+<a href=#691 id=691 data-nosnippet>691</a>        f.debug_struct(<span class="string">"ActorHandle"</span>).field(<span class="string">"cell"</span>, <span class="kw-2">&amp;</span><span class="string">".."</span>).finish()
+<a href=#692 id=692 data-nosnippet>692</a>    }
+<a href=#693 id=693 data-nosnippet>693</a>}
+<a href=#694 id=694 data-nosnippet>694</a>
+<a href=#695 id=695 data-nosnippet>695</a><span class="kw">impl</span>&lt;A: Actor&gt; Clone <span class="kw">for </span>ActorHandle&lt;A&gt; {
+<a href=#696 id=696 data-nosnippet>696</a>    <span class="kw">fn </span>clone(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#697 id=697 data-nosnippet>697</a>        <span class="self">Self </span>{
+<a href=#698 id=698 data-nosnippet>698</a>            cell: <span class="self">self</span>.cell.clone(),
+<a href=#699 id=699 data-nosnippet>699</a>            ports: <span class="self">self</span>.ports.clone(),
+<a href=#700 id=700 data-nosnippet>700</a>        }
+<a href=#701 id=701 data-nosnippet>701</a>    }
+<a href=#702 id=702 data-nosnippet>702</a>}
+<a href=#703 id=703 data-nosnippet>703</a>
+<a href=#704 id=704 data-nosnippet>704</a><span class="doccomment">/// `Referable` is a marker trait for types that can appear as
+<a href=#705 id=705 data-nosnippet>705</a>/// remote references across process boundaries.
+<a href=#706 id=706 data-nosnippet>706</a>///
+<a href=#707 id=707 data-nosnippet>707</a>/// It is not limited to concrete [`Actor`] implementations. For
+<a href=#708 id=708 data-nosnippet>708</a>/// example, façade types generated by [`behavior!`] implement
+<a href=#709 id=709 data-nosnippet>709</a>/// `Referable` so that you can hand out restricted or stable APIs
+<a href=#710 id=710 data-nosnippet>710</a>/// while still using the same remote messaging machinery.
+<a href=#711 id=711 data-nosnippet>711</a>///
+<a href=#712 id=712 data-nosnippet>712</a>/// Implementing this trait means the type can be identified (`Named`)
+<a href=#713 id=713 data-nosnippet>713</a>/// so the runtime knows what it is.
+<a href=#714 id=714 data-nosnippet>714</a>///
+<a href=#715 id=715 data-nosnippet>715</a>///  In contrast, [`RemoteSpawn`] is the trait that marks *actors*
+<a href=#716 id=716 data-nosnippet>716</a>/// that can actually be **spawned remotely**. A behavior may be a
+<a href=#717 id=717 data-nosnippet>717</a>/// `Referable` but is never a `RemoteSpawn`.
+<a href=#718 id=718 data-nosnippet>718</a></span><span class="kw">pub trait </span>Referable: Named {}
+<a href=#719 id=719 data-nosnippet>719</a>
+<a href=#720 id=720 data-nosnippet>720</a><span class="doccomment">/// Binds determines how an actor's ports are bound to a specific
+<a href=#721 id=721 data-nosnippet>721</a>/// reference type.
+<a href=#722 id=722 data-nosnippet>722</a></span><span class="kw">pub trait </span>Binds&lt;A: Actor&gt;: Referable {
+<a href=#723 id=723 data-nosnippet>723</a>    <span class="doccomment">/// Bind ports in this actor.
+<a href=#724 id=724 data-nosnippet>724</a>    </span><span class="kw">fn </span>bind(ports: <span class="kw-2">&amp;</span>Ports&lt;A&gt;);
+<a href=#725 id=725 data-nosnippet>725</a>}
+<a href=#726 id=726 data-nosnippet>726</a>
+<a href=#727 id=727 data-nosnippet>727</a><span class="doccomment">/// Handles is a marker trait specifying that message type [`M`]
+<a href=#728 id=728 data-nosnippet>728</a>/// is handled by a specific actor type.
+<a href=#729 id=729 data-nosnippet>729</a></span><span class="kw">pub trait </span>RemoteHandles&lt;M: RemoteMessage&gt;: Referable {}
+<a href=#730 id=730 data-nosnippet>730</a>
+<a href=#731 id=731 data-nosnippet>731</a><span class="doccomment">/// Check if the actor behaves-as the a given behavior (defined by [`behavior!`]).
+<a href=#732 id=732 data-nosnippet>732</a>///
+<a href=#733 id=733 data-nosnippet>733</a>/// ```
+<a href=#734 id=734 data-nosnippet>734</a>/// # use serde::Serialize;
+<a href=#735 id=735 data-nosnippet>735</a>/// # use serde::Deserialize;
+<a href=#736 id=736 data-nosnippet>736</a>/// # use typeuri::Named;
+<a href=#737 id=737 data-nosnippet>737</a>/// # use hyperactor::Actor;
+<a href=#738 id=738 data-nosnippet>738</a>///
+<a href=#739 id=739 data-nosnippet>739</a>/// // First, define a behavior, based on handling a single message type `()`.
+<a href=#740 id=740 data-nosnippet>740</a>/// hyperactor::behavior!(UnitBehavior, ());
+<a href=#741 id=741 data-nosnippet>741</a>///
+<a href=#742 id=742 data-nosnippet>742</a>/// #[derive(Debug, Default)]
+<a href=#743 id=743 data-nosnippet>743</a>/// struct MyActor;
+<a href=#744 id=744 data-nosnippet>744</a>///
+<a href=#745 id=745 data-nosnippet>745</a>/// impl Actor for MyActor {}
+<a href=#746 id=746 data-nosnippet>746</a>///
+<a href=#747 id=747 data-nosnippet>747</a>/// #[async_trait::async_trait]
+<a href=#748 id=748 data-nosnippet>748</a>/// impl hyperactor::Handler&lt;()&gt; for MyActor {
+<a href=#749 id=749 data-nosnippet>749</a>///     async fn handle(
+<a href=#750 id=750 data-nosnippet>750</a>///         &amp;mut self,
+<a href=#751 id=751 data-nosnippet>751</a>///         _cx: &amp;hyperactor::Context&lt;Self&gt;,
+<a href=#752 id=752 data-nosnippet>752</a>///         _message: (),
+<a href=#753 id=753 data-nosnippet>753</a>///     ) -&gt; Result&lt;(), anyhow::Error&gt; {
+<a href=#754 id=754 data-nosnippet>754</a>///         // no-op
+<a href=#755 id=755 data-nosnippet>755</a>///         Ok(())
+<a href=#756 id=756 data-nosnippet>756</a>///     }
+<a href=#757 id=757 data-nosnippet>757</a>/// }
+<a href=#758 id=758 data-nosnippet>758</a>///
+<a href=#759 id=759 data-nosnippet>759</a>/// hyperactor::assert_behaves!(MyActor as UnitBehavior);
+<a href=#760 id=760 data-nosnippet>760</a>/// ```
+<a href=#761 id=761 data-nosnippet>761</a></span><span class="attr">#[macro_export]
+<a href=#762 id=762 data-nosnippet>762</a></span><span class="macro">macro_rules!</span> assert_behaves {
+<a href=#763 id=763 data-nosnippet>763</a>    (<span class="macro-nonterminal">$ty</span>:ty <span class="kw">as </span><span class="macro-nonterminal">$behavior</span>:ty) =&gt; {
+<a href=#764 id=764 data-nosnippet>764</a>        <span class="kw">const _</span>: <span class="kw">fn</span>() = || {
+<a href=#765 id=765 data-nosnippet>765</a>            <span class="kw">fn </span>check&lt;B: hyperactor::actor::Binds&lt;<span class="macro-nonterminal">$ty</span>&gt;&gt;() {}
+<a href=#766 id=766 data-nosnippet>766</a>            check::&lt;<span class="macro-nonterminal">$behavior</span>&gt;();
+<a href=#767 id=767 data-nosnippet>767</a>        };
+<a href=#768 id=768 data-nosnippet>768</a>    };
+<a href=#769 id=769 data-nosnippet>769</a>}
+<a href=#770 id=770 data-nosnippet>770</a>
+<a href=#771 id=771 data-nosnippet>771</a><span class="attr">#[cfg(test)]
+<a href=#772 id=772 data-nosnippet>772</a></span><span class="kw">mod </span>tests {
+<a href=#773 id=773 data-nosnippet>773</a>    <span class="kw">use </span>std::sync::Mutex;
+<a href=#774 id=774 data-nosnippet>774</a>    <span class="kw">use </span>std::time::Duration;
+<a href=#775 id=775 data-nosnippet>775</a>
+<a href=#776 id=776 data-nosnippet>776</a>    <span class="kw">use </span>tokio::time::timeout;
+<a href=#777 id=777 data-nosnippet>777</a>
+<a href=#778 id=778 data-nosnippet>778</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#779 id=779 data-nosnippet>779</a>    <span class="kw">use crate as </span>hyperactor;
+<a href=#780 id=780 data-nosnippet>780</a>    <span class="kw">use </span><span class="kw">crate</span>::Actor;
+<a href=#781 id=781 data-nosnippet>781</a>    <span class="kw">use </span><span class="kw">crate</span>::OncePortHandle;
+<a href=#782 id=782 data-nosnippet>782</a>    <span class="kw">use </span><span class="kw">crate</span>::PortRef;
+<a href=#783 id=783 data-nosnippet>783</a>    <span class="kw">use </span><span class="kw">crate</span>::checkpoint::CheckpointError;
+<a href=#784 id=784 data-nosnippet>784</a>    <span class="kw">use </span><span class="kw">crate</span>::checkpoint::Checkpointable;
+<a href=#785 id=785 data-nosnippet>785</a>    <span class="kw">use </span><span class="kw">crate</span>::test_utils::pingpong::PingPongActor;
+<a href=#786 id=786 data-nosnippet>786</a>    <span class="kw">use </span><span class="kw">crate</span>::test_utils::pingpong::PingPongMessage;
+<a href=#787 id=787 data-nosnippet>787</a>    <span class="kw">use </span><span class="kw">crate</span>::test_utils::proc_supervison::ProcSupervisionCoordinator; <span class="comment">// for macros
+<a href=#788 id=788 data-nosnippet>788</a>
+<a href=#789 id=789 data-nosnippet>789</a>    </span><span class="attr">#[derive(Debug)]
+<a href=#790 id=790 data-nosnippet>790</a>    </span><span class="kw">struct </span>EchoActor(PortRef&lt;u64&gt;);
+<a href=#791 id=791 data-nosnippet>791</a>
+<a href=#792 id=792 data-nosnippet>792</a>    <span class="attr">#[async_trait]
+<a href=#793 id=793 data-nosnippet>793</a>    </span><span class="kw">impl </span>Actor <span class="kw">for </span>EchoActor {}
+<a href=#794 id=794 data-nosnippet>794</a>
+<a href=#795 id=795 data-nosnippet>795</a>    <span class="attr">#[async_trait]
+<a href=#796 id=796 data-nosnippet>796</a>    </span><span class="kw">impl </span>Handler&lt;u64&gt; <span class="kw">for </span>EchoActor {
+<a href=#797 id=797 data-nosnippet>797</a>        <span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, message: u64) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#798 id=798 data-nosnippet>798</a>            <span class="kw">let </span><span class="self">Self</span>(port) = <span class="self">self</span>;
+<a href=#799 id=799 data-nosnippet>799</a>            port.send(cx, message)<span class="question-mark">?</span>;
+<a href=#800 id=800 data-nosnippet>800</a>            <span class="prelude-val">Ok</span>(())
+<a href=#801 id=801 data-nosnippet>801</a>        }
+<a href=#802 id=802 data-nosnippet>802</a>    }
+<a href=#803 id=803 data-nosnippet>803</a>
+<a href=#804 id=804 data-nosnippet>804</a>    <span class="attr">#[tokio::test]
+<a href=#805 id=805 data-nosnippet>805</a>    </span><span class="kw">async fn </span>test_server_basic() {
+<a href=#806 id=806 data-nosnippet>806</a>        <span class="kw">let </span>proc = Proc::local();
+<a href=#807 id=807 data-nosnippet>807</a>        <span class="kw">let </span>(client, <span class="kw">_</span>) = proc.instance(<span class="string">"client"</span>).unwrap();
+<a href=#808 id=808 data-nosnippet>808</a>        <span class="kw">let </span>(tx, <span class="kw-2">mut </span>rx) = client.open_port();
+<a href=#809 id=809 data-nosnippet>809</a>        <span class="kw">let </span>actor = EchoActor(tx.bind());
+<a href=#810 id=810 data-nosnippet>810</a>        <span class="kw">let </span>handle = proc.spawn::&lt;EchoActor&gt;(<span class="string">"echo"</span>, actor).unwrap();
+<a href=#811 id=811 data-nosnippet>811</a>        handle.send(<span class="kw-2">&amp;</span>client, <span class="number">123u64</span>).unwrap();
+<a href=#812 id=812 data-nosnippet>812</a>        handle.drain_and_stop(<span class="string">"test"</span>).unwrap();
+<a href=#813 id=813 data-nosnippet>813</a>        handle.<span class="kw">await</span>;
+<a href=#814 id=814 data-nosnippet>814</a>
+<a href=#815 id=815 data-nosnippet>815</a>        <span class="macro">assert_eq!</span>(rx.drain(), <span class="macro">vec!</span>[<span class="number">123u64</span>]);
+<a href=#816 id=816 data-nosnippet>816</a>    }
+<a href=#817 id=817 data-nosnippet>817</a>
+<a href=#818 id=818 data-nosnippet>818</a>    <span class="attr">#[tokio::test]
+<a href=#819 id=819 data-nosnippet>819</a>    </span><span class="kw">async fn </span>test_ping_pong() {
+<a href=#820 id=820 data-nosnippet>820</a>        <span class="kw">let </span>proc = Proc::local();
+<a href=#821 id=821 data-nosnippet>821</a>        <span class="kw">let </span>(client, <span class="kw">_</span>) = proc.instance(<span class="string">"client"</span>).unwrap();
+<a href=#822 id=822 data-nosnippet>822</a>        <span class="kw">let </span>(undeliverable_msg_tx, <span class="kw">_</span>) = client.open_port();
+<a href=#823 id=823 data-nosnippet>823</a>
+<a href=#824 id=824 data-nosnippet>824</a>        <span class="kw">let </span>ping_actor = PingPongActor::new(<span class="prelude-val">Some</span>(undeliverable_msg_tx.bind()), <span class="prelude-val">None</span>, <span class="prelude-val">None</span>);
+<a href=#825 id=825 data-nosnippet>825</a>        <span class="kw">let </span>pong_actor = PingPongActor::new(<span class="prelude-val">Some</span>(undeliverable_msg_tx.bind()), <span class="prelude-val">None</span>, <span class="prelude-val">None</span>);
+<a href=#826 id=826 data-nosnippet>826</a>        <span class="kw">let </span>ping_handle = proc.spawn::&lt;PingPongActor&gt;(<span class="string">"ping"</span>, ping_actor).unwrap();
+<a href=#827 id=827 data-nosnippet>827</a>        <span class="kw">let </span>pong_handle = proc.spawn::&lt;PingPongActor&gt;(<span class="string">"pong"</span>, pong_actor).unwrap();
+<a href=#828 id=828 data-nosnippet>828</a>
+<a href=#829 id=829 data-nosnippet>829</a>        <span class="kw">let </span>(local_port, local_receiver) = client.open_once_port();
+<a href=#830 id=830 data-nosnippet>830</a>
+<a href=#831 id=831 data-nosnippet>831</a>        ping_handle
+<a href=#832 id=832 data-nosnippet>832</a>            .send(
+<a href=#833 id=833 data-nosnippet>833</a>                <span class="kw-2">&amp;</span>client,
+<a href=#834 id=834 data-nosnippet>834</a>                PingPongMessage(<span class="number">10</span>, pong_handle.bind(), local_port.bind()),
+<a href=#835 id=835 data-nosnippet>835</a>            )
+<a href=#836 id=836 data-nosnippet>836</a>            .unwrap();
+<a href=#837 id=837 data-nosnippet>837</a>
+<a href=#838 id=838 data-nosnippet>838</a>        <span class="macro">assert!</span>(local_receiver.recv().<span class="kw">await</span>.unwrap());
+<a href=#839 id=839 data-nosnippet>839</a>    }
+<a href=#840 id=840 data-nosnippet>840</a>
+<a href=#841 id=841 data-nosnippet>841</a>    <span class="attr">#[tokio::test]
+<a href=#842 id=842 data-nosnippet>842</a>    </span><span class="kw">async fn </span>test_ping_pong_on_handler_error() {
+<a href=#843 id=843 data-nosnippet>843</a>        <span class="kw">let </span>proc = Proc::local();
+<a href=#844 id=844 data-nosnippet>844</a>        <span class="kw">let </span>(client, <span class="kw">_</span>) = proc.instance(<span class="string">"client"</span>).unwrap();
+<a href=#845 id=845 data-nosnippet>845</a>        <span class="kw">let </span>(undeliverable_msg_tx, <span class="kw">_</span>) = client.open_port();
+<a href=#846 id=846 data-nosnippet>846</a>
+<a href=#847 id=847 data-nosnippet>847</a>        <span class="comment">// Need to set a supervison coordinator for this Proc because there will
+<a href=#848 id=848 data-nosnippet>848</a>        // be actor failure(s) in this test which trigger supervision.
+<a href=#849 id=849 data-nosnippet>849</a>        </span>ProcSupervisionCoordinator::set(<span class="kw-2">&amp;</span>proc).<span class="kw">await</span>.unwrap();
+<a href=#850 id=850 data-nosnippet>850</a>
+<a href=#851 id=851 data-nosnippet>851</a>        <span class="kw">let </span>error_ttl = <span class="number">66</span>;
+<a href=#852 id=852 data-nosnippet>852</a>
+<a href=#853 id=853 data-nosnippet>853</a>        <span class="kw">let </span>ping_actor =
+<a href=#854 id=854 data-nosnippet>854</a>            PingPongActor::new(<span class="prelude-val">Some</span>(undeliverable_msg_tx.bind()), <span class="prelude-val">Some</span>(error_ttl), <span class="prelude-val">None</span>);
+<a href=#855 id=855 data-nosnippet>855</a>        <span class="kw">let </span>pong_actor =
+<a href=#856 id=856 data-nosnippet>856</a>            PingPongActor::new(<span class="prelude-val">Some</span>(undeliverable_msg_tx.bind()), <span class="prelude-val">Some</span>(error_ttl), <span class="prelude-val">None</span>);
+<a href=#857 id=857 data-nosnippet>857</a>        <span class="kw">let </span>ping_handle = proc.spawn::&lt;PingPongActor&gt;(<span class="string">"ping"</span>, ping_actor).unwrap();
+<a href=#858 id=858 data-nosnippet>858</a>        <span class="kw">let </span>pong_handle = proc.spawn::&lt;PingPongActor&gt;(<span class="string">"pong"</span>, pong_actor).unwrap();
+<a href=#859 id=859 data-nosnippet>859</a>
+<a href=#860 id=860 data-nosnippet>860</a>        <span class="kw">let </span>(local_port, local_receiver) = client.open_once_port();
+<a href=#861 id=861 data-nosnippet>861</a>
+<a href=#862 id=862 data-nosnippet>862</a>        ping_handle
+<a href=#863 id=863 data-nosnippet>863</a>            .send(
+<a href=#864 id=864 data-nosnippet>864</a>                <span class="kw-2">&amp;</span>client,
+<a href=#865 id=865 data-nosnippet>865</a>                PingPongMessage(
+<a href=#866 id=866 data-nosnippet>866</a>                    error_ttl + <span class="number">1</span>, <span class="comment">// will encounter an error at TTL=66
+<a href=#867 id=867 data-nosnippet>867</a>                    </span>pong_handle.bind(),
+<a href=#868 id=868 data-nosnippet>868</a>                    local_port.bind(),
+<a href=#869 id=869 data-nosnippet>869</a>                ),
+<a href=#870 id=870 data-nosnippet>870</a>            )
+<a href=#871 id=871 data-nosnippet>871</a>            .unwrap();
+<a href=#872 id=872 data-nosnippet>872</a>
+<a href=#873 id=873 data-nosnippet>873</a>        <span class="comment">// TODO: Fix this receiver hanging issue in T200423722.
+<a href=#874 id=874 data-nosnippet>874</a>        </span><span class="attr">#[allow(clippy::disallowed_methods)]
+<a href=#875 id=875 data-nosnippet>875</a>        </span><span class="kw">let </span>res: <span class="prelude-ty">Result</span>&lt;<span class="prelude-ty">Result</span>&lt;bool, MailboxError&gt;, tokio::time::error::Elapsed&gt; =
+<a href=#876 id=876 data-nosnippet>876</a>            timeout(Duration::from_secs(<span class="number">5</span>), local_receiver.recv()).<span class="kw">await</span>;
+<a href=#877 id=877 data-nosnippet>877</a>        <span class="macro">assert!</span>(res.is_err());
+<a href=#878 id=878 data-nosnippet>878</a>    }
+<a href=#879 id=879 data-nosnippet>879</a>
+<a href=#880 id=880 data-nosnippet>880</a>    <span class="attr">#[derive(Debug)]
+<a href=#881 id=881 data-nosnippet>881</a>    </span><span class="kw">struct </span>InitActor(bool);
+<a href=#882 id=882 data-nosnippet>882</a>
+<a href=#883 id=883 data-nosnippet>883</a>    <span class="attr">#[async_trait]
+<a href=#884 id=884 data-nosnippet>884</a>    </span><span class="kw">impl </span>Actor <span class="kw">for </span>InitActor {
+<a href=#885 id=885 data-nosnippet>885</a>        <span class="kw">async fn </span>init(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _this: <span class="kw-2">&amp;</span>Instance&lt;<span class="self">Self</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#886 id=886 data-nosnippet>886</a>            <span class="self">self</span>.<span class="number">0 </span>= <span class="bool-val">true</span>;
+<a href=#887 id=887 data-nosnippet>887</a>            <span class="prelude-val">Ok</span>(())
+<a href=#888 id=888 data-nosnippet>888</a>        }
+<a href=#889 id=889 data-nosnippet>889</a>    }
+<a href=#890 id=890 data-nosnippet>890</a>
+<a href=#891 id=891 data-nosnippet>891</a>    <span class="attr">#[async_trait]
+<a href=#892 id=892 data-nosnippet>892</a>    </span><span class="kw">impl </span>Handler&lt;OncePortHandle&lt;bool&gt;&gt; <span class="kw">for </span>InitActor {
+<a href=#893 id=893 data-nosnippet>893</a>        <span class="kw">async fn </span>handle(
+<a href=#894 id=894 data-nosnippet>894</a>            <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#895 id=895 data-nosnippet>895</a>            cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;,
+<a href=#896 id=896 data-nosnippet>896</a>            port: OncePortHandle&lt;bool&gt;,
+<a href=#897 id=897 data-nosnippet>897</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#898 id=898 data-nosnippet>898</a>            port.send(cx, <span class="self">self</span>.<span class="number">0</span>)<span class="question-mark">?</span>;
+<a href=#899 id=899 data-nosnippet>899</a>            <span class="prelude-val">Ok</span>(())
+<a href=#900 id=900 data-nosnippet>900</a>        }
+<a href=#901 id=901 data-nosnippet>901</a>    }
+<a href=#902 id=902 data-nosnippet>902</a>
+<a href=#903 id=903 data-nosnippet>903</a>    <span class="attr">#[tokio::test]
+<a href=#904 id=904 data-nosnippet>904</a>    </span><span class="kw">async fn </span>test_init() {
+<a href=#905 id=905 data-nosnippet>905</a>        <span class="kw">let </span>proc = Proc::local();
+<a href=#906 id=906 data-nosnippet>906</a>        <span class="kw">let </span>actor = InitActor(<span class="bool-val">false</span>);
+<a href=#907 id=907 data-nosnippet>907</a>        <span class="kw">let </span>handle = proc.spawn::&lt;InitActor&gt;(<span class="string">"init"</span>, actor).unwrap();
+<a href=#908 id=908 data-nosnippet>908</a>        <span class="kw">let </span>(client, <span class="kw">_</span>) = proc.instance(<span class="string">"client"</span>).unwrap();
+<a href=#909 id=909 data-nosnippet>909</a>
+<a href=#910 id=910 data-nosnippet>910</a>        <span class="kw">let </span>(port, receiver) = client.open_once_port();
+<a href=#911 id=911 data-nosnippet>911</a>        handle.send(<span class="kw-2">&amp;</span>client, port).unwrap();
+<a href=#912 id=912 data-nosnippet>912</a>        <span class="macro">assert!</span>(receiver.recv().<span class="kw">await</span>.unwrap());
+<a href=#913 id=913 data-nosnippet>913</a>
+<a href=#914 id=914 data-nosnippet>914</a>        handle.drain_and_stop(<span class="string">"test"</span>).unwrap();
+<a href=#915 id=915 data-nosnippet>915</a>        handle.<span class="kw">await</span>;
+<a href=#916 id=916 data-nosnippet>916</a>    }
+<a href=#917 id=917 data-nosnippet>917</a>
+<a href=#918 id=918 data-nosnippet>918</a>    <span class="attr">#[derive(Debug)]
+<a href=#919 id=919 data-nosnippet>919</a>    </span><span class="kw">struct </span>CheckpointActor {
+<a href=#920 id=920 data-nosnippet>920</a>        <span class="comment">// The actor does nothing but sum the values of messages.
+<a href=#921 id=921 data-nosnippet>921</a>        </span>sum: u64,
+<a href=#922 id=922 data-nosnippet>922</a>        port: PortRef&lt;u64&gt;,
+<a href=#923 id=923 data-nosnippet>923</a>    }
+<a href=#924 id=924 data-nosnippet>924</a>
+<a href=#925 id=925 data-nosnippet>925</a>    <span class="attr">#[async_trait]
+<a href=#926 id=926 data-nosnippet>926</a>    </span><span class="kw">impl </span>Actor <span class="kw">for </span>CheckpointActor {}
+<a href=#927 id=927 data-nosnippet>927</a>
+<a href=#928 id=928 data-nosnippet>928</a>    <span class="attr">#[async_trait]
+<a href=#929 id=929 data-nosnippet>929</a>    </span><span class="kw">impl </span>Handler&lt;u64&gt; <span class="kw">for </span>CheckpointActor {
+<a href=#930 id=930 data-nosnippet>930</a>        <span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, value: u64) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#931 id=931 data-nosnippet>931</a>            <span class="self">self</span>.sum += value;
+<a href=#932 id=932 data-nosnippet>932</a>            <span class="self">self</span>.port.send(cx, <span class="self">self</span>.sum)<span class="question-mark">?</span>;
+<a href=#933 id=933 data-nosnippet>933</a>            <span class="prelude-val">Ok</span>(())
+<a href=#934 id=934 data-nosnippet>934</a>        }
+<a href=#935 id=935 data-nosnippet>935</a>    }
+<a href=#936 id=936 data-nosnippet>936</a>
+<a href=#937 id=937 data-nosnippet>937</a>    <span class="attr">#[async_trait]
+<a href=#938 id=938 data-nosnippet>938</a>    </span><span class="kw">impl </span>Checkpointable <span class="kw">for </span>CheckpointActor {
+<a href=#939 id=939 data-nosnippet>939</a>        <span class="kw">type </span>State = (u64, PortRef&lt;u64&gt;);
+<a href=#940 id=940 data-nosnippet>940</a>
+<a href=#941 id=941 data-nosnippet>941</a>        <span class="kw">async fn </span>save(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::State, CheckpointError&gt; {
+<a href=#942 id=942 data-nosnippet>942</a>            <span class="prelude-val">Ok</span>((<span class="self">self</span>.sum, <span class="self">self</span>.port.clone()))
+<a href=#943 id=943 data-nosnippet>943</a>        }
+<a href=#944 id=944 data-nosnippet>944</a>
+<a href=#945 id=945 data-nosnippet>945</a>        <span class="kw">async fn </span>load(state: <span class="self">Self</span>::State) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, CheckpointError&gt; {
+<a href=#946 id=946 data-nosnippet>946</a>            <span class="kw">let </span>(sum, port) = state;
+<a href=#947 id=947 data-nosnippet>947</a>            <span class="prelude-val">Ok</span>(CheckpointActor { sum, port })
+<a href=#948 id=948 data-nosnippet>948</a>        }
+<a href=#949 id=949 data-nosnippet>949</a>    }
+<a href=#950 id=950 data-nosnippet>950</a>
+<a href=#951 id=951 data-nosnippet>951</a>    <span class="kw">type </span>MultiValues = Arc&lt;Mutex&lt;(u64, String)&gt;&gt;;
+<a href=#952 id=952 data-nosnippet>952</a>
+<a href=#953 id=953 data-nosnippet>953</a>    <span class="kw">struct </span>MultiValuesTest {
+<a href=#954 id=954 data-nosnippet>954</a>        proc: Proc,
+<a href=#955 id=955 data-nosnippet>955</a>        values: MultiValues,
+<a href=#956 id=956 data-nosnippet>956</a>        handle: ActorHandle&lt;MultiActor&gt;,
+<a href=#957 id=957 data-nosnippet>957</a>        client: Instance&lt;()&gt;,
+<a href=#958 id=958 data-nosnippet>958</a>        _client_handle: ActorHandle&lt;()&gt;,
+<a href=#959 id=959 data-nosnippet>959</a>    }
+<a href=#960 id=960 data-nosnippet>960</a>
+<a href=#961 id=961 data-nosnippet>961</a>    <span class="kw">impl </span>MultiValuesTest {
+<a href=#962 id=962 data-nosnippet>962</a>        <span class="kw">async fn </span>new() -&gt; <span class="self">Self </span>{
+<a href=#963 id=963 data-nosnippet>963</a>            <span class="kw">let </span>proc = Proc::local();
+<a href=#964 id=964 data-nosnippet>964</a>            <span class="kw">let </span>values: MultiValues = Arc::new(Mutex::new((<span class="number">0</span>, <span class="string">""</span>.to_string())));
+<a href=#965 id=965 data-nosnippet>965</a>            <span class="kw">let </span>actor = MultiActor(values.clone());
+<a href=#966 id=966 data-nosnippet>966</a>            <span class="kw">let </span>handle = proc.spawn::&lt;MultiActor&gt;(<span class="string">"myactor"</span>, actor).unwrap();
+<a href=#967 id=967 data-nosnippet>967</a>            <span class="kw">let </span>(client, client_handle) = proc.instance(<span class="string">"client"</span>).unwrap();
+<a href=#968 id=968 data-nosnippet>968</a>            <span class="self">Self </span>{
+<a href=#969 id=969 data-nosnippet>969</a>                proc,
+<a href=#970 id=970 data-nosnippet>970</a>                values,
+<a href=#971 id=971 data-nosnippet>971</a>                handle,
+<a href=#972 id=972 data-nosnippet>972</a>                client,
+<a href=#973 id=973 data-nosnippet>973</a>                _client_handle: client_handle,
+<a href=#974 id=974 data-nosnippet>974</a>            }
+<a href=#975 id=975 data-nosnippet>975</a>        }
+<a href=#976 id=976 data-nosnippet>976</a>
+<a href=#977 id=977 data-nosnippet>977</a>        <span class="kw">fn </span>send&lt;M&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, message: M)
+<a href=#978 id=978 data-nosnippet>978</a>        <span class="kw">where
+<a href=#979 id=979 data-nosnippet>979</a>            </span>M: RemoteMessage,
+<a href=#980 id=980 data-nosnippet>980</a>            MultiActor: Handler&lt;M&gt;,
+<a href=#981 id=981 data-nosnippet>981</a>        {
+<a href=#982 id=982 data-nosnippet>982</a>            <span class="self">self</span>.handle.send(<span class="kw-2">&amp;</span><span class="self">self</span>.client, message).unwrap()
+<a href=#983 id=983 data-nosnippet>983</a>        }
+<a href=#984 id=984 data-nosnippet>984</a>
+<a href=#985 id=985 data-nosnippet>985</a>        <span class="kw">async fn </span>sync(<span class="kw-2">&amp;</span><span class="self">self</span>) {
+<a href=#986 id=986 data-nosnippet>986</a>            <span class="kw">let </span>(port, done) = <span class="self">self</span>.client.open_once_port::&lt;bool&gt;();
+<a href=#987 id=987 data-nosnippet>987</a>            <span class="self">self</span>.handle.send(<span class="kw-2">&amp;</span><span class="self">self</span>.client, port).unwrap();
+<a href=#988 id=988 data-nosnippet>988</a>            <span class="macro">assert!</span>(done.recv().<span class="kw">await</span>.unwrap());
+<a href=#989 id=989 data-nosnippet>989</a>        }
+<a href=#990 id=990 data-nosnippet>990</a>
+<a href=#991 id=991 data-nosnippet>991</a>        <span class="kw">fn </span>get_values(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (u64, String) {
+<a href=#992 id=992 data-nosnippet>992</a>            <span class="self">self</span>.values.lock().unwrap().clone()
+<a href=#993 id=993 data-nosnippet>993</a>        }
+<a href=#994 id=994 data-nosnippet>994</a>    }
+<a href=#995 id=995 data-nosnippet>995</a>
+<a href=#996 id=996 data-nosnippet>996</a>    <span class="attr">#[derive(Debug)]
+<a href=#997 id=997 data-nosnippet>997</a>    #[hyperactor::export(handlers = [u64, String]</span>)]
+<a href=#998 id=998 data-nosnippet>998</a>    <span class="kw">struct </span>MultiActor(MultiValues);
+<a href=#999 id=999 data-nosnippet>999</a>
+<a href=#1000 id=1000 data-nosnippet>1000</a>    <span class="attr">#[async_trait]
+<a href=#1001 id=1001 data-nosnippet>1001</a>    </span><span class="kw">impl </span>Actor <span class="kw">for </span>MultiActor {}
+<a href=#1002 id=1002 data-nosnippet>1002</a>
+<a href=#1003 id=1003 data-nosnippet>1003</a>    <span class="attr">#[async_trait]
+<a href=#1004 id=1004 data-nosnippet>1004</a>    </span><span class="kw">impl </span>Handler&lt;u64&gt; <span class="kw">for </span>MultiActor {
+<a href=#1005 id=1005 data-nosnippet>1005</a>        <span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, message: u64) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#1006 id=1006 data-nosnippet>1006</a>            <span class="kw">let </span><span class="kw-2">mut </span>vals = <span class="self">self</span>.<span class="number">0</span>.lock().unwrap();
+<a href=#1007 id=1007 data-nosnippet>1007</a>            vals.<span class="number">0 </span>= message;
+<a href=#1008 id=1008 data-nosnippet>1008</a>            <span class="prelude-val">Ok</span>(())
+<a href=#1009 id=1009 data-nosnippet>1009</a>        }
+<a href=#1010 id=1010 data-nosnippet>1010</a>    }
+<a href=#1011 id=1011 data-nosnippet>1011</a>
+<a href=#1012 id=1012 data-nosnippet>1012</a>    <span class="attr">#[async_trait]
+<a href=#1013 id=1013 data-nosnippet>1013</a>    </span><span class="kw">impl </span>Handler&lt;String&gt; <span class="kw">for </span>MultiActor {
+<a href=#1014 id=1014 data-nosnippet>1014</a>        <span class="kw">async fn </span>handle(
+<a href=#1015 id=1015 data-nosnippet>1015</a>            <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#1016 id=1016 data-nosnippet>1016</a>            _cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;,
+<a href=#1017 id=1017 data-nosnippet>1017</a>            message: String,
+<a href=#1018 id=1018 data-nosnippet>1018</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#1019 id=1019 data-nosnippet>1019</a>            <span class="kw">let </span><span class="kw-2">mut </span>vals = <span class="self">self</span>.<span class="number">0</span>.lock().unwrap();
+<a href=#1020 id=1020 data-nosnippet>1020</a>            vals.<span class="number">1 </span>= message;
+<a href=#1021 id=1021 data-nosnippet>1021</a>            <span class="prelude-val">Ok</span>(())
+<a href=#1022 id=1022 data-nosnippet>1022</a>        }
+<a href=#1023 id=1023 data-nosnippet>1023</a>    }
+<a href=#1024 id=1024 data-nosnippet>1024</a>
+<a href=#1025 id=1025 data-nosnippet>1025</a>    <span class="attr">#[async_trait]
+<a href=#1026 id=1026 data-nosnippet>1026</a>    </span><span class="kw">impl </span>Handler&lt;OncePortHandle&lt;bool&gt;&gt; <span class="kw">for </span>MultiActor {
+<a href=#1027 id=1027 data-nosnippet>1027</a>        <span class="kw">async fn </span>handle(
+<a href=#1028 id=1028 data-nosnippet>1028</a>            <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#1029 id=1029 data-nosnippet>1029</a>            cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;,
+<a href=#1030 id=1030 data-nosnippet>1030</a>            message: OncePortHandle&lt;bool&gt;,
+<a href=#1031 id=1031 data-nosnippet>1031</a>        ) -&gt; <span class="prelude-ty">Result</span>&lt;(), anyhow::Error&gt; {
+<a href=#1032 id=1032 data-nosnippet>1032</a>            message.send(cx, <span class="bool-val">true</span>).unwrap();
+<a href=#1033 id=1033 data-nosnippet>1033</a>            <span class="prelude-val">Ok</span>(())
+<a href=#1034 id=1034 data-nosnippet>1034</a>        }
+<a href=#1035 id=1035 data-nosnippet>1035</a>    }
+<a href=#1036 id=1036 data-nosnippet>1036</a>
+<a href=#1037 id=1037 data-nosnippet>1037</a>    <span class="attr">#[tokio::test]
+<a href=#1038 id=1038 data-nosnippet>1038</a>    </span><span class="kw">async fn </span>test_multi_handler_refs() {
+<a href=#1039 id=1039 data-nosnippet>1039</a>        <span class="kw">let </span>test = MultiValuesTest::new().<span class="kw">await</span>;
+<a href=#1040 id=1040 data-nosnippet>1040</a>
+<a href=#1041 id=1041 data-nosnippet>1041</a>        test.send(<span class="number">123u64</span>);
+<a href=#1042 id=1042 data-nosnippet>1042</a>        test.send(<span class="string">"foo"</span>.to_string());
+<a href=#1043 id=1043 data-nosnippet>1043</a>        test.sync().<span class="kw">await</span>;
+<a href=#1044 id=1044 data-nosnippet>1044</a>        <span class="macro">assert_eq!</span>(test.get_values(), (<span class="number">123u64</span>, <span class="string">"foo"</span>.to_string()));
+<a href=#1045 id=1045 data-nosnippet>1045</a>
+<a href=#1046 id=1046 data-nosnippet>1046</a>        <span class="kw">let </span>myref: ActorRef&lt;MultiActor&gt; = test.handle.bind();
+<a href=#1047 id=1047 data-nosnippet>1047</a>
+<a href=#1048 id=1048 data-nosnippet>1048</a>        myref.port().send(<span class="kw-2">&amp;</span>test.client, <span class="number">321u64</span>).unwrap();
+<a href=#1049 id=1049 data-nosnippet>1049</a>        test.sync().<span class="kw">await</span>;
+<a href=#1050 id=1050 data-nosnippet>1050</a>        <span class="macro">assert_eq!</span>(test.get_values(), (<span class="number">321u64</span>, <span class="string">"foo"</span>.to_string()));
+<a href=#1051 id=1051 data-nosnippet>1051</a>
+<a href=#1052 id=1052 data-nosnippet>1052</a>        myref.port().send(<span class="kw-2">&amp;</span>test.client, <span class="string">"bar"</span>.to_string()).unwrap();
+<a href=#1053 id=1053 data-nosnippet>1053</a>        test.sync().<span class="kw">await</span>;
+<a href=#1054 id=1054 data-nosnippet>1054</a>        <span class="macro">assert_eq!</span>(test.get_values(), (<span class="number">321u64</span>, <span class="string">"bar"</span>.to_string()));
+<a href=#1055 id=1055 data-nosnippet>1055</a>    }
+<a href=#1056 id=1056 data-nosnippet>1056</a>
+<a href=#1057 id=1057 data-nosnippet>1057</a>    <span class="attr">#[tokio::test]
+<a href=#1058 id=1058 data-nosnippet>1058</a>    </span><span class="kw">async fn </span>test_ref_behavior() {
+<a href=#1059 id=1059 data-nosnippet>1059</a>        <span class="kw">let </span>test = MultiValuesTest::new().<span class="kw">await</span>;
+<a href=#1060 id=1060 data-nosnippet>1060</a>
+<a href=#1061 id=1061 data-nosnippet>1061</a>        test.send(<span class="number">123u64</span>);
+<a href=#1062 id=1062 data-nosnippet>1062</a>        test.send(<span class="string">"foo"</span>.to_string());
+<a href=#1063 id=1063 data-nosnippet>1063</a>
+<a href=#1064 id=1064 data-nosnippet>1064</a>        <span class="macro">hyperactor::behavior!</span>(MyActorBehavior, u64, String);
+<a href=#1065 id=1065 data-nosnippet>1065</a>
+<a href=#1066 id=1066 data-nosnippet>1066</a>        <span class="kw">let </span>myref: ActorRef&lt;MyActorBehavior&gt; = test.handle.bind();
+<a href=#1067 id=1067 data-nosnippet>1067</a>        myref.port().send(<span class="kw-2">&amp;</span>test.client, <span class="string">"biz"</span>.to_string()).unwrap();
+<a href=#1068 id=1068 data-nosnippet>1068</a>        myref.port().send(<span class="kw-2">&amp;</span>test.client, <span class="number">999u64</span>).unwrap();
+<a href=#1069 id=1069 data-nosnippet>1069</a>
+<a href=#1070 id=1070 data-nosnippet>1070</a>        test.sync().<span class="kw">await</span>;
+<a href=#1071 id=1071 data-nosnippet>1071</a>        <span class="macro">assert_eq!</span>(test.get_values(), (<span class="number">999u64</span>, <span class="string">"biz"</span>.to_string()));
+<a href=#1072 id=1072 data-nosnippet>1072</a>    }
+<a href=#1073 id=1073 data-nosnippet>1073</a>
+<a href=#1074 id=1074 data-nosnippet>1074</a>    <span class="attr">#[tokio::test]
+<a href=#1075 id=1075 data-nosnippet>1075</a>    </span><span class="kw">async fn </span>test_actor_handle_downcast() {
+<a href=#1076 id=1076 data-nosnippet>1076</a>        <span class="attr">#[derive(Debug, Default)]
+<a href=#1077 id=1077 data-nosnippet>1077</a>        </span><span class="kw">struct </span>NothingActor;
+<a href=#1078 id=1078 data-nosnippet>1078</a>
+<a href=#1079 id=1079 data-nosnippet>1079</a>        <span class="kw">impl </span>Actor <span class="kw">for </span>NothingActor {}
+<a href=#1080 id=1080 data-nosnippet>1080</a>
+<a href=#1081 id=1081 data-nosnippet>1081</a>        <span class="comment">// Just test that we can round-trip the handle through a downcast.
+<a href=#1082 id=1082 data-nosnippet>1082</a>
+<a href=#1083 id=1083 data-nosnippet>1083</a>        </span><span class="kw">let </span>proc = Proc::local();
+<a href=#1084 id=1084 data-nosnippet>1084</a>        <span class="kw">let </span>handle = proc.spawn(<span class="string">"nothing"</span>, NothingActor).unwrap();
+<a href=#1085 id=1085 data-nosnippet>1085</a>        <span class="kw">let </span>cell = handle.cell();
+<a href=#1086 id=1086 data-nosnippet>1086</a>
+<a href=#1087 id=1087 data-nosnippet>1087</a>        <span class="comment">// Invalid actor doesn't succeed.
+<a href=#1088 id=1088 data-nosnippet>1088</a>        </span><span class="macro">assert!</span>(cell.downcast_handle::&lt;EchoActor&gt;().is_none());
+<a href=#1089 id=1089 data-nosnippet>1089</a>
+<a href=#1090 id=1090 data-nosnippet>1090</a>        <span class="kw">let </span>handle = cell.downcast_handle::&lt;NothingActor&gt;().unwrap();
+<a href=#1091 id=1091 data-nosnippet>1091</a>        handle.drain_and_stop(<span class="string">"test"</span>).unwrap();
+<a href=#1092 id=1092 data-nosnippet>1092</a>        handle.<span class="kw">await</span>;
+<a href=#1093 id=1093 data-nosnippet>1093</a>    }
+<a href=#1094 id=1094 data-nosnippet>1094</a>}</code></pre></div></section></main></body></html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Algebraic structures for monotonic accumulation and lattice-based reduction."><title>algebra - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="algebra" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.0-nightly (02c7b1a7a 2025-09-13)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate algebra</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../algebra/index.html">algebra</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#quick-start" title="Quick Start">Quick Start</a></li><li><a href="#core-concepts" title="Core Concepts">Core Concepts</a></li><li><a href="#homomorphisms" title="Homomorphisms">Homomorphisms</a></li><li><a href="#provided-types" title="Provided Types">Provided Types</a></li><li><a href="#why-idempotence-matters-for-distributed-systems" title="Why Idempotence Matters for Distributed Systems">Why Idempotence Matters for Distributed Systems</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#traits" title="Traits">Traits</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>algebra</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/algebra/lib.rs.html#9-689">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Algebraic structures for monotonic accumulation and lattice-based
+reduction.</p>
+<p>This module provides foundational traits and types for expressing
+commutative, associative, and idempotent operations, enabling
+principled accumulation in distributed systems.</p>
+<h2 id="quick-start"><a class="doc-anchor" href="#quick-start">§</a>Quick Start</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>algebra::BoundedJoinSemilattice;
+<span class="kw">use </span>algebra::JoinSemilattice;
+<span class="kw">use </span>algebra::Max;
+
+<span class="comment">// Max&lt;T&gt; wraps an ordered type where join = max
+</span><span class="kw">let </span>a = Max(<span class="number">5</span>);
+<span class="kw">let </span>b = Max(<span class="number">3</span>);
+<span class="kw">let </span>c = a.join(<span class="kw-2">&amp;</span>b);
+<span class="macro">assert_eq!</span>(c, Max(<span class="number">5</span>));
+
+<span class="comment">// Bottom element is the identity for join
+</span><span class="macro">assert_eq!</span>(Max::&lt;i32&gt;::bottom().join(<span class="kw-2">&amp;</span>a), a);</code></pre></div><h2 id="core-concepts"><a class="doc-anchor" href="#core-concepts">§</a>Core Concepts</h2>
+<ul>
+<li>
+<p><strong>Semigroup</strong>: A type with an associative binary operation
+(<code>combine</code>). Examples: addition, max, string concatenation.</p>
+</li>
+<li>
+<p><strong>Monoid</strong>: A semigroup with an identity element (<code>empty</code>).
+Examples: 0 for addition, empty string for concatenation.</p>
+</li>
+<li>
+<p><strong>CommutativeMonoid</strong>: A monoid where combine is commutative.</p>
+</li>
+<li>
+<p><strong>Group</strong>: A monoid where every element has an inverse.</p>
+</li>
+<li>
+<p><strong>AbelianGroup</strong>: A commutative group.</p>
+</li>
+<li>
+<p><strong>JoinSemilattice</strong>: A commutative, associative, and
+<strong>idempotent</strong> merge operation (<code>join</code>). You can think of <code>join</code>
+as computing a <strong>least upper bound</strong>: it produces the smallest
+value that is “at least as large as” both inputs under the order
+induced by join (<code>a ≤ b</code> iff <code>a.join(&amp;b) == b</code>). Idempotence (<code>a ⊔ a = a</code>) is what makes this safe under at-least-once delivery:
+re-merging the same update is a no-op. Examples: max, min, set
+union.</p>
+</li>
+<li>
+<p><strong>BoundedJoinSemilattice</strong>: A join-semilattice with an explicit
+bottom element (⊥) that serves as the identity for join.</p>
+</li>
+</ul>
+<h2 id="homomorphisms"><a class="doc-anchor" href="#homomorphisms">§</a>Homomorphisms</h2>
+<ul>
+<li><strong>SemigroupHom</strong>: A structure-preserving map between semigroups.</li>
+<li><strong>MonoidHom</strong>: A structure-preserving map between monoids.</li>
+</ul>
+<h2 id="provided-types"><a class="doc-anchor" href="#provided-types">§</a>Provided Types</h2>
+<ul>
+<li><a href="struct.Max.html" title="struct algebra::Max"><code>Max&lt;T&gt;</code></a>: Ordered type where <code>join = max</code>, bottom = minimum.</li>
+<li><a href="struct.Min.html" title="struct algebra::Min"><code>Min&lt;T&gt;</code></a>: Ordered type where <code>join = min</code>, bottom = maximum.</li>
+<li><a href="struct.Any.html" title="struct algebra::Any"><code>Any</code></a>: Boolean where <code>join = ||</code> (OR), bottom = false.</li>
+<li><a href="struct.All.html" title="struct algebra::All"><code>All</code></a>: Boolean where <code>join = &amp;&amp;</code> (AND), bottom = true.</li>
+<li><a href="struct.LatticeMap.html" title="struct algebra::LatticeMap"><code>LatticeMap&lt;K, V&gt;</code></a>: Pointwise map lattice over <code>HashMap</code>.</li>
+<li><a href="struct.LWW.html" title="struct algebra::LWW"><code>LWW&lt;T&gt;</code></a>: Last-Writer-Wins register CRDT.</li>
+</ul>
+<h2 id="why-idempotence-matters-for-distributed-systems"><a class="doc-anchor" href="#why-idempotence-matters-for-distributed-systems">§</a>Why Idempotence Matters for Distributed Systems</h2>
+<p>In distributed systems with at-least-once delivery, messages may
+be delivered multiple times due to retries, network partitions,
+or failover. Non-idempotent operations (like addition) produce
+incorrect results when applied multiple times:</p>
+<div class="example-wrap"><pre class="language-text"><code>// Problem: sum accumulator with duplicates
+sum(1, 2, 2, 3)  // Intended: 1+2+3=6, Actual: 1+2+2+3=8 ❌
+
+// Solution: max accumulator is idempotent
+max(1, 2, 2, 3)  // Always 3, regardless of duplicates ✓</code></pre></div>
+<p>By using lattice types like <a href="struct.Max.html" title="struct algebra::Max"><code>Max</code></a> and <a href="struct.Min.html" title="struct algebra::Min"><code>Min</code></a>, we make the
+idempotence guarantee explicit in the type system.</p>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>algebra::BoundedJoinSemilattice;
+<span class="kw">use </span>algebra::JoinSemilattice;
+<span class="kw">use </span>algebra::Max;
+
+<span class="kw">let </span>a = Max(<span class="number">5</span>);
+<span class="kw">let </span>b = Max(<span class="number">10</span>);
+<span class="kw">let </span>c = a.join(<span class="kw-2">&amp;</span>b);
+<span class="macro">assert_eq!</span>(c, Max(<span class="number">10</span>));
+
+<span class="comment">// Idempotence: joining with self has no effect
+</span><span class="macro">assert_eq!</span>(c.join(<span class="kw-2">&amp;</span>c), c);
+
+<span class="comment">// Identity: joining with bottom has no effect
+</span><span class="macro">assert_eq!</span>(c.join(<span class="kw-2">&amp;</span>Max::bottom()), c);</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.All.html" title="struct algebra::All">All</a></dt><dd>Newtype wrapper for <code>bool</code> where <code>join</code> is logical AND.</dd><dt><a class="struct" href="struct.Any.html" title="struct algebra::Any">Any</a></dt><dd>Newtype wrapper for <code>bool</code> where <code>join</code> is logical OR.</dd><dt><a class="struct" href="struct.LWW.html" title="struct algebra::LWW">LWW</a></dt><dd>A <strong>Last-Writer-Wins register</strong> lattice.</dd><dt><a class="struct" href="struct.LatticeMap.html" title="struct algebra::LatticeMap">Lattice<wbr>Map</a></dt><dd>Pointwise map lattice over <code>HashMap</code>.</dd><dt><a class="struct" href="struct.Max.html" title="struct algebra::Max">Max</a></dt><dd>Newtype wrapper for an <code>Ord</code> type where <code>join</code> is <code>max</code>.</dd><dt><a class="struct" href="struct.Min.html" title="struct algebra::Min">Min</a></dt><dd>Newtype wrapper for an <code>Ord</code> type where <code>join</code> is <code>min</code>.</dd></dl><h2 id="traits" class="section-header">Traits<a href="#traits" class="anchor">§</a></h2><dl class="item-table"><dt><a class="trait" href="trait.AbelianGroup.html" title="trait algebra::AbelianGroup">Abelian<wbr>Group</a></dt><dd>An <strong>abelian group</strong> (commutative group): a group where combine
+is commutative.</dd><dt><a class="trait" href="trait.BoundedJoinSemilattice.html" title="trait algebra::BoundedJoinSemilattice">Bounded<wbr>Join<wbr>Semilattice</a></dt><dd>A <strong>bounded join-semilattice</strong>: a join-semilattice with a bottom
+element that serves as the identity for join.</dd><dt><a class="trait" href="trait.CommutativeMonoid.html" title="trait algebra::CommutativeMonoid">Commutative<wbr>Monoid</a></dt><dd>A <strong>commutative monoid</strong>: a monoid where combine is commutative.</dd><dt><a class="trait" href="trait.Group.html" title="trait algebra::Group">Group</a></dt><dd>A <strong>group</strong>: a monoid where every element has an inverse.</dd><dt><a class="trait" href="trait.JoinSemilattice.html" title="trait algebra::JoinSemilattice">Join<wbr>Semilattice</a></dt><dd>A <strong>join-semilattice</strong>: a type with an associative, commutative,
+and idempotent binary operation (the join).</dd><dt><a class="trait" href="trait.Monoid.html" title="trait algebra::Monoid">Monoid</a></dt><dd>A <strong>monoid</strong>: a semigroup with an identity element.</dd><dt><a class="trait" href="trait.MonoidHom.html" title="trait algebra::MonoidHom">Monoid<wbr>Hom</a></dt><dd>A <strong>monoid homomorphism</strong>: a structure-preserving map between
+monoids that preserves both combine and identity.</dd><dt><a class="trait" href="trait.MonoidHomFromTo.html" title="trait algebra::MonoidHomFromTo">Monoid<wbr>HomFrom<wbr>To</a></dt><dd>Helper trait for explicitly specifying source and target monoids.</dd><dt><a class="trait" href="trait.Semigroup.html" title="trait algebra::Semigroup">Semigroup</a></dt><dd>A <strong>semigroup</strong>: a type with an associative binary operation.</dd><dt><a class="trait" href="trait.SemigroupHom.html" title="trait algebra::SemigroupHom">Semigroup<wbr>Hom</a></dt><dd>A <strong>semigroup homomorphism</strong>: a structure-preserving map between
+semigroups that preserves combine.</dd><dt><a class="trait" href="trait.SemigroupHomFromTo.html" title="trait algebra::SemigroupHomFromTo">Semigroup<wbr>HomFrom<wbr>To</a></dt><dd>Helper trait for explicitly specifying source and target types.</dd></dl></section></div></main></body></html>

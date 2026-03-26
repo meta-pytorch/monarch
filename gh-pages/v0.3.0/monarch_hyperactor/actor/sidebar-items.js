@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MethodSpecifier","PythonActorDispatchMode","PythonMessageKind","UnflattenArg"],"fn":["register_python_bindings"],"struct":["PythonActor","PythonMessage","QueuedMessage"]};

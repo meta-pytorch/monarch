@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AllocatorError","ProcAllocationMode","ProcState","ProcStopReason"],"mod":["__mock_MockAlloc","__mock_MockAlloc_Alloc","__mock_MockAllocator","__mock_MockAllocator_Allocator","local","process","remoteprocess","sim","test_utils"],"struct":["AllocConstraints","AllocSpec","MockAlloc","MockAllocator"],"trait":["Alloc","Allocator"]};

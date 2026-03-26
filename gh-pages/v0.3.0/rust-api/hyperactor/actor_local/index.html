@@ -1,0 +1,46 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Per-actor local storage, analogous to `thread_local!` but scoped to actor instances."><title>hyperactor::actor_local - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.0-nightly (02c7b1a7a 2025-09-13)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module actor_local</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor/index.html">hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module actor_<wbr>local</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#example" title="Example">Example</a></li><li><a href="#deadlock-warning" title="Deadlock Warning">Deadlock Warning</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor</a></div><h1>Module <span>actor_<wbr>local</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor/actor_local.rs.html#9-552">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Per-actor local storage, analogous to <code>thread_local!</code> but scoped to actor instances.</p>
+<p>Use <a href="struct.ActorLocal.html" title="struct hyperactor::actor_local::ActorLocal"><code>ActorLocal</code></a> to declare static variables whose values are isolated per actor.</p>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">use </span>hyperactor::ActorLocal;
+<span class="kw">use </span>hyperactor::actor_local::Entry;
+
+<span class="kw">static </span>REQUEST_COUNT: ActorLocal&lt;u64&gt; = ActorLocal::new();
+
+<span class="kw">impl </span>Handler&lt;MyMessage&gt; <span class="kw">for </span>MyActor {
+    <span class="kw">async fn </span>handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>, cx: <span class="kw-2">&amp;</span>Context&lt;<span class="self">Self</span>&gt;, msg: MyMessage) -&gt; <span class="prelude-ty">Result</span>&lt;(), Error&gt; {
+        <span class="comment">// Fluent style (most common)
+        </span><span class="kw-2">*</span>REQUEST_COUNT.entry(cx).or_default().get_mut() += <span class="number">1</span>;
+
+        <span class="comment">// Or with and_modify
+        </span>REQUEST_COUNT.entry(cx)
+            .and_modify(|v| <span class="kw-2">*</span>v += <span class="number">1</span>)
+            .or_insert(<span class="number">0</span>);
+
+        <span class="comment">// Or pattern matching style
+        </span><span class="kw">match </span>REQUEST_COUNT.entry(cx) {
+            Entry::Occupied(<span class="kw-2">mut </span>o) =&gt; {
+                <span class="kw-2">*</span>o.get_mut() += <span class="number">1</span>;
+            }
+            Entry::Vacant(v) =&gt; {
+                v.insert(<span class="number">0</span>);
+            }
+        }
+
+        <span class="prelude-val">Ok</span>(())
+    }
+}</code></pre></div><h2 id="deadlock-warning"><a class="doc-anchor" href="#deadlock-warning">§</a>Deadlock Warning</h2>
+<p>All <a href="struct.ActorLocal.html" title="struct hyperactor::actor_local::ActorLocal"><code>ActorLocal</code></a> statics for a given actor instance share the same underlying
+lock. The <a href="enum.Entry.html" title="enum hyperactor::actor_local::Entry"><code>Entry</code></a> returned by <a href="struct.ActorLocal.html#method.entry" title="method hyperactor::actor_local::ActorLocal::entry"><code>ActorLocal::entry</code></a> holds this lock until dropped.</p>
+<p><strong>Do not hold multiple entries simultaneously</strong> — this will deadlock:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">static </span>LOCAL_A: ActorLocal&lt;u64&gt; = ActorLocal::new();
+<span class="kw">static </span>LOCAL_B: ActorLocal&lt;String&gt; = ActorLocal::new();
+
+<span class="comment">// DEADLOCK: second entry() blocks waiting for the lock held by first
+</span><span class="kw">let </span>a = LOCAL_A.entry(cx);
+<span class="kw">let </span>b = LOCAL_B.entry(cx);  <span class="comment">// blocks forever!</span></code></pre></div>
+<p>Instead, access entries one at a time:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="comment">// Correct: each entry is dropped before the next is acquired
+</span><span class="kw-2">*</span>LOCAL_A.entry(cx).or_default().get_mut() += <span class="number">1</span>;
+LOCAL_B.entry(cx).or_insert_with(|| <span class="string">"hello"</span>.to_string());</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ActorLocal.html" title="struct hyperactor::actor_local::ActorLocal">Actor<wbr>Local</a></dt><dd>Per-actor local storage slot.</dd><dt><a class="struct" href="struct.ActorLocalKey.html" title="struct hyperactor::actor_local::ActorLocalKey">Actor<wbr>Local<wbr>Key</a></dt><dd>A unique key identifying an <a href="struct.ActorLocal.html" title="struct hyperactor::actor_local::ActorLocal"><code>ActorLocal</code></a> static.</dd><dt><a class="struct" href="struct.ActorLocalStorage.html" title="struct hyperactor::actor_local::ActorLocalStorage">Actor<wbr>Local<wbr>Storage</a></dt><dd>Storage container for actor-local values.</dd><dt><a class="struct" href="struct.OccupiedEntry.html" title="struct hyperactor::actor_local::OccupiedEntry">Occupied<wbr>Entry</a></dt><dd>Entry for an occupied actor-local slot.</dd><dt><a class="struct" href="struct.VacantEntry.html" title="struct hyperactor::actor_local::VacantEntry">Vacant<wbr>Entry</a></dt><dd>Entry for a vacant actor-local slot.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.Entry.html" title="enum hyperactor::actor_local::Entry">Entry</a></dt><dd>Entry into actor-local storage. Holds the lock until dropped.</dd></dl></section></div></main></body></html>

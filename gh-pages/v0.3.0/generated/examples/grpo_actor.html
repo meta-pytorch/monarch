@@ -1,0 +1,1531 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Distributed PPO-like Reinforcement Learning with Monarch Actors" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/generated/examples/grpo_actor.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="This example demonstrates implementing a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework. The implementation features: - Distributed actor architecture with ..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="This example demonstrates implementing a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework. The implementation features: - Distributed actor architecture with ..." />
+
+    <title>Distributed PPO-like Reinforcement Learning with Monarch Actors &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/grpo_actor';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/grpo_actor.html" />
+    <link rel="icon" href="../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Distributed Tensors in Monarch" href="distributed_tensors.html" />
+    <link rel="prev" title="DDP on Kubernetes Using Monarch" href="ddp/kubernetes_ddp.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
+    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api/index.html">
+    Python API
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../rust-api.html">
+    Internal APIs
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../actors.html">
+    Monarch Actors: Complete Guide
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="ping_pong.html">Monarch Actor API: Ping Pong Example</a></li>
+<li class="toctree-l1"><a class="reference internal" href="crawler.html">Distributed Web Crawler Example With Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ddp/spmd_ddp.html">DDP Examples Using SPMDActor</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ddp/kubernetes_ddp.html">DDP on Kubernetes Using Monarch</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Distributed PPO-like Reinforcement Learning with Monarch Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="distributed_tensors.html">Distributed Tensors in Monarch</a></li>
+
+
+
+
+
+
+
+
+
+<li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Examples</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">Distributed...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <link itemprop="item" href="index.html">
+        <meta itemprop="name" content="Examples">
+        <meta itemprop="position" content="1">
+      </div>
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="Distributed PPO-like Reinforcement Learning with Monarch Actors">
+        <meta itemprop="position" content="2">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <div class="sphx-glr-download-link-note admonition note">
+<p class="admonition-title">Note</p>
+<p><a class="reference internal" href="#sphx-glr-download-generated-examples-grpo-actor-py"><span class="std std-ref">Go to the end</span></a>
+to download the full example code</p>
+</div>
+<section class="sphx-glr-example-title" id="distributed-ppo-like-reinforcement-learning-with-monarch-actors">
+<span id="sphx-glr-generated-examples-grpo-actor-py"></span><h1>Distributed PPO-like Reinforcement Learning with Monarch Actors<a class="headerlink" href="#distributed-ppo-like-reinforcement-learning-with-monarch-actors" title="Link to this heading">#</a></h1>
+<p>This example demonstrates implementing a distributed PPO-like reinforcement learning
+algorithm using the Monarch actor framework. The implementation features:
+- Distributed actor architecture with Generator, Scorer, and Learner components
+- Asynchronous communication via queues
+- RDMA-based weight synchronization
+- Event-driven architecture for efficient processing
+The example shows how to:
+- Set up distributed actors on separate GPU meshes
+- Implement policy gradient methods in a distributed setting
+- Use RDMA buffers for efficient parameter sharing
+- Create an asynchronous training loop with multiple components</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+
+<a href="https://docs.python.org/3/library/os.html#os.environ" title="os.environ" class="sphx-glr-backref-module-os sphx-glr-backref-type-py-data"><span class="n">os</span><span class="o">.</span><span class="n">environ</span></a><span class="p">[</span><span class="s2">&quot;PYTORCH_CUDA_ALLOC_CONF&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;expandable_segments:True&quot;</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">copy</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/dataclasses.html#dataclasses.dataclass" title="dataclasses.dataclass" class="sphx-glr-backref-module-dataclasses sphx-glr-backref-type-py-function"><span class="n">dataclass</span></a>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/typing.html#typing.Any" title="typing.Any" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Any</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Dict" title="typing.Dict" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Dict</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.List" title="typing.List" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">List</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Optional</span></a><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nn</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch.optim</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">optim</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span> <span class="n">this_host</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.rdma</span><span class="w"> </span><span class="kn">import</span> <span class="n">RDMABuffer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributions</span><span class="w"> </span><span class="kn">import</span> <span class="n">Categorical</span><span class="p">,</span> <span class="n">kl_divergence</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">Online reinforcement learning (RL) training loop using the Monarch actor framework.</span>
+<span class="sd">This example implements a distributed PPO-like algorithm with three main components:</span>
+<span class="sd">1. Generator: Produces actions using the current policy and sends them for scoring</span>
+<span class="sd">2. Scorer: Evaluates actions and assigns rewards</span>
+<span class="sd">3. Learner: Updates policy based on collected experiences</span>
+
+<span class="sd">Key features demonstrated:</span>
+<span class="sd">- Distributed actors on separate GPU meshes</span>
+<span class="sd">- Asynchronous communication via queues</span>
+<span class="sd">- RDMA-based weight synchronization</span>
+<span class="sd">- Event-driven architecture</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="n">G</span> <span class="o">=</span> <span class="mi">8</span>  <span class="c1"># group size</span>
+<span class="n">STATE_DIM</span> <span class="o">=</span> <span class="mi">4</span>
+<span class="n">ACTION_DIM</span> <span class="o">=</span> <span class="mi">4</span>  <span class="c1"># vocab size</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TrajectorySlice</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Single trajectory from one generator call.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        policy_version: Version of policy that produced this slice</span>
+<span class="sd">        state: Input state tensor [STATE_DIM]</span>
+<span class="sd">        actions: Generated actions [G]</span>
+<span class="sd">        old_logps: Log probabilities of actions under generation policy [G]</span>
+<span class="sd">        rewards: Rewards for each action (initially zeros, filled by Scorer) [G]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">policy_version</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">state</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">actions</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">old_logps</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">rewards</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TrainingBatch</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Batch of trajectories for training.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        states: Batched states [batch_size, STATE_DIM]</span>
+<span class="sd">        actions: Batched actions [batch_size * G]</span>
+<span class="sd">        old_logps: Batched log probabilities [batch_size * G]</span>
+<span class="sd">        rewards: Batched rewards [batch_size * G]</span>
+<span class="sd">        policy_versions: List of policy versions for each slice</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">states</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">actions</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">old_logps</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">rewards</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a>
+    <span class="n">policy_versions</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.List" title="typing.List" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">List</span></a><span class="p">[</span><span class="nb">int</span><span class="p">]</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">TrajectoryQueue</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Queue for trajectory slices between Generator and Scorer.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Initialize an empty queue.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="p">:</span> <a href="https://docs.python.org/3/library/asyncio-queue.html#asyncio.Queue" title="asyncio.Queue" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">asyncio</span><span class="o">.</span><span class="n">Queue</span></a><span class="p">[</span><span class="n">TrajectorySlice</span><span class="p">]</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/asyncio-queue.html#asyncio.Queue" title="asyncio.Queue" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">asyncio</span><span class="o">.</span><span class="n">Queue</span></a><span class="p">()</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">put</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">slice</span><span class="p">:</span> <span class="n">TrajectorySlice</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Add a trajectory slice to the queue.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            slice: The trajectory slice to add</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="nb">slice</span><span class="p">)</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TrajectorySlice</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Remove and return a trajectory slice from the queue.</span>
+<span class="sd">        Returns:</span>
+<span class="sd">            The next trajectory slice in the queue</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">ReplayBuffer</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Storage for scored trajectory slices with weighted sampling.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Initialize an empty buffer.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.List" title="typing.List" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">List</span></a><span class="p">[</span><a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">TrajectorySlice</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>  <span class="c1"># (version, slice)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">storage_event</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/asyncio-sync.html#asyncio.Event" title="asyncio.Event" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">asyncio</span><span class="o">.</span><span class="n">Event</span></a><span class="p">()</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">put</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">slice</span><span class="p">:</span> <span class="n">TrajectorySlice</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Add a trajectory slice to the buffer.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            slice: The trajectory slice to add</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="nb">slice</span><span class="o">.</span><span class="n">policy_version</span><span class="p">,</span> <span class="nb">slice</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">storage_event</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_wait_for_storage</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="p">:</span>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage_event</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">sample_from</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <a href="https://docs.python.org/3/library/typing.html#typing.List" title="typing.List" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">List</span></a><span class="p">[</span><span class="n">TrajectorySlice</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Sample k trajectory slices using weighted sampling.</span>
+
+<span class="sd">        Items from newer policy versions have higher probability of being selected.</span>
+<span class="sd">        If the buffer is empty, waits for it to be populated with a timeout.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            k: Number of slices to sample</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            List of sampled trajectory slices</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            RuntimeError: If buffer is empty after timeout</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">await</span> <a href="https://docs.python.org/3/library/asyncio-task.html#asyncio.wait_for" title="asyncio.wait_for" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-function"><span class="n">asyncio</span><span class="o">.</span><span class="n">wait_for</span></a><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_storage</span><span class="p">(),</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span>
+        <span class="k">except</span> <a href="https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.TimeoutError" title="asyncio.TimeoutError" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-exception"><span class="n">asyncio</span><span class="o">.</span><span class="n">TimeoutError</span></a><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Timeout waiting for ReplayBuffer to be populated&quot;</span><span class="p">)</span>
+
+        <span class="c1"># Extract policy versions and add 1 to ensure all weights are positive</span>
+        <span class="n">policy_versions</span> <span class="o">=</span> <span class="p">[</span><span class="n">version</span> <span class="o">+</span> <span class="mi">1</span> <span class="k">for</span> <span class="n">version</span><span class="p">,</span> <span class="n">_</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="p">]</span>
+
+        <span class="c1"># Use policy versions as weights for sampling</span>
+        <span class="n">total</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">policy_versions</span><span class="p">)</span>
+        <span class="n">probs</span> <span class="o">=</span> <span class="p">[</span><span class="n">v</span> <span class="o">/</span> <span class="n">total</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">policy_versions</span><span class="p">]</span>
+
+        <span class="c1"># Sample indices based on policy version weights</span>
+        <span class="n">indices</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="p">)))</span>
+        <span class="n">chosen_indices</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/random.html#random.choices" title="random.choices" class="sphx-glr-backref-module-random sphx-glr-backref-type-py-function"><span class="n">random</span><span class="o">.</span><span class="n">choices</span></a><span class="p">(</span><span class="n">indices</span><span class="p">,</span> <span class="n">weights</span><span class="o">=</span><span class="n">probs</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="n">k</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="p">[</span><span class="n">i</span><span class="p">][</span><span class="mi">1</span><span class="p">]</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">chosen_indices</span><span class="p">]</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">Scorer</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Evaluates actions and assigns rewards to trajectory slices.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trajectory_queue</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Any" title="typing.Any" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Any</span></a><span class="p">,</span> <span class="n">replay_buffer</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Any" title="typing.Any" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Any</span></a><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Initialize the scorer.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            trajectory_queue: Queue to pull trajectory slices from</span>
+<span class="sd">            replay_buffer: Buffer to store scored slices in</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">trajectory_queue</span> <span class="o">=</span> <span class="n">trajectory_queue</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">replay_buffer</span> <span class="o">=</span> <span class="n">replay_buffer</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">net</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Sequential.html#torch.nn.Sequential" title="torch.nn.Sequential" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span></a><span class="p">(</span>
+            <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">STATE_DIM</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">8</span><span class="p">),</span>
+            <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Tanh.html#torch.nn.Tanh" title="torch.nn.Tanh" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Tanh</span></a><span class="p">(),</span>
+            <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="mi">8</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">running</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_score_slice</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">slice</span><span class="p">:</span> <span class="n">TrajectorySlice</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Score a trajectory slice and store it in the replay buffer.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            slice: The trajectory slice to score</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">s</span> <span class="o">=</span> <span class="nb">slice</span><span class="o">.</span><span class="n">state</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">repeat</span><span class="p">(</span><span class="n">G</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">a</span> <span class="o">=</span> <span class="nb">slice</span><span class="o">.</span><span class="n">actions</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">()</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">rewards</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">net</span><span class="p">(</span><a href="https://docs.pytorch.org/docs/stable/generated/torch.cat.html#torch.cat" title="torch.cat" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">cat</span></a><span class="p">([</span><span class="n">s</span><span class="p">,</span> <span class="n">a</span><span class="p">],</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">))</span><span class="o">.</span><span class="n">squeeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+
+        <span class="n">scored</span> <span class="o">=</span> <span class="n">TrajectorySlice</span><span class="p">(</span>
+            <span class="n">policy_version</span><span class="o">=</span><span class="nb">slice</span><span class="o">.</span><span class="n">policy_version</span><span class="p">,</span>
+            <span class="n">state</span><span class="o">=</span><span class="nb">slice</span><span class="o">.</span><span class="n">state</span><span class="p">,</span>
+            <span class="n">actions</span><span class="o">=</span><span class="nb">slice</span><span class="o">.</span><span class="n">actions</span><span class="p">,</span>
+            <span class="n">old_logps</span><span class="o">=</span><span class="nb">slice</span><span class="o">.</span><span class="n">old_logps</span><span class="p">,</span>
+            <span class="n">rewards</span><span class="o">=</span><span class="n">rewards</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">replay_buffer</span><span class="o">.</span><span class="n">put</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">scored</span><span class="p">)</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Start the scoring event loop.</span>
+
+<span class="sd">        Continuously pulls slices from the queue, scores them,</span>
+<span class="sd">        and puts them in the replay buffer until stopped.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">running</span><span class="p">:</span>
+            <span class="k">return</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">running</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">running</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">slice_</span> <span class="o">=</span> <span class="k">await</span> <a href="https://docs.python.org/3/library/asyncio-task.html#asyncio.wait_for" title="asyncio.wait_for" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-function"><span class="n">asyncio</span><span class="o">.</span><span class="n">wait_for</span></a><span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">trajectory_queue</span><span class="o">.</span><span class="n">get</span><span class="o">.</span><span class="n">call_one</span><span class="p">(),</span>
+                        <span class="n">timeout</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span>
+                    <span class="p">)</span>
+                    <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_score_slice</span><span class="p">(</span><span class="n">slice_</span><span class="p">)</span>
+                <span class="k">except</span> <a href="https://docs.python.org/3/library/asyncio-exceptions.html#asyncio.TimeoutError" title="asyncio.TimeoutError" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-exception"><span class="n">asyncio</span><span class="o">.</span><span class="n">TimeoutError</span></a><span class="p">:</span>
+                    <span class="k">continue</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Scorer event loop error: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">running</span> <span class="o">=</span> <span class="kc">False</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Stop the scoring event loop.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">running</span> <span class="o">=</span> <span class="kc">False</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">Learner</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Updates policy based on collected experiences using PPO algorithm.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">replay_buffer</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Any" title="typing.Any" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Any</span></a><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Initialize the learner.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            replay_buffer: Buffer to sample experiences from</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Policy network and reference network for KL divergence</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Sequential.html#torch.nn.Sequential" title="torch.nn.Sequential" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span></a><span class="p">(</span>
+            <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">STATE_DIM</span><span class="p">,</span> <span class="mi">16</span><span class="p">),</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Tanh.html#torch.nn.Tanh" title="torch.nn.Tanh" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Tanh</span></a><span class="p">(),</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="mi">16</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">)</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ref_model</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/copy.html#copy.deepcopy" title="copy.deepcopy" class="sphx-glr-backref-module-copy sphx-glr-backref-type-py-function"><span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span></a><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ref_model</span><span class="o">.</span><span class="n">parameters</span><span class="p">():</span>
+            <span class="n">p</span><span class="o">.</span><span class="n">requires_grad</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ref_model</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
+
+        <span class="c1"># Optimization parameters</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.optim.Adam.html#torch.optim.Adam" title="torch.optim.Adam" class="sphx-glr-backref-module-torch-optim sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">optim</span><span class="o">.</span><span class="n">Adam</span></a><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="n">lr</span><span class="o">=</span><span class="mf">1e-3</span><span class="p">,</span> <span class="n">eps</span><span class="o">=</span><span class="mf">1e-5</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">eps</span> <span class="o">=</span> <span class="mf">0.2</span>  <span class="c1"># PPO clipping parameter</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">kl_coeff</span> <span class="o">=</span> <span class="mf">0.1</span>  <span class="c1"># KL divergence coefficient</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">policy_version</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">replay_buffer</span> <span class="o">=</span> <span class="n">replay_buffer</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">batch_size</span> <span class="o">=</span> <span class="mi">2</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">generators</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Optional" title="typing.Optional" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Optional</span></a><span class="p">[</span><a href="https://docs.python.org/3/library/typing.html#typing.Any" title="typing.Any" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Any</span></a><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_weights_handle</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Dict" title="typing.Dict" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Dict</span></a><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a><span class="p">[</span><a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">,</span> <span class="n">RDMABuffer</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">init_generators</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">generators</span><span class="p">:</span> <a href="https://docs.python.org/3/library/typing.html#typing.Any" title="typing.Any" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Any</span></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Set the generators service for weight updates.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            generators: Service to notify of policy updates</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">generators</span> <span class="o">=</span> <span class="n">generators</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">weights_handle</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <a href="https://docs.python.org/3/library/typing.html#typing.Dict" title="typing.Dict" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">Dict</span></a><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <a href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="typing.Tuple" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-data"><span class="n">Tuple</span></a><span class="p">[</span><a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">,</span> <span class="n">RDMABuffer</span><span class="p">]]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Create RDMA buffers for model weights.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Dictionary mapping parameter names to RDMA buffers</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_weights_handle</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">k</span><span class="p">:</span> <span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="n">RDMABuffer</span><span class="p">(</span><span class="n">v</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span><span class="o">.</span><span class="n">flatten</span><span class="p">()))</span>
+            <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+        <span class="p">}</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_weights_handle</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_compute_advantages</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rewards</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">)</span> <span class="o">-&gt;</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compute advantages from rewards.</span>
+
+<span class="sd">        In PPO, advantages represent how much better an action is compared to the average.</span>
+<span class="sd">        Here we compute advantages by subtracting a baseline (mean reward) from the rewards</span>
+<span class="sd">        and then normalizing to stabilize training.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            rewards: Raw rewards tensor [batch_size * G]</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Advantages tensor [batch_size * G]</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># First, reshape rewards to [batch_size, G] to compute per-state baseline</span>
+        <span class="n">batch_size</span> <span class="o">=</span> <span class="n">rewards</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">//</span> <span class="n">G</span>
+        <span class="n">rewards_reshaped</span> <span class="o">=</span> <span class="n">rewards</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">batch_size</span><span class="p">,</span> <span class="n">G</span><span class="p">)</span>
+
+        <span class="c1"># Compute baseline (mean reward) for each state</span>
+        <span class="n">baselines</span> <span class="o">=</span> <span class="n">rewards_reshaped</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># [batch_size, 1]</span>
+
+        <span class="c1"># Subtract baseline from rewards to get advantages</span>
+        <span class="n">advantages</span> <span class="o">=</span> <span class="n">rewards_reshaped</span> <span class="o">-</span> <span class="n">baselines</span>  <span class="c1"># [batch_size, G]</span>
+
+        <span class="c1"># Reshape back to original shape</span>
+        <span class="n">advantages</span> <span class="o">=</span> <span class="n">advantages</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size * G]</span>
+
+        <span class="c1"># Normalize advantages for training stability</span>
+        <span class="k">if</span> <span class="n">advantages</span><span class="o">.</span><span class="n">numel</span><span class="p">()</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>  <span class="c1"># Check if we have more than one element</span>
+            <span class="n">advantages</span> <span class="o">=</span> <span class="p">(</span><span class="n">advantages</span> <span class="o">-</span> <span class="n">advantages</span><span class="o">.</span><span class="n">mean</span><span class="p">())</span> <span class="o">/</span> <span class="p">(</span><span class="n">advantages</span><span class="o">.</span><span class="n">std</span><span class="p">()</span> <span class="o">+</span> <span class="mf">1e-8</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">advantages</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_apply_policy_update</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">states</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">,</span>
+        <span class="n">actions</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">,</span>
+        <span class="n">old_logps</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">,</span>
+        <span class="n">advantages</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Apply PPO update to policy network.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            states: Batch of states</span>
+<span class="sd">            actions: Batch of actions</span>
+<span class="sd">            old_logps: Log probabilities from old policy</span>
+<span class="sd">            advantages: Normalized advantages</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Loss value</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Compute new policy distribution and log probabilities</span>
+        <span class="n">dist_new</span> <span class="o">=</span> <span class="n">Categorical</span><span class="p">(</span><span class="n">logits</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><span class="n">states</span><span class="p">))</span>
+        <span class="n">new_logps</span> <span class="o">=</span> <span class="n">dist_new</span><span class="o">.</span><span class="n">log_prob</span><span class="p">(</span><span class="n">actions</span><span class="p">)</span>
+
+        <span class="c1"># PPO clipped objective</span>
+        <span class="n">ratio</span> <span class="o">=</span> <span class="p">(</span><span class="n">new_logps</span> <span class="o">-</span> <span class="n">old_logps</span><span class="p">)</span><span class="o">.</span><span class="n">exp</span><span class="p">()</span>
+        <span class="n">unclipped</span> <span class="o">=</span> <span class="n">ratio</span> <span class="o">*</span> <span class="n">advantages</span>
+        <span class="n">clipped</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.clamp.html#torch.clamp" title="torch.clamp" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">clamp</span></a><span class="p">(</span><span class="n">ratio</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">eps</span><span class="p">,</span> <span class="mi">1</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">eps</span><span class="p">)</span> <span class="o">*</span> <span class="n">advantages</span>
+        <span class="n">ppo_loss</span> <span class="o">=</span> <span class="o">-</span><a href="https://docs.pytorch.org/docs/stable/generated/torch.min.html#torch.min" title="torch.min" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">min</span></a><span class="p">(</span><span class="n">unclipped</span><span class="p">,</span> <span class="n">clipped</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+
+        <span class="c1"># KL penalty to prevent large policy updates</span>
+        <span class="k">with</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.no_grad.html#torch.no_grad" title="torch.no_grad" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span></a><span class="p">():</span>
+            <span class="n">ref_logits</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">ref_model</span><span class="p">(</span><span class="n">states</span><span class="p">)</span>
+        <span class="n">kl</span> <span class="o">=</span> <span class="n">kl_divergence</span><span class="p">(</span><span class="n">Categorical</span><span class="p">(</span><span class="n">logits</span><span class="o">=</span><span class="n">ref_logits</span><span class="p">),</span> <span class="n">dist_new</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+
+        <span class="c1"># Update policy</span>
+        <span class="n">loss</span> <span class="o">=</span> <span class="n">ppo_loss</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">kl_coeff</span> <span class="o">*</span> <span class="n">kl</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">zero_grad</span><span class="p">()</span>
+        <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
+        <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.utils.clip_grad_norm_.html#torch.nn.utils.clip_grad_norm_" title="torch.nn.utils.clip_grad_norm_" class="sphx-glr-backref-module-torch-nn-utils sphx-glr-backref-type-py-function"><span class="n">nn</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">clip_grad_norm_</span></a><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">parameters</span><span class="p">(),</span> <span class="mf">1.0</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">optim</span><span class="o">.</span><span class="n">step</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">policy_version</span> <span class="o">+=</span> <span class="mi">1</span>
+
+        <span class="c1"># Return loss value</span>
+        <span class="k">return</span> <span class="n">loss</span><span class="o">.</span><span class="n">detach</span><span class="p">()</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Perform one training step.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Loss value from the update</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Notify generators of current policy version</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">generators</span><span class="p">:</span>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">generators</span><span class="o">.</span><span class="n">update</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">policy_version</span><span class="p">)</span>
+
+        <span class="c1"># Sample and process trajectory slices</span>
+        <span class="n">slices</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">replay_buffer</span><span class="o">.</span><span class="n">sample_from</span><span class="o">.</span><span class="n">call_one</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">batch_size</span><span class="p">)</span>
+        <span class="n">raw_states</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.stack.html#torch.stack" title="torch.stack" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">stack</span></a><span class="p">([</span><span class="n">s</span><span class="o">.</span><span class="n">state</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">slices</span><span class="p">])</span>
+        <span class="n">actions</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.cat.html#torch.cat" title="torch.cat" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">cat</span></a><span class="p">([</span><span class="n">s</span><span class="o">.</span><span class="n">actions</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">slices</span><span class="p">])</span>
+        <span class="n">old_logps</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.cat.html#torch.cat" title="torch.cat" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">cat</span></a><span class="p">([</span><span class="n">s</span><span class="o">.</span><span class="n">old_logps</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">slices</span><span class="p">])</span>
+        <span class="n">rewards</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.cat.html#torch.cat" title="torch.cat" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">cat</span></a><span class="p">([</span><span class="n">s</span><span class="o">.</span><span class="n">rewards</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">slices</span><span class="p">])</span>
+
+        <span class="c1"># Prepare tensors for update</span>
+        <span class="n">states</span> <span class="o">=</span> <span class="n">raw_states</span><span class="o">.</span><span class="n">repeat_interleave</span><span class="p">(</span><span class="n">G</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
+        <span class="n">actions</span><span class="p">,</span> <span class="n">old_logps</span><span class="p">,</span> <span class="n">rewards</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">x</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="p">(</span><span class="n">actions</span><span class="p">,</span> <span class="n">old_logps</span><span class="p">,</span> <span class="n">rewards</span><span class="p">)</span>
+        <span class="p">]</span>
+        <span class="c1"># Compute advantages and update policy</span>
+        <span class="n">advs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compute_advantages</span><span class="p">(</span><span class="n">rewards</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_apply_policy_update</span><span class="p">(</span><span class="n">states</span><span class="p">,</span> <span class="n">actions</span><span class="p">,</span> <span class="n">old_logps</span><span class="p">,</span> <span class="n">advs</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">GeneratorState</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;States for the Generator&#39;s state machine.&quot;&quot;&quot;</span>
+
+    <span class="n">READY_TO_GENERATE</span> <span class="o">=</span> <span class="s2">&quot;READY_TO_GENERATE&quot;</span>
+    <span class="n">READY_TO_UPDATE</span> <span class="o">=</span> <span class="s2">&quot;READY_TO_UPDATE&quot;</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">Generator</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Generates actions using the current policy.</span>
+<span class="sd">    Maintains a copy of the policy network that is synchronized with the Learner</span>
+<span class="sd">    via RDMA buffers. Generates actions for given states and sends them to the</span>
+<span class="sd">    trajectory queue for scoring.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">weight_buffers</span><span class="p">,</span> <span class="n">trajectory_queue</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Initialize the generator.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            weight_buffers: RDMA buffers for policy weights</span>
+<span class="sd">            trajectory_queue: Queue to put generated trajectories in</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Sequential.html#torch.nn.Sequential" title="torch.nn.Sequential" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Sequential</span></a><span class="p">(</span>
+            <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="n">STATE_DIM</span><span class="p">,</span> <span class="mi">16</span><span class="p">),</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Tanh.html#torch.nn.Tanh" title="torch.nn.Tanh" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Tanh</span></a><span class="p">(),</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Linear.html#torch.nn.Linear" title="torch.nn.Linear" class="sphx-glr-backref-module-torch-nn sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span></a><span class="p">(</span><span class="mi">16</span><span class="p">,</span> <span class="n">ACTION_DIM</span><span class="p">)</span>
+        <span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">weight_buffers</span> <span class="o">=</span> <span class="n">weight_buffers</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">trajectory_queue</span> <span class="o">=</span> <span class="n">trajectory_queue</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">GeneratorState</span><span class="o">.</span><span class="n">READY_TO_GENERATE</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cond</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/asyncio-sync.html#asyncio.Condition" title="asyncio.Condition" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">asyncio</span><span class="o">.</span><span class="n">Condition</span></a><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">policy_version</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">generate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">:</span> <a href="https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor" title="torch.Tensor" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Generate actions for a given state.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            state: Input state tensor [STATE_DIM]</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">cond</span><span class="p">:</span>
+            <span class="c1"># Wait until ready to generate</span>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">cond</span><span class="o">.</span><span class="n">wait_for</span><span class="p">(</span>
+                <span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">GeneratorState</span><span class="o">.</span><span class="n">READY_TO_GENERATE</span>
+            <span class="p">)</span>
+
+            <span class="c1"># Generate actions using current policy</span>
+            <span class="n">x</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="s2">&quot;cuda&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">repeat</span><span class="p">(</span><span class="n">G</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+            <span class="n">dist</span> <span class="o">=</span> <span class="n">Categorical</span><span class="p">(</span><span class="n">logits</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
+            <span class="n">acts</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">sample</span><span class="p">()</span>
+            <span class="n">logps</span> <span class="o">=</span> <span class="n">dist</span><span class="o">.</span><span class="n">log_prob</span><span class="p">(</span><span class="n">acts</span><span class="p">)</span>
+
+            <span class="c1"># Create trajectory slice</span>
+            <span class="n">slice_</span> <span class="o">=</span> <span class="n">TrajectorySlice</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">policy_version</span><span class="p">,</span>
+                <span class="n">state</span><span class="p">,</span>
+                <span class="n">acts</span><span class="p">,</span>
+                <span class="n">logps</span><span class="p">,</span>
+                <a href="https://docs.pytorch.org/docs/stable/generated/torch.zeros.html#torch.zeros" title="torch.zeros" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">zeros</span></a><span class="p">(</span><span class="n">G</span><span class="p">),</span>
+            <span class="p">)</span>
+
+        <span class="c1"># Send to trajectory queue for scoring</span>
+        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">trajectory_queue</span><span class="o">.</span><span class="n">put</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">slice_</span><span class="p">)</span>
+
+        <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">cond</span><span class="p">:</span>
+            <span class="c1"># Signal ready for update</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">GeneratorState</span><span class="o">.</span><span class="n">READY_TO_UPDATE</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">version</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Update policy weights from RDMA buffers.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            version: New policy version number</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">cond</span><span class="p">:</span>
+            <span class="c1"># Copy weights from RDMA buffers</span>
+            <span class="n">sd</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">()</span>
+            <span class="k">for</span> <span class="n">n</span><span class="p">,</span> <span class="p">(</span><span class="n">_</span><span class="p">,</span> <span class="n">b</span><span class="p">)</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">weight_buffers</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="k">await</span> <span class="n">b</span><span class="o">.</span><span class="n">read_into</span><span class="p">(</span><span class="n">sd</span><span class="p">[</span><span class="n">n</span><span class="p">]</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="o">.</span><span class="n">load_state_dict</span><span class="p">(</span><span class="n">sd</span><span class="p">)</span>
+            <span class="c1"># Update version and state</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">policy_version</span> <span class="o">=</span> <span class="n">version</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">GeneratorState</span><span class="o">.</span><span class="n">READY_TO_GENERATE</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Run the distributed reinforcement learning training loop.&quot;&quot;&quot;</span>
+    <span class="c1"># Create process meshes for different components</span>
+    <span class="n">learner_mesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">})</span>
+    <span class="n">gen_mesh</span> <span class="o">=</span> <span class="n">this_host</span><span class="p">()</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">(</span><span class="n">per_host</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;gpus&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">})</span>
+
+    <span class="c1"># Spawn actors on the learner mesh</span>
+    <span class="n">traj_q</span> <span class="o">=</span> <span class="n">learner_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;traj&quot;</span><span class="p">,</span> <span class="n">TrajectoryQueue</span><span class="p">)</span>
+    <span class="n">replay_buf</span> <span class="o">=</span> <span class="n">learner_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;rb&quot;</span><span class="p">,</span> <span class="n">ReplayBuffer</span><span class="p">)</span>
+    <span class="n">learner</span> <span class="o">=</span> <span class="n">learner_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;learner&quot;</span><span class="p">,</span> <span class="n">Learner</span><span class="p">,</span> <span class="n">replay_buf</span><span class="p">)</span>
+    <span class="n">scorer</span> <span class="o">=</span> <span class="n">learner_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;scorer&quot;</span><span class="p">,</span> <span class="n">Scorer</span><span class="p">,</span> <span class="n">traj_q</span><span class="p">,</span> <span class="n">replay_buf</span><span class="p">)</span>
+
+    <span class="c1"># Get weight buffers and spawn generators on the generator mesh</span>
+    <span class="n">wb</span> <span class="o">=</span> <span class="k">await</span> <span class="n">learner</span><span class="o">.</span><span class="n">weights_handle</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
+    <span class="n">generators</span> <span class="o">=</span> <span class="n">gen_mesh</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span>
+        <span class="s2">&quot;generator&quot;</span><span class="p">,</span>
+        <span class="n">Generator</span><span class="p">,</span>
+        <span class="n">wb</span><span class="p">,</span>
+        <span class="n">traj_q</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">await</span> <span class="n">learner</span><span class="o">.</span><span class="n">init_generators</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">generators</span><span class="p">)</span>
+
+    <span class="c1"># initial generator entry</span>
+    <span class="k">await</span> <span class="n">generators</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><a href="https://docs.pytorch.org/docs/stable/generated/torch.randn.html#torch.randn" title="torch.randn" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">randn</span></a><span class="p">(</span><span class="n">STATE_DIM</span><span class="p">))</span>
+    <span class="c1"># Start the scorer event loop in the background</span>
+    <span class="n">scorer_run_future</span> <span class="o">=</span> <span class="n">scorer</span><span class="o">.</span><span class="n">run</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
+
+    <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">5</span><span class="p">):</span>
+        <span class="n">state</span> <span class="o">=</span> <a href="https://docs.pytorch.org/docs/stable/generated/torch.randn.html#torch.randn" title="torch.randn" class="sphx-glr-backref-module-torch sphx-glr-backref-type-py-function"><span class="n">torch</span><span class="o">.</span><span class="n">randn</span></a><span class="p">(</span><span class="n">STATE_DIM</span><span class="p">)</span>
+        <span class="c1"># Generate actions and update policy in parallel</span>
+        <span class="n">_</span><span class="p">,</span> <span class="n">loss</span> <span class="o">=</span> <span class="k">await</span> <a href="https://docs.python.org/3/library/asyncio-task.html#asyncio.gather" title="asyncio.gather" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-function"><span class="n">asyncio</span><span class="o">.</span><span class="n">gather</span></a><span class="p">(</span>
+            <span class="n">generators</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">state</span><span class="p">),</span>
+            <span class="n">learner</span><span class="o">.</span><span class="n">step</span><span class="o">.</span><span class="n">call_one</span><span class="p">(),</span>
+        <span class="p">)</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[Step </span><span class="si">{</span><span class="n">step</span><span class="si">:</span><span class="s2">02d</span><span class="si">}</span><span class="s2">] loss=</span><span class="si">{</span><span class="n">loss</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="c1"># Clean up - stop the scorer and wait for background task to complete</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;🛑 Stopping scorer...&quot;</span><span class="p">)</span>
+    <span class="k">await</span> <span class="n">scorer</span><span class="o">.</span><span class="n">stop</span><span class="o">.</span><span class="n">call_one</span><span class="p">()</span>
+    <span class="k">await</span> <span class="n">scorer_run_future</span>
+
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;✅ Training complete&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+    <a href="https://docs.python.org/3/library/asyncio-runner.html#asyncio.run" title="asyncio.run" class="sphx-glr-backref-module-asyncio sphx-glr-backref-type-py-function"><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span></a><span class="p">(</span><span class="n">main</span><span class="p">())</span>
+</pre></div>
+</div>
+<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
+<div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-grpo-actor-py">
+<div class="sphx-glr-download sphx-glr-download-python docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/dc0a98463635c710bae34e8628fdb677/grpo_actor.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">grpo_actor.py</span></code></a></p>
+</div>
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/7e30eb536167feeaf1efdb2a6ccfe40e/grpo_actor.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">grpo_actor.ipynb</span></code></a></p>
+</div>
+</div>
+<p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="ddp/kubernetes_ddp.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">DDP on Kubernetes Using Monarch</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="distributed_tensors.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Distributed Tensors in Monarch</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="ddp/kubernetes_ddp.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">DDP on Kubernetes Using Monarch</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="distributed_tensors.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Distributed Tensors in Monarch</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Distributed PPO-like Reinforcement Learning with Monarch Actors",
+       "headline": "Distributed PPO-like Reinforcement Learning with Monarch Actors",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/generated/examples/grpo_actor.html",
+       "articleBody": "Note Go to the end to download the full example code Distributed PPO-like Reinforcement Learning with Monarch Actors# This example demonstrates implementing a distributed PPO-like reinforcement learning algorithm using the Monarch actor framework. The implementation features: - Distributed actor architecture with Generator, Scorer, and Learner components - Asynchronous communication via queues - RDMA-based weight synchronization - Event-driven architecture for efficient processing The example shows how to: - Set up distributed actors on separate GPU meshes - Implement policy gradient methods in a distributed setting - Use RDMA buffers for efficient parameter sharing - Create an asynchronous training loop with multiple components import os os.environ[\"PYTORCH_CUDA_ALLOC_CONF\"] = \"expandable_segments:True\" import asyncio import copy import random from dataclasses import dataclass from typing import Any, Dict, List, Optional, Tuple import torch import torch.nn as nn import torch.optim as optim from monarch.actor import Actor, endpoint, this_host from monarch.rdma import RDMABuffer from torch.distributions import Categorical, kl_divergence \"\"\" Online reinforcement learning (RL) training loop using the Monarch actor framework. This example implements a distributed PPO-like algorithm with three main components: 1. Generator: Produces actions using the current policy and sends them for scoring 2. Scorer: Evaluates actions and assigns rewards 3. Learner: Updates policy based on collected experiences Key features demonstrated: - Distributed actors on separate GPU meshes - Asynchronous communication via queues - RDMA-based weight synchronization - Event-driven architecture \"\"\" G = 8 # group size STATE_DIM = 4 ACTION_DIM = 4 # vocab size @dataclass class TrajectorySlice: \"\"\"Single trajectory from one generator call. Attributes: policy_version: Version of policy that produced this slice state: Input state tensor [STATE_DIM] actions: Generated actions [G] old_logps: Log probabilities of actions under generation policy [G] rewards: Rewards for each action (initially zeros, filled by Scorer) [G] \"\"\" policy_version: int state: torch.Tensor actions: torch.Tensor old_logps: torch.Tensor rewards: torch.Tensor @dataclass class TrainingBatch: \"\"\"Batch of trajectories for training. Attributes: states: Batched states [batch_size, STATE_DIM] actions: Batched actions [batch_size * G] old_logps: Batched log probabilities [batch_size * G] rewards: Batched rewards [batch_size * G] policy_versions: List of policy versions for each slice \"\"\" states: torch.Tensor actions: torch.Tensor old_logps: torch.Tensor rewards: torch.Tensor policy_versions: List[int] class TrajectoryQueue(Actor): \"\"\"Queue for trajectory slices between Generator and Scorer.\"\"\" def __init__(self): \"\"\"Initialize an empty queue.\"\"\" self.queue: asyncio.Queue[TrajectorySlice] = asyncio.Queue() @endpoint async def put(self, slice: TrajectorySlice) -\u003e None: \"\"\"Add a trajectory slice to the queue. Args: slice: The trajectory slice to add \"\"\" await self.queue.put(slice) @endpoint async def get(self) -\u003e TrajectorySlice: \"\"\"Remove and return a trajectory slice from the queue. Returns: The next trajectory slice in the queue \"\"\" return await self.queue.get() class ReplayBuffer(Actor): \"\"\"Storage for scored trajectory slices with weighted sampling.\"\"\" def __init__(self): \"\"\"Initialize an empty buffer.\"\"\" self.storage: List[Tuple[int, TrajectorySlice]] = [] # (version, slice) self.storage_event = asyncio.Event() @endpoint async def put(self, slice: TrajectorySlice) -\u003e None: \"\"\"Add a trajectory slice to the buffer. Args: slice: The trajectory slice to add \"\"\" self.storage.append((slice.policy_version, slice)) self.storage_event.set() async def _wait_for_storage(self): if not self.storage: await self.storage_event.wait() @endpoint async def sample_from(self, k: int) -\u003e List[TrajectorySlice]: \"\"\"Sample k trajectory slices using weighted sampling. Items from newer policy versions have higher probability of being selected. If the buffer is empty, waits for it to be populated with a timeout. Args: k: Number of slices to sample Returns: List of sampled trajectory slices Raises: RuntimeError: If buffer is empty after timeout \"\"\" try: await asyncio.wait_for(self._wait_for_storage(), timeout=10.0) except asyncio.TimeoutError: raise RuntimeError(\"Timeout waiting for ReplayBuffer to be populated\") # Extract policy versions and add 1 to ensure all weights are positive policy_versions = [version + 1 for version, _ in self.storage] # Use policy versions as weights for sampling total = sum(policy_versions) probs = [v / total for v in policy_versions] # Sample indices based on policy version weights indices = list(range(len(self.storage))) chosen_indices = random.choices(indices, weights=probs, k=k) return [self.storage[i][1] for i in chosen_indices] class Scorer(Actor): \"\"\"Evaluates actions and assigns rewards to trajectory slices.\"\"\" def __init__(self, trajectory_queue: Any, replay_buffer: Any): \"\"\"Initialize the scorer. Args: trajectory_queue: Queue to pull trajectory slices from replay_buffer: Buffer to store scored slices in \"\"\" self.trajectory_queue = trajectory_queue self.replay_buffer = replay_buffer self.net = nn.Sequential( nn.Linear(STATE_DIM + 1, 8), nn.Tanh(), nn.Linear(8, 1), ).to(\"cuda\") self.running = False async def _score_slice(self, slice: TrajectorySlice) -\u003e None: \"\"\"Score a trajectory slice and store it in the replay buffer. Args: slice: The trajectory slice to score \"\"\" s = slice.state.to(\"cuda\").unsqueeze(0).repeat(G, 1) a = slice.actions.to(\"cuda\").float().unsqueeze(-1) rewards = self.net(torch.cat([s, a], dim=-1)).squeeze(-1) scored = TrajectorySlice( policy_version=slice.policy_version, state=slice.state, actions=slice.actions, old_logps=slice.old_logps, rewards=rewards, ) await self.replay_buffer.put.call(scored) @endpoint async def run(self) -\u003e None: \"\"\"Start the scoring event loop. Continuously pulls slices from the queue, scores them, and puts them in the replay buffer until stopped. \"\"\" if self.running: return self.running = True try: while self.running: try: slice_ = await asyncio.wait_for( self.trajectory_queue.get.call_one(), timeout=10.0, ) await self._score_slice(slice_) except asyncio.TimeoutError: continue except Exception as e: print(f\"Scorer event loop error: {e}\") finally: self.running = False @endpoint async def stop(self) -\u003e None: \"\"\"Stop the scoring event loop.\"\"\" self.running = False class Learner(Actor): \"\"\"Updates policy based on collected experiences using PPO algorithm.\"\"\" def __init__(self, replay_buffer: Any): \"\"\"Initialize the learner. Args: replay_buffer: Buffer to sample experiences from \"\"\" # Policy network and reference network for KL divergence self.model = nn.Sequential( nn.Linear(STATE_DIM, 16), nn.Tanh(), nn.Linear(16, ACTION_DIM) ).to(\"cuda\") self.ref_model = copy.deepcopy(self.model) for p in self.ref_model.parameters(): p.requires_grad = False self.ref_model.eval() # Optimization parameters self.optim = optim.Adam(self.model.parameters(), lr=1e-3, eps=1e-5) self.eps = 0.2 # PPO clipping parameter self.kl_coeff = 0.1 # KL divergence coefficient self.policy_version = 0 self.replay_buffer = replay_buffer self.batch_size = 2 self.generators: Optional[Any] = None self._weights_handle: Dict[str, Tuple[torch.Tensor, RDMABuffer]] = {} @endpoint async def init_generators(self, generators: Any) -\u003e None: \"\"\"Set the generators service for weight updates. Args: generators: Service to notify of policy updates \"\"\" self.generators = generators @endpoint async def weights_handle(self) -\u003e Dict[str, Tuple[torch.Tensor, RDMABuffer]]: \"\"\"Create RDMA buffers for model weights. Returns: Dictionary mapping parameter names to RDMA buffers \"\"\" self._weights_handle = { k: (v, RDMABuffer(v.view(torch.uint8).flatten())) for k, v in self.model.state_dict().items() } return self._weights_handle def _compute_advantages(self, rewards: torch.Tensor) -\u003e torch.Tensor: \"\"\"Compute advantages from rewards. In PPO, advantages represent how much better an action is compared to the average. Here we compute advantages by subtracting a baseline (mean reward) from the rewards and then normalizing to stabilize training. Args: rewards: Raw rewards tensor [batch_size * G] Returns: Advantages tensor [batch_size * G] \"\"\" # First, reshape rewards to [batch_size, G] to compute per-state baseline batch_size = rewards.shape[0] // G rewards_reshaped = rewards.view(batch_size, G) # Compute baseline (mean reward) for each state baselines = rewards_reshaped.mean(dim=1, keepdim=True) # [batch_size, 1] # Subtract baseline from rewards to get advantages advantages = rewards_reshaped - baselines # [batch_size, G] # Reshape back to original shape advantages = advantages.reshape(-1) # [batch_size * G] # Normalize advantages for training stability if advantages.numel() \u003e 1: # Check if we have more than one element advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) return advantages def _apply_policy_update( self, states: torch.Tensor, actions: torch.Tensor, old_logps: torch.Tensor, advantages: torch.Tensor, ) -\u003e torch.Tensor: \"\"\"Apply PPO update to policy network. Args: states: Batch of states actions: Batch of actions old_logps: Log probabilities from old policy advantages: Normalized advantages Returns: Loss value \"\"\" # Compute new policy distribution and log probabilities dist_new = Categorical(logits=self.model(states)) new_logps = dist_new.log_prob(actions) # PPO clipped objective ratio = (new_logps - old_logps).exp() unclipped = ratio * advantages clipped = torch.clamp(ratio, 1 - self.eps, 1 + self.eps) * advantages ppo_loss = -torch.min(unclipped, clipped).mean() # KL penalty to prevent large policy updates with torch.no_grad(): ref_logits = self.ref_model(states) kl = kl_divergence(Categorical(logits=ref_logits), dist_new).mean() # Update policy loss = ppo_loss + self.kl_coeff * kl self.optim.zero_grad() loss.backward() nn.utils.clip_grad_norm_(self.model.parameters(), 1.0) self.optim.step() self.policy_version += 1 # Return loss value return loss.detach() @endpoint async def step(self) -\u003e torch.Tensor: \"\"\"Perform one training step. Returns: Loss value from the update \"\"\" # Notify generators of current policy version if self.generators: await self.generators.update.call(self.policy_version) # Sample and process trajectory slices slices = await self.replay_buffer.sample_from.call_one(self.batch_size) raw_states = torch.stack([s.state for s in slices]) actions = torch.cat([s.actions for s in slices]) old_logps = torch.cat([s.old_logps for s in slices]) rewards = torch.cat([s.rewards for s in slices]) # Prepare tensors for update states = raw_states.repeat_interleave(G, 0).to(\"cuda\") actions, old_logps, rewards = [ x.to(\"cuda\") for x in (actions, old_logps, rewards) ] # Compute advantages and update policy advs = self._compute_advantages(rewards) return self._apply_policy_update(states, actions, old_logps, advs) class GeneratorState: \"\"\"States for the Generator\u0027s state machine.\"\"\" READY_TO_GENERATE = \"READY_TO_GENERATE\" READY_TO_UPDATE = \"READY_TO_UPDATE\" class Generator(Actor): \"\"\"Generates actions using the current policy. Maintains a copy of the policy network that is synchronized with the Learner via RDMA buffers. Generates actions for given states and sends them to the trajectory queue for scoring. \"\"\" def __init__(self, weight_buffers, trajectory_queue): \"\"\"Initialize the generator. Args: weight_buffers: RDMA buffers for policy weights trajectory_queue: Queue to put generated trajectories in \"\"\" self.model = nn.Sequential( nn.Linear(STATE_DIM, 16), nn.Tanh(), nn.Linear(16, ACTION_DIM) ).to(\"cuda\") self.weight_buffers = weight_buffers self.trajectory_queue = trajectory_queue self.state = GeneratorState.READY_TO_GENERATE self.cond = asyncio.Condition() self.policy_version = 0 @endpoint async def generate(self, state: torch.Tensor) -\u003e None: \"\"\"Generate actions for a given state. Args: state: Input state tensor [STATE_DIM] \"\"\" async with self.cond: # Wait until ready to generate await self.cond.wait_for( lambda: self.state == GeneratorState.READY_TO_GENERATE ) # Generate actions using current policy x = state.to(\"cuda\").unsqueeze(0).repeat(G, 1) dist = Categorical(logits=self.model(x)) acts = dist.sample() logps = dist.log_prob(acts) # Create trajectory slice slice_ = TrajectorySlice( self.policy_version, state, acts, logps, torch.zeros(G), ) # Send to trajectory queue for scoring await self.trajectory_queue.put.call(slice_) async with self.cond: # Signal ready for update self.state = GeneratorState.READY_TO_UPDATE self.cond.notify_all() @endpoint async def update(self, version: int) -\u003e None: \"\"\"Update policy weights from RDMA buffers. Args: version: New policy version number \"\"\" async with self.cond: # Copy weights from RDMA buffers sd = self.model.state_dict() for n, (_, b) in self.weight_buffers.items(): await b.read_into(sd[n].view(torch.uint8).flatten()) self.model.load_state_dict(sd) # Update version and state self.policy_version = version self.state = GeneratorState.READY_TO_GENERATE self.cond.notify_all() async def main(): \"\"\"Run the distributed reinforcement learning training loop.\"\"\" # Create process meshes for different components learner_mesh = this_host().spawn_procs(per_host={\"gpus\": 1}) gen_mesh = this_host().spawn_procs(per_host={\"gpus\": 2}) # Spawn actors on the learner mesh traj_q = learner_mesh.spawn(\"traj\", TrajectoryQueue) replay_buf = learner_mesh.spawn(\"rb\", ReplayBuffer) learner = learner_mesh.spawn(\"learner\", Learner, replay_buf) scorer = learner_mesh.spawn(\"scorer\", Scorer, traj_q, replay_buf) # Get weight buffers and spawn generators on the generator mesh wb = await learner.weights_handle.call_one() generators = gen_mesh.spawn( \"generator\", Generator, wb, traj_q, ) await learner.init_generators.call(generators) # initial generator entry await generators.generate.call(torch.randn(STATE_DIM)) # Start the scorer event loop in the background scorer_run_future = scorer.run.call_one() for step in range(5): state = torch.randn(STATE_DIM) # Generate actions and update policy in parallel _, loss = await asyncio.gather( generators.generate.call(state), learner.step.call_one(), ) print(f\"[Step {step:02d}] loss={loss:.3f}\") # Clean up - stop the scorer and wait for background task to complete print(\"\ud83d\uded1 Stopping scorer...\") await scorer.stop.call_one() await scorer_run_future print(\"\u2705 Training complete\") if __name__ == \"__main__\": asyncio.run(main()) Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: grpo_actor.py Download Jupyter notebook: grpo_actor.ipynb Gallery generated by Sphinx-Gallery",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/generated/examples/grpo_actor.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

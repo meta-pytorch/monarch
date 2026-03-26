@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["set_cast_info_on_headers"],"static":["CAST_ORIGINATING_SENDER","CAST_POINT"],"struct":["CastMessage","CastMessageEnvelope","DestinationPort","Uslice"],"trait":["CastInfo"]};

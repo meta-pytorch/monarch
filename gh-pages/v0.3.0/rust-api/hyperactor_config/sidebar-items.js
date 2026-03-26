@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"derive":["AttrValue"],"fn":["from_env","from_yaml","to_yaml"],"macro":["declare_attrs","impl_attrvalue","paste","submit"],"mod":["attrs","global"],"static":["CONFIG"],"struct":["ConfigAttr"]};

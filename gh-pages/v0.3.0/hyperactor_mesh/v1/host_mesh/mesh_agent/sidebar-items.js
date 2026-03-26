@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["HostAgentMode"],"struct":["GetHostMeshAgent","GetLocalProc","HostMeshAgent","ProcState","ShutdownHost"],"trait":["GetHostMeshAgentClient","GetHostMeshAgentHandler","GetLocalProcClient","GetLocalProcHandler","ShutdownHostClient","ShutdownHostHandler"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"macro":["declare_attrs"],"struct":["Attrs","Key"],"trait":["AttrValue","ErasedKey"]};

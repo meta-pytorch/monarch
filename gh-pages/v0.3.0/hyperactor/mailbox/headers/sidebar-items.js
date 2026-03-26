@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["log_message_latency_if_sampling","set_rust_message_type","set_send_timestamp"],"static":["RUST_MESSAGE_TYPE","SEND_TIMESTAMP"]};

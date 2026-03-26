@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["ConfigDump","ConfigDumpResult"],"trait":["ConfigDumpClient","ConfigDumpHandler"]};

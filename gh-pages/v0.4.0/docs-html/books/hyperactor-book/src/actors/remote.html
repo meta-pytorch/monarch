@@ -1,0 +1,1710 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Remote Registry" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/actors/remote.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="The hyperactor::actor::remote module provides the process-local registry for remote-spawnable actors. It is the counterpart to RemoteSpawn: given actor types that implement RemoteSpawn and are regi..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="The hyperactor::actor::remote module provides the process-local registry for remote-spawnable actors. It is the counterpart to RemoteSpawn: given actor types that implement RemoteSpawn and are regi..." />
+
+    <title>Remote Registry &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/actors/remote';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/actors/remote.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Remote Registry - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Remote Registry</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Remote Registry">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="remote-registry">
+<h1>Remote Registry<a class="headerlink" href="#remote-registry" title="Link to this heading">#</a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">hyperactor::actor::remote</span></code> module provides the process-local registry for remote-spawnable actors. It is the counterpart to <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code>: given actor types that implement <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code> and are registered with <code class="docutils literal notranslate"><span class="pre">remote!</span></code>, this module discovers them at runtime and allows actors to be spawned by their global type name. The implementation uses the <a class="reference external" href="https://docs.rs/inventory/0.3.21/inventory/index.html"><code class="docutils literal notranslate"><span class="pre">inventory</span></code></a> crate to collect registrations contributed from any crate linked into the application.</p>
+<section id="registration-model-and-the-remote-macro">
+<h2>Registration model and the <code class="docutils literal notranslate"><span class="pre">remote!</span></code> macro<a class="headerlink" href="#registration-model-and-the-remote-macro" title="Link to this heading">#</a></h2>
+<p>Remote-spawnable actors are registered using the <code class="docutils literal notranslate"><span class="pre">remote!</span></code> macro. Given an actor type that implements <a class="reference internal" href="remote_spawn.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code></span></a> and <code class="docutils literal notranslate"><span class="pre">Named</span></code>, <code class="docutils literal notranslate"><span class="pre">remote!(MyActor)</span></code> arranges for a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record to be submitted to a global registry using the <a class="reference external" href="https://docs.rs/inventory/0.3.21/inventory/index.html"><code class="docutils literal notranslate"><span class="pre">inventory</span></code></a> crate.</p>
+<p>In idiomatic use:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug)]</span>
+<span class="cp">#[hyperactor::export(handlers = [()])]</span>
+<span class="k">struct</span><span class="w"> </span><span class="nc">MyActor</span><span class="p">;</span>
+
+<span class="k">impl</span><span class="w"> </span><span class="n">Actor</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">MyActor</span><span class="w"> </span><span class="p">{}</span>
+
+<span class="cp">#[async_trait::async_trait]</span>
+<span class="k">impl</span><span class="w"> </span><span class="n">RemoteSpawn</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">MyActor</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">type</span><span class="w"> </span><span class="nc">Params</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kt">bool</span><span class="p">;</span>
+
+<span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">new</span><span class="p">(</span><span class="n">params</span><span class="p">:</span><span class="w"> </span><span class="kt">bool</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">anyhow</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">params</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nb">Ok</span><span class="p">(</span><span class="n">MyActor</span><span class="p">)</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nb">Err</span><span class="p">(</span><span class="n">anyhow</span><span class="p">::</span><span class="n">anyhow</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;some failure&quot;</span><span class="p">))</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="n">remote</span><span class="o">!</span><span class="p">(</span><span class="n">MyActor</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>Conceptually, the <code class="docutils literal notranslate"><span class="pre">remote!</span></code> invocation expands to something like:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">static</span><span class="w"> </span><span class="n">MY_ACTOR_NAME</span><span class="p">:</span><span class="w"> </span><span class="nc">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">LazyLock</span><span class="o">&lt;&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="kt">str</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="n">std</span><span class="p">::</span><span class="n">sync</span><span class="p">::</span><span class="n">LazyLock</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="o">||</span><span class="w"> </span><span class="o">&lt;</span><span class="n">MyActor</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">data</span><span class="p">::</span><span class="n">Named</span><span class="o">&gt;</span><span class="p">::</span><span class="n">typename</span><span class="p">());</span>
+
+<span class="n">inventory</span><span class="p">::</span><span class="n">submit</span><span class="o">!</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">actor</span><span class="p">::</span><span class="n">remote</span><span class="p">::</span><span class="n">SpawnableActor</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">MY_ACTOR_NAME</span><span class="p">,</span>
+<span class="w">        </span><span class="n">gspawn</span><span class="p">:</span><span class="w"> </span><span class="o">&lt;</span><span class="n">MyActor</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">actor</span><span class="p">::</span><span class="n">RemoteSpawn</span><span class="o">&gt;</span><span class="p">::</span><span class="n">gspawn</span><span class="p">,</span>
+<span class="w">        </span><span class="n">get_type_id</span><span class="p">:</span><span class="w"> </span><span class="o">&lt;</span><span class="n">MyActor</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">hyperactor</span><span class="p">::</span><span class="n">actor</span><span class="p">::</span><span class="n">RemoteSpawn</span><span class="o">&gt;</span><span class="p">::</span><span class="n">get_type_id</span><span class="p">,</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The real macro uses <code class="docutils literal notranslate"><span class="pre">paste!</span></code> to synthesize the <code class="docutils literal notranslate"><span class="pre">MY_ACTOR_NAME</span></code> identifier and the crate-local paths, but the effect is the same:</p>
+<ul class="simple">
+<li><p>compute a <strong>global type name</strong> for <code class="docutils literal notranslate"><span class="pre">MyActor</span></code> via <code class="docutils literal notranslate"><span class="pre">Named::typename()</span></code>,</p></li>
+<li><p>build a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record that points at <code class="docutils literal notranslate"><span class="pre">MyActor</span></code>s <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code> implementation, and</p></li>
+<li><p>submit that record into the inventory of <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> entries.</p></li>
+</ul>
+<p>At runtime, the <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry (described below) discovers all such submissions via <code class="docutils literal notranslate"><span class="pre">inventory::iter::&lt;SpawnableActor&gt;</span></code> and makes them available for lookup and spawning by global type name.</p>
+</section>
+<section id="spawnableactor-registration-records">
+<h2><code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code>: registration records<a class="headerlink" href="#spawnableactor-registration-records" title="Link to this heading">#</a></h2>
+<p>A <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> is the type-erased registration record produced by <code class="docutils literal notranslate"><span class="pre">remote!</span></code>. Each remotely spawnable actor type contributes exactly one of these records to the process. The registry discovers them at runtime and uses them to look up actors by global type name and to invoke their type-erased constructor.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">SpawnableActor</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="sd">/// A URI that globally identifies an actor.</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="o">&#39;</span><span class="nb">static</span><span class="w"> </span><span class="nc">LazyLock</span><span class="o">&lt;&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="kt">str</span><span class="o">&gt;</span><span class="p">,</span>
+
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">gspawn</span><span class="p">:</span><span class="w"> </span><span class="nc">fn</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="n">Proc</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<span class="w">        </span><span class="n">Data</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Pin</span><span class="o">&lt;</span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Future</span><span class="o">&lt;</span><span class="n">Output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ActorId</span><span class="p">,</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="n">get_type_id</span><span class="p">:</span><span class="w"> </span><span class="nc">fn</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">TypeId</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">name</span></code> is the actor’s global type name, obtained from <code class="docutils literal notranslate"><span class="pre">Named::typename()</span></code>. This is the string that appears on the wire in a remote-spawn request.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gspawn</span></code> is the type-erased entry point for constructing the actor on a remote <code class="docutils literal notranslate"><span class="pre">Proc</span></code>. It is backed by the actor’s <code class="docutils literal notranslate"><span class="pre">RemoteSpawn::gspawn</span></code> implementation and handles deserializing parameters and invoking <code class="docutils literal notranslate"><span class="pre">RemoteSpawn::new(...).await</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">get_type_id</span></code> returns the actor’s <code class="docutils literal notranslate"><span class="pre">TypeId</span></code>, allowing the registry to map a concrete Rust type back to it’s registration entry.</p></li>
+</ul>
+<p>Users never construct a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> manually; these records are generated automatically by the <code class="docutils literal notranslate"><span class="pre">remote!</span></code> macro.</p>
+<p>The reason <code class="docutils literal notranslate"><span class="pre">remote!(MyActor)</span></code> works is that it only requires <code class="docutils literal notranslate"><span class="pre">MyActor:</span> <span class="pre">RemoteSpawn</span></code>. You can provide that either with an explicit <code class="docutils literal notranslate"><span class="pre">impl</span> <span class="pre">RemoteSpawn</span> <span class="pre">for</span> <span class="pre">MyActor</span></code>, or you get it for free from the blanket <code class="docutils literal notranslate"><span class="pre">impl&lt;A:</span> <span class="pre">Actor</span> <span class="pre">+</span> <span class="pre">Referable</span> <span class="pre">+</span> <span class="pre">Binds&lt;Self&gt;</span> <span class="pre">+</span> <span class="pre">Default&gt;</span> <span class="pre">RemoteSpawn</span> <span class="pre">for</span> <span class="pre">A</span></code>.</p>
+<blockquote>
+<div><p><strong>Note:</strong> <code class="docutils literal notranslate"><span class="pre">Referable</span></code> itself only requires <code class="docutils literal notranslate"><span class="pre">Named</span></code>, not <code class="docutils literal notranslate"><span class="pre">Send</span> <span class="pre">+</span> <span class="pre">Sync</span></code>. The <code class="docutils literal notranslate"><span class="pre">Actor</span></code> trait already provides <code class="docutils literal notranslate"><span class="pre">Send</span></code>, but <code class="docutils literal notranslate"><span class="pre">Sync</span></code> must be added explicitly at call sites that require it.</p>
+</div></blockquote>
+<p>In both cases, <code class="docutils literal notranslate"><span class="pre">remote!</span></code> can safely plug <code class="docutils literal notranslate"><span class="pre">&lt;MyActor</span> <span class="pre">as</span> <span class="pre">RemoteSpawn&gt;::gspawn</span></code> into the <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record it generates.</p>
+</section>
+<section id="the-remote-registry">
+<h2>The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry<a class="headerlink" href="#the-remote-registry" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> type is the process-local registry of remote-spawnable actors. It is built from all <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> records submitted via <code class="docutils literal notranslate"><span class="pre">remote!</span></code> and exposed through two lookups: by global type name and by <code class="docutils literal notranslate"><span class="pre">TypeId</span></code>.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[derive(Debug)]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">Remote</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">by_name</span><span class="p">:</span><span class="w"> </span><span class="nc">HashMap</span><span class="o">&lt;&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="kt">str</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="n">SpawnableActor</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">by_type_id</span><span class="p">:</span><span class="w"> </span><span class="nc">HashMap</span><span class="o">&lt;</span><span class="n">TypeId</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="n">SpawnableActor</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">by_type_id</span></code> is used by <code class="docutils literal notranslate"><span class="pre">Remote::name_of::&lt;A&gt;()</span></code>, which starts from a concrete type <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">Actor</span></code> and looks up its <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> in order to read the registered name.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">by_name</span></code> is used by <code class="docutils literal notranslate"><span class="pre">Remote::gspawn</span></code>, which starts from a global type name string received over the wire and looks up the corresponding <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> in order to call its <code class="docutils literal notranslate"><span class="pre">gspawn</span></code> function.</p></li>
+</ul>
+<p>This is why the registry maintains two maps: one keyed by <code class="docutils literal notranslate"><span class="pre">TypeId</span></code> for caller-side APIs that start from a Rust type, and one keyed by string name for remote services that start from a serialized request.</p>
+<section id="building-the-registry-remote-collect">
+<h3>Building the registry: <code class="docutils literal notranslate"><span class="pre">Remote::collect</span></code><a class="headerlink" href="#building-the-registry-remote-collect" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Remote</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">collect</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">by_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HashMap</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">by_type_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HashMap</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="n">entry</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">inventory</span><span class="p">::</span><span class="n">iter</span><span class="p">::</span><span class="o">&lt;</span><span class="n">SpawnableActor</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="n">by_name</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="o">**</span><span class="n">entry</span><span class="p">.</span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">entry</span><span class="p">).</span><span class="n">is_some</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="fm">panic!</span><span class="p">(</span><span class="s">&quot;actor name {} registered multiple times&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">**</span><span class="n">entry</span><span class="p">.</span><span class="n">name</span><span class="p">);</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">type_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="n">entry</span><span class="p">.</span><span class="n">get_type_id</span><span class="p">)();</span>
+<span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="n">by_type_id</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="n">type_id</span><span class="p">,</span><span class="w"> </span><span class="n">entry</span><span class="p">).</span><span class="n">is_some</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="fm">panic!</span><span class="p">(</span>
+<span class="w">                    </span><span class="s">&quot;type id {:?} ({}) registered multiple times&quot;</span><span class="p">,</span>
+<span class="w">                    </span><span class="n">type_id</span><span class="p">,</span><span class="w"> </span><span class="o">**</span><span class="n">entry</span><span class="p">.</span><span class="n">name</span>
+<span class="w">                </span><span class="p">);</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">by_name</span><span class="p">,</span><span class="w"> </span><span class="n">by_type_id</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">Remote::collect</span></code> walks <code class="docutils literal notranslate"><span class="pre">inventory::iter::&lt;SpawnableActor&gt;</span></code> and builds two maps:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">by_name</span></code> for lookup up actors by their global type name (the string that appears on the wire), and</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">by_type_id</span></code> for looking up the registration associated with a concrete Rust type.</p></li>
+</ul>
+<p>It enforces that no two actors register the same global name or <code class="docutils literal notranslate"><span class="pre">TypeId</span></code> in a single binary.</p>
+<p>The result is a process-local view of all remote-spawnable actors; callers are free to construct this registry once and reuse it or to rebuild it on demand, depending on their needs.</p>
+</section>
+<section id="looking-up-names-remote-name-of">
+<h3>Looking up names: <code class="docutils literal notranslate"><span class="pre">Remote::name_of</span></code><a class="headerlink" href="#looking-up-names-remote-name-of" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Remote</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">name_of</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">Actor</span><span class="o">&gt;</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;&amp;&#39;</span><span class="nb">static</span><span class="w"> </span><span class="kt">str</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="bp">self</span><span class="p">.</span><span class="n">by_type_id</span>
+<span class="w">            </span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="o">&amp;</span><span class="n">TypeId</span><span class="p">::</span><span class="n">of</span><span class="p">::</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">())</span>
+<span class="w">            </span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">entry</span><span class="o">|</span><span class="w"> </span><span class="o">**</span><span class="n">entry</span><span class="p">.</span><span class="n">name</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">name_of</span></code> resolves a concrete <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">RemoteSpawn</span></code> to its registered global type name string.</p>
+<p>Given a concrete <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">Actor</span></code>, <code class="docutils literal notranslate"><span class="pre">name_of</span></code> returns the string name that was registered via <code class="docutils literal notranslate"><span class="pre">remote!</span></code>. This is used by caller-side APIs that <em>start from a Rust type</em> and need to put a string type name on the wire for a remote spawn request.</p>
+<p>For example, <code class="docutils literal notranslate"><span class="pre">spawn_with_name_inner</span></code>  constructs an <code class="docutils literal notranslate"><span class="pre">ActorSpec</span></code> by first resolving the type <code class="docutils literal notranslate"><span class="pre">A</span></code> to its global name:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">ProcMeshRef</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">spawn_with_name_inner</span><span class="o">&lt;</span><span class="n">A</span><span class="p">:</span><span class="w"> </span><span class="nc">RemoteSpawn</span><span class="o">&gt;</span><span class="p">(</span>
+<span class="w">      </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">      </span><span class="n">cx</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">impl</span><span class="w"> </span><span class="n">context</span><span class="p">::</span><span class="n">Actor</span><span class="p">,</span>
+<span class="w">      </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="nc">Name</span><span class="p">,</span>
+<span class="w">      </span><span class="n">params</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">A</span><span class="p">::</span><span class="n">Params</span><span class="p">,</span>
+<span class="w">  </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">v1</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ActorMesh</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;&gt;</span>
+<span class="w">  </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">let</span><span class="w"> </span><span class="n">remote</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Remote</span><span class="p">::</span><span class="n">collect</span><span class="p">();</span>
+
+<span class="w">      </span><span class="c1">// Caller starts from the Rust type `A` → resolve to a global type name.</span>
+<span class="w">      </span><span class="kd">let</span><span class="w"> </span><span class="n">actor_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">remote</span>
+<span class="w">          </span><span class="p">.</span><span class="n">name_of</span><span class="p">::</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">()</span>
+<span class="w">          </span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">Error</span><span class="p">::</span><span class="n">ActorTypeNotRegistered</span><span class="p">(</span><span class="n">type_name</span><span class="p">::</span><span class="o">&lt;</span><span class="n">A</span><span class="o">&gt;</span><span class="p">().</span><span class="n">to_string</span><span class="p">()))</span><span class="o">?</span>
+<span class="w">          </span><span class="p">.</span><span class="n">to_string</span><span class="p">();</span>
+
+<span class="w">      </span><span class="kd">let</span><span class="w"> </span><span class="n">serialized_params</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">bincode</span><span class="p">::</span><span class="n">serialize</span><span class="p">(</span><span class="n">params</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">      </span><span class="kd">let</span><span class="w"> </span><span class="n">agent_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">agent_mesh</span><span class="p">();</span>
+
+<span class="w">      </span><span class="n">agent_mesh</span><span class="p">.</span><span class="n">cast</span><span class="p">(</span>
+<span class="w">          </span><span class="n">cx</span><span class="p">,</span>
+<span class="w">          </span><span class="n">resource</span><span class="p">::</span><span class="n">CreateOrUpdate</span><span class="p">::</span><span class="o">&lt;</span><span class="n">mesh_agent</span><span class="p">::</span><span class="n">ActorSpec</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">              </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="nc">name</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">              </span><span class="n">rank</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+<span class="w">              </span><span class="n">spec</span><span class="p">:</span><span class="w"> </span><span class="nc">mesh_agent</span><span class="p">::</span><span class="n">ActorSpec</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                  </span><span class="n">actor_type</span><span class="p">:</span><span class="w"> </span><span class="nc">actor_type</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w">      </span><span class="c1">// ← string name sent over the wire</span>
+<span class="w">                  </span><span class="n">params_data</span><span class="p">:</span><span class="w"> </span><span class="nc">serialized_params</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">              </span><span class="p">},</span>
+<span class="w">          </span><span class="p">},</span>
+<span class="w">      </span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">      </span><span class="o">..</span><span class="p">.</span>
+<span class="w">  </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>Here the caller begins with the Rust type <code class="docutils literal notranslate"><span class="pre">A</span></code> and uses <code class="docutils literal notranslate"><span class="pre">name_of::&lt;A&gt;()</span></code> to obtain the global name that will be sent to the remote <code class="docutils literal notranslate"><span class="pre">Proc</span></code>. On the receiving side, the registry takes the global type name string, resolves it to a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code>, and then invokes that entry’s <code class="docutils literal notranslate"><span class="pre">gspawn</span></code> function to construct the actor.</p>
+</section>
+<section id="spawning-by-name-remote-gspawn">
+<h3>Spawning by name: <code class="docutils literal notranslate"><span class="pre">Remote::gspawn</span></code><a class="headerlink" href="#spawning-by-name-remote-gspawn" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">Remote</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">gspawn</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">proc</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Proc</span><span class="p">,</span>
+<span class="w">        </span><span class="n">actor_type</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<span class="w">        </span><span class="n">actor_name</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<span class="w">        </span><span class="n">params</span><span class="p">:</span><span class="w"> </span><span class="nc">Data</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ActorId</span><span class="p">,</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">entry</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span>
+<span class="w">            </span><span class="p">.</span><span class="n">by_name</span>
+<span class="w">            </span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">actor_type</span><span class="p">)</span>
+<span class="w">            </span><span class="p">.</span><span class="n">ok_or_else</span><span class="p">(</span><span class="o">||</span><span class="w"> </span><span class="n">anyhow</span><span class="p">::</span><span class="n">anyhow</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;actor type {} not registered&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">actor_type</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="p">(</span><span class="n">entry</span><span class="p">.</span><span class="n">gspawn</span><span class="p">)(</span><span class="n">proc</span><span class="p">,</span><span class="w"> </span><span class="n">actor_name</span><span class="p">,</span><span class="w"> </span><span class="n">params</span><span class="p">).</span><span class="k">await</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">gspawn</span></code> is the <strong>name -&gt; spawn</strong>  path. It starts from a a global type name string (<code class="docutils literal notranslate"><span class="pre">actor_type</span></code>), looks up the corresponding <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> in <code class="docutils literal notranslate"><span class="pre">by_name</span></code>, and invokes its <code class="docutils literal notranslate"><span class="pre">gspawn</span></code> function. That function is the type-erased adapter provided by the actor’s <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code> implementation: it deserializes <code class="docutils literal notranslate"><span class="pre">params</span></code> into <code class="docutils literal notranslate"><span class="pre">RemoteSpawn::Params</span></code>, calls <code class="docutils literal notranslate"><span class="pre">RemoteSpawn::new</span></code>, wires the actor into the given <code class="docutils literal notranslate"><span class="pre">Proc</span></code>, and returns the resulting <code class="docutils literal notranslate"><span class="pre">ActorId</span></code>.</p>
+<p>In a typical setup, higher-level code in a separate crate starts from a generic <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">RemoteSpawn</span></code>, uses <code class="docutils literal notranslate"><span class="pre">Remote::name_of::&lt;A&gt;()</span></code> to obtain the global type name, serializes <code class="docutils literal notranslate"><span class="pre">A::Params</span></code>, and sends a request containing:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">actor_type</span></code>: that global type name, and</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">params_data</span></code>: serialized <code class="docutils literal notranslate"><span class="pre">A::Params</span></code>.</p></li>
+</ul>
+<p>On the receiving side, a control-plane or management actor calls:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="bp">self</span><span class="p">.</span><span class="n">remote</span><span class="p">.</span><span class="n">gspawn</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">proc</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">actor_type</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">actor_name</span><span class="p">,</span><span class="w"> </span><span class="n">params_data</span><span class="p">).</span><span class="k">await</span>
+</pre></div>
+</div>
+<p>to look up the corresponding <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> by <code class="docutils literal notranslate"><span class="pre">actor_type</span></code> and invoke its <code class="docutils literal notranslate"><span class="pre">gspawn</span></code> entry point. That call deserializes <code class="docutils literal notranslate"><span class="pre">params_data</span></code>, constructs the actor, wires it into <code class="docutils literal notranslate"><span class="pre">self.proc</span></code> and returns the new <code class="docutils literal notranslate"><span class="pre">ActorId</span></code>.</p>
+</section>
+</section>
+<section id="putting-it-together">
+<h2>Putting it together<a class="headerlink" href="#putting-it-together" title="Link to this heading">#</a></h2>
+<p>Remote spawning in hyperactor involves two complementary pieces:</p>
+<ol class="arabic simple">
+<li><p><strong>Type-level registration</strong> Each <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">RemoteSpawn</span></code> contributes a <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> record when the user writes <code class="docutils literal notranslate"><span class="pre">remote!(A)</span></code>. These records are collected at runtime by <code class="docutils literal notranslate"><span class="pre">Remote::collect()</span></code>.</p></li>
+<li><p><strong>Data-level spawn requests</strong> Higher-level code starts from a concrete actor type (e.g. <code class="docutils literal notranslate"><span class="pre">A:</span> <span class="pre">RemoteSpawn</span></code>), uses <code class="docutils literal notranslate"><span class="pre">Remote::name_of::&lt;A&gt;()</span></code> to obtain it’s global type name, serializes <code class="docutils literal notranslate"><span class="pre">A::Params</span></code>, and sends a request containing those two pieces of data.</p></li>
+</ol>
+<p>On the receiving side, a management component reconstructs the actor by calling:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">remote</span><span class="p">.</span><span class="n">gspawn</span><span class="p">(</span><span class="o">&amp;</span><span class="n">proc</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">actor_type</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">actor_name</span><span class="p">,</span><span class="w"> </span><span class="n">params_data</span><span class="p">).</span><span class="k">await</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">Remote::gspawn</span></code> uses the global type name to locate the correct <code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code> and invokes its type-erased <code class="docutils literal notranslate"><span class="pre">gspawn</span></code> function, which:</p>
+<ul class="simple">
+<li><p>deserializes <code class="docutils literal notranslate"><span class="pre">params_data</span></code>,</p></li>
+<li><p>calls <code class="docutils literal notranslate"><span class="pre">A::new(params).await</span></code>, and</p></li>
+<li><p>installs the actor into the provided <code class="docutils literal notranslate"><span class="pre">Proc</span></code>.</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry is thus the bridge between:</p>
+<ul class="simple">
+<li><p><strong>Rust types</strong> implementing <code class="docutils literal notranslate"><span class="pre">RemoteSpawn</span></code> (which define how to construct the actor), and</p></li>
+<li><p><strong>runtime identifiers</strong> (global type names) used in serialized remote-spawn requests.</p></li>
+</ul>
+<p>This decoupling allows remote spawning to work across processes without requiring shared type information at compile time: all that crosses the wire is a global name and a parameter payload, and the receiving process uses its local registry to handle construction.</p>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registration-model-and-the-remote-macro">Registration model and the <code class="docutils literal notranslate"><span class="pre">remote!</span></code> macro</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spawnableactor-registration-records"><code class="docutils literal notranslate"><span class="pre">SpawnableActor</span></code>: registration records</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-remote-registry">The <code class="docutils literal notranslate"><span class="pre">Remote</span></code> registry</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-the-registry-remote-collect">Building the registry: <code class="docutils literal notranslate"><span class="pre">Remote::collect</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#looking-up-names-remote-name-of">Looking up names: <code class="docutils literal notranslate"><span class="pre">Remote::name_of</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spawning-by-name-remote-gspawn">Spawning by name: <code class="docutils literal notranslate"><span class="pre">Remote::gspawn</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#putting-it-together">Putting it together</a></li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/actors/remote.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-book/src/actors/remote.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Remote Registry",
+       "headline": "Remote Registry",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-book/src/actors/remote.html",
+       "articleBody": "Remote Registry# The hyperactor::actor::remote module provides the process-local registry for remote-spawnable actors. It is the counterpart to RemoteSpawn: given actor types that implement RemoteSpawn and are registered with remote!, this module discovers them at runtime and allows actors to be spawned by their global type name. The implementation uses the inventory crate to collect registrations contributed from any crate linked into the application. Registration model and the remote! macro# Remote-spawnable actors are registered using the remote! macro. Given an actor type that implements RemoteSpawn and Named, remote!(MyActor) arranges for a SpawnableActor record to be submitted to a global registry using the inventory crate. In idiomatic use: #[derive(Debug)] #[hyperactor::export(handlers = [()])] struct MyActor; impl Actor for MyActor {} #[async_trait::async_trait] impl RemoteSpawn for MyActor { type Params = bool; async fn new(params: bool) -\u003e anyhow::Result\u003cSelf\u003e { if params { Ok(MyActor) } else { Err(anyhow::anyhow!(\"some failure\")) } } } remote!(MyActor); Conceptually, the remote! invocation expands to something like: static MY_ACTOR_NAME: std::sync::LazyLock\u003c\u0026\u0027static str\u003e = std::sync::LazyLock::new(|| \u003cMyActor as hyperactor::data::Named\u003e::typename()); inventory::submit! { hyperactor::actor::remote::SpawnableActor { name: \u0026MY_ACTOR_NAME, gspawn: \u003cMyActor as hyperactor::actor::RemoteSpawn\u003e::gspawn, get_type_id: \u003cMyActor as hyperactor::actor::RemoteSpawn\u003e::get_type_id, } } The real macro uses paste! to synthesize the MY_ACTOR_NAME identifier and the crate-local paths, but the effect is the same: compute a global type name for MyActor via Named::typename(), build a SpawnableActor record that points at MyActors RemoteSpawn implementation, and submit that record into the inventory of SpawnableActor entries. At runtime, the Remote registry (described below) discovers all such submissions via inventory::iter::\u003cSpawnableActor\u003e and makes them available for lookup and spawning by global type name. SpawnableActor: registration records# A SpawnableActor is the type-erased registration record produced by remote!. Each remotely spawnable actor type contributes exactly one of these records to the process. The registry discovers them at runtime and uses them to look up actors by global type name and to invoke their type-erased constructor. #[derive(Debug)] pub struct SpawnableActor { /// A URI that globally identifies an actor. pub name: \u0026\u0027static LazyLock\u003c\u0026\u0027static str\u003e, pub gspawn: fn( \u0026Proc, \u0026str, Data, ) -\u003e Pin\u003cBox\u003cdyn Future\u003cOutput = Result\u003cActorId, anyhow::Error\u003e\u003e + Send\u003e\u003e, pub get_type_id: fn() -\u003e TypeId, } name is the actor\u2019s global type name, obtained from Named::typename(). This is the string that appears on the wire in a remote-spawn request. gspawn is the type-erased entry point for constructing the actor on a remote Proc. It is backed by the actor\u2019s RemoteSpawn::gspawn implementation and handles deserializing parameters and invoking RemoteSpawn::new(...).await. get_type_id returns the actor\u2019s TypeId, allowing the registry to map a concrete Rust type back to it\u2019s registration entry. Users never construct a SpawnableActor manually; these records are generated automatically by the remote! macro. The reason remote!(MyActor) works is that it only requires MyActor: RemoteSpawn. You can provide that either with an explicit impl RemoteSpawn for MyActor, or you get it for free from the blanket impl\u003cA: Actor + Referable + Binds\u003cSelf\u003e + Default\u003e RemoteSpawn for A. Note: Referable itself only requires Named, not Send + Sync. The Actor trait already provides Send, but Sync must be added explicitly at call sites that require it. In both cases, remote! can safely plug \u003cMyActor as RemoteSpawn\u003e::gspawn into the SpawnableActor record it generates. The Remote registry# The Remote type is the process-local registry of remote-spawnable actors. It is built from all SpawnableActor records submitted via remote! and exposed through two lookups: by global type name and by TypeId. #[derive(Debug)] pub struct Remote { by_name: HashMap\u003c\u0026\u0027static str, \u0026\u0027static SpawnableActor\u003e, by_type_id: HashMap\u003cTypeId, \u0026\u0027static SpawnableActor\u003e, } by_type_id is used by Remote::name_of::\u003cA\u003e(), which starts from a concrete type A: Actor and looks up its SpawnableActor in order to read the registered name. by_name is used by Remote::gspawn, which starts from a global type name string received over the wire and looks up the corresponding SpawnableActor in order to call its gspawn function. This is why the registry maintains two maps: one keyed by TypeId for caller-side APIs that start from a Rust type, and one keyed by string name for remote services that start from a serialized request. Building the registry: Remote::collect# impl Remote { pub fn collect() -\u003e Self { let mut by_name = HashMap::new(); let mut by_type_id = HashMap::new(); for entry in inventory::iter::\u003cSpawnableActor\u003e { if by_name.insert(**entry.name, entry).is_some() { panic!(\"actor name {} registered multiple times\", **entry.name); } let type_id = (entry.get_type_id)(); if by_type_id.insert(type_id, entry).is_some() { panic!( \"type id {:?} ({}) registered multiple times\", type_id, **entry.name ); } } Self { by_name, by_type_id } } } Remote::collect walks inventory::iter::\u003cSpawnableActor\u003e and builds two maps: by_name for lookup up actors by their global type name (the string that appears on the wire), and by_type_id for looking up the registration associated with a concrete Rust type. It enforces that no two actors register the same global name or TypeId in a single binary. The result is a process-local view of all remote-spawnable actors; callers are free to construct this registry once and reuse it or to rebuild it on demand, depending on their needs. Looking up names: Remote::name_of# impl Remote { pub fn name_of\u003cA: Actor\u003e(\u0026self) -\u003e Option\u003c\u0026\u0027static str\u003e { self.by_type_id .get(\u0026TypeId::of::\u003cA\u003e()) .map(|entry| **entry.name) } } name_of resolves a concrete A: RemoteSpawn to its registered global type name string. Given a concrete A: Actor, name_of returns the string name that was registered via remote!. This is used by caller-side APIs that start from a Rust type and need to put a string type name on the wire for a remote spawn request. For example, spawn_with_name_inner constructs an ActorSpec by first resolving the type A to its global name: impl ProcMeshRef { async fn spawn_with_name_inner\u003cA: RemoteSpawn\u003e( \u0026self, cx: \u0026impl context::Actor, name: Name, params: \u0026A::Params, ) -\u003e v1::Result\u003cActorMesh\u003cA\u003e\u003e { let remote = Remote::collect(); // Caller starts from the Rust type `A` \u2192 resolve to a global type name. let actor_type = remote .name_of::\u003cA\u003e() .ok_or(Error::ActorTypeNotRegistered(type_name::\u003cA\u003e().to_string()))? .to_string(); let serialized_params = bincode::serialize(params)?; let agent_mesh = self.agent_mesh(); agent_mesh.cast( cx, resource::CreateOrUpdate::\u003cmesh_agent::ActorSpec\u003e { name: name.clone(), rank: Default::default(), spec: mesh_agent::ActorSpec { actor_type: actor_type.clone(), // \u2190 string name sent over the wire params_data: serialized_params.clone(), }, }, )?; ... } Here the caller begins with the Rust type A and uses name_of::\u003cA\u003e() to obtain the global name that will be sent to the remote Proc. On the receiving side, the registry takes the global type name string, resolves it to a SpawnableActor, and then invokes that entry\u2019s gspawn function to construct the actor. Spawning by name: Remote::gspawn# impl Remote { pub async fn gspawn( \u0026self, proc: \u0026Proc, actor_type: \u0026str, actor_name: \u0026str, params: Data, ) -\u003e Result\u003cActorId, anyhow::Error\u003e { let entry = self .by_name .get(actor_type) .ok_or_else(|| anyhow::anyhow!(\"actor type {} not registered\", actor_type))?; (entry.gspawn)(proc, actor_name, params).await } } gspawn is the name -\u003e spawn path. It starts from a a global type name string (actor_type), looks up the corresponding SpawnableActor in by_name, and invokes its gspawn function. That function is the type-erased adapter provided by the actor\u2019s RemoteSpawn implementation: it deserializes params into RemoteSpawn::Params, calls RemoteSpawn::new, wires the actor into the given Proc, and returns the resulting ActorId. In a typical setup, higher-level code in a separate crate starts from a generic A: RemoteSpawn, uses Remote::name_of::\u003cA\u003e() to obtain the global type name, serializes A::Params, and sends a request containing: actor_type: that global type name, and params_data: serialized A::Params. On the receiving side, a control-plane or management actor calls: self.remote.gspawn(\u0026self.proc, \u0026actor_type, \u0026actor_name, params_data).await to look up the corresponding SpawnableActor by actor_type and invoke its gspawn entry point. That call deserializes params_data, constructs the actor, wires it into self.proc and returns the new ActorId. Putting it together# Remote spawning in hyperactor involves two complementary pieces: Type-level registration Each A: RemoteSpawn contributes a SpawnableActor record when the user writes remote!(A). These records are collected at runtime by Remote::collect(). Data-level spawn requests Higher-level code starts from a concrete actor type (e.g. A: RemoteSpawn), uses Remote::name_of::\u003cA\u003e() to obtain it\u2019s global type name, serializes A::Params, and sends a request containing those two pieces of data. On the receiving side, a management component reconstructs the actor by calling: remote.gspawn(\u0026proc, \u0026actor_type, \u0026actor_name, params_data).await Remote::gspawn uses the global type name to locate the correct SpawnableActor and invokes its type-erased gspawn function, which: deserializes params_data, calls A::new(params).await, and installs the actor into the provided Proc. The Remote registry is thus the bridge between: Rust types implementing RemoteSpawn (which define how to construct the actor), and runtime identifiers (global type names) used in serialized remote-spawn requests. This decoupling allows remote spawning to work across processes without requiring shared type information at compile time: all that crosses the wire is a global name and a parameter payload, and the receiving process uses its local registry to handle construction.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-book/src/actors/remote.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

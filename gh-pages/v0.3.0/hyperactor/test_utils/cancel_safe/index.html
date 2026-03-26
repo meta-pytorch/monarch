@@ -1,0 +1,44 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Utilities to verify cancellation safety. Utilities for testing cancel safety of futures."><title>hyperactor::test_utils::cancel_safe - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.0-nightly (02c7b1a7a 2025-09-13)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module cancel_safe</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../../hyperactor/index.html">hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module cancel_<wbr>safe</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#what-does-cancel-safe-mean" title="What does “cancel-safe” mean?">What does “cancel-safe” mean?</a></li><li><a href="#why-cancel-safety-matters" title="Why cancel-safety matters">Why cancel-safety matters</a></li><li><a href="#what-this-module-offers" title="What this module offers">What this module offers</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#functions">Module Items</a></h3><ul class="block"><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2><a href="../index.html">In hyperactor::<wbr>test_<wbr>utils</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../../index.html">hyperactor</a>::<wbr><a href="../index.html">test_utils</a></div><h1>Module <span>cancel_<wbr>safe</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../../src/hyperactor/test_utils/cancel_safe.rs.html#9-316">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Utilities to verify cancellation safety.
+Utilities for testing <strong>cancel safety</strong> of futures.</p>
+<h2 id="what-does-cancel-safe-mean"><a class="doc-anchor" href="#what-does-cancel-safe-mean">§</a>What does “cancel-safe” mean?</h2>
+<p>A future is <em>cancel-safe</em> if, at <strong>any</strong> <code>Poll::Pending</code> boundary:</p>
+<ol>
+<li><strong>State remains valid</strong> – dropping the future there does not
+violate external invariants or leave shared state corrupted.</li>
+<li><strong>Restartability holds</strong> – from that state, constructing a
+fresh future for the same logical operation can still run to
+completion and produce the expected result.</li>
+<li><strong>No partial side effects</strong> – cancellation never leaves behind
+a visible “half-done” action; effects are either not started,
+or fully completed in an idempotent way.</li>
+</ol>
+<h2 id="why-cancel-safety-matters"><a class="doc-anchor" href="#why-cancel-safety-matters">§</a>Why cancel-safety matters</h2>
+<p>Executors are free to drop futures after any <code>Poll::Pending</code>. This
+means that cancellation is not an exceptional path – it is <em>part
+of the normal contract</em>. A cancel-unsafe future can leak
+resources, corrupt protocol state, or leave behind truncated I/O.</p>
+<h2 id="what-this-module-offers"><a class="doc-anchor" href="#what-this-module-offers">§</a>What this module offers</h2>
+<p>This module provides helpers (<code>assert_cancel_safe</code>,
+<code>assert_cancel_safe_async</code>) that:</p>
+<ul>
+<li>drive a future to completion once, counting its yield points,</li>
+<li>then for every possible cancellation boundary <code>k</code>, poll a fresh
+future <code>k</code> times, drop it, and finally ensure a <strong>new run</strong>
+still produces the expected result.</li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<ul>
+<li>✓ Pure/logical futures: simple state machines with no I/O (e.g.
+yields twice, then return 42).</li>
+<li>✓ Framed writers that stage bytes internally and only commit
+once the frame is fully written.</li>
+<li>✗ Writers that flush a partial frame before returning <code>Pending</code>.</li>
+<li>✗ Futures that consume from a shared queue before <code>Pending</code> and
+drop without rollback.</li>
+</ul>
+</div></details><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.assert_cancel_safe.html" title="fn hyperactor::test_utils::cancel_safe::assert_cancel_safe">assert_<wbr>cancel_<wbr>safe</a></dt><dd>Runtime-independent version: on each <code>Poll::Pending</code>, we just poll
+again. Suitable for pure/logical futures that don’t rely on
+timers, IO, or other external progress driven by an async runtime.</dd><dt><a class="fn" href="fn.assert_cancel_safe_async.html" title="fn hyperactor::test_utils::cancel_safe::assert_cancel_safe_async">assert_<wbr>cancel_<wbr>safe_<wbr>async</a></dt><dd>Cancel-safety check for async futures. On every <code>Poll::Pending</code>,
+runs <code>on_pending().await</code> to drive external progress (e.g.
+advancing a paused clock or IO). Cancels at each yield boundary
+and ensures a fresh run still produces <code>expected</code>.</dd></dl></section></div></main></body></html>
