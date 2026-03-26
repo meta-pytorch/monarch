@@ -548,6 +548,7 @@ def get_dag_data() -> dict[str, Any]:
                     "label": agent.get("display_name") or _leaf_name(agent["full_name"]),
                     "subtitle": "Host",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -573,6 +574,7 @@ def get_dag_data() -> dict[str, Any]:
                     "label": agent.get("display_name") or _leaf_name(agent["full_name"]),
                     "subtitle": "Proc",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -597,6 +599,7 @@ def get_dag_data() -> dict[str, Any]:
                 "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
                 "status": actor_statuses.get(a["id"], "unknown"),
+                "rank": a["rank"],
             }
         )
 
