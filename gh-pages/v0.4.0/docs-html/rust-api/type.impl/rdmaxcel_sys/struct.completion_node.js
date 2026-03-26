@@ -1,0 +1,9 @@
+(function() {
+    var type_impls = Object.fromEntries([["rdmaxcel_sys",[["<details class=\"toggle implementors-toggle\" open><summary><section id=\"impl-Default-for-completion_node\" class=\"impl\"><a class=\"src rightside\" href=\"src/rdmaxcel_sys/meta-pytorch/monarch/target/debug/build/rdmaxcel-sys-1a85666d7c8d8771/out/bindings.rs.html#11503-11511\">Source</a><a href=\"#impl-Default-for-completion_node\" class=\"anchor\">§</a><h3 class=\"code-header\">impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/default/trait.Default.html\" title=\"trait core::default::Default\">Default</a> for <a class=\"struct\" href=\"rdmaxcel_sys/struct.completion_node.html\" title=\"struct rdmaxcel_sys::completion_node\">completion_node</a></h3></section></summary><div class=\"impl-items\"><details class=\"toggle method-toggle\" open><summary><section id=\"method.default\" class=\"method trait-impl\"><a class=\"src rightside\" href=\"src/rdmaxcel_sys/meta-pytorch/monarch/target/debug/build/rdmaxcel-sys-1a85666d7c8d8771/out/bindings.rs.html#11504-11510\">Source</a><a href=\"#method.default\" class=\"anchor\">§</a><h4 class=\"code-header\">fn <a href=\"https://doc.rust-lang.org/nightly/core/default/trait.Default.html#tymethod.default\" class=\"fn\">default</a>() -&gt; Self</h4></section></summary><div class='docblock'>Returns the “default value” for a type. <a href=\"https://doc.rust-lang.org/nightly/core/default/trait.Default.html#tymethod.default\">Read more</a></div></details></div></details>","Default","rdmaxcel_sys::inner::completion_node_t"]]]]);
+    if (window.register_type_impls) {
+        window.register_type_impls(type_impls);
+    } else {
+        window.pending_type_impls = type_impls;
+    }
+})()
+//{"start":55,"fragment_lengths":[1522]}

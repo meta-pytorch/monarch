@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["IbvManagerLocalMessage","IbvManagerMessage"],"struct":["IbvBackend","IbvManagerActor"],"trait":["IbvManagerLocalMessageClient","IbvManagerLocalMessageHandler","IbvManagerMessageClient","IbvManagerMessageHandler"]};

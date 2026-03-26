@@ -1,0 +1,1779 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Routers" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-book/src/mailboxes/routers.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="While a muxer dispatches messages to exact ActorId matches, a router generalizes this by routing messages to the nearest matching prefix. This enables hierarchical, prefix-based routing across clus..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="While a muxer dispatches messages to exact ActorId matches, a router generalizes this by routing messages to the nearest matching prefix. This enables hierarchical, prefix-based routing across clus..." />
+
+    <title>Routers &#8212; Monarch  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/routers';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/routers.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Routers - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', '');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Routers</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Routers">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="routers">
+<h1>Routers<a class="headerlink" href="#routers" title="Link to this heading">#</a></h1>
+<p>While a muxer dispatches messages to exact <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> matches, a <strong>router</strong> generalizes this by routing messages to the <em>nearest matching prefix</em>. This enables hierarchical, prefix-based routing across clusters of actors—spanning local and remote processes.</p>
+<p>Routers extend the ideas of the muxer with:</p>
+<ul class="simple">
+<li><p>Longest-prefix matching on structured <code class="docutils literal notranslate"><span class="pre">Reference</span></code> identifiers</p></li>
+<li><p>Dynamic routing to local and remote mailboxes</p></li>
+<li><p>Optional serialization and remote connection via <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code></p></li>
+<li><p>Fallback logic via <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code></p></li>
+</ul>
+<p>This page introduces:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code>: prefix-routing within a shared process</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>: remote routing with connection management</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code>: downgradeable reference for ephemeral routing</p></li>
+</ul>
+<p>To support routing, hyperactor defines a universal reference type for hierarchical identifiers:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">Reference</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Proc</span><span class="p">(</span><span class="n">ProcId</span><span class="p">),</span>
+<span class="w">    </span><span class="n">Actor</span><span class="p">(</span><span class="n">ActorId</span><span class="p">),</span>
+<span class="w">    </span><span class="n">Port</span><span class="p">(</span><span class="n">PortId</span><span class="p">),</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>A <code class="docutils literal notranslate"><span class="pre">Reference</span></code> encodes a path through the logical structure of the system-spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax (e.g., <code class="docutils literal notranslate"><span class="pre">tcp:[::1]:1234,myproc,actor[42]</span></code>) and can be parsed from user input or configuration via <code class="docutils literal notranslate"><span class="pre">FromStr</span></code>.</p>
+<section id="total-ordering-and-prefix-routing">
+<h2>Total Ordering and Prefix Routing<a class="headerlink" href="#total-ordering-and-prefix-routing" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">Reference</span></code> implements a total order via a lexicographic comparison of its internal components:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="nb">PartialOrd</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Reference</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">partial_cmp</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">other</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">Ordering</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="bp">self</span><span class="p">.</span><span class="n">cmp</span><span class="p">(</span><span class="n">other</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">impl</span><span class="w"> </span><span class="nb">Ord</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">Reference</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">cmp</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">other</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">Self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">Ordering</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="p">(</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">proc_id</span><span class="p">(),</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">actor_name</span><span class="p">(),</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">pid</span><span class="p">(),</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">port</span><span class="p">(),</span>
+<span class="w">        </span><span class="p">)</span>
+<span class="w">            </span><span class="p">.</span><span class="n">cmp</span><span class="p">(</span><span class="o">&amp;</span><span class="p">(</span>
+<span class="w">                </span><span class="n">other</span><span class="p">.</span><span class="n">proc_id</span><span class="p">(),</span>
+<span class="w">                </span><span class="n">other</span><span class="p">.</span><span class="n">actor_name</span><span class="p">(),</span>
+<span class="w">                </span><span class="n">other</span><span class="p">.</span><span class="n">pid</span><span class="p">(),</span>
+<span class="w">                </span><span class="n">other</span><span class="p">.</span><span class="n">port</span><span class="p">(),</span>
+<span class="w">            </span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This means that references are ordered by their position in the system hierarchy-starting with proc, then actor name, PID, and finally port. For example:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>tcp:127.0.0.1:8080,service &lt; tcp:127.0.0.1:8080,service,trainer[0]
+</pre></div>
+</div>
+<p>For Direct addressing (see <a class="reference internal" href="../references/proc_id.html"><span class="std std-doc">ProcId</span></a>), references use channel addresses instead of ranks:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>tcp:127.0.0.1:8080,service &lt; tcp:127.0.0.1:8080,service,trainer[0]
+</pre></div>
+</div>
+<p>Semantically, a <code class="docutils literal notranslate"><span class="pre">Reference</span></code> like <code class="docutils literal notranslate"><span class="pre">Proc(p)</span></code> is considered a prefix of any <code class="docutils literal notranslate"><span class="pre">Actor</span></code> or <code class="docutils literal notranslate"><span class="pre">Port</span></code> reference that shares the same proc (by matching channel address and proc name).</p>
+<p>Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using <code class="docutils literal notranslate"><span class="pre">BTreeMap&lt;Reference,</span> <span class="pre">...&gt;</span></code>. When routing a message, the destination <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> is converted into a <code class="docutils literal notranslate"><span class="pre">Reference</span></code>, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination.</p>
+<section id="mailboxrouter">
+<h3><code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code><a class="headerlink" href="#mailboxrouter" title="Link to this heading">#</a></h3>
+<p>With this structure in place, we can now define the core router:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">entries</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Reference</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;&gt;&gt;&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>A <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> maintains a thread-safe mapping from <code class="docutils literal notranslate"><span class="pre">Reference</span></code> prefixes to corresponding <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>s. These entries form the routing table: each entry declares that messages targeting a reference in that subtree should be forwarded to the given sender.</p>
+<p>When a message is routed, its destination <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> is converted into a <code class="docutils literal notranslate"><span class="pre">Reference</span></code>. The router performs a longest-prefix match against the table to find the nearest registered handler.</p>
+</section>
+<section id="binding-and-downgrading">
+<h3>Binding and Downgrading<a class="headerlink" href="#binding-and-downgrading" title="Link to this heading">#</a></h3>
+<p>To register a new routing entry, the router provides a <code class="docutils literal notranslate"><span class="pre">bind</span></code> method:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">     </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">dest</span><span class="p">:</span><span class="w"> </span><span class="nc">Reference</span><span class="p">,</span><span class="w"> </span><span class="n">sender</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">w</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">entries</span><span class="p">.</span><span class="n">write</span><span class="p">().</span><span class="n">unwrap</span><span class="p">();</span>
+<span class="w">        </span><span class="n">w</span><span class="p">.</span><span class="n">insert</span><span class="p">(</span><span class="n">dest</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">sender</span><span class="p">));</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Each call to <code class="docutils literal notranslate"><span class="pre">bind</span></code> inserts a new <code class="docutils literal notranslate"><span class="pre">Reference</span></code> → <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> entry into the routing table. These entries act as prefixes: once inserted, they serve as candidates during longest-prefix matching at message delivery time.</p>
+<p>In some cases, you may want to share or store a weak reference to the router-especially when integrating with structures that should not keep the routing table alive indefinitely. To support this, <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> can be downgraded to a <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">downgrade</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">WeakMailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">WeakMailboxRouter</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">downgrade</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">entries</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This enables ephemeral or optional routing logic—useful for circular dependencies, test scaffolding, or weakly held topology graphs.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> is a lightweight wrapper around a weak reference to the router’s internal state:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">WeakMailboxRouter</span><span class="p">(</span>
+<span class="w">    </span><span class="n">Weak</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Reference</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;&gt;&gt;&gt;</span><span class="p">,</span>
+<span class="p">);</span>
+</pre></div>
+</div>
+<p>A <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> can be upgraded back into a strong <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> (if the underlying state is still alive) or used to fail gracefully when routing is unavailable.</p>
+</section>
+<section id="routing-via-mailboxsender">
+<h3>Routing via <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#routing-via-mailboxsender" title="Link to this heading">#</a></h3>
+<p>To participate in message delivery, <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> implements the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">MailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">envelope</span><span class="p">:</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="p">,</span>
+<span class="w">        </span><span class="n">return_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">sender</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">actor_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">actor_id</span><span class="p">();</span>
+<span class="w">            </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span>
+<span class="w">                </span><span class="p">.</span><span class="n">entries</span>
+<span class="w">                </span><span class="p">.</span><span class="n">read</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="n">unwrap</span><span class="p">()</span>
+<span class="w">                </span><span class="p">.</span><span class="n">lower_bound</span><span class="p">(</span><span class="n">Excluded</span><span class="p">(</span><span class="o">&amp;</span><span class="n">actor_id</span><span class="p">.</span><span class="n">clone</span><span class="p">().</span><span class="n">into</span><span class="p">()))</span>
+<span class="w">                </span><span class="p">.</span><span class="n">prev</span><span class="p">()</span>
+<span class="w">            </span><span class="p">{</span>
+<span class="w">                </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+<span class="w">                </span><span class="nb">Some</span><span class="p">((</span><span class="n">key</span><span class="p">,</span><span class="w"> </span><span class="n">sender</span><span class="p">))</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">key</span><span class="p">.</span><span class="n">is_prefix_of</span><span class="p">(</span><span class="o">&amp;</span><span class="n">actor_id</span><span class="p">.</span><span class="n">clone</span><span class="p">().</span><span class="n">into</span><span class="p">())</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nb">Some</span><span class="p">(</span><span class="n">sender</span><span class="p">.</span><span class="n">clone</span><span class="p">())</span>
+<span class="w">                </span><span class="p">}</span>
+<span class="w">                </span><span class="nb">Some</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">};</span>
+
+<span class="w">        </span><span class="k">match</span><span class="w"> </span><span class="n">sender</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span>
+<span class="w">                </span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">Unroutable</span><span class="p">(</span>
+<span class="w">                    </span><span class="s">&quot;no destination found for actor in routing table&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">(),</span>
+<span class="w">                </span><span class="p">),</span>
+<span class="w">                </span><span class="n">return_handle</span><span class="p">,</span>
+<span class="w">            </span><span class="p">),</span>
+<span class="w">            </span><span class="nb">Some</span><span class="p">(</span><span class="n">sender</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">sender</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">),</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This implementation performs a longest-prefix match using the total order on <code class="docutils literal notranslate"><span class="pre">Reference</span></code>:</p>
+<ol class="arabic simple">
+<li><p>It converts the destination <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> into a <code class="docutils literal notranslate"><span class="pre">Reference</span></code>.</p></li>
+<li><p>It performs a descending prefix search using:</p></li>
+</ol>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="w">    </span><span class="n">entries</span><span class="p">.</span><span class="n">lower_bound</span><span class="p">(</span><span class="n">Excluded</span><span class="p">(</span><span class="o">&amp;</span><span class="n">reference</span><span class="p">)).</span><span class="n">prev</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>This locates the greatest key in the routing table that is strictly less than the destination.</p>
+<ol class="arabic simple" start="3">
+<li><p>It checks whether that key is a semantic prefix of the destination (via <code class="docutils literal notranslate"><span class="pre">is_prefix_of</span></code>).</p></li>
+<li><p>If a match is found, the message is forwarded to the corresponding <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>.</p></li>
+<li><p>If no match is found, the message is marked as undeliverable, and returned using the provided <code class="docutils literal notranslate"><span class="pre">return_handle</span></code>.</p></li>
+</ol>
+</section>
+<section id="weakmailboxrouter">
+<h3><code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code><a class="headerlink" href="#weakmailboxrouter" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> is a downgradeable, non-owning reference to a router’s internal state. It allows optional or ephemeral routing participation-for example, when holding a fallback route without keeping the full routing table alive.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">WeakMailboxRouter</span><span class="p">(</span>
+<span class="w">    </span><span class="n">Weak</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Reference</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;&gt;&gt;&gt;</span><span class="p">,</span>
+<span class="p">);</span>
+</pre></div>
+</div>
+<p>To integrate into the routing system, <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> also implements <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">WeakMailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">envelope</span><span class="p">:</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="p">,</span>
+<span class="w">        </span><span class="n">return_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">upgrade</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nb">Some</span><span class="p">(</span><span class="n">router</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">),</span>
+<span class="w">            </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span>
+<span class="w">                </span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">BrokenLink</span><span class="p">(</span><span class="s">&quot;failed to upgrade WeakMailboxRouter&quot;</span><span class="p">.</span><span class="n">to_string</span><span class="p">()),</span>
+<span class="w">                </span><span class="n">return_handle</span><span class="p">,</span>
+<span class="w">            </span><span class="p">),</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>If the router has already been dropped, <code class="docutils literal notranslate"><span class="pre">post</span></code> fails gracefully by returning the message to the sender with a <code class="docutils literal notranslate"><span class="pre">BrokenLink</span></code> error. This makes <code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code> useful in dynamic topologies or teardown-sensitive control paths, where a full routing table may not be guaranteed to exist at the time of message delivery.</p>
+</section>
+<section id="dialmailboxrouter-remote-and-serializable-routing">
+<h3><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>: Remote and Serializable Routing<a class="headerlink" href="#dialmailboxrouter-remote-and-serializable-routing" title="Link to this heading">#</a></h3>
+<p>While <code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code> supports prefix-based routing, it relies on explicitly registered <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code>s. In contrast, <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> enables <strong>remote routing</strong> through a dynamic address book and connection cache. It can forward messages to remote actors by establishing outbound connections on demand.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">DialMailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">address_book</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">RwLock</span><span class="o">&lt;</span><span class="n">BTreeMap</span><span class="o">&lt;</span><span class="n">Reference</span><span class="p">,</span><span class="w"> </span><span class="n">ChannelAddr</span><span class="o">&gt;&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">sender_cache</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">DashMap</span><span class="o">&lt;</span><span class="n">ChannelAddr</span><span class="p">,</span><span class="w"> </span><span class="n">Arc</span><span class="o">&lt;</span><span class="n">MailboxClient</span><span class="o">&gt;&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">default</span><span class="p">:</span><span class="w"> </span><span class="nc">BoxedMailboxSender</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<section id="address-book">
+<h4>Address Book<a class="headerlink" href="#address-book" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">address_book</span></code> maps <code class="docutils literal notranslate"><span class="pre">Reference</span></code> prefixes to <code class="docutils literal notranslate"><span class="pre">ChannelAddr</span></code>s representing remote destinations.</p>
+</section>
+<section id="sender-cache">
+<h4>Sender Cache<a class="headerlink" href="#sender-cache" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">sender_cache</span></code> holds active <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> connections keyed by address. When a message arrives, the router looks up the target in the address book and either reuses an existing sender or dials a new one.</p>
+</section>
+<section id="default-route">
+<h4>Default Route<a class="headerlink" href="#default-route" title="Link to this heading">#</a></h4>
+<p>If no matching reference is found, the message is forwarded to a <code class="docutils literal notranslate"><span class="pre">default</span></code> sender—useful as a catch-all route or failover handler.</p>
+<p>This structure enables adaptive, connection-aware routing across distributed systems. Next, we’ll walk through constructing and populating a <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> using <code class="docutils literal notranslate"><span class="pre">new()</span></code> and <code class="docutils literal notranslate"><span class="pre">bind()</span></code>.</p>
+</section>
+</section>
+<section id="managing-routes-bind-and-unbind">
+<h3>Managing Routes: <code class="docutils literal notranslate"><span class="pre">bind</span></code> and <code class="docutils literal notranslate"><span class="pre">unbind</span></code><a class="headerlink" href="#managing-routes-bind-and-unbind" title="Link to this heading">#</a></h3>
+<p>To populate the router, use <code class="docutils literal notranslate"><span class="pre">bind</span></code> to associate a <code class="docutils literal notranslate"><span class="pre">Reference</span></code> with a <code class="docutils literal notranslate"><span class="pre">ChannelAddr</span></code>. This replaces any existing mapping for the same reference and evicts any cached sender tied to the old address:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">router</span><span class="p">.</span><span class="n">bind</span><span class="p">(</span><span class="n">reference</span><span class="p">,</span><span class="w"> </span><span class="n">remote_addr</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>To remove entries, use <code class="docutils literal notranslate"><span class="pre">unbind</span></code>. It removes all mappings with the given prefix-effectively deleting a subtree of the address book. Corresponding cached senders are also evicted to prevent reuse of stale connections:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">router</span><span class="p">.</span><span class="n">unbind</span><span class="p">(</span><span class="o">&amp;</span><span class="n">reference_prefix</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>This allows the router to adapt dynamically to process exits, topology changes, or application-level reconfiguration. The use of <code class="docutils literal notranslate"><span class="pre">is_prefix_of</span></code> during unbinding ensures that hierarchical references can be removed in bulk-e.g., removing a <code class="docutils literal notranslate"><span class="pre">Proc</span></code>-level entry will also remove all associated <code class="docutils literal notranslate"><span class="pre">Actor</span></code> routes.</p>
+</section>
+<section id="lookup-and-dialing">
+<h3>Lookup and Dialing<a class="headerlink" href="#lookup-and-dialing" title="Link to this heading">#</a></h3>
+<p>Once the router has been populated using <code class="docutils literal notranslate"><span class="pre">bind</span></code>, message delivery proceeds in two phases: <strong>lookup</strong> followed by <strong>dialing</strong>, if needed.</p>
+<section id="address-lookup">
+<h4>Address Lookup<a class="headerlink" href="#address-lookup" title="Link to this heading">#</a></h4>
+<p>When a message arrives, the router first attempts to locate a destination using <code class="docutils literal notranslate"><span class="pre">lookup_addr</span></code>. This method:</p>
+<ul class="simple">
+<li><p>Converts the message’s <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> into a <code class="docutils literal notranslate"><span class="pre">Reference</span></code></p></li>
+<li><p>Performs a longest-prefix search using <code class="docutils literal notranslate"><span class="pre">lower_bound(...).prev()</span></code> on the address book</p></li>
+<li><p>Applies <code class="docutils literal notranslate"><span class="pre">is_prefix_of</span></code> to confirm that the matched reference is semantically valid</p></li>
+</ul>
+<p>This allows the router to resolve addresses at varying levels of granularity-e.g., by process or actor.</p>
+</section>
+<section id="dialing">
+<h4>Dialing<a class="headerlink" href="#dialing" title="Link to this heading">#</a></h4>
+<p>If a matching address is found and no cached connection exists, the router attempts to establish one using <code class="docutils literal notranslate"><span class="pre">channel::dial</span></code>. The resulting connection is wrapped in a <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code> and inserted into the sender cache for future use.</p>
+<p>If the address is already cached, the router reuses the existing sender to avoid redundant connections.</p>
+<p>The result of this lookup-and-dial process is an <code class="docutils literal notranslate"><span class="pre">Arc&lt;MailboxClient&gt;</span></code>—a runtime-capable <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> for remote delivery.</p>
+<p>We’ll now see how this machinery is tied together in the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> implementation for <code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>.</p>
+</section>
+</section>
+<section id="integration-with-mailboxsender">
+<h3>Integration with <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code><a class="headerlink" href="#integration-with-mailboxsender" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> implements the <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code> trait, enabling it to forward messages to remote actors by resolving and caching connections dynamically:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">impl</span><span class="w"> </span><span class="n">MailboxSender</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">DialMailboxRouter</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">post</span><span class="p">(</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span>
+<span class="w">        </span><span class="n">envelope</span><span class="p">:</span><span class="w"> </span><span class="nc">MessageEnvelope</span><span class="p">,</span>
+<span class="w">        </span><span class="n">return_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">PortHandle</span><span class="o">&lt;</span><span class="n">Undeliverable</span><span class="o">&lt;</span><span class="n">MessageEnvelope</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">addr</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">lookup_addr</span><span class="p">(</span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">actor_id</span><span class="p">())</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="bp">self</span><span class="p">.</span><span class="n">default</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">);</span>
+<span class="w">            </span><span class="k">return</span><span class="p">;</span>
+<span class="w">        </span><span class="p">};</span>
+
+<span class="w">        </span><span class="k">match</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">dial</span><span class="p">(</span><span class="o">&amp;</span><span class="n">addr</span><span class="p">,</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">dest</span><span class="p">().</span><span class="n">actor_id</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="nb">Err</span><span class="p">(</span><span class="n">err</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">envelope</span><span class="p">.</span><span class="n">undeliverable</span><span class="p">(</span>
+<span class="w">                </span><span class="n">DeliveryError</span><span class="p">::</span><span class="n">Unroutable</span><span class="p">(</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;cannot dial destination: {err}&quot;</span><span class="p">)),</span>
+<span class="w">                </span><span class="n">return_handle</span><span class="p">,</span>
+<span class="w">            </span><span class="p">),</span>
+<span class="w">            </span><span class="nb">Ok</span><span class="p">(</span><span class="n">sender</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">sender</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">envelope</span><span class="p">,</span><span class="w"> </span><span class="n">return_handle</span><span class="p">),</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Here’s what happens step by step:</p>
+<ol class="arabic simple">
+<li><p>Address lookup:</p></li>
+</ol>
+<ul class="simple">
+<li><p>The destination <code class="docutils literal notranslate"><span class="pre">ActorId</span></code> is converted into a <code class="docutils literal notranslate"><span class="pre">Reference</span></code>.</p></li>
+<li><p>The router searches for the nearest matching prefix in the address book.</p></li>
+<li><p>If no match is found, the message is forwarded to the configured <code class="docutils literal notranslate"><span class="pre">default</span></code> sender.</p></li>
+</ul>
+<ol class="arabic simple" start="2">
+<li><p>Connection resolution:</p></li>
+</ol>
+<ul class="simple">
+<li><p>If an address is found, the router attempts to <code class="docutils literal notranslate"><span class="pre">dial</span></code> or reuse a cached <code class="docutils literal notranslate"><span class="pre">MailboxClient</span></code>.</p></li>
+<li><p>On error (e.g., failed dial), the message is returned to the sender with a <code class="docutils literal notranslate"><span class="pre">DeliveryError::Unroutable</span></code>.</p></li>
+</ul>
+<ol class="arabic simple" start="3">
+<li><p>Message forwarding:</p></li>
+</ol>
+<ul class="simple">
+<li><p>If dialing succeeds, the resulting <code class="docutils literal notranslate"><span class="pre">sender</span></code> is used to post the message.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code> performs prefix-based routing by resolving addresses at runtime and forwarding messages over dialed or cached connections, with fallback to a default sender.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#total-ordering-and-prefix-routing">Total Ordering and Prefix Routing</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mailboxrouter"><code class="docutils literal notranslate"><span class="pre">MailboxRouter</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#binding-and-downgrading">Binding and Downgrading</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#routing-via-mailboxsender">Routing via <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#weakmailboxrouter"><code class="docutils literal notranslate"><span class="pre">WeakMailboxRouter</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dialmailboxrouter-remote-and-serializable-routing"><code class="docutils literal notranslate"><span class="pre">DialMailboxRouter</span></code>: Remote and Serializable Routing</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#address-book">Address Book</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sender-cache">Sender Cache</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#default-route">Default Route</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#managing-routes-bind-and-unbind">Managing Routes: <code class="docutils literal notranslate"><span class="pre">bind</span></code> and <code class="docutils literal notranslate"><span class="pre">unbind</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#lookup-and-dialing">Lookup and Dialing</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#address-lookup">Address Lookup</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#dialing">Dialing</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#integration-with-mailboxsender">Integration with <code class="docutils literal notranslate"><span class="pre">MailboxSender</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-book/src/mailboxes/routers.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-book/src/mailboxes/routers.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Routers",
+       "headline": "Routers",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-book/src/mailboxes/routers.html",
+       "articleBody": "Routers# While a muxer dispatches messages to exact ActorId matches, a router generalizes this by routing messages to the nearest matching prefix. This enables hierarchical, prefix-based routing across clusters of actors\u2014spanning local and remote processes. Routers extend the ideas of the muxer with: Longest-prefix matching on structured Reference identifiers Dynamic routing to local and remote mailboxes Optional serialization and remote connection via DialMailboxRouter Fallback logic via WeakMailboxRouter This page introduces: MailboxRouter: prefix-routing within a shared process DialMailboxRouter: remote routing with connection management WeakMailboxRouter: downgradeable reference for ephemeral routing To support routing, hyperactor defines a universal reference type for hierarchical identifiers: pub enum Reference { Proc(ProcId), Actor(ActorId), Port(PortId), } A Reference encodes a path through the logical structure of the system-spanning from procs to fine-grained targets like actors or ports. It has a concrete string syntax (e.g., tcp:[::1]:1234,myproc,actor[42]) and can be parsed from user input or configuration via FromStr. Total Ordering and Prefix Routing# Reference implements a total order via a lexicographic comparison of its internal components: impl PartialOrd for Reference { fn partial_cmp(\u0026self, other: \u0026Self) -\u003e Option\u003cOrdering\u003e { Some(self.cmp(other)) } } impl Ord for Reference { fn cmp(\u0026self, other: \u0026Self) -\u003e Ordering { ( self.proc_id(), self.actor_name(), self.pid(), self.port(), ) .cmp(\u0026( other.proc_id(), other.actor_name(), other.pid(), other.port(), )) } } This means that references are ordered by their position in the system hierarchy-starting with proc, then actor name, PID, and finally port. For example: tcp:127.0.0.1:8080,service \u003c tcp:127.0.0.1:8080,service,trainer[0] For Direct addressing (see ProcId), references use channel addresses instead of ranks: tcp:127.0.0.1:8080,service \u003c tcp:127.0.0.1:8080,service,trainer[0] Semantically, a Reference like Proc(p) is considered a prefix of any Actor or Port reference that shares the same proc (by matching channel address and proc name). Because this order is total and consistent with prefix semantics, it enables efficient prefix-based routing using BTreeMap\u003cReference, ...\u003e. When routing a message, the destination ActorId is converted into a Reference, and the router performs a longest-prefix match by locating the nearest entry that is a prefix of the destination. MailboxRouter# With this structure in place, we can now define the core router: pub struct MailboxRouter { entries: Arc\u003cRwLock\u003cBTreeMap\u003cReference, Arc\u003cdyn MailboxSender + Send + Sync\u003e\u003e\u003e\u003e, } A MailboxRouter maintains a thread-safe mapping from Reference prefixes to corresponding MailboxSenders. These entries form the routing table: each entry declares that messages targeting a reference in that subtree should be forwarded to the given sender. When a message is routed, its destination ActorId is converted into a Reference. The router performs a longest-prefix match against the table to find the nearest registered handler. Binding and Downgrading# To register a new routing entry, the router provides a bind method: impl MailboxRouter { pub fn bind(\u0026self, dest: Reference, sender: impl MailboxSender + \u0027static) { let mut w = self.entries.write().unwrap(); w.insert(dest, Arc::new(sender)); } } Each call to bind inserts a new Reference \u2192 MailboxSender entry into the routing table. These entries act as prefixes: once inserted, they serve as candidates during longest-prefix matching at message delivery time. In some cases, you may want to share or store a weak reference to the router-especially when integrating with structures that should not keep the routing table alive indefinitely. To support this, MailboxRouter can be downgraded to a WeakMailboxRouter: impl MailboxRouter { pub fn downgrade(\u0026self) -\u003e WeakMailboxRouter { WeakMailboxRouter(Arc::downgrade(\u0026self.entries)) } } This enables ephemeral or optional routing logic\u2014useful for circular dependencies, test scaffolding, or weakly held topology graphs. The WeakMailboxRouter is a lightweight wrapper around a weak reference to the router\u2019s internal state: pub struct WeakMailboxRouter( Weak\u003cRwLock\u003cBTreeMap\u003cReference, Arc\u003cdyn MailboxSender + Send + Sync\u003e\u003e\u003e\u003e, ); A WeakMailboxRouter can be upgraded back into a strong MailboxRouter (if the underlying state is still alive) or used to fail gracefully when routing is unavailable. Routing via MailboxSender# To participate in message delivery, MailboxRouter implements the MailboxSender trait: impl MailboxSender for MailboxRouter { fn post( \u0026self, envelope: MessageEnvelope, return_handle: PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e, ) { let sender = { let actor_id = envelope.dest().actor_id(); match self .entries .read() .unwrap() .lower_bound(Excluded(\u0026actor_id.clone().into())) .prev() { None =\u003e None, Some((key, sender)) if key.is_prefix_of(\u0026actor_id.clone().into()) =\u003e { Some(sender.clone()) } Some(_) =\u003e None, } }; match sender { None =\u003e envelope.undeliverable( DeliveryError::Unroutable( \"no destination found for actor in routing table\".to_string(), ), return_handle, ), Some(sender) =\u003e sender.post(envelope, return_handle), } } } This implementation performs a longest-prefix match using the total order on Reference: It converts the destination ActorId into a Reference. It performs a descending prefix search using: entries.lower_bound(Excluded(\u0026reference)).prev() This locates the greatest key in the routing table that is strictly less than the destination. It checks whether that key is a semantic prefix of the destination (via is_prefix_of). If a match is found, the message is forwarded to the corresponding MailboxSender. If no match is found, the message is marked as undeliverable, and returned using the provided return_handle. WeakMailboxRouter# A WeakMailboxRouter is a downgradeable, non-owning reference to a router\u2019s internal state. It allows optional or ephemeral routing participation-for example, when holding a fallback route without keeping the full routing table alive. pub struct WeakMailboxRouter( Weak\u003cRwLock\u003cBTreeMap\u003cReference, Arc\u003cdyn MailboxSender + Send + Sync\u003e\u003e\u003e\u003e, ); To integrate into the routing system, WeakMailboxRouter also implements MailboxSender: impl MailboxSender for WeakMailboxRouter { fn post( \u0026self, envelope: MessageEnvelope, return_handle: PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e, ) { match self.upgrade() { Some(router) =\u003e router.post(envelope, return_handle), None =\u003e envelope.undeliverable( DeliveryError::BrokenLink(\"failed to upgrade WeakMailboxRouter\".to_string()), return_handle, ), } } } If the router has already been dropped, post fails gracefully by returning the message to the sender with a BrokenLink error. This makes WeakMailboxRouter useful in dynamic topologies or teardown-sensitive control paths, where a full routing table may not be guaranteed to exist at the time of message delivery. DialMailboxRouter: Remote and Serializable Routing# While MailboxRouter supports prefix-based routing, it relies on explicitly registered MailboxSenders. In contrast, DialMailboxRouter enables remote routing through a dynamic address book and connection cache. It can forward messages to remote actors by establishing outbound connections on demand. pub struct DialMailboxRouter { address_book: Arc\u003cRwLock\u003cBTreeMap\u003cReference, ChannelAddr\u003e\u003e\u003e, sender_cache: Arc\u003cDashMap\u003cChannelAddr, Arc\u003cMailboxClient\u003e\u003e\u003e, default: BoxedMailboxSender, } Address Book# The address_book maps Reference prefixes to ChannelAddrs representing remote destinations. Sender Cache# The sender_cache holds active MailboxClient connections keyed by address. When a message arrives, the router looks up the target in the address book and either reuses an existing sender or dials a new one. Default Route# If no matching reference is found, the message is forwarded to a default sender\u2014useful as a catch-all route or failover handler. This structure enables adaptive, connection-aware routing across distributed systems. Next, we\u2019ll walk through constructing and populating a DialMailboxRouter using new() and bind(). Managing Routes: bind and unbind# To populate the router, use bind to associate a Reference with a ChannelAddr. This replaces any existing mapping for the same reference and evicts any cached sender tied to the old address: router.bind(reference, remote_addr); To remove entries, use unbind. It removes all mappings with the given prefix-effectively deleting a subtree of the address book. Corresponding cached senders are also evicted to prevent reuse of stale connections: router.unbind(\u0026reference_prefix); This allows the router to adapt dynamically to process exits, topology changes, or application-level reconfiguration. The use of is_prefix_of during unbinding ensures that hierarchical references can be removed in bulk-e.g., removing a Proc-level entry will also remove all associated Actor routes. Lookup and Dialing# Once the router has been populated using bind, message delivery proceeds in two phases: lookup followed by dialing, if needed. Address Lookup# When a message arrives, the router first attempts to locate a destination using lookup_addr. This method: Converts the message\u2019s ActorId into a Reference Performs a longest-prefix search using lower_bound(...).prev() on the address book Applies is_prefix_of to confirm that the matched reference is semantically valid This allows the router to resolve addresses at varying levels of granularity-e.g., by process or actor. Dialing# If a matching address is found and no cached connection exists, the router attempts to establish one using channel::dial. The resulting connection is wrapped in a MailboxClient and inserted into the sender cache for future use. If the address is already cached, the router reuses the existing sender to avoid redundant connections. The result of this lookup-and-dial process is an Arc\u003cMailboxClient\u003e\u2014a runtime-capable MailboxSender for remote delivery. We\u2019ll now see how this machinery is tied together in the MailboxSender implementation for DialMailboxRouter. Integration with MailboxSender# DialMailboxRouter implements the MailboxSender trait, enabling it to forward messages to remote actors by resolving and caching connections dynamically: impl MailboxSender for DialMailboxRouter { fn post( \u0026self, envelope: MessageEnvelope, return_handle: PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e, ) { let Some(addr) = self.lookup_addr(envelope.dest().actor_id()) else { self.default.post(envelope, return_handle); return; }; match self.dial(\u0026addr, envelope.dest().actor_id()) { Err(err) =\u003e envelope.undeliverable( DeliveryError::Unroutable(format!(\"cannot dial destination: {err}\")), return_handle, ), Ok(sender) =\u003e sender.post(envelope, return_handle), } } } Here\u2019s what happens step by step: Address lookup: The destination ActorId is converted into a Reference. The router searches for the nearest matching prefix in the address book. If no match is found, the message is forwarded to the configured default sender. Connection resolution: If an address is found, the router attempts to dial or reuse a cached MailboxClient. On error (e.g., failed dial), the message is returned to the sender with a DeliveryError::Unroutable. Message forwarding: If dialing succeeds, the resulting sender is used to post the message. DialMailboxRouter performs prefix-based routing by resolving addresses at runtime and forwarding messages over dialed or cached connections, with fallback to a default sender.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-book/src/mailboxes/routers.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

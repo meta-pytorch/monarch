@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MeshKind","NamespaceError"],"struct":["InMemoryNamespace"],"trait":["Namespace","Registrable"]};

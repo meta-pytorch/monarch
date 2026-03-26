@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PyProcMesh"],"fn":["register_python_bindings"],"struct":["PyProcMeshImpl","PyProcMeshRefImpl"]};

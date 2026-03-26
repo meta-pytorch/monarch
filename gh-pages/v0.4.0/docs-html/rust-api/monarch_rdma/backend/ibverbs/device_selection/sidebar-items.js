@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["get_cuda_device_to_ibv_device","resolve_ibv_device","select_optimal_ibv_device"]};

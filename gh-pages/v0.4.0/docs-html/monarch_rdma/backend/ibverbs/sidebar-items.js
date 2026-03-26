@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["device_selection","manager_actor","primitives","queue_pair"],"struct":["IbvBuffer","IbvOp"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_device_ptr"],"struct":["KeepaliveLocalMemory","UnsafeLocalMemory"],"trait":["Keepalive","RdmaLocalMemory"]};

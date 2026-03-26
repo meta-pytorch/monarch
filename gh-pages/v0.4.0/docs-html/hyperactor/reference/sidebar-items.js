@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Reference","ReferenceKind","ReferenceParsingError","UnboundPortKind"],"fn":["is_valid_ident"],"mod":["lex","name"],"struct":["ActorId","ActorRef","OncePortRef","PortId","PortRef","ProcId","UnboundPort"],"type":["Index"]};

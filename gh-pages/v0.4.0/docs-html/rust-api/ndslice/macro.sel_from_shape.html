@@ -1,0 +1,40 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Construct a `Selection` from a `Shape` using labeled dimension constraints."><title>sel_from_shape in ndslice - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="ndslice" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc macro"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">sel_from_shape</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../ndslice/index.html">ndslice</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">sel_<wbr>from_<wbr>shape</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#forms" title="Forms">Forms</a></li><li><a href="#panics" title="Panics">Panics</a></li><li><a href="#see-also" title="See Also">See Also</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate ndslice</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">ndslice</a></div><h1>Macro <span class="macro">sel_<wbr>from_<wbr>shape</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/ndslice/selection.rs.html#1423-1440">Source</a> </span></div><pre class="rust item-decl"><code>macro_rules! sel_from_shape {
+    ($shape:expr, $label:ident = $range:expr) =&gt; { ... };
+    ($shape:expr, $($label:ident = $val:literal),* $(,)?) =&gt; { ... };
+    ($shape:expr, $($label:ident = $range:expr),* $(,)?) =&gt; { ... };
+}</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Construct a <a href="selection/enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> from a <a href="shape/struct.Shape.html" title="struct ndslice::shape::Shape"><code>Shape</code></a> using labeled dimension
+constraints.</p>
+<p>This macro provides a convenient syntax for specifying
+sub-selections on a shape by labeling dimensions and applying
+either exact indices or ranges. Internally, it wraps
+<a href="selection/fn.selection_from_one.html" title="fn ndslice::selection::selection_from_one"><code>selection_from_one</code></a> and <a href="selection/fn.selection_from.html" title="fn ndslice::selection::selection_from"><code>selection_from</code></a> to produce a
+fully-aligned <a href="selection/enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> expression.</p>
+<h2 id="forms"><a class="doc-anchor" href="#forms">§</a>Forms</h2>
+<ul>
+<li>
+<p>Single labeled range:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">let </span>shape = <span class="macro">ndslice::shape!</span>(zone = <span class="number">2</span>, host = <span class="number">4</span>, gpu = <span class="number">8</span>);
+<span class="kw">let </span>sel = <span class="macro">ndslice::sel_from_shape!</span>(<span class="kw-2">&amp;</span>shape, host = <span class="number">1</span>..<span class="number">3</span>);</code></pre></div></li>
+<li>
+<p>Multiple exact indices (converted to <code>n..n+1</code>):</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">let </span>shape = <span class="macro">ndslice::shape!</span>(zone = <span class="number">2</span>, host = <span class="number">4</span>, gpu = <span class="number">8</span>);
+<span class="kw">let </span>sel = <span class="macro">ndslice::sel_from_shape!</span>(<span class="kw-2">&amp;</span>shape, zone = <span class="number">1</span>, gpu = <span class="number">4</span>);</code></pre></div></li>
+<li>
+<p>Multiple labeled ranges:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">let </span>shape = <span class="macro">ndslice::shape!</span>(zone = <span class="number">2</span>, host = <span class="number">4</span>, gpu = <span class="number">8</span>);
+<span class="kw">let </span>sel = <span class="macro">ndslice::sel_from_shape!</span>(<span class="kw-2">&amp;</span>shape, zone = <span class="number">0</span>..<span class="number">1</span>, host = <span class="number">1</span>..<span class="number">3</span>, gpu = <span class="number">4</span>..<span class="number">8</span>);</code></pre></div></li>
+</ul>
+<h2 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h2>
+<p>This macro calls <code>.unwrap()</code> on the result of the underlying
+functions. It will panic if any label is not found in the shape.</p>
+<h2 id="see-also"><a class="doc-anchor" href="#see-also">§</a>See Also</h2>
+<ul>
+<li><a href="selection/fn.selection_from_one.html" title="fn ndslice::selection::selection_from_one"><code>selection_from_one</code></a></li>
+<li><a href="selection/fn.selection_from.html" title="fn ndslice::selection::selection_from"><code>selection_from</code></a></li>
+<li><a href="selection/enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a></li>
+<li><a href="shape/struct.Shape.html" title="struct ndslice::shape::Shape"><code>Shape</code></a></li>
+</ul>
+</div></details></section></div></main></body></html>

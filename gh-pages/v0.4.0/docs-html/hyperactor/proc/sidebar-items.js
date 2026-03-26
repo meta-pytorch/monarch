@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["ActorInstance","Context","Instance","InstanceCell","InstanceReceivers","Ports","Proc","WeakInstanceCell","WeakProc","WorkCell"]};

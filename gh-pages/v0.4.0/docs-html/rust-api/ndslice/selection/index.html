@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Selection algebra for describing multidimensional mesh regions. This module defines a recursive algebra for selecting coordinates in a multidimensional space."><title>ndslice::selection - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="ndslice" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module selection</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../ndslice/index.html">ndslice</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module selection</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#example" title="Example">Example</a></li><li><a href="#evaluation" title="Evaluation">Evaluation</a></li></ul><h3><a href="#modules">Module Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#traits" title="Traits">Traits</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate ndslice</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">ndslice</a></div><h1>Module <span>selection</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/ndslice/selection.rs.html#9-2524">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Selection algebra for describing multidimensional mesh regions.
+This module defines a recursive algebra for selecting coordinates
+in a multidimensional space.</p>
+<p>A <code>Selection</code> describes constraints across dimensions of an
+<code>ndslice::Slice</code>. Variants like [<code>All</code>], [<code>First</code>], and <a href="../shape/struct.Range.html" title="struct ndslice::shape::Range"><code>Range</code></a>
+operate dimensionally, while [<code>Intersection</code>] and [<code>Union</code>] allow
+for logical composition of selections.</p>
+<h3 id="example"><a class="doc-anchor" href="#example">§</a>Example</h3>
+<p>Suppose a 3-dimensional mesh system of:</p>
+<ul>
+<li>2 zones</li>
+<li>4 hosts per zone</li>
+<li>8 GPUs per host</li>
+</ul>
+<p>The corresponding <code>Slice</code> will have shape <code>[2, 4, 8]</code>. An
+expression to denote the first 4 GPUs of host 0 together with the
+last 4 GPUs on host 1 across all regions can be written as:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>ndslice::selection::dsl::all;
+<span class="kw">use </span>ndslice::selection::dsl::range;
+<span class="kw">use </span>ndslice::selection::dsl::true_;
+<span class="kw">use </span>ndslice::selection::dsl::union;
+
+<span class="kw">let </span>s = all(range(<span class="number">0</span>, range(<span class="number">0</span>..<span class="number">4</span>, true_())));
+<span class="kw">let </span>t = all(range(<span class="number">1</span>, range(<span class="number">4</span>.., true_())));
+<span class="kw">let </span>selection = union(s, t);</code></pre></div>
+<p>Assuming a row-major layout, that is the set of 4 x 2 x 2 = 16
+coordinates <em>{(0, 0, 0), … (0, 0, 3), (0, 1, 5), …, (0, 1, 7),
+(1, 0, 0), …, (1, 0, 3), (1, 1, 4), …, (1, 1, 7)}</em> where code
+to print that set might read as follows.</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>ndslice::Slice;
+<span class="kw">use </span>ndslice::selection::EvalOpts;
+<span class="kw">use </span>ndslice::selection::dsl::all;
+<span class="kw">use </span>ndslice::selection::dsl::range;
+<span class="kw">use </span>ndslice::selection::dsl::true_;
+<span class="kw">use </span>ndslice::selection::dsl::union;
+
+<span class="kw">let </span>slice = Slice::new(<span class="number">0usize</span>, <span class="macro">vec!</span>[<span class="number">2</span>, <span class="number">4</span>, <span class="number">8</span>], <span class="macro">vec!</span>[<span class="number">32</span>, <span class="number">8</span>, <span class="number">1</span>]).unwrap();
+<span class="kw">let </span>s = all(range(<span class="number">0</span>, range(<span class="number">0</span>..<span class="number">4</span>, true_())));
+<span class="kw">let </span>t = all(range(<span class="number">1</span>, range(<span class="number">4</span>.., true_())));
+
+<span class="kw">for </span>r <span class="kw">in </span>union(s, t).eval(<span class="kw-2">&amp;</span>EvalOpts::lenient(), <span class="kw-2">&amp;</span>slice).unwrap() {
+    <span class="macro">println!</span>(<span class="string">"{:?}"</span>, slice.coordinates(r).unwrap());
+}</code></pre></div>
+<p>which is using the <code>eval</code> function described next.</p>
+<h3 id="evaluation"><a class="doc-anchor" href="#evaluation">§</a>Evaluation</h3>
+<p>Selections are evaluated against an <code>ndslice::Slice</code> using the
+<a href="enum.Selection.html#method.eval" title="method ndslice::selection::Selection::eval"><code>Selection::eval</code></a> method, which returns a lazy iterator over the
+flat (linearized) indices of elements that match.</p>
+<p>Evaluation proceeds recursively, dimension by dimension, with each
+variant of <code>Selection</code> contributing logic at a particular level of
+the slice.</p>
+<p>If a <code>Selection</code> is shorter than the number of dimensions, it is
+implicitly extended with <code>true_()</code> at the remaining levels. This
+means <code>Selection::True</code> acts as the identity element, matching all
+remaining indices by default.</p>
+</div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="dsl/index.html" title="mod ndslice::selection::dsl">dsl</a></dt><dd><code>SelectionSYM</code>-based constructors specialized to the <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a>
+AST.</dd><dt><a class="mod" href="normal/index.html" title="mod ndslice::selection::normal">normal</a></dt><dd>Normalization logic for <code>Selection</code>.</dd><dt><a class="mod" href="parse/index.html" title="mod ndslice::selection::parse">parse</a></dt><dd>A parser for selection expressions in a compact textual syntax.</dd><dt><a class="mod" href="pretty/index.html" title="mod ndslice::selection::pretty">pretty</a></dt><dd>Formatting utilities for <code>Selection</code> expressions.</dd><dt><a class="mod" href="routing/index.html" title="mod ndslice::selection::routing">routing</a></dt><dd>Shape navigation guided by <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> expressions.</dd><dt><a class="mod" href="test_utils/index.html" title="mod ndslice::selection::test_utils">test_<wbr>utils</a></dt><dt><a class="mod" href="token_parser/index.html" title="mod ndslice::selection::token_parser">token_<wbr>parser</a></dt><dd>A <code>TokenStream</code> to <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> parser. Used at compile time in
+[<code>sel!]</code>. See [<code>selection::parse</code>] for syntax details and
+examples.
+A <code>TokenStream</code> to <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> parser used by the <code>sel!</code>
+procedural macro.</dd></dl><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.EvalOpts.html" title="struct ndslice::selection::EvalOpts">Eval<wbr>Opts</a></dt><dd><code>EvalOpts</code> controls runtime behavior of <a href="enum.Selection.html#method.eval" title="method ndslice::selection::Selection::eval"><code>Selection::eval</code></a> by
+enforcing stricter validation rules.</dd><dt><a class="struct" href="struct.NormalizedSelectionKey.html" title="struct ndslice::selection::NormalizedSelectionKey">Normalized<wbr>Selection<wbr>Key</a></dt><dd>Wraps a normalized selection and derives <code>Eq</code> and <code>Hash</code>, relying
+on the canonical structure of the normalized form.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.LabelKey.html" title="enum ndslice::selection::LabelKey">Label<wbr>Key</a></dt><dd>A metadata label used to constrain values at a given coordinate
+dimension.</dd><dt><a class="enum" href="enum.Selection.html" title="enum ndslice::selection::Selection">Selection</a></dt><dd>An algebra for expressing node selection.</dd></dl><h2 id="traits" class="section-header">Traits<a href="#traits" class="anchor">§</a></h2><dl class="item-table"><dt><a class="trait" href="trait.ReifySlice.html" title="trait ndslice::selection::ReifySlice">Reify<wbr>Slice</a></dt><dd>Connects the <code>select!</code> API to the <code>Selection</code> algebra by enabling
+<code>base.reify_slice(slice)</code> syntax, where <code>base: Slice</code>.</dd><dt><a class="trait" href="trait.SelectionSYM.html" title="trait ndslice::selection::SelectionSYM">SelectionSYM</a></dt><dd>This trait defines an abstract syntax without committing to a
+specific representation. It follow the
+<a href="https://okmij.org/ftp/tagless-final/index.html">tagless-final</a>
+style where <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> is a default AST representation.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.is_equivalent_true.html" title="fn ndslice::selection::is_equivalent_true">is_<wbr>equivalent_<wbr>true</a></dt><dd>Trivial all(true) equivalence.</dd><dt><a class="fn" href="fn.normalize.html" title="fn ndslice::selection::normalize">normalize</a></dt><dd>Normalizes a <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> toward a canonical form for structural
+comparison.</dd><dt><a class="fn" href="fn.selection_from.html" title="fn ndslice::selection::selection_from">selection_<wbr>from</a></dt><dd>Construct a <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> from a <a href="../shape/struct.Shape.html" title="struct ndslice::shape::Shape"><code>Shape</code></a> and multiple labeled
+range constraints.</dd><dt><a class="fn" href="fn.selection_from_one.html" title="fn ndslice::selection::selection_from_one">selection_<wbr>from_<wbr>one</a></dt><dd>Construct a <a href="enum.Selection.html" title="enum ndslice::selection::Selection"><code>Selection</code></a> from a <a href="../shape/struct.Shape.html" title="struct ndslice::shape::Shape"><code>Shape</code></a> and a single labeled
+constraint.</dd><dt><a class="fn" href="fn.structurally_equal.html" title="fn ndslice::selection::structurally_equal">structurally_<wbr>equal</a></dt><dd>Compares two <code>Selection</code> values for structural equality.</dd></dl></section></div></main></body></html>

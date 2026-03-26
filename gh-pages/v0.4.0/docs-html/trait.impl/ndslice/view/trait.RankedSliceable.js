@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["hyperactor_mesh",[["impl <a class=\"trait\" href=\"ndslice/view/trait.RankedSliceable.html\" title=\"trait ndslice::view::RankedSliceable\">RankedSliceable</a> for <a class=\"struct\" href=\"hyperactor_mesh/host_mesh/struct.HostMeshRef.html\" title=\"struct hyperactor_mesh::host_mesh::HostMeshRef\">HostMeshRef</a>",0],["impl <a class=\"trait\" href=\"ndslice/view/trait.RankedSliceable.html\" title=\"trait ndslice::view::RankedSliceable\">RankedSliceable</a> for <a class=\"struct\" href=\"hyperactor_mesh/proc_mesh/struct.ProcMeshRef.html\" title=\"struct hyperactor_mesh::proc_mesh::ProcMeshRef\">ProcMeshRef</a>",0],["impl&lt;A: <a class=\"trait\" href=\"hyperactor/actor/trait.Referable.html\" title=\"trait hyperactor::actor::Referable\">Referable</a>&gt; <a class=\"trait\" href=\"ndslice/view/trait.RankedSliceable.html\" title=\"trait ndslice::view::RankedSliceable\">RankedSliceable</a> for <a class=\"struct\" href=\"hyperactor_mesh/actor_mesh/struct.ActorMeshRef.html\" title=\"struct hyperactor_mesh::actor_mesh::ActorMeshRef\">ActorMeshRef</a>&lt;A&gt;",0],["impl&lt;T: <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html\" title=\"trait core::clone::Clone\">Clone</a> + 'static&gt; <a class=\"trait\" href=\"ndslice/view/trait.RankedSliceable.html\" title=\"trait ndslice::view::RankedSliceable\">RankedSliceable</a> for <a class=\"struct\" href=\"hyperactor_mesh/value_mesh/struct.ValueMesh.html\" title=\"struct hyperactor_mesh::value_mesh::ValueMesh\">ValueMesh</a>&lt;T&gt;",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1538]}

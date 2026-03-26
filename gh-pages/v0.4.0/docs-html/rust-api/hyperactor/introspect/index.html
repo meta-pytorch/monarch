@@ -1,0 +1,109 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Introspection protocol for hyperactor actors."><title>hyperactor::introspect - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="hyperactor" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module introspect</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../hyperactor/index.html">hyperactor</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module introspect</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#design-invariants" title="Design Invariants">Design Invariants</a><ul><li><a href="#introspection-key-invariants-ik-" title="Introspection key invariants (IK-*)">Introspection key invariants (IK-*)</a></li><li><a href="#failure-introspection-invariants-fi-" title="Failure introspection invariants (FI-*)">Failure introspection invariants (FI-*)</a></li><li><a href="#attrs-view-invariants-av-" title="Attrs view invariants (AV-*)">Attrs view invariants (AV-*)</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#statics" title="Statics">Statics</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate hyperactor</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">hyperactor</a></div><h1>Module <span>introspect</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/hyperactor/introspect.rs.html#9-1100">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Introspection protocol for hyperactor actors.</p>
+<p>Every actor has a dedicated introspect task that handles
+<a href="enum.IntrospectMessage.html" title="enum hyperactor::introspect::IntrospectMessage"><code>IntrospectMessage</code></a> by reading <a href="../proc/struct.InstanceCell.html" title="struct hyperactor::proc::InstanceCell"><code>InstanceCell</code></a> state directly,
+without going through the actor’s message loop. This means:</p>
+<ul>
+<li>Stuck actors can be introspected (the task runs independently).</li>
+<li>Introspection does not perturb observed state (no Heisenberg).</li>
+<li>Live status is reported accurately.</li>
+</ul>
+<p>Infrastructure actors publish domain-specific metadata via
+<code>publish_attrs()</code>, which the introspect task reads for
+Entity-view queries. Non-addressable children (e.g., system procs)
+are resolved via a callback registered on <a href="../proc/struct.InstanceCell.html" title="struct hyperactor::proc::InstanceCell"><code>InstanceCell</code></a>.</p>
+<p>Callers navigate topology by fetching an <a href="struct.IntrospectResult.html" title="struct hyperactor::introspect::IntrospectResult"><code>IntrospectResult</code></a>
+and following its <code>children</code> references.</p>
+<h2 id="design-invariants"><a class="doc-anchor" href="#design-invariants">§</a>Design Invariants</h2>
+<p>The introspection subsystem maintains eleven invariants (S1–S11).
+Each is documented at the code site that enforces it.</p>
+<ul>
+<li><strong>S1.</strong> Introspection must not depend on actor responsiveness –
+a wedged actor can still be introspected (runtime task, not
+actor loop).</li>
+<li><strong>S2.</strong> Introspection must not perturb observed state – reading
+<code>InstanceCell</code> never sets <code>last_message_handler</code> to
+<code>IntrospectMessage</code>.</li>
+<li><strong>S3.</strong> Sender routing is unchanged – senders target the same
+<code>PortId</code> (<code>IntrospectMessage::port()</code>) across processes.</li>
+<li><strong>S4.</strong> <code>IntrospectMessage</code> never produces a <code>WorkCell</code> –
+pre-registration via <code>open_message_port</code> gives the introspect
+port its own channel, independent of the actor’s work queue.</li>
+<li><strong>S5.</strong> Replies never use <code>PanickingMailboxSender</code> – the
+introspect task replies via <code>Mailbox::serialize_and_send_once</code>.</li>
+<li><strong>S6.</strong> View semantics are stable – Actor view uses live
+structural state + supervision children; Entity view uses
+published properties + domain children.</li>
+<li><strong>S7.</strong> <code>QueryChild</code> must work without actor handlers – system
+procs are resolved via a per-actor callback on <code>InstanceCell</code>.</li>
+<li><strong>S8.</strong> Published properties are constrained – actors cannot
+publish <code>Root</code> or <code>Error</code> payloads (only <code>Host</code> and <code>Proc</code>
+variants).</li>
+<li><strong>S9.</strong> Port binding is single source of truth – the introspect
+port is bound exactly once via <code>bind_actor_port()</code> in
+<code>Instance::new()</code>.</li>
+<li><strong>S10.</strong> Introspect receiver lifecycle – created in
+<code>Instance::new()</code>, spawned in <code>start()</code>, dropped in
+<code>child_instance()</code>.</li>
+<li><strong>S11.</strong> Terminated snapshots do not keep actors resolvable –
+<code>store_terminated_snapshot</code> writes to the proc’s snapshot map,
+not the instances map. <code>resolve_actor_ref</code> checks terminal
+status independently and is unaffected by snapshot storage.</li>
+<li><strong>S12.</strong> Introspection must not impair actor liveness –
+introspection queries (including DashMap reads for actor
+enumeration) must not cause convoy starvation or scheduling
+delays that stall concurrent actor spawn/stop operations.</li>
+</ul>
+<h3 id="introspection-key-invariants-ik-"><a class="doc-anchor" href="#introspection-key-invariants-ik-">§</a>Introspection key invariants (IK-*)</h3>
+<ul>
+<li><strong>IK-1 (metadata completeness):</strong> Every actor-runtime
+introspection key must carry <code>@meta(INTROSPECT = ...)</code> with
+non-empty <code>name</code> and <code>desc</code>.</li>
+<li><strong>IK-2 (short-name uniqueness):</strong> No two introspection keys
+may share the same <code>IntrospectAttr.name</code>. Duplicates would break
+the FQ-to-short HTTP remap and schema output.</li>
+</ul>
+<h3 id="failure-introspection-invariants-fi-"><a class="doc-anchor" href="#failure-introspection-invariants-fi-">§</a>Failure introspection invariants (FI-*)</h3>
+<p>The FailureInfo presentation type lives in
+<code>hyperactor_mesh::introspect</code>; these invariants are documented
+here because the enforcement sites are in hyperactor
+(<code>proc.rs</code> <code>serve()</code>, <code>live_actor_payload</code>).</p>
+<ul>
+<li><strong>FI-1 (event-before-status):</strong> All <code>InstanceCell</code> state that
+<code>live_actor_payload</code> reads must be written BEFORE
+<code>change_status()</code> transitions to terminal.</li>
+<li><strong>FI-2 (write-once):</strong> <code>InstanceCellState::supervision_event</code>
+is written at most once per actor lifetime.</li>
+<li><strong>FI-3 (failure attrs &lt;-&gt; status):</strong> Failure attrs are present
+iff status is <code>"failed"</code>.</li>
+<li><strong>FI-4 (is_propagated &lt;-&gt; root_cause_actor):</strong>
+<code>failure_is_propagated == true</code> iff
+<code>failure_root_cause_actor != this_actor_id</code>.</li>
+<li><strong>FI-5 (is_poisoned &lt;-&gt; failed_actor_count):</strong>
+<code>is_poisoned == true</code> iff <code>failed_actor_count &gt; 0</code>.</li>
+<li><strong>FI-6 (clean stop = no artifacts):</strong> When an actor stops
+cleanly, <code>supervision_event</code> is <code>None</code>, failure attrs are
+absent, and the actor does not contribute to
+<code>failed_actor_count</code>.</li>
+</ul>
+<h3 id="attrs-view-invariants-av-"><a class="doc-anchor" href="#attrs-view-invariants-av-">§</a>Attrs view invariants (AV-*)</h3>
+<p>These govern the typed view layer (<code>ActorAttrsView</code>). The
+full AV-* / DP-* family is documented in
+<code>hyperactor_mesh::introspect</code>; the subset relevant to this
+crate:</p>
+<ul>
+<li><strong>AV-1 (view-roundtrip):</strong> For each view V,
+<code>V::from_attrs(&amp;v.to_attrs()) == Ok(v)</code>.</li>
+<li><strong>AV-2 (required-key-strictness):</strong> <code>from_attrs</code> fails iff
+required keys for that view are missing.</li>
+<li><strong>AV-3 (unknown-key-tolerance):</strong> Unknown attrs keys must
+not affect successful decode outcome.</li>
+</ul>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.ActorAttrsView.html" title="struct hyperactor::introspect::ActorAttrsView">Actor<wbr>Attrs<wbr>View</a></dt><dd>Typed view over attrs for an actor node.</dd><dt><a class="struct" href="struct.FailureAttrs.html" title="struct hyperactor::introspect::FailureAttrs">Failure<wbr>Attrs</a></dt><dd>Structured failure fields decoded from <code>FAILURE_*</code> attrs.</dd><dt><a class="struct" href="struct.IntrospectResult.html" title="struct hyperactor::introspect::IntrospectResult">Introspect<wbr>Result</a></dt><dd>Internal introspection result. Carries attrs as a JSON string.
+The mesh layer constructs the API-facing <code>NodePayload</code> (with
+<code>properties</code>) from this via <code>derive_properties</code>.</dd><dt><a class="struct" href="struct.RecordedEvent.html" title="struct hyperactor::introspect::RecordedEvent">Recorded<wbr>Event</a></dt><dd>Structured tracing event from the actor-local flight recorder.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.AttrsViewError.html" title="enum hyperactor::introspect::AttrsViewError">Attrs<wbr>View<wbr>Error</a></dt><dd>Error from decoding an <code>Attrs</code> bag into a typed view.</dd><dt><a class="enum" href="enum.IntrospectMessage.html" title="enum hyperactor::introspect::IntrospectMessage">Introspect<wbr>Message</a></dt><dd>Introspection query sent to any actor.</dd><dt><a class="enum" href="enum.IntrospectView.html" title="enum hyperactor::introspect::IntrospectView">Introspect<wbr>View</a></dt><dd>Context for introspection query - what aspect of the actor to
+describe.</dd></dl><h2 id="statics" class="section-header">Statics<a href="#statics" class="anchor">§</a></h2><dl class="item-table"><dt><a class="static" href="static.ACTOR_TYPE.html" title="static hyperactor::introspect::ACTOR_TYPE">ACTOR_<wbr>TYPE</a></dt><dd>Fully-qualified actor type name.</dd><dt><a class="static" href="static.CHILDREN.html" title="static hyperactor::introspect::CHILDREN">CHILDREN</a></dt><dd>Child reference strings for tree navigation. Published by
+infrastructure actors (HostMeshAgent, ProcAgent) so the
+Entity view can return children without parsing mesh-layer keys.</dd><dt><a class="static" href="static.CREATED_AT.html" title="static hyperactor::introspect::CREATED_AT">CREATED_<wbr>AT</a></dt><dd>Timestamp when this actor was created.</dd><dt><a class="static" href="static.ERROR_CODE.html" title="static hyperactor::introspect::ERROR_CODE">ERROR_<wbr>CODE</a></dt><dd>Machine-readable error code for error nodes.</dd><dt><a class="static" href="static.ERROR_MESSAGE.html" title="static hyperactor::introspect::ERROR_MESSAGE">ERROR_<wbr>MESSAGE</a></dt><dd>Human-readable error message for error nodes.</dd><dt><a class="static" href="static.FAILURE_ERROR_MESSAGE.html" title="static hyperactor::introspect::FAILURE_ERROR_MESSAGE">FAILURE_<wbr>ERROR_<wbr>MESSAGE</a></dt><dd>Failure error message.</dd><dt><a class="static" href="static.FAILURE_IS_PROPAGATED.html" title="static hyperactor::introspect::FAILURE_IS_PROPAGATED">FAILURE_<wbr>IS_<wbr>PROPAGATED</a></dt><dd>Whether the failure was propagated from a child.</dd><dt><a class="static" href="static.FAILURE_OCCURRED_AT.html" title="static hyperactor::introspect::FAILURE_OCCURRED_AT">FAILURE_<wbr>OCCURRED_<wbr>AT</a></dt><dd>Timestamp when failure occurred.</dd><dt><a class="static" href="static.FAILURE_ROOT_CAUSE_ACTOR.html" title="static hyperactor::introspect::FAILURE_ROOT_CAUSE_ACTOR">FAILURE_<wbr>ROOT_<wbr>CAUSE_<wbr>ACTOR</a></dt><dd>Actor that caused the failure (root cause).</dd><dt><a class="static" href="static.FAILURE_ROOT_CAUSE_NAME.html" title="static hyperactor::introspect::FAILURE_ROOT_CAUSE_NAME">FAILURE_<wbr>ROOT_<wbr>CAUSE_<wbr>NAME</a></dt><dd>Name of root cause actor.</dd><dt><a class="static" href="static.FLIGHT_RECORDER.html" title="static hyperactor::introspect::FLIGHT_RECORDER">FLIGHT_<wbr>RECORDER</a></dt><dd>Flight recorder JSON (recent trace events).</dd><dt><a class="static" href="static.IS_SYSTEM.html" title="static hyperactor::introspect::IS_SYSTEM">IS_<wbr>SYSTEM</a></dt><dd>Whether this actor is infrastructure/system.</dd><dt><a class="static" href="static.LAST_HANDLER.html" title="static hyperactor::introspect::LAST_HANDLER">LAST_<wbr>HANDLER</a></dt><dd>Name of the last message handler invoked.</dd><dt><a class="static" href="static.MESSAGES_PROCESSED.html" title="static hyperactor::introspect::MESSAGES_PROCESSED">MESSAGES_<wbr>PROCESSED</a></dt><dd>Number of messages processed by this actor.</dd><dt><a class="static" href="static.STATUS.html" title="static hyperactor::introspect::STATUS">STATUS</a></dt><dd>Actor lifecycle status: “running”, “stopped”, “failed”.</dd><dt><a class="static" href="static.STATUS_REASON.html" title="static hyperactor::introspect::STATUS_REASON">STATUS_<wbr>REASON</a></dt><dd>Reason for stop/failure (absent when running).</dd><dt><a class="static" href="static.TOTAL_PROCESSING_TIME_US.html" title="static hyperactor::introspect::TOTAL_PROCESSING_TIME_US">TOTAL_<wbr>PROCESSING_<wbr>TIME_<wbr>US</a></dt><dd>Total CPU time in message handlers (microseconds).</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.format_timestamp.html" title="fn hyperactor::introspect::format_timestamp">format_<wbr>timestamp</a></dt><dd>Format a <a href="https://doc.rust-lang.org/nightly/std/time/struct.SystemTime.html" title="struct std::time::SystemTime"><code>SystemTime</code></a> as an ISO 8601 timestamp with millisecond
+precision.</dd><dt><a class="fn" href="fn.live_actor_payload.html" title="fn hyperactor::introspect::live_actor_payload">live_<wbr>actor_<wbr>payload</a></dt><dd>Build an <a href="struct.IntrospectResult.html" title="struct hyperactor::introspect::IntrospectResult"><code>IntrospectResult</code></a> from live <a href="../proc/struct.InstanceCell.html" title="struct hyperactor::proc::InstanceCell"><code>InstanceCell</code></a> state.</dd><dt><a class="fn" href="fn.serve_introspect.html" title="fn hyperactor::introspect::serve_introspect">serve_<wbr>introspect</a></dt><dd>Introspect task: runs on a dedicated tokio task per actor,
+handling <a href="enum.IntrospectMessage.html" title="enum hyperactor::introspect::IntrospectMessage"><code>IntrospectMessage</code></a> by reading <a href="../proc/struct.InstanceCell.html" title="struct hyperactor::proc::InstanceCell"><code>InstanceCell</code></a>
+directly and replying via the actor’s [<code>Mailbox</code>].</dd></dl></section></div></main></body></html>

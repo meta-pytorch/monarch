@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["get_flush_count","register_python_bindings","reset_flush_count"],"mod":["database_scanner","pyspy_table","query_engine"],"struct":["EntityDispatcher","QueryResponse","RecordBatchSink"],"type":["FlushCallback"]};
