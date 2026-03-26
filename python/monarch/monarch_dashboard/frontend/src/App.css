@@ -828,14 +828,14 @@ button:focus:not(:focus-visible) {
 
 .dag-tooltip {
   position: absolute;
-  transform: translate(-50%, -100%);
+  transform: translate(-50%, 0);
   pointer-events: none;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   padding: 6px 10px;
   white-space: nowrap;
-  z-index: 20;
+  z-index: 1000;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 

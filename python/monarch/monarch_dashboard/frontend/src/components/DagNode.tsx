@@ -56,12 +56,9 @@ export function DagNodeComponent({
   const isRect = RECT_TIERS.has(node.tier);
   const isSmallNode = node.tier === "actor" || node.tier === "actor_mesh";
 
-  // Truncate label for small nodes.
-  const maxChars = isSmallNode ? 12 : 14;
+  const maxLen = isSmallNode ? 14 : 20;
   const displayLabel =
-    node.label.length > maxChars
-      ? node.label.slice(0, maxChars - 1) + "\u2026"
-      : node.label;
+    node.label.length > maxLen ? node.label.slice(0, maxLen - 1) + "\u2026" : node.label;
 
   // Rectangle dimensions for mesh tiers.
   const w = r * 2.2;
@@ -183,6 +180,7 @@ export function DagNodeComponent({
           {node.subtitle}
         </text>
       )}
+
     </g>
   );
 }

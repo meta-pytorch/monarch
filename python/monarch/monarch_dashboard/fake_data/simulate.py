@@ -101,6 +101,7 @@ def _build_hierarchy() -> dict:
                 "mesh_id": host_mesh_id,
                 "rank": 0,
                 "full_name": f"{host_full}/HostAgent[0]",
+                "display_name": f"Host Unit Rank {h_idx}",
             }
         )
         # 2 proc meshes per host mesh.
@@ -130,6 +131,7 @@ def _build_hierarchy() -> dict:
                     "mesh_id": proc_mesh_id,
                     "rank": 0,
                     "full_name": f"{pm_full}/ProcAgent[0]",
+                    "display_name": f"Proc Unit Rank {pm_idx}",
                 }
             )
             # 1 actor mesh per proc mesh.
@@ -159,6 +161,7 @@ def _build_hierarchy() -> dict:
                     "mesh_id": actor_mesh_id,
                     "rank": 0,
                     "full_name": f"{am_full}/{actor_type}[0]",
+                    "display_name": None,
                 }
             )
             if actor_trigger_id is None:
