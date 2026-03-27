@@ -25,7 +25,7 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
     env:
       # Event flags evaluated by github actions before the step runs:
-      IS_PUSH: ${{ github.event_name == 'push' }}
+      IS_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads') }}
       IS_SCHEDULE:  ${{ github.event_name == 'schedule' }}
       IS_ROCM_TAG:  ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
 
