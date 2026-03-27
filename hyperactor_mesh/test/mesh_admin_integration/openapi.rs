@@ -69,6 +69,8 @@ impl OpenApiValidator {
             "/v1/{reference}",
             "/v1/config/{proc_reference}",
             "/v1/pyspy/{proc_reference}",
+            "/v1/query",
+            "/v1/pyspy_dump/{proc_reference}",
             "/v1/tree",
             "/v1/schema",
             "/v1/schema/error",
@@ -100,15 +102,17 @@ impl OpenApiValidator {
     /// MIT-48: path parameters match declared contract (type: string,
     /// required: true).
     fn check_path_params(&self) {
-        for path in [
-            "/v1/{reference}",
-            "/v1/config/{proc_reference}",
-            "/v1/pyspy/{proc_reference}",
-        ] {
+        let cases: &[(&str, &str)] = &[
+            ("/v1/{reference}", "get"),
+            ("/v1/config/{proc_reference}", "get"),
+            ("/v1/pyspy/{proc_reference}", "get"),
+            ("/v1/pyspy_dump/{proc_reference}", "post"),
+        ];
+        for &(path, method) in cases {
             let params = self
                 .doc
                 .pointer(&format!(
-                    "/paths/{}/get/parameters",
+                    "/paths/{}/{method}/parameters",
                     escape_pointer_segment(path)
                 ))
                 .and_then(|v| v.as_array())

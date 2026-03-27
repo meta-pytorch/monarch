@@ -126,6 +126,43 @@ impl WorkloadFixture {
             .with_context(|| format!("deserialize response from GET {url} (HTTP {status}): {body}"))
     }
 
+    /// POST a path with a JSON body relative to the admin URL.
+    pub(crate) async fn post(&self, path: &str, body: &impl serde::Serialize) -> Result<Response> {
+        let url = format!("{}{}", self.admin_url, path);
+        let resp = self
+            .client
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        Ok(resp)
+    }
+
+    /// POST a path with a JSON body and deserialize the JSON response.
+    pub(crate) async fn post_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<T> {
+        let url = format!("{}{}", self.admin_url, path);
+        let resp = self
+            .client
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            bail!("POST {url}: HTTP {status}: {text}");
+        }
+        serde_json::from_str(&text).with_context(|| {
+            format!("deserialize response from POST {url} (HTTP {status}): {text}")
+        })
+    }
+
     /// Walk root → hosts → procs → actors and classify service vs
     /// worker procs. MIT-7 (proc-classification).
     ///

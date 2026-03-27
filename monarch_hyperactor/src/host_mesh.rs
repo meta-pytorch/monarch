@@ -514,6 +514,7 @@ fn _spawn_admin(
     host_meshes: Vec<PyRef<'_, PyHostMesh>>,
     instance: &PyInstance,
     admin_addr: Option<String>,
+    telemetry_url: Option<String>,
 ) -> PyResult<PyPythonTask> {
     if host_meshes.is_empty() {
         return Err(PyException::new_err("at least one mesh is required"));
@@ -533,7 +534,7 @@ fn _spawn_admin(
 
     let instance = instance.clone();
     PyPythonTask::new(async move {
-        let addr = host_mesh::spawn_admin(&mesh_refs, instance.deref(), admin_addr)
+        let addr = host_mesh::spawn_admin(&mesh_refs, instance.deref(), admin_addr, telemetry_url)
             .await
             .map_err(|e| PyException::new_err(e.to_string()))?;
         Ok(addr)

@@ -141,7 +141,7 @@ async fn main() -> Result<ExitCode> {
 
     // Start the mesh admin agent.
     let h = this_host().await;
-    let mesh_admin_url = spawn_admin([&h], instance, None).await?;
+    let mesh_admin_url = spawn_admin([&h], instance, None, None).await?;
     let mtls_flags = if mesh_admin_url.starts_with("https") {
         "--cacert /var/facebook/rootcanal/ca.pem \
          --cert /var/facebook/x509_identities/server.pem \

@@ -159,6 +159,7 @@ async def async_main(
     dashboard_port: int = 8265,
     kill_waiter_after: float | None = None,
 ) -> None:
+    telemetry_url = None
     if dashboard:
         _, telemetry_url = start_telemetry(
             include_dashboard=True, dashboard_port=dashboard_port
@@ -168,7 +169,7 @@ async def async_main(
     host = this_host()
 
     # Spawn the admin agent so the TUI can attach.
-    admin_url = await _spawn_admin([host])
+    admin_url = await _spawn_admin([host], telemetry_url=telemetry_url)
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "

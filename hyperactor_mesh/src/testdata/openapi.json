@@ -588,6 +588,47 @@
           "frames"
         ],
         "type": "object"
+      },
+      "PyspyDumpAndStoreResponse": {
+        "description": "Response body from `POST /v1/pyspy_dump/{*proc_reference}`.",
+        "properties": {
+          "dump_id": {
+            "description": "Unique identifier for the stored dump.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dump_id"
+        ],
+        "title": "PyspyDumpAndStoreResponse",
+        "type": "object"
+      },
+      "QueryRequest": {
+        "description": "Request body for `POST /v1/query`.",
+        "properties": {
+          "sql": {
+            "description": "SQL query string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "QueryRequest",
+        "type": "object"
+      },
+      "QueryResponse": {
+        "description": "Response body from `POST /v1/query`.",
+        "properties": {
+          "rows": {
+            "description": "Query result rows."
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "title": "QueryResponse",
+        "type": "object"
       }
     }
   },
@@ -760,6 +801,145 @@
           }
         },
         "summary": "Py-spy stack dump for a proc"
+      }
+    },
+    "/v1/pyspy_dump/{proc_reference}": {
+      "post": {
+        "description": "Runs py-spy against the target process, stores the result in the dashboard's DataFusion pyspy tables, and returns the dump_id.",
+        "operationId": "pyspyDumpAndStore",
+        "parameters": [
+          {
+            "description": "URL-encoded proc reference (ProcId)",
+            "in": "path",
+            "name": "proc_reference",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PyspyDumpAndStoreResponse"
+                }
+              }
+            },
+            "description": "Dump stored successfully"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad request (malformed proc reference)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Proc or dashboard not found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal error"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Gateway timeout"
+          }
+        },
+        "summary": "Trigger py-spy dump and store in telemetry"
+      }
+    },
+    "/v1/query": {
+      "post": {
+        "description": "Forwards a SQL query to the Monarch dashboard's DataFusion engine. Requires telemetry_url to be configured.",
+        "operationId": "queryProxy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            },
+            "description": "Query results"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad request (invalid SQL or missing sql field)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Dashboard not configured"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Internal error"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Gateway timeout"
+          }
+        },
+        "summary": "Proxy SQL query to the telemetry dashboard"
       }
     },
     "/v1/root": {
