@@ -292,6 +292,7 @@ def test_duration_params(param_name, test_value, expected_value, default_value):
         # Runtime and buffering
         ("small_write_threshold", 512, 256),
         # Mesh config (usize::MAX doesn't have a fixed value, skip default check)
+        ("max_cast_dimension_size", 32, 16),
         # Logging config
         ("read_log_buffer", 16384, 100),
     ],
@@ -491,7 +492,7 @@ def test_all_params_together():
     assert config["mesh_terminate_timeout"] == "10s"
     assert config["shared_asyncio_runtime"] is False
     assert config["small_write_threshold"] == 256
-    # max_cast_dimension_size is usize::MAX, skip checking it
+    assert config["max_cast_dimension_size"] == 16
     assert config["read_log_buffer"] == 100
     assert config["force_file_log"] is False
     assert config["prefix_with_rank"] is True
