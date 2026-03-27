@@ -286,12 +286,13 @@ class ProcMesh(MeshTrait):
         self._logging_manager = LoggingManager()
         self._controller_controller: Optional["_ControllerController"] = None
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
+        self._pending_actor_spawns: list = []
 
     @property
     def initialized(self) -> Future[Literal[True]]:
         """
         Future completes with 'True' when the ProcMesh has initialized.
-        Because ProcMesh are remote objects, there is no guarentee that the ProcMesh is
+        Because ProcMesh are remote objects, there is no guarantee that the ProcMesh is
         still usable after this completes, only that at some point in the past it was usable.
         """
         pm: Shared[HyProcMesh] = self._proc_mesh
@@ -500,6 +501,7 @@ class ProcMesh(MeshTrait):
         )
 
         mesh = ActorMesh(Class, name, actor_mesh, self._region.as_shape(), self)
+        self._pending_actor_spawns.append(mesh)
 
         # We don't start the supervision polling loop until the first call to
         # supervision_event, which needs an Instance. Initialize here so events
@@ -579,6 +581,14 @@ class ProcMesh(MeshTrait):
             raise RuntimeError("`ProcMesh` has already been stopped")
         return self
 
+    async def _flush_pending_actor_spawns(self) -> None:
+        for mesh in self._pending_actor_spawns:
+            try:
+                await mesh.initialized
+            except Exception:
+                pass
+        self._pending_actor_spawns.clear()
+
     def stop(self, reason: str = "stopped by client") -> Future[None]:
         """
         This will stop all processes (and actors) in the mesh and
@@ -588,6 +598,7 @@ class ProcMesh(MeshTrait):
         instance = context().actor_instance._as_rust()
 
         async def _stop_nonblocking(instance: HyInstance) -> None:
+            await self._flush_pending_actor_spawns()
             pm = await self._proc_mesh
             await self._logging_manager.flush_async()
             await pm.stop_nonblocking(instance, reason)
