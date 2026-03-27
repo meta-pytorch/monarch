@@ -31,6 +31,7 @@ use hyperactor::mailbox::MessageEnvelope;
 use hyperactor::mailbox::Undeliverable;
 use hyperactor::message::Bind;
 use hyperactor::message::Bindings;
+use hyperactor::message::IndexedErasedUnbound;
 use hyperactor::message::Unbind;
 use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_config::Flattrs;
@@ -191,7 +192,61 @@ pub struct PythonMessage {
     pub message: Part,
 }
 
-wirevalue::register_type!(PythonMessage);
+/// Extract the endpoint method name from a [`PythonMessage`].
+fn python_message_endpoint_name(msg: &PythonMessage) -> Option<String> {
+    match &msg.kind {
+        PythonMessageKind::CallMethod { name, .. }
+        | PythonMessageKind::CallMethodIndirect { name, .. } => Some(name.name().to_string()),
+        _ => None,
+    }
+}
+
+// We use manual `submit!` instead of `register_type!` because PythonMessage is a
+// struct, so the default `endpoint_name` (which delegates to `arm_unchecked`)
+// always returns None. The custom implementation inspects `PythonMessageKind` to
+// extract the method name. This registration handles direct (non-cast) dispatch.
+wirevalue::submit! {
+    wirevalue::TypeInfo {
+        typename: <PythonMessage as wirevalue::Named>::typename,
+        typehash: <PythonMessage as wirevalue::Named>::typehash,
+        typeid: <PythonMessage as wirevalue::Named>::typeid,
+        port: <PythonMessage as wirevalue::Named>::port,
+        dump: Some(<PythonMessage as wirevalue::NamedDumpable>::dump),
+        arm_unchecked: <PythonMessage as wirevalue::Named>::arm_unchecked,
+        endpoint_name: |ptr| {
+            // SAFETY: ptr points to a PythonMessage.
+            let msg = unsafe { &*(ptr as *const PythonMessage) };
+            python_message_endpoint_name(msg)
+        },
+    }
+}
+
+// Cast messages arrive as IndexedErasedUnbound<PythonMessage>, which wraps a
+// serialized PythonMessage. This type has no `register_type!` by default (it
+// shares ErasedUnbound's wire format), so we register it explicitly. The
+// endpoint_name deserializes the inner payload to read the method name. This
+// costs one extra deserialization per message, but the Part payload uses
+// zero-copy Bytes refcounting, and Python actor throughput is GIL-bounded,
+// so the serde overhead is negligible relative to Python-side processing.
+wirevalue::submit! {
+    wirevalue::TypeInfo {
+        typename: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typename,
+        typehash: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typehash,
+        typeid: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::typeid,
+        port: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::port,
+        dump: None,
+        arm_unchecked: <IndexedErasedUnbound<PythonMessage> as wirevalue::Named>::arm_unchecked,
+        endpoint_name: |ptr| {
+            // SAFETY: ptr points to an IndexedErasedUnbound<PythonMessage>.
+            let erased = unsafe { &*(ptr as *const IndexedErasedUnbound<PythonMessage>) };
+            erased
+                .inner_any()
+                .deserialized_unchecked::<PythonMessage>()
+                .ok()
+                .and_then(|msg| python_message_endpoint_name(&msg))
+        },
+    }
+}
 
 impl From<ValueOverlay<PythonResponseMessage>> for PythonMessage {
     fn from(overlay: ValueOverlay<PythonResponseMessage>) -> Self {

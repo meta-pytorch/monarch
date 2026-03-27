@@ -803,6 +803,43 @@ def test_messages_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+def test_messages_endpoint(cleanup_callbacks) -> None:
+    """Test that the messages table endpoint column is populated with the method name."""
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="ep_workers_procs")
+    workers = worker_procs.spawn("ep_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Call the "ping" endpoint
+    for _ in range(3):
+        workers.ping.call().get()
+
+    # Query for messages with a non-null endpoint received by our workers
+    result = engine.query(
+        "SELECT m.endpoint FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
+    )
+    result_dict = result.to_pydict()
+    endpoints = result_dict.get("endpoint", [])
+
+    # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
+    assert len(endpoints) == 6, (
+        f"Expected 6 messages with endpoint, got {len(endpoints)}"
+    )
+    assert all(ep == "ping" for ep in endpoints), (
+        f"Expected all endpoints to be 'ping', got {set(endpoints)}"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
 def test_message_status_events_table(cleanup_callbacks) -> None:
     """Test that message_status_events captures queued/active/complete transitions."""
     engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
