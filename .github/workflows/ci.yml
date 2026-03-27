@@ -7,11 +7,9 @@ on:
       - gh/**
   push:
     branches:
-push:
-  branches:
-    - main
-  tags:
-    - ciflow/rocm/*
+      - main
+    tags:
+      - ciflow/rocm/*
   workflow_dispatch: # Allows manual triggering
 
 concurrency:
