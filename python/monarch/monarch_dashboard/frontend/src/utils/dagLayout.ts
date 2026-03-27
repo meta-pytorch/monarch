@@ -30,6 +30,7 @@ export interface ApiDagNode {
   label: string;
   subtitle: string;
   status: string;
+  rank?: number;
 }
 
 /** An edge from the /api/dag response. */
@@ -146,7 +147,11 @@ export function computeLayout(data: ApiDagData): DagGraph {
     const node = nodeMap[id];
     if (!node) return [];
 
-    const kids = children[id] ?? [];
+    const kids = (children[id] ?? []).slice().sort((a, b) => {
+      const ra = nodeMap[a]?.rank ?? 0;
+      const rb = nodeMap[b]?.rank ?? 0;
+      return ra - rb;
+    });
     if (kids.length === 0) {
       const x = nextX;
       nextX += HORIZONTAL_SPACING;
