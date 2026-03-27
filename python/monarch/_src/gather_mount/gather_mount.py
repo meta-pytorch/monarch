@@ -261,7 +261,11 @@ class GatherSourceActor(Actor):
 
     @endpoint
     async def release_rdma(self, token: int) -> None:
-        self._pending_rdma.pop(token, None)
+        entry = self._pending_rdma.pop(token, None)
+        if entry is not None:
+            mm, mv = entry
+            mv.release()
+            mm.close()
 
 
 # ── Client actor ──────────────────────────────────────────────────────────────
@@ -474,9 +478,13 @@ class GatherClientActor(Actor):
         if actual_len == 0 or rdma_buf is None:
             return b""
         mm = _mmap.mmap(-1, actual_len, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
-        mv: memoryview = memoryview(mm)[:actual_len]
-        await rdma_buf.read_into(mv)
-        data = bytes(mv)
+        try:
+            mv: memoryview = memoryview(mm)[:actual_len]
+            await rdma_buf.read_into(mv)
+            data = bytes(mv)
+            mv.release()
+        finally:
+            mm.close()
         # pyre-ignore[16]
         actor.release_rdma.broadcast(token)
         return data
