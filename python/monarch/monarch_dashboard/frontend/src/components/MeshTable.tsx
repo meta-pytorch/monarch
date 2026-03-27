@@ -8,7 +8,7 @@
 
 import React, { useState } from "react";
 import { StatusBadge } from "./StatusBadge";
-import { formatTimestamp, formatShape, leafName } from "../utils/status";
+import { formatTimestamp, formatShape, leafName, agentDisplayName } from "../utils/status";
 import { useApi } from "../hooks/useApi";
 
 interface EntityTableProps {
@@ -113,7 +113,7 @@ function renderCell(key: string, entity: any): React.ReactNode {
     case "mesh_class":
       return val ?? "\u2014";
     case "full_name":
-      return <span className="mono-cell">{leafName(val)}</span>;
+      return <span className="mono-cell">{agentDisplayName(val, entity.rank) ?? leafName(val)}</span>;
     case "shape_json":
       return <span className="mono-cell">{formatShape(val)}</span>;
     case "status":
