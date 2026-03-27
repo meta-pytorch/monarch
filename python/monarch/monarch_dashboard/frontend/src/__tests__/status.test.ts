@@ -140,6 +140,12 @@ describe("agentDisplayName", () => {
     expect(agentDisplayName("PythonActor<Trainer>[0]", 0)).toBeNull();
     expect(agentDisplayName("Python<_SMPD>", 0)).toBeNull();
   });
+
+  test("returns null for null/undefined fullName", () => {
+    expect(agentDisplayName(null)).toBeNull();
+    expect(agentDisplayName(undefined)).toBeNull();
+    expect(agentDisplayName(null, 0)).toBeNull();
+  });
 });
 
 describe("splitMessages", () => {

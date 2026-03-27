@@ -66,7 +66,8 @@ export function leafName(name: string | null | undefined): string {
  *  Returns null if the name doesn't match a host/proc agent pattern,
  *  so the caller can fall back to the default display.
  */
-export function agentDisplayName(fullName: string, rank?: number | string | null): string | null {
+export function agentDisplayName(fullName: string | null | undefined, rank?: number | string | null): string | null {
+  if (!fullName) return null;
   const low = fullName.toLowerCase();
   const isHost = low.includes("hostagent") || low.includes("host_agent");
   const isProcAgent = low.includes("procagent") || low.includes("proc_agent");
