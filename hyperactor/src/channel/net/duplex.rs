@@ -130,10 +130,11 @@ impl<M: RemoteMessage> Tx<M> for DuplexTx<M> {
             self.tx
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
+            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
-                reason: None,
+                reason,
             });
         }
     }
@@ -358,7 +359,7 @@ async fn dispatch_duplex_stream<In: RemoteMessage, Out: RemoteMessage>(
                         }
                     }
 
-                    let _ = notify.send(TxStatus::Closed);
+                    let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
                 });
 
                 e.insert(mvar.clone());
@@ -520,7 +521,7 @@ pub(crate) fn spawn<Out: RemoteMessage, In: RemoteMessage>(
             }
         }
 
-        let _ = notify.send(TxStatus::Closed);
+        let _ = notify.send(TxStatus::Closed("duplex session ended".into()));
     });
     (
         DuplexTx::new(outbound_tx, addr.clone(), status),

@@ -25,7 +25,6 @@ use hyperactor::channel::ChannelTransport;
 use hyperactor::channel::ChannelTx;
 use hyperactor::channel::Rx;
 use hyperactor::channel::Tx;
-use hyperactor::channel::TxStatus;
 use hyperactor::reference as hyperactor_reference;
 use hyperactor::sync::flag;
 use hyperactor::sync::monitor;
@@ -324,7 +323,7 @@ impl Child {
                 // (fails keepalive).
                 self.group.spawn(async move {
                     let _ = status
-                        .wait_for(|status| matches!(status, TxStatus::Closed))
+                        .wait_for(|status| status.is_closed())
                         .await;
                     Result::<(), ()>::Err(())
                 });
