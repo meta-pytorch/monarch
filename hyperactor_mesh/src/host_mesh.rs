@@ -62,7 +62,7 @@ use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::host_mesh::host_agent::SpawnMeshAdminClient;
 use crate::host_mesh::host_agent::StopHostClient;
-use crate::host_mesh::host_agent::TerminateChildrenClient;
+use crate::host_mesh::host_agent::TerminateProcsClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -192,7 +192,7 @@ impl HostRef {
         let max_in_flight =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
-            .terminate_children(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .terminate_procs(cx, terminate_timeout, max_in_flight.clamp(1, 256))
             .await?;
         Ok(())
     }
@@ -675,6 +675,7 @@ impl HostMesh {
     ///    timeouts.
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
     pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+        let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
 
         // Phase 1: terminate all user procs while service infrastructure
@@ -685,6 +686,7 @@ impl HostMesh {
                 .map(|host| async move { host.terminate_children(cx).await }),
         )
         .await;
+        let phase1_ms = t0.elapsed().as_millis();
         for result in &results {
             if let Err(e) = result {
                 tracing::warn!(
@@ -697,11 +699,14 @@ impl HostMesh {
         }
 
         // Phase 2: shut down hosts concurrently. No user procs remain.
+        let t1 = std::time::Instant::now();
         let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
             let result = host.shutdown(cx).await;
             (host, result)
         }))
         .await;
+        let phase2_ms = t1.elapsed().as_millis();
+        let total_ms = t0.elapsed().as_millis();
         let mut failed_hosts = vec![];
         for (host, result) in &results {
             if let Err(e) = result {
@@ -716,11 +721,20 @@ impl HostMesh {
             }
         }
         if failed_hosts.is_empty() {
-            tracing::info!(name = "HostMeshStatus", status = "Shutdown::Success");
+            tracing::info!(
+                name = "HostMeshStatus",
+                status = "Shutdown::Success",
+                phase1_ms,
+                phase2_ms,
+                total_ms,
+            );
         } else {
             tracing::error!(
                 name = "HostMeshStatus",
                 status = "Shutdown::Failed",
+                phase1_ms,
+                phase2_ms,
+                total_ms,
                 "host mesh shutdown failed; check the logs of the failed hosts for details: {:?}",
                 failed_hosts
             );
@@ -753,6 +767,7 @@ impl HostMesh {
     /// [`HostMesh::attach`] to create a new mesh.
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
     pub async fn stop(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+        let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
 
         // Phase 1: terminate all user procs while service infrastructure
@@ -763,6 +778,7 @@ impl HostMesh {
                 .map(|host| async move { host.terminate_children(cx).await }),
         )
         .await;
+        let phase1_ms = t0.elapsed().as_millis();
         for result in &results {
             if let Err(e) = result {
                 tracing::warn!(
@@ -775,11 +791,14 @@ impl HostMesh {
         }
 
         // Phase 2: stop hosts concurrently. No user procs remain.
+        let t1 = std::time::Instant::now();
         let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
             let result = host.stop(cx).await;
             (host, result)
         }))
         .await;
+        let phase2_ms = t1.elapsed().as_millis();
+        let total_ms = t0.elapsed().as_millis();
         let mut failed_hosts = vec![];
         for (host, result) in &results {
             if let Err(e) = result {
@@ -794,11 +813,20 @@ impl HostMesh {
             }
         }
         if failed_hosts.is_empty() {
-            tracing::info!(name = "HostMeshStatus", status = "Stop::Success");
+            tracing::info!(
+                name = "HostMeshStatus",
+                status = "Stop::Success",
+                phase1_ms,
+                phase2_ms,
+                total_ms,
+            );
         } else {
             tracing::error!(
                 name = "HostMeshStatus",
                 status = "Stop::Failed",
+                phase1_ms,
+                phase2_ms,
+                total_ms,
                 "host mesh stop failed; check the logs of the failed hosts for details: {:?}",
                 failed_hosts
             );
