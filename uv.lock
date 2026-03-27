@@ -501,6 +501,12 @@ wheels = [
 ]
 
 [[package]]
+name = "fusepy"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/04/0b/4506cb2e831cea4b0214d3625430e921faaa05a7fb520458c75a2dbd2152/fusepy-3.0.1.tar.gz", hash = "sha256:72ff783ec2f43de3ab394e3f7457605bf04c8cf288a2f4068b4cde141d4ee6bd", size = 11519, upload-time = "2018-09-17T00:14:52.666Z" }
+
+[[package]]
 name = "idna"
 version = "3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -1811,6 +1817,7 @@ dependencies = [
     { name = "cloudpickle" },
     { name = "clusterscope" },
     { name = "flask" },
+    { name = "fusepy" },
     { name = "lark" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1862,6 +1869,7 @@ requires-dist = [
     { name = "cloudpickle" },
     { name = "clusterscope" },
     { name = "flask", specifier = ">=2.0" },
+    { name = "fusepy" },
     { name = "ipython", marker = "extra == 'examples'" },
     { name = "kubernetes", marker = "extra == 'kubernetes'" },
     { name = "kubernetes", marker = "extra == 'test'" },
