@@ -297,12 +297,12 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
                         error = %err,
                         "failed to push message to outbox"
                     );
-                    let _ = notify.send(TxStatus::Closed);
+                    let _ = notify.send(TxStatus::Closed("failed to push to outbox".into()));
                     return;
                 }
             }
             None => {
-                let _ = notify.send(TxStatus::Closed);
+                let _ = notify.send(TxStatus::Closed("sender dropped".into()));
                 return;
             }
         }
@@ -434,7 +434,7 @@ pub(crate) fn spawn<M: RemoteMessage>(link: impl Link) -> NetTx<M> {
             });
         }
 
-        let _ = notify.send(TxStatus::Closed);
+        let _ = notify.send(TxStatus::Closed(reason.into()));
     });
     tx
 }
@@ -691,10 +691,11 @@ impl<M: RemoteMessage> Tx<M> for NetTx<M> {
             self.sender
                 .send((message, return_channel, tokio::time::Instant::now()))
         {
+            let reason = self.status.borrow().as_closed().map(|r| r.to_string());
             let _ = return_channel.send(SendError {
                 error: ChannelError::Closed,
                 message,
-                reason: None,
+                reason,
             });
         }
     }
@@ -2747,8 +2748,8 @@ mod tests {
     async fn verify_tx_closed(tx_status: &mut watch::Receiver<TxStatus>, expected_log: &str) {
         match tokio::time::timeout(Duration::from_secs(5), tx_status.changed()).await {
             Ok(Ok(())) => {
-                let current_status = *tx_status.borrow();
-                assert_eq!(current_status, TxStatus::Closed);
+                let current_status = tx_status.borrow().clone();
+                assert!(current_status.is_closed());
                 logs_assert_unscoped(|logs| {
                     if logs.iter().any(|log| log.contains(expected_log)) {
                         Ok(())
@@ -3484,10 +3485,12 @@ mod tests {
         tx.post(101);
         let mut watcher = tx.status().clone();
         // When NetRx exits, it should notify NetTx to exit as well.
-        let _ = watcher.wait_for(|val| *val == TxStatus::Closed).await;
+        let _ = watcher
+            .wait_for(|val| val.is_closed())
+            .await;
         // wait_for could return Err due to race between when watch's sender was
         // dropped and when wait_for was called. So we still need to do an
         // equality check.
-        assert_eq!(*watcher.borrow(), TxStatus::Closed);
+        assert!(watcher.borrow().is_closed());
     }
 }
