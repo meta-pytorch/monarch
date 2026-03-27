@@ -14,7 +14,7 @@ import { ActorDetail } from "./components/ActorDetail";
 import { DagView } from "./components/DagView";
 import { SummaryView } from "./components/SummaryView";
 import { NavItem } from "./types";
-import { leafName } from "./utils/status";
+import { leafName, agentDisplayName } from "./utils/status";
 import "./App.css";
 
 const TABS = [
@@ -62,9 +62,9 @@ const LEVELS: Partial<Record<NavItem["level"], {
   idKey: string;
 }>> = {
   host_meshes:  { next: "host_units",   label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
-  host_units:   { next: "proc_meshes",  label: (r) => leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
+  host_units:   { next: "proc_meshes",  label: (r) => agentDisplayName(r.full_name, r.rank) ?? leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
   proc_meshes:  { next: "proc_units",   label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
-  proc_units:   { next: "actor_meshes", label: (r) => leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
+  proc_units:   { next: "actor_meshes", label: (r) => agentDisplayName(r.full_name, r.rank) ?? leafName(r.full_name), idField: "meshId",  idKey: "mesh_id" },
   actor_meshes: { next: "actors",       label: (r) => r.given_name,       idField: "meshId",  idKey: "id" },
   actors:       { next: "actor_detail", label: (r) => leafName(r.full_name), idField: "actorId", idKey: "id" },
 };
