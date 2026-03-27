@@ -382,7 +382,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 class: "Host".to_string(),
                 given_name: host_mesh.name().name().to_string(),
                 full_name: host_name_str,
-                shape_json: host_mesh.region().extent().to_string(),
+                shape_json: serde_json::to_string(&host_mesh.region().extent()).unwrap_or_default(),
                 parent_mesh_id: None,
                 parent_view_json: None,
             });
@@ -405,7 +405,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 class: "Proc".to_string(),
                 given_name: proc_mesh.name().name().to_string(),
                 full_name: proc_name_str,
-                shape_json: proc_mesh.region().extent().to_string(),
+                shape_json: serde_json::to_string(&proc_mesh.region().extent()).unwrap_or_default(),
                 parent_mesh_id: Some(host_mesh_id),
                 parent_view_json: None,
             });
@@ -428,7 +428,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
                 class: <PythonActor as typeuri::Named>::typename().to_string(),
                 given_name: "client".to_string(),
                 full_name: client_mesh_name,
-                shape_json: proc_mesh.region().extent().to_string(),
+                shape_json: serde_json::to_string(&proc_mesh.region().extent()).unwrap_or_default(),
                 parent_mesh_id: Some(proc_mesh_id),
                 parent_view_json: None,
             });
