@@ -108,7 +108,7 @@ declare_attrs! {
         Some("HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE".to_string()),
         Some("max_cast_dimension_size".to_string()),
     ))
-    pub attr MAX_CAST_DIMENSION_SIZE: usize = usize::MAX;
+    pub attr MAX_CAST_DIMENSION_SIZE: usize = 16;
 
     /// Which builtin process launcher backend to use.
     /// Accepted values: "native" (default), "systemd".
