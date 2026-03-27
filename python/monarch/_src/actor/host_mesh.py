@@ -374,8 +374,9 @@ class HostMesh(MeshTrait):
                 pass
         self._pending_spawns.clear()
         for pm in self._proc_meshes:
+            await pm._flush_pending_actor_spawns()
             try:
-                await pm.stop()
+                await pm._logging_manager.flush_async()
             except Exception:
                 pass
 

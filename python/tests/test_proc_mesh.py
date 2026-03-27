@@ -40,7 +40,6 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch._src.job.process import ProcessJob
-from scoped_state import scoped_state
 
 
 _proc_rank = -1
@@ -91,110 +90,104 @@ class TestActor(Actor):
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_proc_mesh_initialization() -> None:
-    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-        host = state.hosts
-        proc_mesh = host.spawn_procs(name="test_proc")
-        # Test that initialization completes successfully
-        assert await proc_mesh.initialized
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(name="test_proc")
+    # Test that initialization completes successfully
+    assert await proc_mesh.initialized
 
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_proc_mesh_spawn_single_actor() -> None:
-    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-        host = state.hosts
-        proc_mesh = host.spawn_procs(name="test_proc")
-        actor = proc_mesh.spawn("test_actor", TestActor, 42)
-        assert actor.get_value.call_one().get() == 42
-        actor.set_value.call_one(43).get()
-        assert actor.get_value.call_one().get() == 43
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(name="test_proc")
+    actor = proc_mesh.spawn("test_actor", TestActor, 42)
+    assert actor.get_value.call_one().get() == 42
+    actor.set_value.call_one(43).get()
+    assert actor.get_value.call_one().get() == 43
 
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_proc_mesh_multi_actor() -> None:
-    with scoped_state(ProcessJob({"hosts": 4}), cached_path=None) as state:
-        host = state.hosts
-        proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
-        actor = proc_mesh.spawn("test_actor", TestActor, 42)
+    host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
+    actor = proc_mesh.spawn("test_actor", TestActor, 42)
 
-        proc_ranks = actor.get_proc_rank.call().get()
-        assert proc_ranks.extent.labels == ["hosts", "gpus"]
-        assert proc_ranks.extent.sizes == [4, 3]
-        for i, (point, rank) in enumerate(proc_ranks.items()):
-            assert rank == i
-            assert point.rank == i
+    proc_ranks = actor.get_proc_rank.call().get()
+    assert proc_ranks.extent.labels == ["hosts", "gpus"]
+    assert proc_ranks.extent.sizes == [4, 3]
+    for i, (point, rank) in enumerate(proc_ranks.items()):
+        assert rank == i
+        assert point.rank == i
 
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 def test_proc_mesh_sliced() -> None:
-    with scoped_state(ProcessJob({"hosts": 4}), cached_path=None) as state:
-        host = state.hosts
-        proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
-        # Initialize _proc_rank on each actor process
-        actor = proc_mesh.spawn("test_actor", TestActor, 42)
-        actor.get_proc_rank.call().get()
-        # Hosts 0 and 2, gpus 1 and 2
-        sliced = proc_mesh._new_with_shape(
-            Shape(
-                labels=["hosts", "gpus"],
-                slice=Slice(offset=1, sizes=[2, 2], strides=[6, 1]),
-            )
+    host = ProcessJob({"hosts": 4}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(name="test_proc", per_host={"gpus": 3})
+    # Initialize _proc_rank on each actor process
+    actor = proc_mesh.spawn("test_actor", TestActor, 42)
+    actor.get_proc_rank.call().get()
+    # Hosts 0 and 2, gpus 1 and 2
+    sliced = proc_mesh._new_with_shape(
+        Shape(
+            labels=["hosts", "gpus"],
+            slice=Slice(offset=1, sizes=[2, 2], strides=[6, 1]),
         )
-        actor = sliced.spawn("test_actor_sliced", TestActor, 42)
-        proc_ranks = actor.get_proc_rank.call().get()
-        assert proc_ranks.extent.labels == ["hosts", "gpus"]
-        assert proc_ranks.extent.sizes == [2, 2]
-        for (i, (point, rank)), expected_rank in zip(
-            enumerate(proc_ranks.items()), [1, 2, 7, 8]
-        ):
-            assert rank == expected_rank
-            assert point.rank == i
+    )
+    actor = sliced.spawn("test_actor_sliced", TestActor, 42)
+    proc_ranks = actor.get_proc_rank.call().get()
+    assert proc_ranks.extent.labels == ["hosts", "gpus"]
+    assert proc_ranks.extent.sizes == [2, 2]
+    for (i, (point, rank)), expected_rank in zip(
+        enumerate(proc_ranks.items()), [1, 2, 7, 8]
+    ):
+        assert rank == expected_rank
+        assert point.rank == i
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_nested_meshes() -> None:
-    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
-        host = state.hosts
-        proc = host.spawn_procs(name="proc")
-        actor = proc.spawn("actor", TestActor)
-        nested = actor.spawn_on_this_host.call().get()
-        nested_0 = nested.item(hosts=0)
-        nested_1 = nested.item(hosts=1)
-        for i, nested in enumerate([nested_0, nested_1]):
-            region = cast(
-                ProcMesh, cast(ActorMesh[TestActor], nested)._proc_mesh
-            )._host_mesh.region
-            assert region.labels == ["hosts"]
-            assert region.slice() == Slice(offset=i, sizes=[1], strides=[1])
-        res_0 = nested_0.slice(gpus=0).call_on_other_mesh.call_one(nested_1).get()
-        res_1 = nested_1.slice(gpus=0).call_on_other_mesh.call_one(nested_0).get()
-        for point, value in res_0:
-            assert value == point.rank + 1
-        for point, value in res_1:
-            assert value == point.rank
+    host = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
+    proc = host.spawn_procs(name="proc")
+    actor = proc.spawn("actor", TestActor)
+    nested = actor.spawn_on_this_host.call().get()
+    nested_0 = nested.item(hosts=0)
+    nested_1 = nested.item(hosts=1)
+    for i, nested in enumerate([nested_0, nested_1]):
+        region = cast(
+            ProcMesh, cast(ActorMesh[TestActor], nested)._proc_mesh
+        )._host_mesh.region
+        assert region.labels == ["hosts"]
+        assert region.slice() == Slice(offset=i, sizes=[1], strides=[1])
+    res_0 = nested_0.slice(gpus=0).call_on_other_mesh.call_one(nested_1).get()
+    res_1 = nested_1.slice(gpus=0).call_on_other_mesh.call_one(nested_0).get()
+    for point, value in res_0:
+        assert value == point.rank + 1
+    for point, value in res_1:
+        assert value == point.rank
 
 
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
     monarch.actor.unhandled_fault_hook = lambda failure: None
-    with scoped_state(ProcessJob({"hosts": 2}), cached_path=None) as state:
-        host = state.hosts
-        proc = host.spawn_procs(per_host={"gpus": 2})
+    host = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
+    proc = host.spawn_procs(per_host={"gpus": 2})
 
-        async def task():
-            cloudpickle.dumps(proc)
+    async def task():
+        cloudpickle.dumps(proc)
 
-        await proc.initialized
-        PythonTask.from_coroutine(task()).block_on()
+    await proc.initialized
+    PythonTask.from_coroutine(task()).block_on()
 
-        async def task():
-            cloudpickle.dumps(proc.slice(gpus=0, hosts=0))
+    async def task():
+        cloudpickle.dumps(proc.slice(gpus=0, hosts=0))
 
-        PythonTask.from_coroutine(task()).block_on()
+    PythonTask.from_coroutine(task()).block_on()
 
 
 @pytest.mark.timeout(60)
@@ -339,21 +332,14 @@ def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
         time.sleep(15)
         return await pm
 
-    # Can't use scoped_state here: graceful shutdown blocks on proc_mesh
-    # initialization, but this test intentionally replaces _proc_mesh with a
-    # sleeping coroutine to verify that spawn() doesn't block.
-    job = ProcessJob({"hosts": 1})
-    try:
-        host = job.state(cached_path=None).hosts
-        proc_mesh = host.spawn_procs(name="test_proc")
-        proc_mesh._proc_mesh = PythonTask.from_coroutine(
-            sleep_then_mesh(proc_mesh._proc_mesh)
-        ).spawn()
-        assert proc_mesh._proc_mesh.poll() is None
-        proc_mesh.spawn("pid", PidActor)
-        assert proc_mesh._proc_mesh.poll() is None
-    finally:
-        job.kill()
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    proc_mesh = host.spawn_procs(name="test_proc")
+    proc_mesh._proc_mesh = PythonTask.from_coroutine(
+        sleep_then_mesh(proc_mesh._proc_mesh)
+    ).spawn()
+    assert proc_mesh._proc_mesh.poll() is None
+    proc_mesh.spawn("pid", PidActor)
+    assert proc_mesh._proc_mesh.poll() is None
 
 
 @pytest.mark.timeout(60)
@@ -393,12 +379,11 @@ def test_proc_mesh_spawn_callback() -> None:
 
     register_proc_mesh_spawn_callback(callback)
     try:
-        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-            host = state.hosts
-            proc_mesh = host.spawn_procs(name="test_proc")
+        host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+        proc_mesh = host.spawn_procs(name="test_proc")
 
-            assert len(spawned_meshes) == 1
-            assert spawned_meshes[0] is proc_mesh
+        assert len(spawned_meshes) == 1
+        assert spawned_meshes[0] is proc_mesh
     finally:
         unregister_proc_mesh_spawn_callback(callback)
 
@@ -418,14 +403,13 @@ def test_proc_mesh_spawn_callback_multiple() -> None:
     register_proc_mesh_spawn_callback(callback1)
     register_proc_mesh_spawn_callback(callback2)
     try:
-        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-            host = state.hosts
-            proc_mesh = host.spawn_procs(name="test_proc")
+        host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+        proc_mesh = host.spawn_procs(name="test_proc")
 
-            assert len(callback1_meshes) == 1
-            assert len(callback2_meshes) == 1
-            assert callback1_meshes[0] is proc_mesh
-            assert callback2_meshes[0] is proc_mesh
+        assert len(callback1_meshes) == 1
+        assert len(callback2_meshes) == 1
+        assert callback1_meshes[0] is proc_mesh
+        assert callback2_meshes[0] is proc_mesh
     finally:
         unregister_proc_mesh_spawn_callback(callback1)
         unregister_proc_mesh_spawn_callback(callback2)
@@ -442,8 +426,7 @@ def test_proc_mesh_spawn_callback_unregister() -> None:
     register_proc_mesh_spawn_callback(callback)
     unregister_proc_mesh_spawn_callback(callback)
 
-    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-        host = state.hosts
-        host.spawn_procs(name="test_proc")
+    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
+    host.spawn_procs(name="test_proc")
 
-        assert len(spawned_meshes) == 0
+    assert len(spawned_meshes) == 0
