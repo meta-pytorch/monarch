@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from typing import Dict, List, Optional, Union
 
 from monarch._src.actor.bootstrap import attach_to_workers
@@ -97,9 +98,60 @@ class ProcessJob(JobTrait):
                         start_new_session=True,
                     )
                     self._host_to_pid[host_key] = ProcessState(proc.pid, addr)
+                    logger.info(
+                        "ProcessJob: spawned worker pid=%d mesh=%s rank=%d addr=%s",
+                        proc.pid,
+                        mesh_name,
+                        i,
+                        addr,
+                    )
+                    self._watch_process(proc, mesh_name, i, addr)
         except Exception:
             self._kill()
             raise
+
+    @staticmethod
+    def _watch_process(
+        proc: subprocess.Popen,
+        mesh_name: str,
+        rank: int,
+        addr: str,
+    ) -> None:
+        def _waiter() -> None:
+            pid = proc.pid
+            try:
+                proc.wait()
+                code = proc.returncode
+            except Exception:
+                logger.exception(
+                    "ProcessJob: error waiting on pid=%d mesh=%s rank=%d addr=%s",
+                    pid,
+                    mesh_name,
+                    rank,
+                    addr,
+                )
+                return
+            if code == 0 or code == -signal.SIGTERM:
+                logger.info(
+                    "ProcessJob: worker exited pid=%d exit_code=%d mesh=%s rank=%d addr=%s",
+                    pid,
+                    code,
+                    mesh_name,
+                    rank,
+                    addr,
+                )
+            else:
+                logger.warning(
+                    "ProcessJob: worker died unexpectedly pid=%d exit_code=%d mesh=%s rank=%d addr=%s",
+                    pid,
+                    code,
+                    mesh_name,
+                    rank,
+                    addr,
+                )
+
+        t = threading.Thread(target=_waiter, daemon=True, name=f"watch-{mesh_name}_{rank}")
+        t.start()
 
     def _state(self) -> JobState:
         if not self._pids_active():
