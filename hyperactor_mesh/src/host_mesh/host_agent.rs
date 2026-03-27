@@ -589,7 +589,9 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             return Ok(());
         }
 
-        let host = self.host_mut().expect("host present");
+        let host = self
+            .host_mut()
+            .ok_or_else(|| anyhow::anyhow!("HostAgent has already shut down"))?;
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
@@ -1283,9 +1285,12 @@ impl Handler<GetLocalProc> for HostAgent {
         cx: &Context<Self>,
         GetLocalProc { proc_mesh_agent }: GetLocalProc,
     ) -> anyhow::Result<()> {
+        let host = self
+            .host()
+            .ok_or_else(|| anyhow::anyhow!("HostAgent has already shut down"))?;
         let agent = self
             .local_mesh_agent
-            .get_or_init(|| ProcAgent::boot_v1(self.host().unwrap().local_proc().clone(), None));
+            .get_or_init(|| ProcAgent::boot_v1(host.local_proc().clone(), None));
 
         match agent {
             Err(e) => anyhow::bail!("error booting local proc: {}", e),
