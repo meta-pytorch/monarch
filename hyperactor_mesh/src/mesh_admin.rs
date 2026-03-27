@@ -265,25 +265,50 @@
 //!
 //! CLI-based `mast_conda:///` resolution (OSS-compatible fallback):
 //!
-//! - **MC-1 (cli-contract):** `mast get-status --json <job>` must
-//!   exit 0 and produce valid JSON. Missing binary → distinct error.
-//!   Non-zero exit → includes exit code and stderr. Malformed JSON →
-//!   parse error.
-//! - **MC-2 (head-hostname):** `head_hostname` extracts the first
-//!   hostname by ascending task index from the last attempt of each
-//!   task group.
-//! - **MC-3 (fqdn-idempotent):** `qualify_fqdn` passes through
-//!   hostnames containing a dot. Short hostnames are qualified via
-//!   `getaddrinfo(AI_CANONNAME)`. Failure falls back to the raw
-//!   hostname.
-//! - **MC-4 (fqdn-nonblocking):** `qualify_fqdn` runs the blocking
-//!   `getaddrinfo` syscall via `spawn_blocking`.
-//! - **MC-5 (admin-port):** `resolve_admin_port` uses the explicit
-//!   override when provided, otherwise reads the port from
-//!   `MESH_ADMIN_ADDR` config.
+//! - **MC-1 (cli-contract):** `mast get-job-definition --output json
+//!   <job>` and `mast get-status --json <job>` must both exit 0 and
+//!   produce valid JSON. Missing binary, non-zero exit, and malformed
+//!   JSON are reported distinctly.
+//! - **MC-2 (definition-ordered mesh selection):** the admin host is
+//!   resolved from the first mesh-bearing task group in
+//!   `hpcTaskGroups` definition order, not by globally merging all
+//!   task groups from status. Task-group selection comes from
+//!   definition only; hostname selection comes from the latest
+//!   task-group execution attempt and the latest task execution
+//!   attempt within the selected group.
+//! - **MC-3 (mesh-bearing discriminator):** a task group is
+//!   mesh-bearing iff its name appears in at least one
+//!   `applicationMetadata` key with prefix `monarch/meshes/<name>/`.
+//!   The specific suffix (e.g. `host_type`, `gpus`, `transport`)
+//!   does not matter — any key under that prefix qualifies. This
+//!   metadata is written by both `host_mesh_conda` (TorchX path)
+//!   and `MASTJob.add_mesh` (native path) via `tag_as_metadata`.
+//! - **MC-4 (ambiguity rule):** if no `monarch/meshes/` metadata
+//!   exists, resolution succeeds only when the job definition
+//!   contains exactly one task group; multi-group jobs without
+//!   metadata must fail.
+//! - **MC-5 (metadata mismatch):** if `monarch/meshes/` metadata
+//!   exists but names no actual task group in `hpcTaskGroups`,
+//!   resolution must fail.
+//! - **MC-6 (selected-group head host):** once the first
+//!   mesh-bearing task group is chosen, its head host is task `0`
+//!   from that group's latest execution attempt, taking the latest
+//!   task execution attempt for task `0`.
+//! - **MC-7 (fqdn qualification fallback):** short hostnames are
+//!   qualified via `getaddrinfo(AI_CANONNAME)` when possible; on
+//!   failure, the raw hostname is used.
+//! - **MC-8 (port resolution):** an explicit port override wins;
+//!   otherwise the port comes from `MESH_ADMIN_ADDR`.
+//! - **MC-9 (resolver parity):** this CLI resolver and the Thrift
+//!   resolver (`hyperactor_meta::mast::resolve_admin_hostname`)
+//!   must select the same task group and hostname for equivalent
+//!   job definition and status data.
 //!
-//! Enforced by `test_head_hostname_*`, `test_qualify_fqdn_*`,
-//! `test_resolve_mast_*`, `test_resolve_admin_port_*`.
+//! Enforced by `test_cli_resolves_first_mesh_group_not_first_task_group`,
+//! `test_cli_falls_back_to_sole_group_when_no_metadata`,
+//! `test_cli_errors_when_multi_group_and_no_metadata`,
+//! `test_cli_errors_when_metadata_names_no_actual_task_group`,
+//! `test_cli_errors_when_selected_mesh_group_has_no_task_zero_hostname`.
 
 use std::collections::HashMap;
 use std::io;
@@ -2520,9 +2545,76 @@ fn derive_actor_label(reference: &str) -> String {
     }
 }
 
+// -- mast_conda:/// handle parsing --
+//
+// Shared between the CLI and Thrift resolution paths. The parser
+// lives here so that `hyperactor_meta` (which depends on this crate)
+// can reuse it.
+
+/// Extract the job name from a `mast_conda:///<job-name>` handle.
+///
+/// The job name determines the admin host via a two-step join: the
+/// job definition provides ordered task groups and application
+/// metadata, and job status provides allocated hostnames. The first
+/// mesh-bearing task group (name appears under
+/// `monarch/meshes/<group>/` in `applicationMetadata`) in definition
+/// order determines the admin host (task-0 within that group). Port
+/// is determined separately by CLI flag or config default.
+pub fn parse_mast_handle(handle: &str) -> Result<&str, anyhow::Error> {
+    let job_name = handle
+        .strip_prefix("mast_conda:///")
+        .ok_or_else(|| anyhow::anyhow!("expected mast_conda:/// prefix, got '{}'", handle))?;
+
+    if job_name.is_empty() {
+        anyhow::bail!("empty job name in handle '{}'", handle);
+    }
+
+    Ok(job_name)
+}
+
 // -- CLI-based mast_conda:/// resolution --
 //
-// See module doc for MC-1..MC-5 invariants.
+// See module doc for MC-1..MC-9 invariants.
+//
+// Resolution joins two MAST data sources:
+//   1. Job definition (`mast get-job-definition --output json`) —
+//      provides the ordered task group list and application metadata.
+//   2. Job status (`mast get-status --json`) — provides runtime
+//      hostnames for allocated tasks.
+//
+// The admin host is task-0 of the first mesh-bearing task group in
+// definition order. A task group is mesh-bearing when its name
+// appears as a key under `monarch/meshes/<group>/...` in the job's
+// `applicationMetadata`. This metadata is written by both
+// `host_mesh_conda` (TorchX path) and `MASTJob.add_mesh` (native
+// path) via `tag_as_metadata`.
+
+// -- Job definition types (MC-2, MC-3, MC-4, MC-5) --
+
+/// CLI envelope from `mast get-job-definition --output json`.
+///
+/// The CLI wraps the definition in `{"data": ...}`.
+#[derive(serde::Deserialize)]
+struct MastJobDefinitionEnvelope {
+    data: MastJobDefinitionResponse,
+}
+
+/// The job definition payload.
+#[derive(serde::Deserialize)]
+struct MastJobDefinitionResponse {
+    #[serde(rename = "hpcTaskGroups")]
+    task_groups: Vec<MastTaskGroupDef>,
+    #[serde(rename = "applicationMetadata")]
+    application_metadata: Option<std::collections::HashMap<String, String>>,
+}
+
+/// A task group definition with its name.
+#[derive(serde::Deserialize)]
+struct MastTaskGroupDef {
+    name: String,
+}
+
+// -- Job status types (MC-6) --
 
 /// Top-level response from `mast get-status --json`.
 #[derive(serde::Deserialize)]
@@ -2551,42 +2643,115 @@ struct MastTaskAttempt {
     hostname: Option<String>,
 }
 
-/// Extract the head node hostname from a parsed MAST status response
-/// (MC-2).
+/// Collect the set of mesh group names from `applicationMetadata`.
 ///
-/// For each task group, the last attempt is selected. Within that
-/// attempt, each task's last execution attempt provides the hostname.
-/// Task indices (the map keys) are parsed as integers and sorted
-/// ascending; the first hostname is the head node.
-fn head_hostname(response: &MastStatusResponse) -> Result<String, String> {
-    let mut hosts: Vec<(i64, String)> = Vec::new();
-    for attempts in response.latest_attempt.task_groups.values() {
-        let group = match attempts.last() {
-            Some(g) => g,
-            None => continue,
-        };
-        for (index_str, task_attempts) in &group.tasks {
-            let attempt = match task_attempts.last() {
-                Some(a) => a,
-                None => continue,
-            };
-            if let Some(ref hostname) = attempt.hostname {
-                let index = index_str.parse::<i64>().unwrap_or(i64::MAX);
-                hosts.push((index, hostname.clone()));
+/// Monarch writes `monarch/meshes/<group>/host_type` (and `/gpus`,
+/// `/transport`) for every mesh. We extract group names from any key
+/// matching `monarch/meshes/<name>/`.
+fn mesh_groups_from_metadata(
+    metadata: &std::collections::HashMap<String, String>,
+) -> std::collections::HashSet<&str> {
+    let mut groups = std::collections::HashSet::new();
+    for key in metadata.keys() {
+        if let Some(rest) = key.strip_prefix("monarch/meshes/") {
+            if let Some(name) = rest.split('/').next() {
+                if !name.is_empty() {
+                    groups.insert(name);
+                }
             }
         }
     }
-    hosts.sort_by_key(|(idx, _)| *idx);
-    hosts
-        .into_iter()
-        .next()
-        .map(|(_, h)| h)
-        .ok_or_else(|| "no hostnames found in MAST response".to_string())
+    groups
+}
+
+/// Return the name of the first mesh-bearing task group in
+/// job-definition order (MC-2, MC-3, MC-4, MC-5).
+///
+/// A task group is mesh-bearing iff its name appears in at least one
+/// `applicationMetadata` key prefixed by `monarch/meshes/<name>/`
+/// (MC-3). If no metadata exists, resolution succeeds only for
+/// single-group jobs (MC-4); multi-group without metadata fails.
+/// If metadata exists but names no actual task group, resolution
+/// fails (MC-5).
+fn first_mesh_group(definition: &MastJobDefinitionResponse) -> Result<&str, String> {
+    let mesh_names = definition
+        .application_metadata
+        .as_ref()
+        .map(|md| mesh_groups_from_metadata(md))
+        .unwrap_or_default();
+    if !mesh_names.is_empty() {
+        return definition
+            .task_groups
+            .iter()
+            .find(|g| mesh_names.contains(g.name.as_str()))
+            .map(|g| g.name.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "mesh metadata names {:?} do not match any task group",
+                    mesh_names
+                )
+            });
+    }
+    // Fallback: no Monarch mesh metadata. Only safe for single-group jobs.
+    match definition.task_groups.as_slice() {
+        [only] => Ok(only.name.as_str()),
+        [] => Err("job definition has no task groups".to_string()),
+        _ => Err(
+            "multiple task groups but no monarch/meshes/ metadata to identify the mesh group"
+                .to_string(),
+        ),
+    }
+}
+
+/// Extract task-0's hostname from a specific task group in the status
+/// response (MC-6).
+///
+/// Selects the latest task-group execution attempt, then finds task-0
+/// by parsing the trailing integer from TW task handles
+/// (`<prefix>/<index>`). Returns the hostname from the latest task
+/// execution attempt of task-0.
+fn mesh_group_head_hostname(
+    status: &MastStatusResponse,
+    group_name: &str,
+) -> Result<String, String> {
+    let attempts = status
+        .latest_attempt
+        .task_groups
+        .get(group_name)
+        .ok_or_else(|| format!("task group '{}' not found in job status", group_name))?;
+
+    let group = attempts
+        .last()
+        .ok_or_else(|| format!("no execution attempts for task group '{}'", group_name))?;
+
+    // Find the task whose TW handle ends in /0 (task index 0).
+    for (tw_handle, task_attempts) in &group.tasks {
+        let is_task_zero = tw_handle
+            .rsplit_once('/')
+            .and_then(|(_, s)| s.parse::<i64>().ok())
+            == Some(0);
+
+        if is_task_zero {
+            if let Some(attempt) = task_attempts.last() {
+                if let Some(ref hostname) = attempt.hostname {
+                    return Ok(hostname.clone());
+                }
+            }
+            return Err(format!(
+                "task-0 in group '{}' has no hostname (not yet allocated)",
+                group_name,
+            ));
+        }
+    }
+
+    Err(format!(
+        "task-0 not found in group '{}' execution attempts",
+        group_name,
+    ))
 }
 
 /// Qualify a short hostname to an FQDN via
-/// `getaddrinfo(AI_CANONNAME)` (MC-3,
-/// MC-4).
+/// `getaddrinfo(AI_CANONNAME)` (MC-7).
 ///
 /// Called via `spawn_blocking` to avoid blocking tokio workers. Falls
 /// back to the raw hostname on any failure.
@@ -2648,7 +2813,7 @@ fn qualify_fqdn_blocking(hostname: &str) -> String {
 }
 
 /// Resolve admin port from an explicit override or `MESH_ADMIN_ADDR`
-/// config (MC-5).
+/// config (MC-8).
 ///
 /// When `port_override` is `Some`, that port is used directly. When
 /// `None`, the port is read from the `MESH_ADMIN_ADDR` configuration
@@ -2666,29 +2831,9 @@ fn resolve_admin_port(port_override: Option<u16>) -> Result<u16, anyhow::Error> 
     }
 }
 
-/// Resolve a `mast_conda:///<job-name>` handle into an
-/// `https://<fqdn>:<port>` base URL by shelling out to the `mast` CLI
-/// (MC-1).
-///
-/// This is the OSS-compatible counterpart to
-/// `hyperactor_meta::mesh_admin::resolve_mast_handle`. The `cmd`
-/// parameter names the CLI binary; production passes `"mast"`, tests
-/// substitute a synthetic command.
-async fn try_resolve_mast_handle(
-    handle: &str,
-    port_override: Option<u16>,
-    cmd: &str,
-) -> anyhow::Result<String> {
-    let port = resolve_admin_port(port_override)?;
-    let job_name = handle
-        .strip_prefix("mast_conda:///")
-        .ok_or_else(|| anyhow::anyhow!("expected mast_conda:/// prefix, got '{}'", handle))?;
-
-    let output = match tokio::process::Command::new(cmd)
-        .args(["get-status", "--json", job_name])
-        .output()
-        .await
-    {
+/// Run a MAST CLI subcommand and return its stdout (MC-1).
+async fn run_mast_cmd(cmd: &str, args: &[&str]) -> anyhow::Result<Vec<u8>> {
+    let output = match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(o) => o,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             anyhow::bail!(
@@ -2703,18 +2848,53 @@ async fn try_resolve_mast_handle(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
-            "'mast get-status' exited with {}: {}",
+            "'mast {}' exited with {}: {}",
+            args.first().unwrap_or(&""),
             output.status,
             stderr.trim()
         );
     }
 
-    let response: MastStatusResponse = serde_json::from_slice(&output.stdout)
-        .map_err(|e| anyhow::anyhow!("failed to parse mast JSON output: {}", e))?;
+    Ok(output.stdout)
+}
 
-    let hostname =
-        head_hostname(&response).map_err(|e| anyhow::anyhow!("MAST job '{}': {}", job_name, e))?;
+/// Resolve a `mast_conda:///<job-name>` handle into an
+/// `https://<fqdn>:<port>` base URL by shelling out to the `mast`
+/// CLI (MC-1 through MC-9).
+///
+/// Resolution joins two MAST data sources:
+/// 1. Job definition — ordered task groups and application metadata.
+/// 2. Job status — runtime hostnames.
+///
+/// The admin host is task-0 of the first mesh-bearing task group
+/// (identified via `applicationMetadata`) in definition order.
+async fn try_resolve_mast_handle(
+    handle: &str,
+    port_override: Option<u16>,
+    cmd: &str,
+) -> anyhow::Result<String> {
+    let job_name = parse_mast_handle(handle)?;
+    let port = resolve_admin_port(port_override)?;
 
+    // MC-2, MC-3, MC-4, MC-5: job definition → first mesh-bearing task group.
+    let def_stdout =
+        run_mast_cmd(cmd, &["get-job-definition", "--output", "json", job_name]).await?;
+    let envelope: MastJobDefinitionEnvelope = serde_json::from_slice(&def_stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse job definition JSON: {}", e))?;
+    let definition = envelope.data;
+
+    let mesh_group = first_mesh_group(&definition)
+        .map_err(|e| anyhow::anyhow!("MAST job '{}': {}", job_name, e))?;
+
+    // MC-6: job status → task-0 hostname within selected group.
+    let status_stdout = run_mast_cmd(cmd, &["get-status", "--json", job_name]).await?;
+    let status: MastStatusResponse = serde_json::from_slice(&status_stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse job status JSON: {}", e))?;
+
+    let hostname = mesh_group_head_hostname(&status, mesh_group)
+        .map_err(|e| anyhow::anyhow!("MAST job '{}': {}", job_name, e))?;
+
+    // MC-7: qualify to FQDN.
     let fqdn = qualify_fqdn(&hostname).await;
     Ok(format!("https://{}:{}", fqdn, port))
 }
@@ -3521,143 +3701,7 @@ mod tests {
         );
     }
 
-    // -- MAST CLI resolver tests --
-    //
-    // These tests exercise the invariants introduced by the CLI-based
-    // MAST handle resolution. Each test names the invariant it
-    // establishes.
-
-    /// Helper: build a `MastStatusResponse` from a list of
-    /// `(task_index, hostname)` pairs in one task group.
-    fn mast_response_from_hosts(hosts: &[(i64, &str)]) -> super::MastStatusResponse {
-        let mut tasks = std::collections::HashMap::new();
-        for (idx, host) in hosts {
-            tasks.insert(
-                idx.to_string(),
-                vec![super::MastTaskAttempt {
-                    hostname: Some(host.to_string()),
-                }],
-            );
-        }
-        super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::from([(
-                    "trainers".to_string(),
-                    vec![super::MastTaskGroup { tasks }],
-                )]),
-            },
-        }
-    }
-
-    // MC-2: single group, tasks sorted by ascending index.
-    #[test]
-    fn test_head_hostname_single_group() {
-        let response = mast_response_from_hosts(&[(2, "host2"), (0, "host0"), (1, "host1")]);
-        let head = super::head_hostname(&response).unwrap();
-        assert_eq!(head, "host0");
-    }
-
-    // MC-2: last attempt selected per task.
-    #[test]
-    fn test_head_hostname_last_attempt_wins() {
-        let mut tasks = std::collections::HashMap::new();
-        tasks.insert(
-            "0".to_string(),
-            vec![
-                super::MastTaskAttempt {
-                    hostname: Some("old_host".to_string()),
-                },
-                super::MastTaskAttempt {
-                    hostname: Some("new_host".to_string()),
-                },
-            ],
-        );
-        let response = super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::from([(
-                    "trainers".to_string(),
-                    vec![super::MastTaskGroup { tasks }],
-                )]),
-            },
-        };
-        let head = super::head_hostname(&response).unwrap();
-        assert_eq!(head, "new_host");
-    }
-
-    // MC-2: multiple groups merged and sorted.
-    #[test]
-    fn test_head_hostname_multiple_groups() {
-        let mut tasks_a = std::collections::HashMap::new();
-        tasks_a.insert(
-            "1".to_string(),
-            vec![super::MastTaskAttempt {
-                hostname: Some("host_a1".to_string()),
-            }],
-        );
-        let mut tasks_b = std::collections::HashMap::new();
-        tasks_b.insert(
-            "0".to_string(),
-            vec![super::MastTaskAttempt {
-                hostname: Some("host_b0".to_string()),
-            }],
-        );
-        let response = super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::from([
-                    (
-                        "group_a".to_string(),
-                        vec![super::MastTaskGroup { tasks: tasks_a }],
-                    ),
-                    (
-                        "group_b".to_string(),
-                        vec![super::MastTaskGroup { tasks: tasks_b }],
-                    ),
-                ]),
-            },
-        };
-        let head = super::head_hostname(&response).unwrap();
-        assert_eq!(head, "host_b0");
-    }
-
-    // MC-2: no hostnames → error.
-    #[test]
-    fn test_head_hostname_empty() {
-        let response = super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::new(),
-            },
-        };
-        assert!(super::head_hostname(&response).is_err());
-    }
-
-    // MC-2: hostname field is None (task not yet
-    // allocated) → skipped.
-    #[test]
-    fn test_head_hostname_skips_unallocated() {
-        let mut tasks = std::collections::HashMap::new();
-        tasks.insert(
-            "0".to_string(),
-            vec![super::MastTaskAttempt { hostname: None }],
-        );
-        tasks.insert(
-            "1".to_string(),
-            vec![super::MastTaskAttempt {
-                hostname: Some("allocated_host".to_string()),
-            }],
-        );
-        let response = super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::from([(
-                    "trainers".to_string(),
-                    vec![super::MastTaskGroup { tasks }],
-                )]),
-            },
-        };
-        let head = super::head_hostname(&response).unwrap();
-        assert_eq!(head, "allocated_host");
-    }
-
-    // MC-3: hostname with dot passes through
+    // MC-5: hostname with dot passes through
     // unchanged (no DNS lookup).
     #[tokio::test]
     async fn test_qualify_fqdn_already_qualified() {
@@ -3730,8 +3774,14 @@ mod tests {
     // MC-1: valid JSON, happy path end-to-end.
     #[tokio::test]
     async fn test_cli_happy_path() {
-        let json = r#"{"latestAttempt":{"taskGroupExecutionAttempts":{"trainers":[{"taskExecutionAttempts":{"0":[{"hostname":"devgpu042"}]}}]}}}"#;
-        let (_dir, script_path) = write_test_script(&format!("#!/bin/sh\necho '{}'\n", json));
+        let def_json = r#"{"data":{"hpcTaskGroups":[{"name":"trainers"}],"applicationMetadata":{"monarch/meshes/trainers/host_type":"grandteton"}}}"#;
+        let status_json = r#"{"latestAttempt":{"taskGroupExecutionAttempts":{"trainers":[{"taskExecutionAttempts":{"job/trainers.0.hash/0":[{"hostname":"devgpu042"}]}}]}}}"#;
+        // Script checks first arg to return the right response.
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in\nget-job-definition) echo '{}' ;;\n*) echo '{}' ;;\nesac\n",
+            def_json, status_json,
+        );
+        let (_dir, script_path) = write_test_script(&script);
         let url =
             super::try_resolve_mast_handle("mast_conda:///test-job", Some(1729), &script_path)
                 .await
@@ -3782,49 +3832,6 @@ mod tests {
             "expected prefix error, got: {}",
             err
         );
-    }
-
-    // MC-2: a task group with zero attempts is skipped.
-    #[test]
-    fn test_head_hostname_empty_attempts_vec() {
-        let response = super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::from([(
-                    "trainers".to_string(),
-                    vec![], // no attempts in this group
-                )]),
-            },
-        };
-        assert!(super::head_hostname(&response).is_err());
-    }
-
-    // MC-2: non-numeric task index keys sort last
-    // (i64::MAX fallback).
-    #[test]
-    fn test_head_hostname_non_numeric_index() {
-        let mut tasks = std::collections::HashMap::new();
-        tasks.insert(
-            "abc".to_string(),
-            vec![super::MastTaskAttempt {
-                hostname: Some("host_abc".to_string()),
-            }],
-        );
-        tasks.insert(
-            "0".to_string(),
-            vec![super::MastTaskAttempt {
-                hostname: Some("host_0".to_string()),
-            }],
-        );
-        let response = super::MastStatusResponse {
-            latest_attempt: super::MastAttempt {
-                task_groups: std::collections::HashMap::from([(
-                    "trainers".to_string(),
-                    vec![super::MastTaskGroup { tasks }],
-                )]),
-            },
-        };
-        let head = super::head_hostname(&response).unwrap();
-        assert_eq!(head, "host_0");
     }
 
     // Verifies that GET /v1/{proc_id} reflects actors spawned directly
@@ -4024,5 +4031,180 @@ mod tests {
 
         let (_, parsed) = parse_pyspy_proc_reference(&with_slash).unwrap();
         assert_eq!(parsed, proc_id);
+    }
+
+    // -- parse_mast_handle tests --
+
+    #[test]
+    fn test_parse_mast_handle() {
+        assert_eq!(
+            super::parse_mast_handle("mast_conda:///my-job").unwrap(),
+            "my-job"
+        );
+    }
+
+    #[test]
+    fn test_parse_mast_handle_empty_job() {
+        assert!(super::parse_mast_handle("mast_conda:///").is_err());
+    }
+
+    #[test]
+    fn test_parse_mast_handle_missing_prefix() {
+        assert!(super::parse_mast_handle("https://example.com/job").is_err());
+    }
+
+    // -- mast_conda:/// CLI resolution tests --
+    //
+    // Tests for MC-1..MC-6 invariants: definition/status join,
+    // definition-ordered mesh selection, mesh-bearing discriminator,
+    // selected-group head host, no implicit global task ordering,
+    // port resolution.
+
+    /// Helper: build a `MastJobDefinitionResponse` with task group
+    /// names and mesh group names (which get metadata entries).
+    fn make_definition(groups: &[&str], mesh_groups: &[&str]) -> super::MastJobDefinitionResponse {
+        let mut metadata = std::collections::HashMap::new();
+        for name in mesh_groups {
+            metadata.insert(
+                format!("monarch/meshes/{}/host_type", name),
+                "grandteton".to_string(),
+            );
+        }
+        super::MastJobDefinitionResponse {
+            task_groups: groups
+                .iter()
+                .map(|name| super::MastTaskGroupDef {
+                    name: name.to_string(),
+                })
+                .collect(),
+            application_metadata: Some(metadata),
+        }
+    }
+
+    /// Helper: build a `MastStatusResponse` from (group_name, [(tw_handle, hostname)]) pairs.
+    fn make_status(groups: &[(&str, &[(&str, Option<&str>)])]) -> super::MastStatusResponse {
+        let mut tg_map = std::collections::HashMap::new();
+        for (group_name, tasks) in groups {
+            let mut task_attempts = std::collections::HashMap::new();
+            for (handle, hostname) in *tasks {
+                task_attempts.insert(
+                    handle.to_string(),
+                    vec![super::MastTaskAttempt {
+                        hostname: hostname.map(|h| h.to_string()),
+                    }],
+                );
+            }
+            tg_map.insert(
+                group_name.to_string(),
+                vec![super::MastTaskGroup {
+                    tasks: task_attempts,
+                }],
+            );
+        }
+        super::MastStatusResponse {
+            latest_attempt: super::MastAttempt {
+                task_groups: tg_map,
+            },
+        }
+    }
+
+    // MC-2, MC-3: The resolver picks the first task group in
+    // definition order whose name appears in monarch/meshes/
+    // metadata, NOT the first group overall.
+    #[test]
+    fn test_cli_resolves_first_mesh_group_not_first_task_group() {
+        // Definition: controller, trainer, generator.
+        // Metadata marks trainer and generator as mesh groups.
+        let definition = make_definition(
+            &["controller", "trainer", "generator"],
+            &["trainer", "generator"],
+        );
+
+        let mesh_group = super::first_mesh_group(&definition).unwrap();
+        assert_eq!(mesh_group, "trainer");
+
+        // Status: trainer/0 → host-t0, generator/0 → host-g0.
+        let status = make_status(&[
+            (
+                "controller",
+                &[("job/controller.0.hash/0", Some("host-c0"))],
+            ),
+            ("trainer", &[("job/trainer.0.hash/0", Some("host-t0"))]),
+            ("generator", &[("job/generator.0.hash/0", Some("host-g0"))]),
+        ]);
+
+        let hostname = super::mesh_group_head_hostname(&status, mesh_group).unwrap();
+        assert_eq!(
+            hostname, "host-t0",
+            "admin host must be task-0 of the first mesh-bearing group (trainer), not controller or generator"
+        );
+    }
+
+    // MC-4: Single-group job with no mesh metadata falls back to
+    // that group.
+    #[test]
+    fn test_cli_falls_back_to_sole_group_when_no_metadata() {
+        let definition = make_definition(&["workers"], &[]);
+        let group = super::first_mesh_group(&definition).unwrap();
+        assert_eq!(group, "workers", "should fall back to sole task group");
+    }
+
+    // Multi-group job with no mesh metadata must fail (ambiguous).
+    #[test]
+    fn test_cli_errors_when_multi_group_and_no_metadata() {
+        let definition = make_definition(&["workers", "sidecar"], &[]);
+        let err = super::first_mesh_group(&definition).unwrap_err();
+        assert!(
+            err.contains("no monarch/meshes/"),
+            "error should mention missing metadata: {}",
+            err
+        );
+    }
+
+    // Empty definition must fail.
+    #[test]
+    fn test_cli_errors_when_no_task_groups_exist() {
+        let definition = make_definition(&[], &[]);
+        let err = super::first_mesh_group(&definition).unwrap_err();
+        assert!(
+            err.contains("no task groups"),
+            "error should mention no task groups: {}",
+            err
+        );
+    }
+
+    // MC-5: Metadata names groups that don't exist in
+    // hpcTaskGroups → resolution must fail.
+    #[test]
+    fn test_cli_errors_when_metadata_names_no_actual_task_group() {
+        // Task groups: "workers", "sidecar".
+        // Metadata names "trainer" — not a real task group.
+        let definition = make_definition(&["workers", "sidecar"], &["trainer"]);
+        let err = super::first_mesh_group(&definition).unwrap_err();
+        assert!(
+            err.contains("do not match any task group"),
+            "error should mention mismatch: {}",
+            err
+        );
+    }
+
+    // MC-6: If the selected mesh group's task-0 has no hostname
+    // (not yet allocated), resolution must fail rather than
+    // silently picking another task or group.
+    #[test]
+    fn test_cli_errors_when_selected_mesh_group_has_no_task_zero_hostname() {
+        let definition = make_definition(&["trainer"], &["trainer"]);
+        let mesh_group = super::first_mesh_group(&definition).unwrap();
+        assert_eq!(mesh_group, "trainer");
+
+        // Status: trainer has task-0 but hostname is None.
+        let status = make_status(&[("trainer", &[("job/trainer.0.hash/0", None)])]);
+
+        let err = super::mesh_group_head_hostname(&status, mesh_group).unwrap_err();
+        assert!(
+            err.contains("no hostname"),
+            "error should mention missing hostname: {}",
+            err
+        );
     }
 }
