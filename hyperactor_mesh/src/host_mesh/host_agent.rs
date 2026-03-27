@@ -1045,6 +1045,10 @@ pub struct SpawnMeshAdmin {
     /// the server reads `MESH_ADMIN_ADDR` from config.
     pub admin_addr: Option<std::net::SocketAddr>,
 
+    /// Base URL of the Monarch dashboard for proxy routes. `None` if
+    /// the dashboard is not running.
+    pub telemetry_url: Option<String>,
+
     /// Reply port for the admin HTTP address string (e.g.
     /// `"myhost.facebook.com:8080"`).
     #[reply]
@@ -1070,6 +1074,7 @@ impl Handler<SpawnMeshAdmin> for HostAgent {
                 msg.hosts,
                 msg.root_client_actor_id,
                 msg.admin_addr,
+                msg.telemetry_url,
             ),
         )?;
         let response = agent_handle.get_admin_addr(cx).await?;

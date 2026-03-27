@@ -1655,6 +1655,7 @@ pub async fn spawn_admin(
     meshes: impl IntoIterator<Item = impl AsRef<HostMeshRef>>,
     cx: &impl hyperactor::context::Actor,
     admin_addr: Option<std::net::SocketAddr>,
+    telemetry_url: Option<String>,
 ) -> anyhow::Result<String> {
     let meshes: Vec<_> = meshes.into_iter().collect();
     anyhow::ensure!(!meshes.is_empty(), "at least one mesh is required (SA-1)");
@@ -1673,7 +1674,7 @@ pub async fn spawn_admin(
     let root_client_id = cx.mailbox().actor_id().clone();
     let head_agent = meshes[0].as_ref().hosts()[0].mesh_agent();
     let addr = head_agent
-        .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_addr)
+        .spawn_mesh_admin(cx, hosts, Some(root_client_id), admin_addr, telemetry_url)
         .await?;
 
     Ok(addr)
@@ -2187,7 +2188,7 @@ mod tests {
     #[tokio::test]
     async fn test_sa1_empty_mesh_set_rejected() {
         let instance = testing::instance();
-        let result = spawn_admin(std::iter::empty::<&HostMeshRef>(), instance, None).await;
+        let result = spawn_admin(std::iter::empty::<&HostMeshRef>(), instance, None, None).await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("SA-1"), "expected SA-1 error, got: {err}");
     }
@@ -2196,7 +2197,7 @@ mod tests {
     async fn test_sa2_empty_hosts_rejected() {
         let instance = testing::instance();
         let mesh = HostMeshRef::from_hosts(Name::new("empty").unwrap(), vec![]);
-        let result = spawn_admin([&mesh], instance, None).await;
+        let result = spawn_admin([&mesh], instance, None, None).await;
         let err = result.unwrap_err().to_string();
         assert!(err.contains("SA-2"), "expected SA-2 error, got: {err}");
     }

@@ -437,6 +437,7 @@ class HostMesh(MeshTrait):
 def _spawn_admin(
     host_meshes: list["HostMesh"],
     admin_addr: Optional[str] = None,
+    telemetry_url: Optional[str] = None,
 ) -> "Future[str]":
     """
     Spawn a MeshAdminAgent aggregating topology across one or more HostMeshes.
@@ -455,6 +456,9 @@ def _spawn_admin(
             Must not be empty.
         admin_addr: Optional socket address for the admin HTTP server.
             When ``None``, reads ``MESH_ADMIN_ADDR`` from config.
+        telemetry_url: Optional base URL of the Monarch telemetry dashboard.
+            When provided, the admin exposes proxy routes (``/v1/query``,
+            ``/v1/pyspy_dump``) that forward to the dashboard.
 
     Returns:
         Future[str]: The admin HTTP URL (for example
@@ -469,7 +473,7 @@ def _spawn_admin(
     async def task() -> str:
         hy_meshes = [await m._hy_host_mesh for m in host_meshes]
         return await _hy_spawn_admin(
-            hy_meshes, context().actor_instance._as_rust(), admin_addr
+            hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url
         )
 
     return Future(coro=task())
