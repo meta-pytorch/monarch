@@ -28,7 +28,6 @@ jobs:
       IS_PUSH: ${{ github.event_name == 'push' }}
       IS_SCHEDULE:  ${{ github.event_name == 'schedule' }}
       IS_ROCM_TAG:  ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
-      TRIGGERED_ROCM_LABEL: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' }}
 
     steps:
       - id: set
@@ -65,11 +64,10 @@ jobs:
           IS_PUSH="${IS_PUSH:-false}"
           IS_SCHEDULE="${IS_SCHEDULE:-false}"
           IS_ROCM_TAG="${IS_ROCM_TAG:-false}"
-          TRIGGERED_ROCM_LABEL="${TRIGGERED_ROCM_LABEL:-false}"
 
           # Decide which matrix entries to include based on event type
           # Runs ROCm only for push tag OR when PR label gets triggered
-          if [[ "$IS_ROCM_TAG" == "true" || "$TRIGGERED_ROCM_LABEL" == "true" ]]; then
+          if [[ "$IS_ROCM_TAG" == "true" ]]; then
             cat > matrix.json <<JSON
           {"include": [$ROCM_MATRIX]}
           JSON
