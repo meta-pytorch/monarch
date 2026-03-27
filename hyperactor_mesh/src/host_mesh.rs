@@ -53,6 +53,7 @@ use crate::alloc::Alloc;
 use crate::bootstrap::BootstrapCommand;
 use crate::bootstrap::BootstrapProcManager;
 use crate::bootstrap::ProcBind;
+use crate::host_mesh::host_agent::DrainHostClient;
 pub use crate::host_mesh::host_agent::HostAgent;
 use crate::host_mesh::host_agent::HostAgentMode;
 use crate::host_mesh::host_agent::HostMeshAgentProcMeshTrampoline;
@@ -61,8 +62,6 @@ use crate::host_mesh::host_agent::ProcState;
 use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::host_mesh::host_agent::SpawnMeshAdminClient;
-use crate::host_mesh::host_agent::StopHostClient;
-use crate::host_mesh::host_agent::TerminateProcsClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -165,34 +164,17 @@ impl HostRef {
         Ok(())
     }
 
-    /// Request a stop of this host: tear down all resources but keep
-    /// the worker process alive for reconnection.
-    pub(crate) async fn stop(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+    /// Drain all user procs on this host but keep the host, service
+    /// proc, and networking alive. Used during mesh stop/shutdown so
+    /// that forwarder flushes can still reach remote hosts.
+    pub(crate) async fn drain(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
         let terminate_timeout =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
         let max_in_flight =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
-            .stop_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
-            .await?;
-        Ok(())
-    }
-
-    /// Terminate all user procs on this host but keep the host, service
-    /// proc, and networking alive. Used as phase 1 of two-phase
-    /// shutdown so that forwarder flushes can still reach remote hosts.
-    pub(crate) async fn terminate_children(
-        &self,
-        cx: &impl hyperactor::context::Actor,
-    ) -> anyhow::Result<()> {
-        let agent = self.mesh_agent();
-        let terminate_timeout =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
-        let max_in_flight =
-            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
-        agent
-            .terminate_procs(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .drain_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
             .await?;
         Ok(())
     }
@@ -683,7 +665,7 @@ impl HostMesh {
         let results = futures::future::join_all(
             self.current_ref
                 .values()
-                .map(|host| async move { host.terminate_children(cx).await }),
+                .map(|host| async move { host.drain(cx).await }),
         )
         .await;
         let phase1_ms = t0.elapsed().as_millis();
@@ -691,9 +673,9 @@ impl HostMesh {
             if let Err(e) = result {
                 tracing::warn!(
                     name = "HostMeshStatus",
-                    status = "Shutdown::TerminateChildren::Failed",
+                    status = "Shutdown::Drain::Failed",
                     error = %e,
-                    "terminate_children failed on a host"
+                    "drain failed on a host"
                 );
             }
         }
@@ -755,13 +737,9 @@ impl HostMesh {
         HostMeshShutdownGuard(self)
     }
 
-    /// Stop all hosts owned by this `HostMesh`, terminating user procs
+    /// Stop all hosts owned by this `HostMesh`, draining user procs
     /// but keeping worker processes and their sockets alive for
     /// reconnection.
-    ///
-    /// Uses the same two-phase approach as [`shutdown`](Self::shutdown):
-    /// first terminate children across all hosts (while networking
-    /// stays alive), then stop hosts concurrently.
     ///
     /// After `stop`, the same worker addresses can be passed to
     /// [`HostMesh::attach`] to create a new mesh.
@@ -770,62 +748,31 @@ impl HostMesh {
         let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
 
-        // Phase 1: terminate all user procs while service infrastructure
-        // stays alive so forwarder flushes can complete across hosts.
         let results = futures::future::join_all(
             self.current_ref
                 .values()
-                .map(|host| async move { host.terminate_children(cx).await }),
+                .map(|host| async move { host.drain(cx).await }),
         )
         .await;
-        let phase1_ms = t0.elapsed().as_millis();
-        for result in &results {
-            if let Err(e) = result {
-                tracing::warn!(
-                    name = "HostMeshStatus",
-                    status = "Stop::TerminateChildren::Failed",
-                    error = %e,
-                    "terminate_children failed on a host"
-                );
-            }
-        }
-
-        // Phase 2: stop hosts concurrently. No user procs remain.
-        let t1 = std::time::Instant::now();
-        let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
-            let result = host.stop(cx).await;
-            (host, result)
-        }))
-        .await;
-        let phase2_ms = t1.elapsed().as_millis();
         let total_ms = t0.elapsed().as_millis();
         let mut failed_hosts = vec![];
-        for (host, result) in &results {
+        for (i, result) in results.iter().enumerate() {
             if let Err(e) = result {
                 tracing::warn!(
                     name = "HostMeshStatus",
-                    status = "Stop::Host::Failed",
-                    host = %host,
+                    status = "Stop::Drain::Failed",
                     error = %e,
-                    "host stop failed"
+                    "drain failed on a host"
                 );
-                failed_hosts.push(host);
+                failed_hosts.push(i);
             }
         }
         if failed_hosts.is_empty() {
-            tracing::info!(
-                name = "HostMeshStatus",
-                status = "Stop::Success",
-                phase1_ms,
-                phase2_ms,
-                total_ms,
-            );
+            tracing::info!(name = "HostMeshStatus", status = "Stop::Success", total_ms,);
         } else {
             tracing::error!(
                 name = "HostMeshStatus",
                 status = "Stop::Failed",
-                phase1_ms,
-                phase2_ms,
                 total_ms,
                 "host mesh stop failed; check the logs of the failed hosts for details: {:?}",
                 failed_hosts

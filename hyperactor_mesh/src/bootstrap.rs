@@ -293,7 +293,7 @@ async fn halt<R>() -> R {
 /// the [`ShutdownHost`] handler sends back the mailbox server handle, drains
 /// it, and (if `exit_on_shutdown`) calls `process::exit`.
 ///
-/// Note: [`StopHost`] does **not** trigger this handle — a stopped host
+/// Note: [`DrainHost`] does **not** trigger this handle — a drained host
 /// keeps its mailbox server (and Unix socket) alive so new clients can
 /// reconnect to the same address.
 pub struct HostShutdownHandle {
@@ -349,7 +349,7 @@ pub async fn host(
     let host = Host::new(manager, addr).await?;
     let addr = host.addr().clone();
 
-    // The ShutdownHost/StopHost handler will call host.serve() inside
+    // The ShutdownHost handler will call host.serve() inside
     // HostAgent::init (after this.bind::<Self>(), so the actor port is bound
     // before the frontend starts routing messages), then send the resulting
     // MailboxServerHandle back here for draining.
