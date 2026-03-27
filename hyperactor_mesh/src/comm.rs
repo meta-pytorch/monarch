@@ -1446,7 +1446,7 @@ mod tests {
         let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_v1_retrofit() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
@@ -1457,7 +1457,7 @@ mod tests {
         execute_cast_and_reply_v1().await
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_v1_native() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
@@ -1480,7 +1480,7 @@ mod tests {
         let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_v1_retrofit() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, false);
@@ -1491,7 +1491,7 @@ mod tests {
         execute_cast_and_accum_v1(&config).await
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_v1_native() {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(ENABLE_NATIVE_V1_CASTING, true);
@@ -1581,7 +1581,7 @@ mod tests {
         }
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_reply_once_v1() {
         // Test OncePort without accumulator - port is NOT split.
         // All destinations receive the same original port.
@@ -1603,7 +1603,7 @@ mod tests {
         let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_cast_and_accum_once_v1() {
         // Test OncePort splitting with sum accumulator.
         // Each destination actor replies with its rank.
@@ -1624,7 +1624,7 @@ mod tests {
         let _ = setup.host_mesh.shutdown(setup.instance).await;
     }
 
-    #[async_timed_test(timeout_secs = 120)]
+    #[async_timed_test(timeout_secs = 60)]
     async fn test_unsplit_port_not_split() {
         let instance = crate::testing::instance();
         let mut host_mesh = local_host_mesh(8).await;
@@ -1674,7 +1674,6 @@ mod tests {
             let val = reply_rx.recv().await.unwrap();
             assert_eq!(val, 42);
         }
-
         let _ = host_mesh.shutdown(instance).await;
     }
 }
