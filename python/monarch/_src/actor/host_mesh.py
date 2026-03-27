@@ -88,6 +88,7 @@ class HostMesh(MeshTrait):
         self._stream_logs = stream_logs
         self._is_fake_in_process = is_fake_in_process
         self._code_sync_proc_mesh: Optional["_Lazy[ProcMesh]"] = code_sync_proc_mesh
+        self._pending_spawns: list[Shared[HyProcMesh]] = []
 
     @classmethod
     def _allocate_nonblocking(
@@ -223,9 +224,12 @@ class HostMesh(MeshTrait):
                 context().actor_instance._as_rust(), name, per_host, proc_bind
             )
 
+        spawn_shared = PythonTask.from_coroutine(task()).spawn()
+        self._pending_spawns.append(spawn_shared)
+
         return ProcMesh.from_host_mesh(
             self,
-            PythonTask.from_coroutine(task()).spawn(),
+            spawn_shared,
             Extent(
                 self._labels + tuple(per_host.labels),
                 self.region.slice().sizes + list(per_host.sizes),
@@ -359,6 +363,14 @@ class HostMesh(MeshTrait):
     def _initialized_mesh(self) -> HyHostMesh:
         return self._hy_host_mesh.poll() or self._hy_host_mesh.block_on()
 
+    async def _flush_pending_spawns(self) -> None:
+        for shared in self._pending_spawns:
+            try:
+                await shared
+            except Exception:
+                pass
+        self._pending_spawns.clear()
+
     def shutdown(self) -> Future[None]:
         """
         Shutdown the host mesh and all of its processes. It will throw an exception
@@ -377,6 +389,7 @@ class HostMesh(MeshTrait):
         """
 
         async def task() -> None:
+            await self._flush_pending_spawns()
             hy_mesh = await self._hy_host_mesh
             await hy_mesh.shutdown(context().actor_instance._as_rust())
             # Remove the inner host mesh to clean up associated memory.
@@ -398,6 +411,7 @@ class HostMesh(MeshTrait):
         """
 
         async def task() -> None:
+            await self._flush_pending_spawns()
             hy_mesh = await self._hy_host_mesh
             await hy_mesh.stop(context().actor_instance._as_rust())
 
