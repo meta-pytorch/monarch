@@ -217,13 +217,16 @@ pub const HOST_MESH_AGENT_ACTOR_NAME: &str = "host_agent";
 
 /// Lifecycle state of the host managed by [`HostAgent`].
 enum HostAgentState {
-    /// Normal operation — can spawn procs, handle messages.
-    Running(HostAgentMode),
-    /// Children being terminated by a TerminationWorker.
-    Stopping,
-    /// Children terminated, host still alive for shutdown.
-    Stopped(HostAgentMode),
-    /// Host fully shut down (after ShutdownHost).
+    /// Waiting for a client to attach. The host is idle and ready
+    /// to accept new proc spawn requests.
+    Detached(HostAgentMode),
+    /// Actively running procs for an attached client.
+    Attached(HostAgentMode),
+    /// Procs are being drained by a DrainWorker. The host has been
+    /// temporarily moved to the worker. The host agent remains
+    /// responsive; min_proc_status() returns Stopping.
+    Draining,
+    /// Host fully shut down.
     Shutdown,
 }
 
@@ -236,27 +239,28 @@ struct ProcStatusChanged {
     name: Name,
 }
 
-/// Sent by TerminationWorker back to HostAgent when termination completes.
+/// Sent by DrainWorker back to HostAgent when draining completes.
 /// Not exported — delivered locally via PortHandle (no serialization).
-struct TerminationDone {
+struct DrainComplete {
     host: HostAgentMode,
+    ack: hyperactor_reference::PortRef<()>,
 }
 
 /// Child actor whose only job is to run `host.terminate_children()` in
-/// its `init()`, send the ack reply, return the host to the parent
-/// via TerminationDone, and exit. Runs on the same proc as the host
-/// agent so it gets its own `Instance` (required by `terminate_children`).
+/// its `init()`, return the host and ack to the parent via DrainComplete,
+/// and exit. Runs on the same proc as the host agent so it gets its
+/// own `Instance` (required by `terminate_children`).
 #[hyperactor::export(handlers = [])]
-struct TerminationWorker {
+struct DrainWorker {
     host: Option<HostAgentMode>,
     timeout: Duration,
     max_in_flight: usize,
-    ack: hyperactor_reference::PortRef<()>,
-    done_notify: PortHandle<TerminationDone>,
+    ack: Option<hyperactor_reference::PortRef<()>>,
+    done_notify: PortHandle<DrainComplete>,
 }
 
 #[async_trait]
-impl Actor for TerminationWorker {
+impl Actor for DrainWorker {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         if let Some(host) = self.host.as_mut() {
             match host {
@@ -265,37 +269,30 @@ impl Actor for TerminationWorker {
                         this,
                         self.timeout,
                         self.max_in_flight.clamp(1, 256),
-                        "terminate children",
+                        "drain host",
                     )
                     .await;
                 }
                 HostAgentMode::Local(host) => {
-                    host.terminate_children(
-                        this,
-                        self.timeout,
-                        self.max_in_flight,
-                        "terminate children",
-                    )
-                    .await;
+                    host.terminate_children(this, self.timeout, self.max_in_flight, "drain host")
+                        .await;
                 }
             }
         }
 
-        // Reply ack to the caller.
-        self.ack.send(this, ())?;
-
-        // Return host to parent.
-        if let Some(host) = self.host.take() {
-            let _ = self.done_notify.send(this, TerminationDone { host });
+        // Bundle host + ack into DrainComplete so the parent sends the ack
+        // AFTER restoring state (prevents race with ShutdownHost).
+        if let (Some(host), Some(ack)) = (self.host.take(), self.ack.take()) {
+            let _ = self.done_notify.send(this, DrainComplete { host, ack });
         }
 
         Ok(())
     }
 }
 
-impl fmt::Debug for TerminationWorker {
+impl fmt::Debug for DrainWorker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TerminationWorker")
+        f.debug_struct("DrainWorker")
             .field("timeout", &self.timeout)
             .field("max_in_flight", &self.max_in_flight)
             .finish()
@@ -311,8 +308,7 @@ impl fmt::Debug for TerminationWorker {
         resource::WaitRankStatus { cast = true },
         resource::List,
         ShutdownHost,
-        StopHost,
-        TerminateProcs,
+        DrainHost,
         SpawnMeshAdmin,
         SetClientConfig,
         ProcStatusChanged,
@@ -354,7 +350,7 @@ impl HostAgent {
     /// Create a new host mesh agent running in the provided mode.
     pub fn new(host: HostAgentMode) -> Self {
         Self {
-            state: HostAgentState::Running(host),
+            state: HostAgentState::Detached(host),
             created: HashMap::new(),
             pending_proc_waiters: HashMap::new(),
             watching: HashSet::new(),
@@ -368,23 +364,22 @@ impl HostAgent {
     /// Procs on this host cannot be healthier than this.
     fn min_proc_status(&self) -> resource::Status {
         match &self.state {
-            HostAgentState::Running(_) => resource::Status::Running, // no constraint
-            HostAgentState::Stopping => resource::Status::Stopping,
-            HostAgentState::Stopped(_) => resource::Status::Stopped,
+            HostAgentState::Detached(_) | HostAgentState::Attached(_) => resource::Status::Running,
+            HostAgentState::Draining => resource::Status::Stopping,
             HostAgentState::Shutdown => resource::Status::Stopped,
         }
     }
 
     fn host(&self) -> Option<&HostAgentMode> {
         match &self.state {
-            HostAgentState::Running(h) | HostAgentState::Stopped(h) => Some(h),
+            HostAgentState::Detached(h) | HostAgentState::Attached(h) => Some(h),
             _ => None,
         }
     }
 
     fn host_mut(&mut self) -> Option<&mut HostAgentMode> {
         match &mut self.state {
-            HostAgentState::Running(h) | HostAgentState::Stopped(h) => Some(h),
+            HostAgentState::Detached(h) | HostAgentState::Attached(h) => Some(h),
             _ => None,
         }
     }
@@ -394,7 +389,7 @@ impl HostAgent {
     /// The host, system proc, mailbox server, and HostAgent all stay
     /// alive — only user procs are killed. After this returns the host
     /// is ready to accept new spawn requests with the same proc names.
-    async fn terminate_children_and_clear(
+    async fn drain(
         &mut self,
         cx: &Context<'_, Self>,
         timeout: std::time::Duration,
@@ -419,7 +414,7 @@ impl HostAgent {
         self.created.clear();
     }
 
-    /// Publish the current host properties and children list for
+    /// Publish the current host properties and child list for
     /// introspection. Called from init and after each state change
     /// (proc created/stopped).
     fn publish_introspect_properties(&self, cx: &Instance<Self>) {
@@ -630,10 +625,22 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
         if let Err(e) = &created {
             tracing::error!("failed to spawn proc {}: {}", create_or_update.name, e);
         }
+        let was_empty = self.created.is_empty();
         self.created.insert(
             create_or_update.name.clone(),
             ProcCreationState { rank, created },
         );
+
+        // Transition Detached → Attached on first proc creation.
+        if was_empty {
+            if let HostAgentState::Detached(_) = &self.state {
+                let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
+                    HostAgentState::Detached(h) => h,
+                    _ => unreachable!(),
+                };
+                self.state = HostAgentState::Attached(host);
+            }
+        }
 
         // If any WaitRankStatus messages arrived before this proc
         // existed, their waiters were stashed with a sentinel rank.
@@ -953,66 +960,53 @@ pub struct ShutdownHost {
 }
 wirevalue::register_type!(ShutdownHost);
 
-/// Stop the host: tear down all resources (procs, host, router) but
-/// keep the worker process alive so a new client can re-bootstrap.
-/// TODO: consider generalizing resource::StopAll to use for this case.
+/// Drain all user procs on this host but keep the host, service
+/// proc, and networking alive. Used during mesh stop/shutdown so
+/// that forwarder flushes can still reach remote hosts.
 #[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
-pub struct StopHost {
-    /// Grace window: send SIGTERM and wait this long before
-    /// escalating.
-    pub timeout: std::time::Duration,
-    /// Max number of children to terminate concurrently on this host.
-    pub max_in_flight: usize,
-    /// Ack that the agent finished stop work (best-effort).
-    #[reply]
-    pub ack: hyperactor::reference::PortRef<()>,
-}
-wirevalue::register_type!(StopHost);
-
-/// Terminate all user procs on this host but keep the host, service
-/// proc, and networking alive.  Used as phase 1 of a two-phase mesh
-/// shutdown so that forwarder flushes can still reach remote hosts.
-#[derive(Serialize, Deserialize, Debug, Named, Handler, RefClient, HandleClient)]
-pub struct TerminateProcs {
+pub struct DrainHost {
     pub timeout: std::time::Duration,
     pub max_in_flight: usize,
     #[reply]
     pub ack: hyperactor::reference::PortRef<()>,
 }
-wirevalue::register_type!(TerminateProcs);
+wirevalue::register_type!(DrainHost);
 
 #[async_trait]
-impl Handler<TerminateProcs> for HostAgent {
-    async fn handle(&mut self, cx: &Context<Self>, msg: TerminateProcs) -> anyhow::Result<()> {
-        // Only proceed if Running.
-        let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-            HostAgentState::Running(h) => h,
-            other => {
-                // Already stopping/stopped — put state back, ack immediately.
+impl Handler<DrainHost> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, msg: DrainHost) -> anyhow::Result<()> {
+        let host = match std::mem::replace(&mut self.state, HostAgentState::Draining) {
+            HostAgentState::Attached(h) => h,
+            other @ (HostAgentState::Detached(_) | HostAgentState::Draining) => {
+                // Nothing to drain — ack immediately.
                 self.state = other;
                 msg.ack.send(cx, ())?;
                 return Ok(());
             }
+            HostAgentState::Shutdown => {
+                self.state = HostAgentState::Shutdown;
+                msg.ack.send(cx, ())?;
+                return Ok(());
+            }
         };
-        // Do NOT clear `self.created` here: the TerminationWorker
+
+        // Do NOT clear `self.created` here: the DrainWorker
         // terminates procs asynchronously, and concurrent GetState /
-        // GetRankStatus queries must still find the entries.  With the
-        // host in Stopping state (`self.host()` returns None), those
+        // GetRankStatus queries must still find the entries. With the
+        // host in Draining state (`self.host()` returns None), those
         // handlers already report Status::Stopped for every known
-        // proc, which is the correct answer while termination is
+        // proc, which is the correct answer while draining is
         // in progress.
 
-        self.state = HostAgentState::Stopping;
-
-        let done_port = cx.port::<TerminationDone>();
+        let done_port = cx.port::<DrainComplete>();
 
         cx.spawn_with_name(
-            "termination_worker",
-            TerminationWorker {
+            "drain_worker",
+            DrainWorker {
                 host: Some(host),
                 timeout: msg.timeout,
                 max_in_flight: msg.max_in_flight,
-                ack: msg.ack,
+                ack: Some(msg.ack),
                 done_notify: done_port,
             },
         )?;
@@ -1022,52 +1016,11 @@ impl Handler<TerminateProcs> for HostAgent {
 }
 
 #[async_trait]
-impl Handler<TerminationDone> for HostAgent {
-    async fn handle(&mut self, _cx: &Context<Self>, msg: TerminationDone) -> anyhow::Result<()> {
-        self.state = HostAgentState::Stopped(msg.host);
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Handler<StopHost> for HostAgent {
-    async fn handle(&mut self, cx: &Context<Self>, msg: StopHost) -> anyhow::Result<()> {
-        // Terminate children BEFORE acking, so the caller's networking
-        // stays alive while children flush their forwarders during
-        // teardown. If we ack first, the caller proceeds to tear down
-        // the host proc's networking while children are still running,
-        // causing their forwarder flushes to hang until
-        // MESSAGE_DELIVERY_TIMEOUT expires.
-        if !self.created.is_empty() {
-            self.terminate_children_and_clear(cx, msg.timeout, msg.max_in_flight)
-                .await;
-        }
-
-        // Reset to Running so the host is ready for new spawn requests.
-        // TerminateProcs may have moved us to Stopped(host); StopHost's
-        // contract is to leave the host alive and re-usable.
-        match &self.state {
-            HostAgentState::Stopped(_) => {
-                // Take ownership of the host out of Stopped and wrap it
-                // back in Running.
-                let host = match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-                    HostAgentState::Stopped(h) => h,
-                    _ => unreachable!(),
-                };
-                self.state = HostAgentState::Running(host);
-            }
-            HostAgentState::Running(_) => {} // already fine
-            _ => {}
-        }
-
-        // Ack after children are terminated so the caller does not
-        // tear down the host's networking prematurely.
+impl Handler<DrainComplete> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, msg: DrainComplete) -> anyhow::Result<()> {
+        self.state = HostAgentState::Detached(msg.host);
+        self.created.clear();
         msg.ack.send(cx, ())?;
-        tracing::info!(
-            proc_id = %cx.self_id().proc_id(),
-            actor_id = %cx.self_id(),
-            "host stopped, ready for new client"
-        );
         Ok(())
     }
 }
@@ -1082,8 +1035,7 @@ impl Handler<ShutdownHost> for HostAgent {
         // causing their forwarder flushes to hang until
         // MESSAGE_DELIVERY_TIMEOUT expires.
         if !self.created.is_empty() {
-            self.terminate_children_and_clear(cx, msg.timeout, msg.max_in_flight)
-                .await;
+            self.drain(cx, msg.timeout, msg.max_in_flight).await;
         }
 
         // Ack after children are terminated so the caller does not
@@ -1093,11 +1045,11 @@ impl Handler<ShutdownHost> for HostAgent {
         // Drop the host and signal the bootstrap loop to drain the
         // mailbox and exit.
         match std::mem::replace(&mut self.state, HostAgentState::Shutdown) {
-            HostAgentState::Running(HostAgentMode::Process {
+            HostAgentState::Detached(HostAgentMode::Process {
                 shutdown_tx: Some(tx),
                 ..
             })
-            | HostAgentState::Stopped(HostAgentMode::Process {
+            | HostAgentState::Attached(HostAgentMode::Process {
                 shutdown_tx: Some(tx),
                 ..
             }) => {
