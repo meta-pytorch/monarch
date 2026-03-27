@@ -57,7 +57,6 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Union
 
-import fuse
 from fuse import FUSE, FuseOSError, Operations
 from monarch.actor import Actor, context, endpoint, HostMesh, Point, this_proc
 
