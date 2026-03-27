@@ -34,55 +34,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Define ROCm matrix
-          ROCM_MATRIX=$(cat <<EOF
-          {
-            "name": "rocm",
-            "runner": "${{ inputs.runner-rocm }}",
-            "gpu-arch-type": "rocm",
-            "gpu-arch-version": "7.2",
-            "docker-image": "pytorch/almalinux-builder:rocm7.2",
-            "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"
-          }
-          EOF
-          )
+          # Define ROCm matrices
+          ROCM_71_MATRIX='{"name": "rocm7.1", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.1", "docker-image": "pytorch/almalinux-builder:rocm7.1", "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
+          ROCM_72_MATRIX='{"name": "rocm7.2", "runner": "${{ inputs.runner-rocm }}", "gpu-arch-type": "rocm", "gpu-arch-version": "7.2", "docker-image": "pytorch/almalinux-builder:rocm7.2", "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
           # Define CUDA matrix
-          CUDA_MATRIX=$(cat <<EOF
-          {
-            "name": "cuda",
-            "runner": "${{ inputs.runner-cuda }}",
-            "gpu-arch-type": "cuda",
-            "gpu-arch-version": "12.8",
-            "docker-image": "pytorch/manylinux2_28-builder:cuda12.8",
-            "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"
-          }
-          EOF
-          )
-
-          # Use default value as 'false' for unset environment variables
-          IS_PUSH="${IS_PUSH:-false}"
-          IS_SCHEDULE="${IS_SCHEDULE:-false}"
-          IS_ROCM_TAG="${IS_ROCM_TAG:-false}"
+          CUDA_MATRIX='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "12.8", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
 
           # Decide which matrix entries to include based on event type
-          # Runs ROCm only for push tag OR when PR label gets triggered
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            cat > matrix.json <<JSON
-          {"include": [$ROCM_MATRIX]}
-          JSON
-
-          # Runs CUDA and ROCm for push to main or cron schedule
+            # ROCm tag: run both ROCm versions only
+            echo "{\"include\": [$ROCM_71_MATRIX, $ROCM_72_MATRIX]}" > matrix.json
           elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
-            cat > matrix.json <<JSON
-          {"include": [$CUDA_MATRIX,$ROCM_MATRIX]}
-          JSON
-
-          # Runs CUDA only as default (includes normal PR without ROCm label)
+            # Push to branch or schedule: run CUDA and both ROCm versions
+            echo "{\"include\": [$CUDA_MATRIX, $ROCM_71_MATRIX, $ROCM_72_MATRIX]}" > matrix.json
           else
-            cat > matrix.json <<JSON
-          {"include": [$CUDA_MATRIX]}
-          JSON
+            # Default (PRs without ROCm label): run CUDA only
+            echo "{\"include\": [$CUDA_MATRIX]}" > matrix.json
           fi
 
           # Export matrix to job outputs

@@ -2,16 +2,6 @@ name: Test GPU Rust
 
 on:
   workflow_call:
-    inputs:
-      artifact-name-cuda:
-        description: 'CUDA wheel artifact name'
-        required: true
-        type: string
-      artifact-name-rocm:
-        description: 'ROCm wheel artifact name'
-        required: false
-        type: string
-        default: ''
 
 concurrency:
   group: test-gpu-rust-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -34,7 +24,7 @@ jobs:
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       submodules: recursive
-      download-artifact: ${{ matrix.name == 'cuda' && inputs.artifact-name-cuda || inputs.artifact-name-rocm }}
+      download-artifact: monarch-${{ matrix.name }}-${{ github.sha }}-py3.10
       script: |
         # Source common setup functions
         source scripts/common-setup.sh

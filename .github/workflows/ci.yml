@@ -19,6 +19,7 @@ concurrency:
 jobs:
   build-cuda:
     name: Build CUDA
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/build-cuda.yml
 
   build-rocm:
@@ -42,9 +43,6 @@ jobs:
     name: Test GPU Python
     needs: [build-cuda, build-rocm]
     uses: ./.github/workflows/test-gpu-python.yml
-    with:
-      artifact-name-cuda: monarch-cuda-${{ github.sha }}-py3.10
-      artifact-name-rocm: monarch-rocm7.2-${{ github.sha }}
 
   test-cpu-rust:
     name: Test CPU Rust
@@ -61,9 +59,6 @@ jobs:
     name: Test GPU Rust
     needs: [build-cuda, build-rocm]
     uses: ./.github/workflows/test-gpu-rust.yml
-    with:
-      artifact-name-cuda: monarch-cuda-${{ github.sha }}-py3.10
-      artifact-name-rocm: monarch-rocm7.2-${{ github.sha }}
 
   build-docker:
     name: Build Docker image
