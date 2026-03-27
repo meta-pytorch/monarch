@@ -366,6 +366,17 @@ impl HostAgent {
         }
     }
 
+    /// Minimum status floor derived from the host agent's lifecycle.
+    /// Procs on this host cannot be healthier than this.
+    fn min_proc_status(&self) -> resource::Status {
+        match &self.state {
+            HostAgentState::Running(_) => resource::Status::Running, // no constraint
+            HostAgentState::Stopping => resource::Status::Stopping,
+            HostAgentState::Stopped(_) => resource::Status::Stopped,
+            HostAgentState::Shutdown => resource::Status::Stopped,
+        }
+    }
+
     fn host(&self) -> Option<&HostAgentMode> {
         match &self.state {
             HostAgentState::Running(h) | HostAgentState::Stopped(h) => Some(h),
@@ -708,11 +719,11 @@ impl Handler<resource::GetRankStatus> for HostAgent {
                 rank,
                 created: Ok((proc_id, _mesh_agent)),
             }) => {
-                let status = match self.host() {
+                let raw_status = match self.host() {
                     Some(host) => host.proc_status(proc_id).await.0,
-                    None => Status::Stopped,
+                    None => resource::Status::Unknown,
                 };
-                (*rank, status)
+                (*rank, raw_status.clamp_min(self.min_proc_status()))
             }
             Some(ProcCreationState {
                 rank,
@@ -989,7 +1000,13 @@ impl Handler<TerminateProcs> for HostAgent {
                 return Ok(());
             }
         };
-        self.created.clear();
+        // Do NOT clear `self.created` here: the TerminationWorker
+        // terminates procs asynchronously, and concurrent GetState /
+        // GetRankStatus queries must still find the entries.  With the
+        // host in Stopping state (`self.host()` returns None), those
+        // handlers already report Status::Stopped for every known
+        // proc, which is the correct answer while termination is
+        // in progress.
 
         self.state = HostAgentState::Stopping;
 
@@ -1111,13 +1128,14 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
                 rank,
                 created: Ok((proc_id, mesh_agent)),
             }) => {
-                let (status, proc_status, bootstrap_command) = match self.host() {
+                let (raw_status, proc_status, bootstrap_command) = match self.host() {
                     Some(host) => {
                         let (status, proc_status) = host.proc_status(proc_id).await;
                         (status, proc_status, host.bootstrap_command())
                     }
-                    None => (resource::Status::Stopped, None, None),
+                    None => (resource::Status::Unknown, None, None),
                 };
+                let status = raw_status.clamp_min(self.min_proc_status());
                 resource::State {
                     name: get_state.name.clone(),
                     status,
