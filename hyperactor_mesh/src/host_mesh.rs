@@ -62,6 +62,7 @@ use crate::host_mesh::host_agent::SetClientConfigClient;
 use crate::host_mesh::host_agent::ShutdownHostClient;
 use crate::host_mesh::host_agent::SpawnMeshAdminClient;
 use crate::host_mesh::host_agent::StopHostClient;
+use crate::host_mesh::host_agent::TerminateChildrenClient;
 use crate::mesh_controller::HostMeshController;
 use crate::mesh_controller::ProcMeshController;
 use crate::proc_agent::ProcAgent;
@@ -174,6 +175,24 @@ impl HostRef {
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
             .stop_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .await?;
+        Ok(())
+    }
+
+    /// Terminate all user procs on this host but keep the host, service
+    /// proc, and networking alive. Used as phase 1 of two-phase
+    /// shutdown so that forwarder flushes can still reach remote hosts.
+    pub(crate) async fn terminate_children(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+    ) -> anyhow::Result<()> {
+        let agent = self.mesh_agent();
+        let terminate_timeout =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
+        let max_in_flight =
+            hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
+        agent
+            .terminate_children(cx, terminate_timeout, max_in_flight.clamp(1, 256))
             .await?;
         Ok(())
     }
@@ -647,18 +666,45 @@ impl HostMesh {
     /// Request a clean shutdown of all hosts owned by this
     /// `HostMesh`.
     ///
-    /// For each host, this sends `ShutdownHost` to its
-    /// `HostAgent`. The agent takes and drops its `Host` (via
-    /// `Option::take()`), which in turn drops the embedded
-    /// `BootstrapProcManager`. On drop, the manager walks its PID
-    /// table and sends SIGKILL to any procs it spawned—tying proc
-    /// lifetimes to their hosts and preventing leaks.
+    /// Uses a two-phase approach:
+    /// 1. **Terminate children** on every host concurrently. Service
+    ///    infrastructure (host agent, comm proc, networking) stays
+    ///    alive so that forwarder flushes can still reach remote hosts.
+    /// 2. **Shut down hosts** concurrently. No user procs remain, so
+    ///    this is fast and cannot deadlock on cross-host flush
+    ///    timeouts.
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
     pub async fn shutdown(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         tracing::info!(name = "HostMeshStatus", status = "Shutdown::Attempt");
+
+        // Phase 1: terminate all user procs while service infrastructure
+        // stays alive so forwarder flushes can complete across hosts.
+        let results = futures::future::join_all(
+            self.current_ref
+                .values()
+                .map(|host| async move { host.terminate_children(cx).await }),
+        )
+        .await;
+        for result in &results {
+            if let Err(e) = result {
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Shutdown::TerminateChildren::Failed",
+                    error = %e,
+                    "terminate_children failed on a host"
+                );
+            }
+        }
+
+        // Phase 2: shut down hosts concurrently. No user procs remain.
+        let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
+            let result = host.shutdown(cx).await;
+            (host, result)
+        }))
+        .await;
         let mut failed_hosts = vec![];
-        for host in self.current_ref.values() {
-            if let Err(e) = host.shutdown(cx).await {
+        for (host, result) in &results {
+            if let Err(e) = result {
                 tracing::warn!(
                     name = "HostMeshStatus",
                     status = "Shutdown::Host::Failed",
@@ -699,18 +745,48 @@ impl HostMesh {
     /// but keeping worker processes and their sockets alive for
     /// reconnection.
     ///
+    /// Uses the same two-phase approach as [`shutdown`](Self::shutdown):
+    /// first terminate children across all hosts (while networking
+    /// stays alive), then stop hosts concurrently.
+    ///
     /// After `stop`, the same worker addresses can be passed to
     /// [`HostMesh::attach`] to create a new mesh.
     #[hyperactor::instrument(fields(host_mesh=self.name.to_string()))]
     pub async fn stop(&mut self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
+
+        // Phase 1: terminate all user procs while service infrastructure
+        // stays alive so forwarder flushes can complete across hosts.
+        let results = futures::future::join_all(
+            self.current_ref
+                .values()
+                .map(|host| async move { host.terminate_children(cx).await }),
+        )
+        .await;
+        for result in &results {
+            if let Err(e) = result {
+                tracing::warn!(
+                    name = "HostMeshStatus",
+                    status = "Stop::TerminateChildren::Failed",
+                    error = %e,
+                    "terminate_children failed on a host"
+                );
+            }
+        }
+
+        // Phase 2: stop hosts concurrently. No user procs remain.
+        let results = futures::future::join_all(self.current_ref.values().map(|host| async move {
+            let result = host.stop(cx).await;
+            (host, result)
+        }))
+        .await;
         let mut failed_hosts = vec![];
-        for host in self.current_ref.values() {
-            if let Err(e) = host.stop(cx).await {
+        for (host, result) in &results {
+            if let Err(e) = result {
                 tracing::warn!(
                     name = "HostMeshStatus",
                     status = "Stop::Host::Failed",
-                    %host,
+                    host = %host,
                     error = %e,
                     "host stop failed"
                 );
