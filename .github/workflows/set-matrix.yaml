@@ -7,10 +7,12 @@ on:
         description: 'Override default ROCm runner label'
         required: false
         type: string
+        default: linux.rocm.gpu.gfx942.1
       runner-cuda:
         description: 'Override default CUDA runner label'
         required: false
         type: string
+        default: linux.g5.4xlarge.nvidia.gpu
     outputs:
       matrix:
         description: dynamically set matrix
@@ -28,28 +30,16 @@ jobs:
       IS_ROCM_TAG:  ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
       TRIGGERED_ROCM_LABEL: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' }}
 
-      # Default CUDA & ROCm runners
-      DEFAULT_ROCM_RUNNER: linux.rocm.gpu.gfx942.1
-      DEFAULT_CUDA_RUNNER: linux.g5.4xlarge.nvidia.gpu
-
-      # Input CUDA & ROCm runners
-      ROCM_RUNNER_INPUT: ${{ inputs.runner-rocm }}
-      CUDA_RUNNER_INPUT: ${{ inputs.runner-cuda }}
-
     steps:
       - id: set
         run: |
           set -euo pipefail
 
-          # Select runner if provided, else use default value
-          ROCM_RUNNER="${ROCM_RUNNER_INPUT:-$DEFAULT_ROCM_RUNNER}"
-          CUDA_RUNNER="${CUDA_RUNNER_INPUT:-$DEFAULT_CUDA_RUNNER}"
-
           # Define ROCm matrix
           ROCM_MATRIX=$(cat <<EOF
           {
             "name": "rocm",
-            "runner": "${ROCM_RUNNER}",
+            "runner": "${{ inputs.runner-rocm }}",
             "gpu-arch-type": "rocm",
             "gpu-arch-version": "7.2",
             "docker-image": "pytorch/almalinux-builder:rocm7.2",
@@ -62,7 +52,7 @@ jobs:
           CUDA_MATRIX=$(cat <<EOF
           {
             "name": "cuda",
-            "runner": "${CUDA_RUNNER}",
+            "runner": "${{ inputs.runner-cuda }}",
             "gpu-arch-type": "cuda",
             "gpu-arch-version": "12.8",
             "docker-image": "pytorch/manylinux2_28-builder:cuda12.8",
