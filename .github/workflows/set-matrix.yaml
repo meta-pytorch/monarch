@@ -25,7 +25,7 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
     env:
       # Event flags evaluated by github actions before the step runs:
-      IS_MAIN_PUSH: ${{ github.event_name == 'push' }}
+      IS_PUSH: ${{ github.event_name == 'push' }}
       IS_SCHEDULE:  ${{ github.event_name == 'schedule' }}
       IS_ROCM_TAG:  ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
       TRIGGERED_ROCM_LABEL: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' }}
@@ -62,7 +62,7 @@ jobs:
           )
 
           # Use default value as 'false' for unset environment variables
-          IS_MAIN_PUSH="${IS_MAIN_PUSH:-false}"
+          IS_PUSH="${IS_PUSH:-false}"
           IS_SCHEDULE="${IS_SCHEDULE:-false}"
           IS_ROCM_TAG="${IS_ROCM_TAG:-false}"
           TRIGGERED_ROCM_LABEL="${TRIGGERED_ROCM_LABEL:-false}"
@@ -75,7 +75,7 @@ jobs:
           JSON
 
           # Runs CUDA and ROCm for push to main or cron schedule
-          elif [[ "$IS_MAIN_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
+          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
             cat > matrix.json <<JSON
           {"include": [$CUDA_MATRIX,$ROCM_MATRIX]}
           JSON
