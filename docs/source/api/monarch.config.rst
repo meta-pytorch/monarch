@@ -457,7 +457,7 @@ Mesh Configuration
     Maximum dimension size for cast operations.
 
     - **Type**: ``int``
-    - **Default**: ``usize::MAX`` (platform-dependent)
+    - **Default**: ``16``
     - **Environment**: ``HYPERACTOR_MESH_MAX_CAST_DIMENSION_SIZE``
 
 
