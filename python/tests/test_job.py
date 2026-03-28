@@ -11,11 +11,19 @@ import subprocess
 import sys
 import tempfile
 from typing import cast, Dict, Optional, Sequence
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Import directly from _src since job module isn't properly exposed
-from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
+from monarch._src.job.job import (
+    job_load,
+    job_loads,
+    JobState,
+    JobTrait,
+    LocalJob,
+    TelemetryConfig,
+)
 from monarch.actor import HostMesh
 
 
@@ -24,15 +32,21 @@ class MockJobTrait(JobTrait):
     Mock implementation of JobTrait for testing purposes.
     """
 
-    def __init__(self, host_names: Sequence[str] = ("default",), compatible_specs=None):
+    def __init__(
+        self,
+        host_names: Sequence[str] = ("default",),
+        compatible_specs=None,
+        telemetry: Optional[TelemetryConfig] = None,
+    ):
         """
         Initialize a mock job trait.
 
         Args:
             host_names: Names of host meshes to create in the state
             compatible_specs: List of specs this job is compatible with, or None if compatible with all
+            telemetry: Optional telemetry configuration.
         """
-        super().__init__()
+        super().__init__(telemetry=telemetry)
         self._host_names = host_names
         self._compatible_specs = compatible_specs
         # Track mock state for testing
@@ -297,6 +311,61 @@ def test_kill():
 
     # kill_called should now be True
     assert job.kill_called
+
+
+def test_state_query_engine_none_without_telemetry():
+    """Test that query_engine is None when no telemetry is configured."""
+    job = MockJobTrait()
+    state = job.state(cached_path=None)
+    assert state.query_engine is None
+    assert state.telemetry_url is None
+
+
+@patch("monarch._src.job.job.start_telemetry")
+def test_state_query_engine_set_with_telemetry(mock_start):
+    """Test that query_engine is set when telemetry is configured."""
+    mock_engine = MagicMock()
+    mock_url = "http://localhost:8265"
+    mock_start.return_value = (mock_engine, mock_url)
+
+    job = MockJobTrait(telemetry=TelemetryConfig())
+    state = job.state(cached_path=None)
+
+    assert state.query_engine is not None
+    assert state.query_engine is mock_engine
+    assert state.telemetry_url == mock_url
+
+
+@patch("monarch._src.job.job.start_telemetry")
+def test_telemetry_started_only_once(mock_start):
+    """Test that telemetry is not restarted on subsequent state() calls."""
+    mock_start.return_value = (MagicMock(), "http://localhost:8265")
+
+    job = MockJobTrait(telemetry=TelemetryConfig())
+    job.state(cached_path=None)
+    job.state(cached_path=None)
+
+    mock_start.assert_called_once()
+
+
+@patch("monarch._src.job.job.start_telemetry")
+def test_telemetry_dropped_on_pickle(mock_start):
+    """Test that query_engine is dropped during pickling and restored after."""
+    mock_start.return_value = (MagicMock(), "http://localhost:8265")
+
+    job = MockJobTrait(telemetry=TelemetryConfig())
+    job.state(cached_path=None)
+    assert mock_start.call_count == 1
+
+    # Serialize and deserialize — query_engine should be dropped
+    loaded_job = job_loads(job.dumps())
+    assert loaded_job._query_engine is None
+    assert loaded_job._telemetry_url is None
+
+    # Getting state again should re-initialize telemetry
+    state = loaded_job.state(cached_path=None)
+    assert mock_start.call_count == 2
+    assert state.query_engine is not None
 
 
 # Tests for LocalJob implementation

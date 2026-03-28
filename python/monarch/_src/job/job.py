@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._src.actor.bootstrap import attach_to_workers
@@ -22,6 +23,29 @@ from monarch._src.actor.bootstrap import attach_to_workers
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
 from monarch.actor import enable_transport, HostMesh, this_host
+from monarch.distributed_telemetry.actor import start_telemetry
+from monarch.distributed_telemetry.engine import QueryEngine
+
+
+@dataclass
+class TelemetryConfig:
+    """Configuration for automatic telemetry startup.
+
+    When passed to a job constructor, telemetry (and optionally a dashboard)
+    is started automatically when ``state()`` is called.
+
+    Args:
+        batch_size: Number of rows to buffer before flushing to a RecordBatch.
+        retention_secs: Retention window in seconds for message tables.
+            0 disables retention.
+        include_dashboard: Whether to start the monarch dashboard web server.
+        dashboard_port: Preferred port for the dashboard.
+    """
+
+    batch_size: int = 1000
+    retention_secs: int = 600
+    include_dashboard: bool = False
+    dashboard_port: int = 8265
 
 
 class JobState:
@@ -38,8 +62,15 @@ class JobState:
         state.dataloaders # HostMesh for the "dataloaders" mesh
     """
 
-    def __init__(self, hosts: Dict[str, HostMesh]):
+    def __init__(
+        self,
+        hosts: Dict[str, HostMesh],
+        query_engine: Optional[QueryEngine] = None,
+        telemetry_url: Optional[str] = None,
+    ):
         self._hosts = hosts
+        self.query_engine = query_engine
+        self.telemetry_url = telemetry_url
 
     def __getattr__(self, attr: str) -> HostMesh:
         try:
@@ -98,9 +129,32 @@ class JobTrait(ABC):
         ``apply()`` set the status after ``_create()`` returns.
     """
 
-    def __init__(self):
+    def __init__(self, telemetry: Optional[TelemetryConfig] = None):
         super().__init__()
         self._status: Literal["running", "not_running"] | CachedRunning = "not_running"
+        self._telemetry = telemetry
+        self._query_engine: Optional[QueryEngine] = None
+        self._telemetry_url: Optional[str] = None
+
+    def _start_telemetry_if_configured(self) -> None:
+        """Start telemetry if configured and not already running."""
+        if self._telemetry is None or self._query_engine is not None:
+            return
+
+        cfg = self._telemetry
+        self._query_engine, self._telemetry_url = start_telemetry(
+            batch_size=cfg.batch_size,
+            retention_secs=cfg.retention_secs,
+            include_dashboard=cfg.include_dashboard,
+            dashboard_port=cfg.dashboard_port,
+        )
+
+    def _wrap_state(self, job_state: JobState) -> JobState:
+        """Attach telemetry fields to a JobState."""
+        if self._query_engine is not None:
+            job_state.query_engine = self._query_engine
+            job_state.telemetry_url = self._telemetry_url
+        return job_state
 
     @property
     def _running(self) -> "Optional[JobTrait]":
@@ -157,17 +211,20 @@ class JobTrait(ABC):
         running_job = self._running
         if running_job is not None:
             logger.info("Job is running, returning current state")
-            return running_job._state()
+            self._start_telemetry_if_configured()
+            return self._wrap_state(running_job._state())
 
         cached = self._load_cached(cached_path)
         if cached is not None:
             self._status = CachedRunning(cached)
             logger.info("Connecting to cached job")
-            return cached._state()
+            self._start_telemetry_if_configured()
+            return self._wrap_state(cached._state())
         logger.info("Applying current job")
         self.apply()
         logger.info("Job has started, connecting to current state")
-        result = self._state()
+        self._start_telemetry_if_configured()
+        result = self._wrap_state(self._state())
         if cached_path is not None:
             # Create the directory for cached_path if it doesn't exist
             cache_dir = os.path.dirname(cached_path)
@@ -200,6 +257,15 @@ class JobTrait(ABC):
             os.remove(cached_path)
             return None
         return job
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # QueryEngine holds Rust bindings / network connections and is not
+        # picklable.  Drop it so deserialized jobs re-initialize telemetry
+        # on the next state() call.
+        state["_query_engine"] = None
+        state["_telemetry_url"] = None
+        return state
 
     def dump(self, filename: str):
         """
@@ -292,17 +358,22 @@ class LocalJob(JobTrait):
     execution by changing the job configuration.
     """
 
-    def __init__(self, hosts: Sequence["str"] = ("hosts",)):
+    def __init__(
+        self,
+        hosts: Sequence["str"] = ("hosts",),
+        telemetry: Optional[TelemetryConfig] = None,
+    ):
         """
         Args:
             hosts: Names of the host meshes to create.
+            telemetry: Optional telemetry configuration.
         """
         self._host_names = hosts
         # if launched with client_script, the proc corresponding to the
         # locally running client, and the log_dir it is writing to.
         self._proc: Optional[subprocess.Popen] = None
         self._log_dir: Optional[str] = None
-        super().__init__()
+        super().__init__(telemetry=telemetry)
 
     def _kill(self):
         pass
@@ -386,7 +457,7 @@ class BatchJob(JobTrait):
     """
 
     def __init__(self, job: JobTrait):
-        super().__init__()
+        super().__init__(telemetry=job._telemetry)
         self._job = job
 
     def can_run(self, spec: JobTrait):
@@ -422,8 +493,8 @@ class LoginJob(JobTrait):
     Makes a connections directly to hosts via an explicit list.
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, telemetry: Optional[TelemetryConfig] = None):
+        super().__init__(telemetry=telemetry)
         self._meshes: Dict[str, List[str]] = {}
         self._host_to_pid: Dict[str, ProcessState] = {}
 
@@ -493,12 +564,13 @@ class SSHJob(LoginJob):
         python_exe: str = "python",
         ssh_args: Sequence[str] = (),
         monarch_port: int = 22222,
+        telemetry: Optional[TelemetryConfig] = None,
     ):
         enable_transport("tcp")
         self._python_exe = python_exe
         self._ssh_args = ssh_args
         self._port = monarch_port
-        super().__init__()
+        super().__init__(telemetry=telemetry)
 
     def _start_host(self, host: str) -> ProcessState:
         addr = f"tcp://{host}:{self._port}"

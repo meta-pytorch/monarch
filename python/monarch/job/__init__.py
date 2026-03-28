@@ -5,7 +5,14 @@
 # LICENSE file in the root directory of this source tree.
 
 # Re-export the job module directly
-from monarch._src.job.job import job_load, job_loads, JobState, JobTrait, LocalJob
+from monarch._src.job.job import (
+    job_load,
+    job_loads,
+    JobState,
+    JobTrait,
+    LocalJob,
+    TelemetryConfig,
+)
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.slurm import SlurmJob
 
@@ -18,4 +25,5 @@ __all__ = [
     "LocalJob",
     "ProcessJob",
     "SlurmJob",
+    "TelemetryConfig",
 ]
