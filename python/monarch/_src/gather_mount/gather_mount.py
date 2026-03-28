@@ -215,7 +215,7 @@ class GatherSourceActor(Actor):
             except OSError:
                 return None
         try:
-            future: asyncio.Future[None] = self._inotify.add_watch(
+            future: asyncio.Future[None] = self._inotify.add_watch(  # pyre-ignore[1001]
                 self._full(rel_path), rel_path
             )
             st = os.stat(self._full(rel_path))
@@ -568,7 +568,9 @@ class GatherMount:
 
         # The Rust FUSE session runs on the shared Tokio runtime; it calls
         # back into client_actor for every filesystem operation.
-        self._fuse_handle = mount_gather_fuse(client_actor, local_mount_point)
+        self._fuse_handle: object = mount_gather_fuse(
+            client_actor, local_mount_point
+        )  # pyre-ignore[16]
         self._mounted = True
         atexit.register(self.close)
         logger.info("gather_mount: mounted at %s", local_mount_point)
