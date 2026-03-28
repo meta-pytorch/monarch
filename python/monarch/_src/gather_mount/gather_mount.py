@@ -568,9 +568,9 @@ class GatherMount:
 
         # The Rust FUSE session runs on the shared Tokio runtime; it calls
         # back into client_actor for every filesystem operation.
-        self._fuse_handle: object = mount_gather_fuse(
+        self._fuse_handle: object = mount_gather_fuse(  # pyre-ignore[16]
             client_actor, local_mount_point
-        )  # pyre-ignore[16]
+        )
         self._mounted = True
         atexit.register(self.close)
         logger.info("gather_mount: mounted at %s", local_mount_point)
@@ -580,7 +580,7 @@ class GatherMount:
         if not self._mounted:
             return
         self._mounted = False
-        self._fuse_handle.unmount()
+        self._fuse_handle.unmount()  # pyre-ignore[16]
         logger.info("gather_mount: unmounted %s", self._local_mount_point)
 
     def __enter__(self) -> "GatherMount":
