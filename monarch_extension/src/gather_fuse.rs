@@ -152,7 +152,7 @@ fn decode_read(result: Bound<'_, PyAny>) -> PyResult<FuseResult<Bytes>> {
 
 /// Maps Python errors and FUSE errors to a single `FuseResult<T>`.
 fn py_err_to_fuse(e: PyErr) -> Errno {
-    eprintln!("[gather_fuse] error: {e}");
+    warn!("gather_fuse actor error: {e}");
     Errno::from(libc::EIO)
 }
 
