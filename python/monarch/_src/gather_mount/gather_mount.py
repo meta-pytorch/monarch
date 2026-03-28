@@ -49,15 +49,13 @@ import mmap as _mmap
 import os
 import stat as _stat
 import struct
-import subprocess
-import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Union
 
-from fuse import FUSE, FuseOSError, Operations
+from monarch._rust_bindings.monarch_extension.gather_fuse import mount_gather_fuse
 from monarch.actor import Actor, context, endpoint, HostMesh, Point, this_proc
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -67,9 +65,6 @@ _NOTIFY_BATCH_S: float = 0.05
 
 # Byte threshold above which transfers use RDMABuffer instead of plain bytes.
 _RDMA_THRESHOLD: int = 1 * 1024 * 1024  # 1 MiB
-
-# Seconds to wait for the FUSE kernel module to make the mount point live.
-_MOUNT_TIMEOUT: float = 10.0
 
 # inotify flags
 _IN_MODIFY: int = 0x00000002
@@ -211,9 +206,14 @@ class GatherSourceActor(Actor):
         change occurring between registration and the stat still triggers an
         invalidation.  Returns ``(mtime_ns, size, mode)`` or ``None``.
         """
-        assert self._inotify is not None, "init_watch must be called first"
-        future = self._inotify.add_watch(self._full(rel_path), rel_path)
+        if self._inotify is None:
+            try:
+                st = os.stat(self._full(rel_path))
+                return (st.st_mtime_ns, st.st_size, st.st_mode)
+            except OSError:
+                return None
         try:
+            future = self._inotify.add_watch(self._full(rel_path), rel_path)
             st = os.stat(self._full(rel_path))
         except OSError:
             return None
@@ -528,53 +528,6 @@ def _make_stat(mode: int, size: int, mtime_ns: int) -> dict[str, object]:
     }
 
 
-# ── FUSE filesystem (thin adapter) ────────────────────────────────────────────
-
-
-class _GatherMountFS(Operations):
-    """Thin FUSE adapter — no state, delegates everything to GatherClientActor."""
-
-    def __init__(self, client_actor: object) -> None:
-        self._client = client_actor
-
-    def getattr(  # pyre-ignore[14]
-        self, path: str, fh: int | None = None
-    ) -> dict[str, object]:
-        # pyre-ignore[16]
-        result = self._client.getattr_path.call_one(path).get()
-        if isinstance(result, int):
-            raise FuseOSError(result)
-        return result
-
-    def readdir(  # pyre-ignore[14]
-        self, path: str, fh: int
-    ) -> list[str]:
-        # pyre-ignore[16]
-        result = self._client.readdir_path.call_one(path).get()
-        if isinstance(result, int):
-            raise FuseOSError(result)
-        return [".", ".."] + result
-
-    def open(self, path: str, flags: int) -> int:  # pyre-ignore[14]
-        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
-            raise FuseOSError(errno.EACCES)
-        return 0
-
-    def read(  # pyre-ignore[14]
-        self, path: str, size: int, offset: int, fh: int
-    ) -> bytes:
-        # pyre-ignore[16]
-        result = self._client.read_path.call_one(path, size, offset).get()
-        if isinstance(result, int):
-            raise FuseOSError(result)
-        return result
-
-    def access(self, path: str, mode: int) -> int:  # pyre-ignore[14]
-        if mode & os.W_OK:
-            raise FuseOSError(errno.EACCES)
-        return 0
-
-
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -593,7 +546,6 @@ class GatherMount:
         remote_mount_point: Union[str, Callable[[Point], str]],
     ) -> None:
         self._local_mount_point = local_mount_point
-        self._fuse_thread: threading.Thread | None = None
         self._mounted: bool = False
 
         procs = host_mesh.spawn_procs(name="gather_mount")
@@ -605,57 +557,24 @@ class GatherMount:
 
         os.makedirs(local_mount_point, exist_ok=True)
 
-        # Broadcast init_watch to all source actors in one message — each actor
-        # identifies itself via its shard_key when sending invalidation notifications.
+        # Call init_watch on all source actors and wait for completion before
+        # mounting — ensures inotify is ready before the first FUSE operation.
         # pyre-ignore[16]
-        actors.init_watch.broadcast(client_actor)
+        actors.init_watch.call(client_actor).get()
 
-        fs = _GatherMountFS(client_actor)
-        self._fuse_thread = threading.Thread(
-            target=lambda: FUSE(
-                fs,
-                local_mount_point,
-                nothreads=False,
-                foreground=True,
-            ),
-            daemon=True,
-            name="gather_mount_fuse",
-        )
-        self._fuse_thread.start()
-        self._wait_for_mount()
+        # The Rust FUSE session runs on the shared Tokio runtime; it calls
+        # back into client_actor for every filesystem operation.
+        self._fuse_handle = mount_gather_fuse(client_actor, local_mount_point)
         self._mounted = True
         atexit.register(self.close)
         logger.info("gather_mount: mounted at %s", local_mount_point)
-
-    def _wait_for_mount(self) -> None:
-        deadline = time.monotonic() + _MOUNT_TIMEOUT
-        while time.monotonic() < deadline:
-            if os.path.ismount(self._local_mount_point):
-                return
-            time.sleep(0.05)
-        raise RuntimeError(
-            f"FUSE mount at {self._local_mount_point!r} did not become ready "
-            f"within {_MOUNT_TIMEOUT}s"
-        )
 
     def close(self) -> None:
         """Unmount the FUSE filesystem."""
         if not self._mounted:
             return
         self._mounted = False
-        # -z (lazy) detaches immediately even if the mount is still busy,
-        # preventing the process from getting stuck on close or Ctrl-C.
-        result = subprocess.run(
-            ["fusermount3", "-uz", self._local_mount_point],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            subprocess.run(
-                ["fusermount", "-uz", self._local_mount_point],
-                capture_output=True,
-            )
-        if self._fuse_thread is not None:
-            self._fuse_thread.join(timeout=5.0)
+        self._fuse_handle.unmount()
         logger.info("gather_mount: unmounted %s", self._local_mount_point)
 
     def __enter__(self) -> "GatherMount":

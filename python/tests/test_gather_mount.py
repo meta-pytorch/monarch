@@ -4,6 +4,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 """Tests for monarch.gather_mount.
 
 Run with:
@@ -21,15 +23,7 @@ import unittest
 
 def _skip_if_no_fuse() -> None:
     """Skip the test if FUSE is unavailable in the current environment."""
-    try:
-        import fuse  # noqa: F401
-    except ImportError:
-        raise unittest.SkipTest("fusepy not installed")
-
-    # fusermount must be accessible for mounting/unmounting.
-    import shutil as _shutil
-
-    if _shutil.which("fusermount3") is None and _shutil.which("fusermount") is None:
+    if shutil.which("fusermount3") is None and shutil.which("fusermount") is None:
         raise unittest.SkipTest("fusermount / fusermount3 not found on PATH")
 
 

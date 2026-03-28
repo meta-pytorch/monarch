@@ -36,7 +36,6 @@ dependencies = [
     "flask>=2.0",
     "xxhash",
     "py-spy",
-    "fusepy",
 ]
 
 # PyTorch nightly build indices for different platforms
