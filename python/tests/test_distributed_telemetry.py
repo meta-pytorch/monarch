@@ -25,6 +25,48 @@ from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.job import ProcessJob
 
 
+def _make_pyspy_json(
+    pid: int = 1234,
+    func_name: str = "test_fn",
+    filename: str = "test.py",
+    line: int = 1,
+    os_thread_id: int = 100,
+    owns_gil: bool = True,
+) -> str:
+    """Build a minimal pyspy JSON payload with a single frame for testing."""
+    module = filename.removesuffix(".py")
+    return json.dumps(
+        {
+            "Ok": {
+                "pid": pid,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": pid,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": os_thread_id,
+                        "active": True,
+                        "owns_gil": owns_gil,
+                        "frames": [
+                            {
+                                "name": func_name,
+                                "filename": filename,
+                                "module": module,
+                                "short_filename": filename,
+                                "line": line,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+
 class WorkerActor(Actor):
     """Simple worker actor that can spawn child processes."""
 
@@ -1297,8 +1339,8 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
-    """try_store_pyspy_dump routes to the correct child proc via _proc_id_index."""
+def test_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
+    """store_pyspy_dump sends directly to the correct child proc via ActorId."""
     engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
@@ -1322,40 +1364,12 @@ def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
     assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
     child_proc_ref = child_proc_refs[0]
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 9999,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 9999,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 200,
-                        "active": True,
-                        "owns_gil": True,
-                        "frames": [
-                            {
-                                "name": "child_fn",
-                                "filename": "child.py",
-                                "module": "child",
-                                "short_filename": "child.py",
-                                "line": 42,
-                                "locals": [],
-                                "is_entry": True,
-                            }
-                        ],
-                    }
-                ],
-                "warnings": [],
-            }
-        }
+    pyspy_json = _make_pyspy_json(
+        pid=9999, func_name="child_fn", filename="child.py", line=42, os_thread_id=200
     )
 
-    # Store a pyspy dump targeting the child proc_ref.
-    # Use 'try_store_pyspy_dump' to avoid fallback to root coordinator.
-    result = engine._actor.try_store_pyspy_dump.call_one(
+    # Store a pyspy dump targeting the child proc_ref via direct ActorId send.
+    result = engine._actor.store_pyspy_dump.call_one(
         "child-dump-1", child_proc_ref, pyspy_json
     ).get()
     assert result
@@ -1378,6 +1392,36 @@ def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
     hosts.shutdown().get()
 
 
+@pytest.mark.timeout(60)
+def test_store_pyspy_dump_on_coordinator(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores locally when proc_ref matches the coordinator."""
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+
+    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+
+    pyspy_json = _make_pyspy_json(
+        func_name="coordinator_fn", filename="coordinator.py", line=10
+    )
+
+    # Use try_store_pyspy_dump since engine is in the same process as the coordinator.
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "coord-dump-1", coordinator_proc_id, pyspy_json
+    ).get()
+    assert result
+
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'coord-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["coordinator_fn"]
+    assert frames_dict["line"] == [10]
+
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'coord-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == [coordinator_proc_id]
+
+
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> None:
@@ -1395,35 +1439,13 @@ def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> 
     # Trigger child spawning.
     engine.query("SELECT COUNT(*) AS cnt FROM actors")
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 7777,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 7777,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 300,
-                        "active": True,
-                        "owns_gil": False,
-                        "frames": [
-                            {
-                                "name": "orphan_fn",
-                                "filename": "orphan.py",
-                                "module": "orphan",
-                                "short_filename": "orphan.py",
-                                "line": 99,
-                                "locals": [],
-                                "is_entry": True,
-                            }
-                        ],
-                    }
-                ],
-                "warnings": [],
-            }
-        }
+    pyspy_json = _make_pyspy_json(
+        pid=7777,
+        func_name="orphan_fn",
+        filename="orphan.py",
+        line=99,
+        os_thread_id=300,
+        owns_gil=False,
     )
 
     # Store with a proc_ref that doesn't exist in the tree.
