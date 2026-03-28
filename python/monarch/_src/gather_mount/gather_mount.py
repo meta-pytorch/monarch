@@ -55,7 +55,9 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Union
 
-from monarch._rust_bindings.monarch_extension.gather_fuse import mount_gather_fuse
+from monarch._rust_bindings.monarch_extension.gather_fuse import (  # pyre-ignore[21]
+    mount_gather_fuse,
+)
 from monarch.actor import Actor, context, endpoint, HostMesh, Point, this_proc
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -94,8 +96,8 @@ class _Inotify:
         ifd: int = libc.inotify_init1(_IN_NONBLOCK | _IN_CLOEXEC)
         if ifd < 0:
             raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
-        self._libc = libc
-        self._ifd = ifd
+        self._libc: ctypes.CDLL = libc
+        self._ifd: int = ifd
         # wd → (rel_path, Future that resolves when the path changes)
         self._wd_to_entry: dict[int, tuple[str, asyncio.Future[None]]] = {}
         self._path_to_wd: dict[str, int] = {}
@@ -158,7 +160,7 @@ class GatherSourceActor(Actor):
             self._root = str(remote_path)
 
         self._shard_key: str = _point_to_key(dict(rank))
-        self._pending_rdma: dict[int, tuple[_mmap.mmap, memoryview]] = {}
+        self._pending_rdma: dict[int, tuple[_mmap.mmap, memoryview[bytes]]] = {}
         self._next_token: int = 0
         self._inotify: _Inotify | None = None
         self._client_actor: object = None

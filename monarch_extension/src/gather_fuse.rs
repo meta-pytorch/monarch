@@ -157,14 +157,14 @@ fn py_err_to_fuse(e: PyErr) -> Errno {
 }
 
 async fn do_getattr(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<FileAttr> {
-    let fut = Python::with_gil(|py| start_actor_call(&actor.bind(py), "getattr_path", (&path,)))
+    let fut = Python::with_gil(|py| start_actor_call(actor.bind(py), "getattr_path", (&path,)))
         .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
     Python::with_gil(|py| decode_getattr(raw.bind(py).clone())).map_err(py_err_to_fuse)?
 }
 
 async fn do_readdir(actor: &Arc<Py<PyAny>>, path: String) -> FuseResult<Vec<String>> {
-    let fut = Python::with_gil(|py| start_actor_call(&actor.bind(py), "readdir_path", (&path,)))
+    let fut = Python::with_gil(|py| start_actor_call(actor.bind(py), "readdir_path", (&path,)))
         .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
     Python::with_gil(|py| decode_readdir(raw.bind(py).clone())).map_err(py_err_to_fuse)?
@@ -176,10 +176,9 @@ async fn do_read(
     size: u32,
     offset: u64,
 ) -> FuseResult<Bytes> {
-    let fut = Python::with_gil(|py| {
-        start_actor_call(&actor.bind(py), "read_path", (&path, size, offset))
-    })
-    .map_err(py_err_to_fuse)?;
+    let fut =
+        Python::with_gil(|py| start_actor_call(actor.bind(py), "read_path", (&path, size, offset)))
+            .map_err(py_err_to_fuse)?;
     let raw = fut.await.map_err(py_err_to_fuse)?;
     Python::with_gil(|py| decode_read(raw.bind(py).clone())).map_err(py_err_to_fuse)?
 }
