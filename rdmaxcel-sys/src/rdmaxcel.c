@@ -733,14 +733,15 @@ int rdmaxcel_efa_post_write(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id) {
+    uint64_t wr_id,
+    int signaled) {
   if (!qp || !qp->qpex || !ah) {
     return RDMAXCEL_INVALID_PARAMS;
   }
 
   ibv_wr_start(qp->qpex);
   qp->qpex->wr_id = wr_id;
-  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+  qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
 
   ibv_wr_rdma_write(qp->qpex, rkey, (uintptr_t)remote_addr);
   ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
@@ -748,12 +749,32 @@ int rdmaxcel_efa_post_write(
 
   int ret = ibv_wr_complete(qp->qpex);
   if (ret != 0) {
-    fprintf(
-        stderr,
-        "ERROR: EFA ibv_wr_complete (write) failed: %d (%s)\n",
-        ret,
-        strerror(ret));
-    return RDMAXCEL_WR_COMPLETE_FAILED;
+    // On ENOMEM, drain CQ to free send queue slots and retry
+    if (ret == ENOMEM) {
+      struct ibv_wc drain_wc[32];
+      for (int retry = 0; retry < 1000 && ret == ENOMEM; retry++) {
+        int drained = ibv_poll_cq(qp->send_cq, 32, drain_wc);
+        if (drained <= 0) {
+          usleep(1);
+        }
+        ibv_wr_start(qp->qpex);
+        qp->qpex->wr_id = wr_id;
+        qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
+        ibv_wr_rdma_write(qp->qpex, rkey, (uintptr_t)remote_addr);
+        ibv_wr_set_sge(
+            qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
+        ibv_wr_set_ud_addr(qp->qpex, ah, remote_qpn, qkey);
+        ret = ibv_wr_complete(qp->qpex);
+      }
+    }
+    if (ret != 0) {
+      fprintf(
+          stderr,
+          "ERROR: EFA ibv_wr_complete (write) failed: %d (%s)\n",
+          ret,
+          strerror(ret));
+      return RDMAXCEL_WR_COMPLETE_FAILED;
+    }
   }
   return RDMAXCEL_SUCCESS;
 }
@@ -768,14 +789,15 @@ int rdmaxcel_efa_post_read(
     size_t length,
     void* remote_addr,
     uint32_t rkey,
-    uint64_t wr_id) {
+    uint64_t wr_id,
+    int signaled) {
   if (!qp || !qp->qpex || !ah) {
     return RDMAXCEL_INVALID_PARAMS;
   }
 
   ibv_wr_start(qp->qpex);
   qp->qpex->wr_id = wr_id;
-  qp->qpex->wr_flags = IBV_SEND_SIGNALED;
+  qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
 
   ibv_wr_rdma_read(qp->qpex, rkey, (uintptr_t)remote_addr);
   ibv_wr_set_sge(qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
@@ -783,12 +805,31 @@ int rdmaxcel_efa_post_read(
 
   int ret = ibv_wr_complete(qp->qpex);
   if (ret != 0) {
-    fprintf(
-        stderr,
-        "ERROR: EFA ibv_wr_complete (read) failed: %d (%s)\n",
-        ret,
-        strerror(ret));
-    return RDMAXCEL_WR_COMPLETE_FAILED;
+    if (ret == ENOMEM) {
+      struct ibv_wc drain_wc[32];
+      for (int retry = 0; retry < 1000 && ret == ENOMEM; retry++) {
+        int drained = ibv_poll_cq(qp->send_cq, 32, drain_wc);
+        if (drained <= 0) {
+          usleep(1);
+        }
+        ibv_wr_start(qp->qpex);
+        qp->qpex->wr_id = wr_id;
+        qp->qpex->wr_flags = signaled ? IBV_SEND_SIGNALED : 0;
+        ibv_wr_rdma_read(qp->qpex, rkey, (uintptr_t)remote_addr);
+        ibv_wr_set_sge(
+            qp->qpex, lkey, (uintptr_t)local_addr, (uint32_t)length);
+        ibv_wr_set_ud_addr(qp->qpex, ah, remote_qpn, qkey);
+        ret = ibv_wr_complete(qp->qpex);
+      }
+    }
+    if (ret != 0) {
+      fprintf(
+          stderr,
+          "ERROR: EFA ibv_wr_complete (read) failed: %d (%s)\n",
+          ret,
+          strerror(ret));
+      return RDMAXCEL_WR_COMPLETE_FAILED;
+    }
   }
   return RDMAXCEL_SUCCESS;
 }
@@ -908,6 +949,7 @@ int rdmaxcel_efa_post_op(
     void* remote_addr,
     uint32_t rkey,
     uint64_t wr_id,
+    int signaled,
     int op_type) {
   if (!ah) {
     return RDMAXCEL_INVALID_PARAMS;
@@ -923,7 +965,8 @@ int rdmaxcel_efa_post_op(
         length,
         remote_addr,
         rkey,
-        wr_id);
+        wr_id,
+        signaled);
   } else if (op_type == 1) {
     return rdmaxcel_efa_post_read(
         qp,
@@ -935,7 +978,8 @@ int rdmaxcel_efa_post_op(
         length,
         remote_addr,
         rkey,
-        wr_id);
+        wr_id,
+        signaled);
   }
   return RDMAXCEL_UNSUPPORTED_OP;
 }
@@ -983,8 +1027,15 @@ int rdmaxcel_qp_post_op(
   }
 
   // EFA send/write/read: dispatch via extended verbs
-  // Map op_type 3 (write_with_imm) to 0 (write) for EFA
-  int efa_op = (op_type == 3) ? 0 : op_type;
+  // EFA SRD does not support RDMA Write with Immediate — map to plain write
+  int efa_op = op_type;
+  if (op_type == 3) {
+    fprintf(
+        stderr,
+        "WARNING: EFA does not support WriteWithImm, using plain Write "
+        "(immediate data dropped)\n");
+    efa_op = 0;
+  }
   return rdmaxcel_efa_post_op(
       qp,
       qp->efa_ah,
@@ -996,5 +1047,6 @@ int rdmaxcel_qp_post_op(
       remote_addr,
       rkey,
       wr_id,
+      signaled,
       efa_op);
 }
