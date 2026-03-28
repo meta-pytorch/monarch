@@ -44,9 +44,8 @@ from enum import auto, Enum
 from typing import Any, cast
 
 from monarch._src.actor.actor_mesh import ActorMesh
-from monarch._src.actor.host_mesh import _spawn_admin
 from monarch.actor import Actor, current_rank, endpoint
-from monarch.job import ProcessJob, TelemetryConfig
+from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
 
 
 class ChopstickStatus(Enum):
@@ -164,7 +163,7 @@ async def async_main(
             include_dashboard=True, dashboard_port=dashboard_port
         )
 
-    job = ProcessJob({"hosts": 1}, telemetry=telemetry)
+    job = ProcessJob({"hosts": 1}, telemetry=telemetry, mesh_admin=MeshAdminConfig())
     state = job.state(cached_path=None)
     host = state.hosts
 
@@ -172,8 +171,8 @@ async def async_main(
     if telemetry_url is not None:
         print(f"  - Dashboard:     {telemetry_url}")
 
-    # Spawn the admin agent so the TUI can attach.
-    admin_url = await _spawn_admin([host], telemetry_url=telemetry_url)
+    admin_url = state.admin_url
+    assert admin_url is not None
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "

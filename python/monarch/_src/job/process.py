@@ -17,7 +17,13 @@ from typing import Dict, List, Optional, Union
 
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.future import Future
-from monarch._src.job.job import JobState, JobTrait, ProcessState, TelemetryConfig
+from monarch._src.job.job import (
+    JobState,
+    JobTrait,
+    MeshAdminConfig,
+    ProcessState,
+    TelemetryConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +57,16 @@ class ProcessJob(JobTrait):
         meshes: Dict[str, int],
         env: Optional[Dict[str, str]] = None,
         telemetry: Optional[TelemetryConfig] = None,
+        mesh_admin: Optional[MeshAdminConfig] = None,
     ) -> None:
         """
         Args:
             meshes: Mapping from mesh name to number of hosts.
             env: Extra environment variables for worker subprocesses.
             telemetry: Optional telemetry configuration.
+            mesh_admin: Optional mesh admin configuration.
         """
-        super().__init__(telemetry=telemetry)
+        super().__init__(telemetry=telemetry, mesh_admin=mesh_admin)
         self._meshes = meshes
         self._env = env
         self._host_to_pid: Dict[str, ProcessState] = {}

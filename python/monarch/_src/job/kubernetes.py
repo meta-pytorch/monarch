@@ -23,7 +23,7 @@ except ImportError:
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
-from monarch._src.job.job import JobState, JobTrait, TelemetryConfig
+from monarch._src.job.job import JobState, JobTrait, MeshAdminConfig, TelemetryConfig
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -102,6 +102,7 @@ class KubernetesJob(JobTrait):
         namespace: str,
         timeout: int | None = None,
         telemetry: TelemetryConfig | None = None,
+        mesh_admin: MeshAdminConfig | None = None,
     ) -> None:
         """
         Initialize a KubernetesJob.
@@ -110,12 +111,13 @@ class KubernetesJob(JobTrait):
             namespace: Kubernetes namespace for all meshes
             timeout: Maximum seconds to wait for pods to be ready for each mesh (default: None, wait indefinitely)
             telemetry: Optional telemetry configuration.
+            mesh_admin: Optional mesh admin configuration.
         """
         configure(default_transport=ChannelTransport.TcpWithHostname)
         self._namespace = namespace
         self._timeout = timeout
         self._meshes: Dict[str, Dict[str, Any]] = {}
-        super().__init__(telemetry=telemetry)
+        super().__init__(telemetry=telemetry, mesh_admin=mesh_admin)
 
     # TODO: Consider adding monarch-rank label instead of relying on StatefulSet index by default if using MonarchMesh CRD.
     def add_mesh(
