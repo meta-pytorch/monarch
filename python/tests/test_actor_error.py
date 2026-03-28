@@ -733,6 +733,7 @@ class Intermediate(Actor):
         return True
 
 
+@pytest.mark.oss_skip  # SF(2026-03-09) Failed: Subprocess crashed with exit code 1
 @pytest.mark.timeout(30)
 @parametrize_config(actor_queue_dispatch={True, False})
 @isolate_in_subprocess

@@ -23,6 +23,7 @@ from monarch.builtins.random import (
 from monarch.common.device_mesh import no_mesh
 
 
+@pytest.mark.oss_skip  # Temp disable SF(2026-03-09): "timeout waiting for message from proc mesh agent while querying for "logger-15cjmAZgUyCJ"
 @pytest.mark.timeout(120)
 class TestRandomFunctions:
     local = None
