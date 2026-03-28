@@ -215,7 +215,9 @@ class GatherSourceActor(Actor):
             except OSError:
                 return None
         try:
-            future = self._inotify.add_watch(self._full(rel_path), rel_path)
+            future: asyncio.Future[None] = self._inotify.add_watch(
+                self._full(rel_path), rel_path
+            )
             st = os.stat(self._full(rel_path))
         except OSError:
             return None
@@ -252,7 +254,7 @@ class GatherSourceActor(Actor):
             return (-1, None, 0)
 
         mm = _mmap.mmap(-1, actual, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
-        mv: memoryview = memoryview(mm)[:actual]
+        mv: memoryview[bytes] = memoryview(mm)[:actual]
         mv[:] = data
         rdma_buf = RDMABuffer(mv)
 
@@ -481,7 +483,7 @@ class GatherClientActor(Actor):
             return b""
         mm = _mmap.mmap(-1, actual_len, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
         try:
-            mv: memoryview = memoryview(mm)[:actual_len]
+            mv: memoryview[bytes] = memoryview(mm)[:actual_len]
             await rdma_buf.read_into(mv)
             data = bytes(mv)
             mv.release()
