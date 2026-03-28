@@ -17,14 +17,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-cuda:
-    name: Build CUDA
-    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
-    uses: ./.github/workflows/build-cuda.yml
-
-  build-rocm:
-    name: Build ROCm
-    uses: ./.github/workflows/build-rocm.yml
+  build-gpu:
+    name: Build GPU
+    uses: ./.github/workflows/build-gpu.yml
 
   build-cpu:
     name: Build CPU
@@ -39,7 +34,7 @@ jobs:
 
   test-gpu-python:
     name: Test GPU Python
-    needs: [build-cuda, build-rocm]
+    needs: build-gpu
     uses: ./.github/workflows/test-gpu-python.yml
 
   test-cpu-rust:
@@ -55,15 +50,15 @@ jobs:
 
   test-gpu-rust:
     name: Test GPU Rust
-    needs: [build-cuda, build-rocm]
+    needs: build-gpu
     uses: ./.github/workflows/test-gpu-rust.yml
 
   build-docker:
     name: Build Docker image
-    needs: build-cuda
+    needs: build-gpu
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/build-docker.yml
     with:
-      # Docker image requires python 3.12
       artifact-name: monarch-cuda-${{ github.sha }}-py3.12
 
   status-check:

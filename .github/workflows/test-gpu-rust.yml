@@ -12,7 +12,7 @@ jobs:
     uses: ./.github/workflows/set-matrix.yaml
 
   test-gpu-rust:
-    name: Test GPU Rust (${{ matrix.name }})
+    name: Test GPU Rust (${{ matrix.name }}-py3.10)
     needs: set-matrix
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
