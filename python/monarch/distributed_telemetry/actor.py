@@ -21,15 +21,22 @@ variable and used by the DistributedTelemetryActor when it initializes.
 
 import functools
 import logging
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
+)
+from monarch._rust_bindings.monarch_hyperactor.actor import (
+    MethodSpecifier,
+    PythonMessage,
+    PythonMessageKind,
 )
 from monarch._rust_bindings.monarch_hyperactor.mailbox import (
     PortId,
     UndeliverableMessageEnvelope,
 )
+from monarch._rust_bindings.monarch_hyperactor.pickle import pickle as monarch_pickle
+from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.proc_mesh import (
     ProcMesh,
@@ -42,13 +49,6 @@ from monarch.monarch_dashboard.server.app import start_dashboard
 from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
-
-
-class _ChildEntry(NamedTuple):
-    """Index entry mapping a proc_id to the child mesh and its rank kwargs."""
-
-    mesh: Any  # ActorMesh
-    rank_kwargs: Dict[str, int]
 
 
 # Module-level scanner created at process startup to avoid race conditions.
@@ -95,6 +95,26 @@ def _register_scanner(
         _spawn_callback_registered = True
 
 
+def _build_telemetry_actor_id(proc_ref: str) -> Optional[ActorId]:
+    """Parse a proc_ref string into an ActorId targeting the telemetry actor.
+
+    Uses ``ActorId.from_string`` with a synthetic actor suffix to avoid
+    fragile comma-splitting (addr can contain commas in complex formats
+    like ``tcp![::1]:2345``).
+    """
+    try:
+        parsed = ActorId.from_string(f"{proc_ref},_parse[0]")
+        return ActorId(
+            addr=parsed.addr,
+            proc_name=parsed.proc_name,
+            actor_name="telemetry",
+            pid=0,
+        )
+    except Exception:
+        logger.debug("failed to parse proc_ref %r into ActorId", proc_ref)
+        return None
+
+
 class DistributedTelemetryActor(Actor):
     """
     Distributed telemetry actor that wraps a local DatabaseScanner.
@@ -112,9 +132,6 @@ class DistributedTelemetryActor(Actor):
         self._children: Dict[str, Any] = {}
         self._num_procs_processed: int = 0
         self._proc_id: str = context().actor_instance.proc_id
-        # Lazily built index: proc_id → _ChildEntry for targeted routing
-        # in store_pyspy_dump.
-        self._proc_id_index: Dict[str, _ChildEntry] = {}
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         """Handle child mesh failures gracefully.
@@ -126,16 +143,7 @@ class DistributedTelemetryActor(Actor):
         Note: stopping a ProcMesh loses process-local telemetry data from
         those children.
         """
-        removed = self._children.pop(failure.mesh_name, None)
-        if removed is not None:
-            # Purge stale proc_id_index entries for the dead child.
-            stale = [
-                pid
-                for pid, entry in self._proc_id_index.items()
-                if entry.mesh is removed
-            ]
-            for pid in stale:
-                del self._proc_id_index[pid]
+        self._children.pop(failure.mesh_name, None)
         logger.info("child mesh failed: %s", failure.mesh_name)
         return True
 
@@ -156,17 +164,6 @@ class DistributedTelemetryActor(Actor):
             mesh_name: str = actor_mesh._name.get()
             self._children[mesh_name] = actor_mesh
             self._num_procs_processed += 1
-            self._index_child(actor_mesh)
-
-    def _index_child(self, child_mesh: Any) -> None:
-        """Query child mesh proc_ids and populate ``_proc_id_index``."""
-        try:
-            # pyre-ignore[29]: child_mesh is an ActorMesh
-            proc_ids = child_mesh.get_proc_id.call().get()
-            for point, pid in proc_ids.items():
-                self._proc_id_index[pid] = _ChildEntry(child_mesh, dict(point))
-        except Exception:
-            logger.warning("failed to index child proc_ids, skipping")
 
     @endpoint
     def ready(self) -> None:
@@ -194,7 +191,6 @@ class DistributedTelemetryActor(Actor):
         # pyre-ignore[16]: children is an ActorMesh with _name
         mesh_name: str = children._name.get()
         self._children[mesh_name] = children
-        self._index_child(children)
 
     @endpoint
     def apply_retention(self, table_name: str, where_clause: str) -> None:
@@ -207,48 +203,39 @@ class DistributedTelemetryActor(Actor):
             except Exception:
                 logger.info("child apply_retention failed, skipping")
 
-    def _route_to_children(
-        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    def _try_direct_store(
+        self,
+        actor_id: ActorId,
+        dump_id: str,
+        proc_ref: str,
+        pyspy_result_json: str,
     ) -> bool:
-        """Route pyspy dump to the matching child. Returns True if a child stored it."""
-        self._spawn_missing_children()
+        """Send a store message directly to an actor via its ActorId.
 
-        entry = self._proc_id_index.get(proc_ref)
-        if entry is not None:
-            try:
-                # pyre-ignore[29]: entry.mesh is an ActorMesh
-                result = (
-                    entry.mesh.slice(**entry.rank_kwargs)
-                    .try_store_pyspy_dump.call_one(dump_id, proc_ref, pyspy_result_json)
-                    .get()
-                )
-                if result:
-                    return True
-            except Exception:
-                logger.info("targeted store_pyspy_dump failed for %s", proc_ref)
+        Opens a once-port for the response so we can confirm the target
+        actually stored the data. Times out after 5 seconds to avoid
+        blocking indefinitely if the target actor does not exist.
+        """
+        try:
+            self._spawn_missing_children()
 
-        # Fallback: fan out to all children concurrently (e.g. index stale
-        # after mesh topology change).
-        futures = []
-        for child_mesh in self._children.values():
-            try:
-                # pyre-ignore[29]: child_mesh is an ActorMesh
-                futures.append(
-                    child_mesh.try_store_pyspy_dump.call(
-                        dump_id, proc_ref, pyspy_result_json
-                    )
-                )
-            except Exception:
-                logger.info("child store_pyspy_dump call failed, skipping")
+            mailbox = context().actor_instance._mailbox
+            handle, receiver = mailbox.open_once_port()
+            port_ref = handle.bind()
 
-        for fut in futures:
-            try:
-                if any(fut.get().values()):
-                    return True
-            except Exception:
-                logger.info("child store_pyspy_dump failed, skipping")
+            state = monarch_pickle(((dump_id, proc_ref, pyspy_result_json), {}))
+            kind = PythonMessageKind.CallMethod(
+                MethodSpecifier.ReturnsResponse("try_store_pyspy_dump"), port_ref
+            )
+            msg = PythonMessage(kind, state.buffer())
+            mailbox.post(actor_id, msg)
 
-        return False
+            from monarch._src.actor.actor_mesh import PortReceiver
+
+            return PortReceiver(mailbox, receiver).recv().get(timeout=5.0)
+        except Exception:
+            logger.debug("direct store to %s failed", actor_id, exc_info=True)
+            return False
 
     @endpoint
     def store_pyspy_dump(
@@ -257,21 +244,23 @@ class DistributedTelemetryActor(Actor):
         """Store py-spy dump data in the pyspy DataFusion tables on the target proc.
 
         If ``proc_ref`` matches this actor's proc, stores locally.
-        Otherwise routes to the matching child. If no child in the
-        tree matches, the root coordinator stores it so data is not lost.
-
-        Returns True if this actor or a descendant stored the dump.
+        Otherwise sends directly to the target telemetry actor via ActorId.
+        Falls back to root coordinator storage if the direct send fails.
         """
         if proc_ref == self._proc_id:
             self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
             return True
 
-        if self._route_to_children(dump_id, proc_ref, pyspy_result_json):
+        # Try direct ActorId-based send, bypassing the mesh hierarchy.
+        target = _build_telemetry_actor_id(proc_ref)
+        if target is not None and self._try_direct_store(
+            target, dump_id, proc_ref, pyspy_result_json
+        ):
             return True
 
-        # No proc in the tree matched; store on this (root) coordinator
-        # so the data is not lost.
-        logger.info("no child matched proc_ref %s, storing on root", proc_ref)
+        # Direct send failed or could not parse; store on this (root)
+        # coordinator so the data is not lost.
+        logger.info("direct store failed for proc_ref %s, storing on root", proc_ref)
         self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
         return True
 
@@ -279,16 +268,15 @@ class DistributedTelemetryActor(Actor):
     def try_store_pyspy_dump(
         self, dump_id: str, proc_ref: str, pyspy_result_json: str
     ) -> bool:
-        """Try to store the dump on the matching proc. Returns True if stored.
+        """Try to store the dump if proc_ref matches this actor's proc.
 
         Unlike ``store_pyspy_dump``, this does not fall back to root storage.
-        Used for recursive child routing.
+        Called via direct ActorId-based messaging from the root coordinator.
         """
         if proc_ref == self._proc_id:
             self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
             return True
-
-        return self._route_to_children(dump_id, proc_ref, pyspy_result_json)
+        return False
 
     @endpoint
     def scan(
