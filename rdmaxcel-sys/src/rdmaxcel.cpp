@@ -464,7 +464,8 @@ int register_segments(
     }
     seg.registration->mrs = std::move(all_mrs);
     seg.registration->mr_size = seg.phys_size;
-    seg.registration->mr_addr = seg.phys_address;
+    // Memory regions are always registered at address 0.
+    seg.registration->mr_addr = 0;
     seg.registration->mkey = mkey;
     seg.registration->pd = static_cast<void*>(pd);
   }
