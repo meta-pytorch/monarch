@@ -21,14 +21,17 @@ jobs:
     name: Build GPU
     uses: ./.github/workflows/build-gpu.yml
 
+  # CPU jobs skip on ROCm tags since they already run in the PR workflow
   build-cpu:
     name: Build CPU
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/build-cpu.yml
     with:
       artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
   test-cpu-python:
     name: Test CPU Python
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     needs: build-cpu
     uses: ./.github/workflows/test-cpu-python.yml
     with:
@@ -41,10 +44,12 @@ jobs:
 
   test-cpu-rust:
     name: Test CPU Rust
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/test-cpu-rust.yml
 
   test-cpu-rust-arm64:
     name: Test CPU Rust (ARM64)
+    if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/test-cpu-rust.yml
     with:
       runner: linux.arm64.2xlarge
@@ -71,13 +76,19 @@ jobs:
     steps:
       - name: Check all jobs status
         run: |
-          if [[ "${{ needs.test-cpu-python.result }}" != "success" ]] ||
-             [[ "${{ needs.test-gpu-python.result }}" != "success" ]] ||
-             [[ "${{ needs.test-cpu-rust.result }}" != "success" ]] ||
-             [[ "${{ needs.test-cpu-rust-arm64.result }}" != "success" ]] ||
+          # GPU jobs must always pass
+          if [[ "${{ needs.test-gpu-python.result }}" != "success" ]] ||
              [[ "${{ needs.test-gpu-rust.result }}" != "success" ]]; then
-            echo "One or more jobs failed"
+            echo "GPU tests failed"
             exit 1
-          else
-            echo "All jobs passed"
           fi
+
+          # CPU jobs must pass or be skipped (skipped on ROCm tag runs)
+          if [[ "${{ needs.test-cpu-python.result }}" != "success" && "${{ needs.test-cpu-python.result }}" != "skipped" ]] ||
+             [[ "${{ needs.test-cpu-rust.result }}" != "success" && "${{ needs.test-cpu-rust.result }}" != "skipped" ]] ||
+             [[ "${{ needs.test-cpu-rust-arm64.result }}" != "success" && "${{ needs.test-cpu-rust-arm64.result }}" != "skipped" ]]; then
+            echo "CPU tests failed"
+            exit 1
+          fi
+
+          echo "All required jobs passed"
