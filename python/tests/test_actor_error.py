@@ -670,7 +670,7 @@ async def test_actor_mesh_supervision_handling() -> None:
     # existing call should fail with supervision error
     with pytest.raises(
         SupervisionError,
-        match=".*Actor .* exited because of the following reason",
+        match="The actor .* and all its descendants have failed",
     ):
         await e.fail_with_supervision_error.call_one()
     print("after failure")
@@ -679,8 +679,8 @@ async def test_actor_mesh_supervision_handling() -> None:
     with pytest.raises(
         RuntimeError,
         match="failure on mesh.*error.*with event: "
-        "The actor.*ErrorActor error.* and all its descendants have failed|"
-        "Actor.*error.*exited because of the following",
+        "Supervision event: actor.*ErrorActor error.* failed|"
+        "The actor.*error.*and all its descendants have failed",
     ):
         await e.check.call()
     print("after subsequent endpoint call")
@@ -752,7 +752,7 @@ async def test_actor_mesh_supervision_handling_chained_error() -> None:
     # as an application error (ActorError).
     with pytest.raises(
         ActorError,
-        match=".*Actor .* exited because of the following reason",
+        match="The actor .* and all its descendants have failed",
     ):
         await intermediate_actor.forward_error.call()
 
@@ -796,7 +796,7 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     # The call should raise a SupervisionError
     with pytest.raises(
         SupervisionError,
-        match=".*Actor .* exited because of the following reason",
+        match="The actor .* and all its descendants have failed",
     ):
         await error_actor.fail_with_supervision_error.call_one()
 
@@ -805,10 +805,9 @@ async def test_base_exception_handling(mesh, error_actor_cls) -> None:
     with pytest.raises(
         RuntimeError,
         match="failure on mesh .*error.* at rank 0 with event:.*"
-        "The actor .*ErrorActor error.*and all its descendants have failed.*"
+        "Supervision event: actor .*ErrorActor error.*failed.*"
         "|"
-        "Actor .*error.*exited because of the following reason:"
-        ".*ErrorActor error.*and all its descendants have failed",
+        "The actor.*error.*and all its descendants have failed",
     ):
         await error_actor.check.call()
     # The above check call is undeliverable and might get returned to the client
@@ -837,7 +836,7 @@ async def test_process_exit_handling(error_actor_cls) -> None:
     proc = spawn_procs_on_this_host({"gpus": 1})
     error_actor = proc.spawn("error", error_actor_cls)
 
-    base_match = "Endpoint call {}\\(\\) failed, (Actor .*error.* exited because of the following reason|actor mesh is stopped due to proc mesh shutdown)"
+    base_match = "Endpoint call {}\\(\\) failed, (The actor .*error.* and all its descendants have failed|actor mesh is stopped due to proc mesh shutdown)"
     # The call should raise a SupervisionError
     with pytest.raises(
         SupervisionError,
@@ -850,9 +849,9 @@ async def test_process_exit_handling(error_actor_cls) -> None:
         RuntimeError,
         # Message changes depending on actor_queue_dispatch.
         match="failure on mesh .*error.* at rank 0 with event: "
-        "The actor.*ErrorActor error.*was running on a process which and all its descendants have failed"
+        "The actor.*ErrorActor error.*and all its descendants have failed"
         "|"
-        "Actor.*error.*exited because of the following reason",
+        "The actor.*error.*and all its descendants have failed",
     ):
         await error_actor.check.call()
 
@@ -898,7 +897,7 @@ async def test_sigsegv_handling():
     with pytest.raises(
         RuntimeError,
         match="failure on mesh.*fault.*with event.*|"
-        "Actor.*fault.*exited because of the following reason",
+        "The actor.*fault.*and all its descendants have failed",
     ):
         await actor.check.call()
 
@@ -939,7 +938,8 @@ async def test_supervision_with_proc_mesh_stopped(mesh) -> None:
         match="Endpoint call healthy.check\\(\\) failed, Actor.*healthy.*is "
         "unhealthy with reason:.*timeout waiting for response from host mesh agent for"
         "|actor mesh is stopped due to proc mesh shutdown"
-        "|The actor .* and all its descendants have failed",
+        "|The actor .* and all its descendants have failed"
+        "|Supervision event: actor .* has status:",
     ):
         await actor_mesh.check.call()
 
@@ -971,7 +971,7 @@ async def test_actor_mesh_stop() -> None:
     # the right error message.
     with pytest.raises(
         SupervisionError,
-        match=r"(?s)Actor .*printer-.* exited because of the following reason:.*stopped",
+        match=r"(?s)(The actor|Supervision event: actor) .*printer-.* (and all its descendants have failed|has status:).*stopped",
     ):
         await am_1.print.call("hello 2")
 
@@ -1012,7 +1012,8 @@ async def test_supervision_with_sending_error() -> None:
         # The host mesh agent sends or the proc mesh agent sends might break.
         # Either case is an error that tells us that the send failed.
         error_msg_regx = (
-            "Actor .* (is unhealthy with reason|exited because of the following reason)|"
+            "Actor .* is unhealthy with reason|"
+            "The actor .* and all its descendants have failed|"
             "actor mesh is stopped due to proc mesh shutdown"
         )
 
@@ -1069,7 +1070,8 @@ async def test_slice_supervision() -> None:
     slice_3 = error_mesh.slice(gpus=3)
 
     match = (
-        "Actor .* (is unhealthy with reason:|exited because of the following reason:)"
+        "Actor .* is unhealthy with reason:|"
+        "The actor .* and all its descendants have failed"
     )
     print("before slice_3 fail")
     # Trigger supervision error on gpus=3
@@ -1085,8 +1087,8 @@ async def test_slice_supervision() -> None:
     # Slice containing only gpus=3 is unhealthy
     with pytest.raises(
         RuntimeError,
-        match="failure on mesh.*error.*at rank 3 with event: The actor.*ErrorActor error.* and all its descendants have failed|"
-        "Actor.*error.*exited because of the following",
+        match="failure on mesh.*error.*at rank 3 with event: Supervision event: actor.*ErrorActor error.* failed|"
+        "The actor.*error.*and all its descendants have failed",
     ):
         await slice_3.check.call()
 
@@ -1378,7 +1380,7 @@ async def test_supervise_callback_unhandled():
     )
 
     message = re.compile(
-        r"The actor .* and all its descendants have failed\..*error_actor",
+        r"The actor.*error_actor.*and all its descendants have failed",
         re.DOTALL,
     )
     # Note that __supervise__ will not get called until the next message
@@ -1544,6 +1546,58 @@ def test_controller_controller_error():
     # Note that we cannot spawn new actors on a proc mesh that has prior supervision
     # events at the moment, so we have to use a pre-existing one.
     actor_2.check.call_one().get()
+
+
+def _subprocess_fault_hook_called_once(marker_path: str) -> None:
+    """Subprocess helper: sets a fault hook that counts invocations and raises,
+    then triggers a supervision error. Writes the invocation count to marker_path."""
+    call_count = 0
+
+    def counting_hook(failure):
+        nonlocal call_count
+        call_count += 1
+        # Write count after each invocation so the parent can inspect it.
+        with open(marker_path, "w") as f:
+            f.write(str(call_count))
+        raise RuntimeError("hook raised")
+
+    monarch.actor.unhandled_fault_hook = counting_hook
+
+    proc = this_host().spawn_procs({"gpus": 1})
+    actor = proc.spawn("error", ErrorActor)
+    actor.check.call().get()
+
+    # Trigger supervision error that reaches unhandled_fault_hook.
+    with pytest.raises(SupervisionError):
+        actor.fail_with_supervision_error.call().get()
+
+    # Give the fault time to propagate back to the client.
+    time.sleep(5)
+
+
+@pytest.mark.timeout(60)
+@parametrize_config(actor_queue_dispatch={True, False})
+def test_unhandled_fault_hook_called_once() -> None:
+    """Regression test: when the fault hook raises, __supervise__ must not
+    re-dispatch the event, so the hook is invoked exactly once."""
+    import tempfile
+
+    marker = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    marker_path = marker.name
+    marker.write(b"0")
+    marker.close()
+
+    ctx = multiprocessing.get_context("spawn")
+    p = ctx.Process(target=_subprocess_fault_hook_called_once, args=[marker_path])
+    p.start()
+    p.join(30)
+
+    with open(marker_path) as f:
+        count = f.read().strip()
+    os.unlink(marker_path)
+    assert count == "1", (
+        f"unhandled_fault_hook should be called exactly once, but was called {count} time(s)"
+    )
 
 
 def _subprocess_unhandled_fault_hook_atexit(marker_path: str) -> None:

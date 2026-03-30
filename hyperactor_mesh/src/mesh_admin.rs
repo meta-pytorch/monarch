@@ -198,10 +198,12 @@
 //!
 //! ## Client host invariants (CH-*)
 //!
-//! Let **A** denote the observed host mesh (the host mesh for which
-//! this `MeshAdminAgent` was spawned), and let **C** denote the
-//! process-global singleton client host mesh in the caller process
-//! (whose local proc hosts the root client actor).
+//! Let **A** denote the aggregated host set (the union of hosts
+//! from all meshes passed to [`host_mesh::spawn_admin`],
+//! deduplicated by `HostAgent` `ActorId` — see SA-3), and let
+//! **C** denote the process-global singleton client host mesh in
+//! the caller process (whose local proc hosts the root client
+//! actor).
 //!
 //! - **CH-1 (deduplication):** When C ∈ A, the client host appears
 //!   exactly once in the admin host list (deduplicated by `HostAgent`
@@ -212,17 +214,52 @@
 //! - **CH-2 (reachability):** In both cases, the root client actor
 //!   is reachable through the standard host → proc → actor walk.
 //!
-//! - **CH-3 (ordering):** `spawn_admin` requires `cx: &impl
-//!   context::Actor` (the caller's root client instance). Constructing
-//!   that instance initializes C. Therefore C is available when
-//!   `spawn_admin` executes. Any refactor must preserve this ordering.
+//! - **CH-3 (ordering):** C must be initialized before
+//!   `spawn_admin` executes. In Rust, calling `context()` /
+//!   `this_host()` / `this_proc()` triggers `GLOBAL_CONTEXT`
+//!   bootstrap, which initializes C. In Python, `bootstrap_host()`
+//!   calls `register_client_host()` before any actor code runs.
+//!   Either path ensures C is available by the time `spawn_admin`
+//!   reads it via `try_this_host()`. Any refactor must preserve
+//!   this ordering.
 //!
-//! **Mechanism:** [`HostMeshRef::spawn_admin`] reads C from the
-//! caller process (via `try_this_host()`), merges it with A's host
-//! list, deduplicates by `HostAgent` `ActorId`, and sends the merged
+//! - **CH-4 (runtime-agnostic client-host discovery):** `spawn_admin`
+//!   discovers C via `try_this_host()`, which checks two sources
+//!   in order: the Rust `GLOBAL_CONTEXT` (initialized via
+//!   `context()` / `this_host()` / `this_proc()`) and the
+//!   externally registered client host (set by
+//!   `register_client_host()` from Python's `bootstrap_host()`).
+//!   Aggregation logic must not branch on which source provided C.
+//!
+//! **Mechanism:** [`host_mesh::spawn_admin`] aggregates hosts from
+//! all input meshes (SA-3), reads C from the caller process (via
+//! `try_this_host()`), merges it with the aggregated set (SA-6),
+//! deduplicates by `HostAgent` `ActorId`, and sends the merged
 //! list in `SpawnMeshAdmin`. This works for same-process and
-//! cross-process setups because merge+dedeup happens in the caller
+//! cross-process setups because merge+dedup happens in the caller
 //! process before sending the spawn request.
+//!
+//! ## Spawn/aggregation invariants (SA-*)
+//!
+//! [`host_mesh::spawn_admin`] aggregates hosts from one or more
+//! meshes into a single admin host set.
+//!
+//! - **SA-1 (non-empty mesh set):** The input must yield at least
+//!   one mesh.
+//! - **SA-2 (non-empty hosts):** Every input mesh must contain at
+//!   least one host.
+//! - **SA-3 (host-agent identity dedup):** The admin host set is
+//!   the ordered union of host agents from all input meshes,
+//!   deduplicated by `HostAgent` `ActorId` in first-seen order.
+//! - **SA-4 (single-mesh degeneracy):** `spawn_admin([mesh], ...)`
+//!   is behaviorally equivalent to the former `mesh.spawn_admin(...)`.
+//!   Established by existing single-mesh integration tests (e.g.
+//!   `dining_philosophers`); no dedicated unit test.
+//! - **SA-5 (placement determinism):** The admin is spawned on the
+//!   first input mesh's first host.
+//! - **SA-6 (client-host merge after aggregation):** Client-host
+//!   inclusion/dedup (CH-1) operates on the already-aggregated host
+//!   set, not per-mesh independently.
 //!
 //! ## MAST resolution invariants (MC-*)
 //!
@@ -261,6 +298,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::routing::post;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
 use hyperactor::Context;
@@ -578,6 +616,11 @@ pub struct MeshAdminAgent {
     /// for the admin HTTP server. Returned via `GetAdminAddr`.
     admin_host: Option<String>,
 
+    /// Base URL of the Monarch dashboard. Passed explicitly via
+    /// `SpawnMeshAdmin`. Used by proxy routes that forward requests
+    /// to the dashboard's `/api/*` endpoints.
+    telemetry_url: Option<String>,
+
     /// When the mesh was started (ISO-8601 timestamp).
     started_at: String,
 
@@ -607,6 +650,7 @@ impl MeshAdminAgent {
         hosts: Vec<(String, hyperactor_reference::ActorRef<HostAgent>)>,
         root_client_actor_id: Option<hyperactor_reference::ActorId>,
         admin_addr: Option<std::net::SocketAddr>,
+        telemetry_url: Option<String>,
     ) -> Self {
         let host_agents_by_actor_id: HashMap<hyperactor_reference::ActorId, String> = hosts
             .iter()
@@ -627,6 +671,7 @@ impl MeshAdminAgent {
             admin_addr_override: admin_addr,
             admin_addr: None,
             admin_host: None,
+            telemetry_url,
             started_at,
             started_by,
         }
@@ -674,6 +719,14 @@ struct BridgeState {
     resolve_semaphore: tokio::sync::Semaphore,
     /// Keep the handle alive so the bridge mailbox is not dropped.
     _bridge_handle: ActorHandle<()>,
+    /// Base URL of the Monarch dashboard (e.g.
+    /// `"http://localhost:5000"`). Passed from `MeshAdminAgent` at
+    /// init time. Used by proxy routes that forward requests to the
+    /// dashboard's `/api/*` endpoints.
+    telemetry_url: Option<String>,
+    /// Shared HTTP client for outbound proxy requests to the
+    /// dashboard. Reuses connection pool across requests.
+    http_client: reqwest::Client,
 }
 
 /// A TCP listener that performs a TLS handshake on each accepted
@@ -798,6 +851,8 @@ impl Actor for MeshAdminAgent {
                 crate::config::MESH_ADMIN_MAX_CONCURRENT_RESOLVES,
             )),
             _bridge_handle: bridge_handle,
+            telemetry_url: self.telemetry_url.clone(),
+            http_client: reqwest::Client::new(),
         });
         let router = create_mesh_admin_router(bridge_state);
 
@@ -1345,7 +1400,9 @@ impl MeshAdminAgent {
 /// - `GET /v1/schema/error` — JSON Schema for `ApiErrorEnvelope`.
 /// - `GET /v1/openapi.json` — OpenAPI 3.1 spec (embeds JSON Schemas).
 /// - `GET /v1/tree` — ASCII topology dump.
+/// - `POST /v1/query` — proxy SQL query to the dashboard server.
 /// - `GET /v1/pyspy/{*proc_reference}` — py-spy stack dump for a proc.
+/// - `POST /v1/pyspy_dump/{*proc_reference}` — py-spy dump + store in Datafusion.
 /// - `GET /v1/config/{*proc_reference}` — config snapshot for a proc.
 /// - `GET /v1/{*reference}` — JSON `NodePayload` for a single reference.
 /// - `GET /SKILL.md` — agent-facing API documentation (markdown).
@@ -1357,7 +1414,12 @@ fn create_mesh_admin_router(bridge_state: Arc<BridgeState>) -> Router {
         .route("/v1/schema/error", get(serve_error_schema))
         .route("/v1/openapi.json", get(serve_openapi))
         .route("/v1/tree", get(tree_dump))
+        .route("/v1/query", post(query_proxy))
         .route("/v1/pyspy/{*proc_reference}", get(pyspy_bridge))
+        .route(
+            "/v1/pyspy_dump/{*proc_reference}",
+            post(pyspy_dump_and_store),
+        )
         .route("/v1/config/{*proc_reference}", get(config_bridge))
         .route("/v1/{*reference}", get(resolve_reference_bridge))
         .with_state(bridge_state)
@@ -1483,6 +1545,13 @@ pub fn build_openapi_spec() -> serde_json::Value {
         .expect("ApiErrorEnvelope schema must be serializable");
     let mut pyspy_schema = serde_json::to_value(schemars::schema_for!(PySpyResult))
         .expect("PySpyResult schema must be serializable");
+    let mut query_request_schema = serde_json::to_value(schemars::schema_for!(QueryRequest))
+        .expect("QueryRequest schema must be serializable");
+    let mut query_response_schema = serde_json::to_value(schemars::schema_for!(QueryResponse))
+        .expect("QueryResponse schema must be serializable");
+    let mut pyspy_dump_response_schema =
+        serde_json::to_value(schemars::schema_for!(PyspyDumpAndStoreResponse))
+            .expect("PyspyDumpAndStoreResponse schema must be serializable");
 
     // Hoist $defs into a shared components/schemas map so
     // OpenAPI tools can resolve references.
@@ -1490,9 +1559,18 @@ pub fn build_openapi_spec() -> serde_json::Value {
     hoist_defs(&mut node_schema, &mut shared_schemas);
     hoist_defs(&mut error_schema, &mut shared_schemas);
     hoist_defs(&mut pyspy_schema, &mut shared_schemas);
+    hoist_defs(&mut query_request_schema, &mut shared_schemas);
+    hoist_defs(&mut query_response_schema, &mut shared_schemas);
+    hoist_defs(&mut pyspy_dump_response_schema, &mut shared_schemas);
     shared_schemas.insert("NodePayload".into(), node_schema);
     shared_schemas.insert("ApiErrorEnvelope".into(), error_schema);
     shared_schemas.insert("PySpyResult".into(), pyspy_schema);
+    shared_schemas.insert("QueryRequest".into(), query_request_schema);
+    shared_schemas.insert("QueryResponse".into(), query_response_schema);
+    shared_schemas.insert(
+        "PyspyDumpAndStoreResponse".into(),
+        pyspy_dump_response_schema,
+    );
 
     // Rewrite any remaining $defs refs in the hoisted component schemas.
     for value in shared_schemas.values_mut() {
@@ -1668,6 +1746,63 @@ pub fn build_openapi_spec() -> serde_json::Value {
                         "504": error_response("Gateway timeout")
                     }
                 }
+            },
+            "/v1/query": {
+                "post": {
+                    "summary": "Proxy SQL query to the telemetry dashboard",
+                    "operationId": "queryProxy",
+                    "description": "Forwards a SQL query to the Monarch dashboard's DataFusion engine. Requires telemetry_url to be configured.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/QueryRequest" }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Query results",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/QueryResponse" }
+                                }
+                            }
+                        },
+                        "400": error_response("Bad request (invalid SQL or missing sql field)"),
+                        "404": error_response("Dashboard not configured"),
+                        "500": error_response("Internal error"),
+                        "504": error_response("Gateway timeout")
+                    }
+                }
+            },
+            "/v1/pyspy_dump/{proc_reference}": {
+                "post": {
+                    "summary": "Trigger py-spy dump and store in telemetry",
+                    "operationId": "pyspyDumpAndStore",
+                    "description": "Runs py-spy against the target process, stores the result in the dashboard's DataFusion pyspy tables, and returns the dump_id.",
+                    "parameters": [{
+                        "name": "proc_reference",
+                        "in": "path",
+                        "required": true,
+                        "description": "URL-encoded proc reference (ProcId)",
+                        "schema": { "type": "string" }
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "Dump stored successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/PyspyDumpAndStoreResponse" }
+                                }
+                            }
+                        },
+                        "400": error_response("Bad request (malformed proc reference)"),
+                        "404": error_response("Proc or dashboard not found"),
+                        "500": error_response("Internal error"),
+                        "504": error_response("Gateway timeout")
+                    }
+                }
             }
         },
         "components": {
@@ -1758,17 +1893,17 @@ async fn probe_actor(
     }
 }
 
-/// HTTP bridge for py-spy stack dump requests.
+/// Core py-spy dump logic shared by `pyspy_bridge` and
+/// `pyspy_dump_and_store`.
 ///
-/// Parses the proc reference, routes to the appropriate actor
-/// (ProcAgent on worker procs, HostAgent on the service proc),
-/// probes for reachability, and sends `PySpyDump` directly.
-/// See PS-12, PS-13 in `introspect` module doc.
-async fn pyspy_bridge(
-    State(state): State<Arc<BridgeState>>,
-    AxumPath(proc_reference): AxumPath<String>,
-) -> Result<Json<PySpyResult>, ApiError> {
-    let (proc_reference, proc_id) = parse_pyspy_proc_reference(&proc_reference)?;
+/// Parses the proc reference, routes to the appropriate actor,
+/// probes for reachability, sends `PySpyDump`, and returns the
+/// result.
+async fn do_pyspy_dump(
+    state: &BridgeState,
+    raw_proc_reference: &str,
+) -> Result<PySpyResult, ApiError> {
+    let (proc_reference, proc_id) = parse_pyspy_proc_reference(raw_proc_reference)?;
 
     // PS-12: route by proc name — service proc → HostAgent, all others → ProcAgent.
     let agent_id = if proc_id.base_name() == SERVICE_PROC_NAME {
@@ -1823,7 +1958,7 @@ async fn pyspy_bridge(
         details: None,
     })?;
 
-    let wire_result = tokio::time::timeout(
+    tokio::time::timeout(
         hyperactor_config::global::get(crate::config::MESH_ADMIN_PYSPY_BRIDGE_TIMEOUT),
         reply_rx.recv(),
     )
@@ -1843,9 +1978,169 @@ async fn pyspy_bridge(
         code: "internal_error".to_string(),
         message: format!("failed to receive PySpyResult: {}", e),
         details: None,
+    })
+}
+
+/// HTTP bridge for py-spy stack dump requests.
+///
+/// Parses the proc reference, routes to the appropriate actor
+/// (ProcAgent on worker procs, HostAgent on the service proc),
+/// probes for reachability, and sends `PySpyDump` directly.
+/// See PS-12, PS-13 in `introspect` module doc.
+async fn pyspy_bridge(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+) -> Result<Json<PySpyResult>, ApiError> {
+    Ok(Json(do_pyspy_dump(&state, &proc_reference).await?))
+}
+
+/// Request body for `POST /v1/query`.
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct QueryRequest {
+    /// SQL query string.
+    pub sql: String,
+}
+
+/// Response body from `POST /v1/query`.
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct QueryResponse {
+    /// Query result rows.
+    pub rows: serde_json::Value,
+}
+
+/// Request body sent to the dashboard's `/api/pyspy_dump` endpoint.
+#[derive(Debug, Serialize)]
+struct StorePyspyDumpRequest {
+    dump_id: String,
+    proc_ref: String,
+    pyspy_result_json: String,
+}
+
+/// Response body from `POST /v1/pyspy_dump/{*proc_reference}`.
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PyspyDumpAndStoreResponse {
+    /// Unique identifier for the stored dump.
+    pub dump_id: String,
+}
+
+/// Resolve the telemetry URL from bridge state, returning an
+/// `ApiError` if not configured.
+fn require_telemetry_url(state: &BridgeState) -> Result<&str, ApiError> {
+    state.telemetry_url.as_deref().ok_or_else(|| {
+        ApiError::not_found("dashboard not configured (no telemetry_url provided)", None)
+    })
+}
+
+/// Proxy SQL queries to the Monarch dashboard's `/api/query`
+/// endpoint.
+///
+/// Requires `telemetry_url` to be set. The request body must
+/// contain a `sql` field. The dashboard response rows are returned
+/// verbatim.
+async fn query_proxy(
+    State(state): State<Arc<BridgeState>>,
+    axum::Json(body): axum::Json<QueryRequest>,
+) -> Result<axum::Json<QueryResponse>, ApiError> {
+    let telemetry_url = require_telemetry_url(&state)?;
+
+    let resp = state
+        .http_client
+        .post(format!("{}/api/query", telemetry_url))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ApiError {
+            code: "proxy_error".to_string(),
+            message: format!("failed to proxy query to dashboard: {}", e),
+            details: None,
+        })?;
+
+    let status = resp.status();
+    let resp_body = resp.bytes().await.map_err(|e| ApiError {
+        code: "proxy_error".to_string(),
+        message: format!("failed to read dashboard response: {}", e),
+        details: None,
     })?;
 
-    Ok(Json(wire_result))
+    if !status.is_success() {
+        // Try to extract error message from dashboard response.
+        let msg = serde_json::from_slice::<serde_json::Value>(&resp_body)
+            .ok()
+            .and_then(|v| v.get("error")?.as_str().map(String::from))
+            .unwrap_or_else(|| format!("dashboard returned HTTP {status}"));
+        let code = if status.is_client_error() {
+            "bad_request"
+        } else {
+            "proxy_error"
+        };
+        return Err(ApiError {
+            code: code.to_string(),
+            message: msg,
+            details: None,
+        });
+    }
+
+    let result: QueryResponse = serde_json::from_slice(&resp_body).map_err(|e| ApiError {
+        code: "proxy_error".to_string(),
+        message: format!("failed to parse dashboard response: {}", e),
+        details: None,
+    })?;
+
+    Ok(axum::Json(result))
+}
+
+/// Trigger a py-spy dump and store the result in the dashboard's
+/// DataFusion pyspy tables.
+///
+/// 1. Performs a py-spy dump via `do_pyspy_dump` (same as
+///    `pyspy_bridge`).
+/// 2. POSTs the serialized result to the dashboard's
+///    `/api/pyspy_dump` endpoint for persistent storage.
+/// 3. Returns the generated dump id.
+async fn pyspy_dump_and_store(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(proc_reference): AxumPath<String>,
+) -> Result<axum::Json<PyspyDumpAndStoreResponse>, ApiError> {
+    let telemetry_url = require_telemetry_url(&state)?;
+    let pyspy_result = do_pyspy_dump(&state, &proc_reference).await?;
+
+    let dump_id = uuid::Uuid::new_v4().to_string();
+    let pyspy_json = serde_json::to_string(&pyspy_result).map_err(|e| ApiError {
+        code: "internal_error".to_string(),
+        message: format!("failed to serialize PySpyResult: {}", e),
+        details: None,
+    })?;
+
+    let store_body = StorePyspyDumpRequest {
+        dump_id: dump_id.clone(),
+        proc_ref: proc_reference,
+        pyspy_result_json: pyspy_json,
+    };
+
+    let store_resp = state
+        .http_client
+        .post(format!("{}/api/pyspy_dump", telemetry_url))
+        .json(&store_body)
+        .send()
+        .await
+        .map_err(|e| ApiError {
+            code: "proxy_error".to_string(),
+            message: format!("failed to store pyspy dump in dashboard: {}", e),
+            details: None,
+        })?;
+
+    if !store_resp.status().is_success() {
+        return Err(ApiError {
+            code: "proxy_error".to_string(),
+            message: format!(
+                "dashboard rejected pyspy dump store: HTTP {}",
+                store_resp.status()
+            ),
+            details: None,
+        });
+    }
+
+    Ok(axum::Json(PyspyDumpAndStoreResponse { dump_id }))
 }
 
 /// HTTP bridge for config dump requests.
@@ -2485,6 +2780,7 @@ mod tests {
             vec![("host_a".to_string(), ref1), ("host_b".to_string(), ref2)],
             None,
             None,
+            None,
         );
 
         let payload = agent.build_root_payload();
@@ -2571,6 +2867,7 @@ mod tests {
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
                     Some("[::]:0".parse().unwrap()),
+                    None,
                 ),
             )
             .unwrap();
@@ -2727,6 +3024,7 @@ mod tests {
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
                     Some("[::]:0".parse().unwrap()),
+                    None,
                 ),
             )
             .unwrap();
@@ -2812,6 +3110,7 @@ mod tests {
             vec![("host_a".to_string(), ref1)],
             Some(client_actor_id.clone()),
             None,
+            None,
         );
 
         let payload = agent.build_root_payload();
@@ -2882,6 +3181,7 @@ mod tests {
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     Some(root_client_actor_id.clone()),
                     Some("[::]:0".parse().unwrap()),
+                    None,
                 ),
             )
             .unwrap();
@@ -3035,6 +3335,7 @@ mod tests {
                     vec![(host_addr_str, host_agent_ref)],
                     None,
                     Some("[::]:0".parse().unwrap()),
+                    None,
                 ),
             )
             .unwrap();
@@ -3133,6 +3434,7 @@ mod tests {
                     vec![(host_addr_str.clone(), host_agent_ref.clone())],
                     None,
                     Some("[::]:0".parse().unwrap()),
+                    None,
                 ),
             )
             .unwrap();
@@ -3599,6 +3901,7 @@ mod tests {
                     vec![(user_proc_addr, host_agent_ref.clone())],
                     None,
                     Some("[::]:0".parse().unwrap()),
+                    None,
                 ),
             )
             .unwrap();

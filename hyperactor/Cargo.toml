@@ -66,7 +66,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
-smol_str = "0.1.24"
+smol_str = "0.3.6"
 strum = { version = "0.27.1", features = ["derive"] }
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
@@ -86,10 +86,10 @@ indoc = "2.0.2"
 maplit = "1.0"
 proptest = "1.10.0"
 serde_bytes = "0.11"
-tempfile = "3.26.0"
+tempfile = "3.27.0"
 timed_test = { version = "0.0.0", path = "../timed_test" }
 tokio-test = "0.4.5"
-tracing-subscriber = { version = "0.3.20", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
+tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 
 [features]

@@ -80,10 +80,10 @@ impl SupervisionError {
     #[allow(dead_code)]
     pub(crate) fn new_err_from(failure: MeshFailure) -> PyErr {
         let event = failure.event;
-        Self::new_err(format!(
-            "Actor {} exited because of the following reason: {}",
-            event.actor_id, event,
-        ))
+        let message = event
+            .failure_report()
+            .unwrap_or_else(|| format!("{}", event));
+        Self::new_err(message)
     }
     /// Set the endpoint on a PyErr containing a SupervisionError.
     ///
@@ -154,7 +154,10 @@ impl PyMeshFailure {
     }
 
     fn report(&self) -> String {
-        format!("{}", self.inner.event)
+        self.inner
+            .event
+            .failure_report()
+            .unwrap_or_else(|| format!("{}", self.inner.event))
     }
 }
 

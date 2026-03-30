@@ -13,6 +13,9 @@
 //! details on the right pane, including actor flight recorder events
 //! when an actor is selected.
 //!
+//! Binaries construct a [`TuiConfig`] (after resolving any
+//! `mast_conda:///` handles themselves) and call [`run`].
+//!
 //! # Design Pillars (Algebraic)
 //!
 //! This TUI is intentionally structured around three algebraic
@@ -150,12 +153,12 @@
 //! buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_example_dining_philosophers
 //!
 //! # Terminal 2: Run this TUI (use the port printed by the application)
-//! buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX
+//! buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX
 //! ```
 
 mod actions;
 mod app;
-mod client;
+pub(crate) mod client;
 mod diagnostics;
 mod fetch;
 mod filter;
@@ -166,6 +169,9 @@ mod overlay;
 mod render;
 mod theme;
 mod tree;
+
+#[cfg(test)]
+mod tests;
 
 // Re-exports so #[cfg(test)] mod tests can use `use super::*`.
 #[allow(unused_imports)]
@@ -178,7 +184,6 @@ use std::time::Duration;
 
 pub(crate) use actions::*;
 pub(crate) use app::*;
-use clap::Parser;
 use crossterm::ExecutableCommand;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
@@ -201,15 +206,32 @@ use ratatui::backend::CrosstermBackend;
 // Re-exports so #[cfg(test)] mod tests can use `use super::*`.
 #[allow(unused_imports)]
 pub(crate) use render::*;
+// --- public API ---
+pub use theme::LangName;
+pub use theme::ThemeName;
 pub(crate) use theme::*;
 pub(crate) use tree::*;
+
+/// Configuration for the mesh admin TUI.
+///
+/// Binaries translate their own CLI args into this struct.
+/// The `addr` field must be a resolved address (`host:port` or
+/// `https://host:port`), not a MAST handle. MAST resolution is
+/// the binary's responsibility.
+pub struct TuiConfig {
+    pub addr: String,
+    pub refresh_ms: u64,
+    pub theme: ThemeName,
+    pub lang: LangName,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub diagnose: bool,
+}
 
 // Terminal setup / teardown
 
 /// Put the terminal into "TUI mode".
-///
-/// Enables raw mode, switches to the alternate screen, and clears it,
-/// returning a `ratatui::Terminal` backed by crossterm.
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -221,9 +243,6 @@ fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
 }
 
 /// Restore the terminal back to normal "shell mode".
-///
-/// Disables raw mode, leaves the alternate screen, and re-enables the
-/// cursor.
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
@@ -231,26 +250,10 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
     Ok(())
 }
 
-// Main loop
-
-#[cfg(fbcode_build)]
-#[fbinit::main]
-async fn main(fb: fbinit::FacebookInit) -> io::Result<()> {
-    run(Some(fb)).await
-}
-
-#[cfg(not(fbcode_build))]
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    run(None).await
-}
-
 async fn run_diagnose(client: reqwest::Client, base_url: String) -> io::Result<()> {
     use crate::diagnostics::DiagSummary;
     use crate::diagnostics::run_diagnostics;
 
-    // Global timeout: prevents hanging if the server is unreachable or
-    // per-probe timeouts interact badly with very large meshes.
     const GLOBAL_TIMEOUT_SECS: u64 = 120;
 
     let mut rx = run_diagnostics(client, base_url);
@@ -293,21 +296,12 @@ async fn run_diagnose(client: reqwest::Client, base_url: String) -> io::Result<(
     Ok(())
 }
 
-async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
-    let mut args = Args::parse();
+/// Run the mesh admin TUI. Does not return until the user exits
+/// or diagnostics complete.
+pub async fn run(config: TuiConfig) -> io::Result<()> {
+    let (base_url, client) = client::build_client(&config);
 
-    // Resolve mast_conda:/// handles to https://fqdn:port before
-    // building the HTTP client (MR-1).
-    if args.addr.starts_with("mast_conda:///") {
-        let resolver = client::MastResolver::new(fb, args.mast_resolver.as_deref());
-        args.addr = client::resolve_mast_addr(&resolver, &args.addr, args.admin_port).await;
-    }
-
-    // Build the HTTP client and base URL, configuring TLS when
-    // certificates are available.
-    let (base_url, client) = client::build_client(&args);
-
-    if args.diagnose {
+    if config.diagnose {
         return run_diagnose(client, base_url).await;
     }
 
@@ -316,10 +310,7 @@ async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
         return Ok(());
     }
 
-    // Show an indicatif spinner on stderr while fetching initial data.
-    // This runs before the alternate screen so it's visible as a normal
-    // Terminal line.
-    let mut app = App::new(base_url, client, args.theme, args.lang);
+    let mut app = App::new(base_url, client, config.theme, config.lang);
     let spinner = ProgressBar::new_spinner();
     spinner.set_style(
         ProgressStyle::default_spinner()
@@ -340,10 +331,7 @@ async fn run(fb: Option<fbinit::FacebookInit>) -> io::Result<()> {
     spinner.finish_and_clear();
 
     let mut terminal = setup_terminal()?;
-    let result = run_app(&mut terminal, &args, app).await;
+    let result = run_app(&mut terminal, config.refresh_ms, app).await;
     restore_terminal(&mut terminal)?;
     result
 }
-
-#[cfg(test)]
-mod tests;

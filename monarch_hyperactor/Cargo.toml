@@ -39,13 +39,14 @@ monarch_conda = { version = "0.0.0", path = "../monarch_conda" }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
-once_cell = "1.21"
+once_cell = "1.21.4"
 opentelemetry = "0.31"
 pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone"] }
 pyo3-async-runtimes = { version = "0.26", features = ["attributes", "tokio-runtime"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 serde_multipart = { version = "0.0.0", path = "../serde_multipart" }
-tempfile = "3.26.0"
+tempfile = "3.27.0"
 tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }

@@ -24,7 +24,7 @@ Usage::
 
 Then, in another terminal::
 
-    buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr <addr>
+    buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr <addr>
 
 where ``<addr>`` is the address printed by the example.
 
@@ -45,6 +45,7 @@ from enum import auto, Enum
 from typing import Any, cast
 
 from monarch._src.actor.actor_mesh import ActorMesh
+from monarch._src.actor.host_mesh import _spawn_admin
 from monarch.actor import Actor, current_rank, endpoint, this_host
 from monarch.distributed_telemetry.actor import start_telemetry
 
@@ -158,13 +159,17 @@ async def async_main(
     dashboard_port: int = 8265,
     kill_waiter_after: float | None = None,
 ) -> None:
+    telemetry_url = None
     if dashboard:
-        start_telemetry(include_dashboard=True, dashboard_port=dashboard_port)
+        _, telemetry_url = start_telemetry(
+            include_dashboard=True, dashboard_port=dashboard_port
+        )
+        print(f"  - Dashboard:     {telemetry_url}")
 
     host = this_host()
 
     # Spawn the admin agent so the TUI can attach.
-    admin_url = await host._spawn_admin()
+    admin_url = await _spawn_admin([host], telemetry_url=telemetry_url)
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "
@@ -177,13 +182,8 @@ async def async_main(
     print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print(
-        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
+        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
-    if dashboard:
-        dashboard_url = os.environ.get(
-            "MONARCH_DASHBOARD_URL", f"http://localhost:{dashboard_port}"
-        )
-        print(f"  - Dashboard:     {dashboard_url}")
     print("\nPress Ctrl+C to stop.\n", flush=True)
 
     # Spawn philosopher processes and actors.

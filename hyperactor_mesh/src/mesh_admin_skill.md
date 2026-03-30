@@ -68,8 +68,10 @@ failed), `note` (role), `phase` (AdminInfra or Mesh), and `outcome`
 
 ## Endpoints
 
-All endpoints are read-only (`GET`). All return `application/json`
-except `/SKILL.md` (`text/markdown`).
+Most endpoints are read-only (`GET`). Two endpoints accept `POST`:
+`/v1/query` (SQL queries) and `/v1/pyspy_dump/{proc_reference}`
+(dump-and-store). All endpoints return `application/json` except
+`/SKILL.md` (`text/markdown`).
 
 - `GET {base}/v1/schema`
   JSON Schema for `NodePayload` (authoritative contract).
@@ -156,6 +158,52 @@ except `/SKILL.md` (`text/markdown`).
   ```
   buck2 test fbcode//monarch/hyperactor_mesh:config_integration_test
   ```
+
+- `POST {base}/v1/query`
+  Execute a SQL query to distributed telemetry DataFusion engine.
+  Requires `telemetry_url` to be configured.
+
+  Request body (`QueryRequest`):
+  ```json
+  {"sql": "SELECT * FROM actors LIMIT 10"}
+  ```
+
+  Success returns a `QueryResponse`:
+  ```json
+  {"rows": [ ... ]}
+  ```
+
+  `rows` contains the DataFusion result set as a JSON array. On
+  invalid SQL or query failure, a non-200 status is returned with
+  the dashboard's error message.
+
+  Discover tables with: `SELECT table_name FROM information_schema.tables`.
+
+- `POST {base}/v1/pyspy_dump/{proc_reference}`
+  Captures a py-spy stack dump from the process hosting
+  `{proc_reference}` and persists the result in the telemetry
+  store. The reference must be a valid ProcId (percent-encoded
+  in the URL path). Requires `telemetry_url` to be configured.
+
+  The endpoint performs two steps:
+  1. Sends a `PySpyDump` message to the target proc's agent
+     (same routing as `GET /v1/pyspy/{proc_reference}`).
+  2. Stores the result in DataFusion via the dashboard, keyed
+     by a generated UUID.
+
+  Success returns a `PyspyDumpAndStoreResponse`:
+  ```json
+  {"dump_id": "550e8400-e29b-41d4-a716-446655440000"}
+  ```
+
+  Use `dump_id` to retrieve the stored dump via `/v1/query`:
+  ```json
+  {"sql": "SELECT * FROM pyspy_dumps WHERE dump_id = '550e8400-...'"}
+  ```
+
+  Error handling follows the same conventions as
+  `GET /v1/pyspy/{proc_reference}`: `not_found` if the target
+  agent is unreachable, `gateway_timeout` on timeout.
 
 - `GET {base}/SKILL.md`
   This document.

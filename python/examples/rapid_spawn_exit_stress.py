@@ -20,6 +20,7 @@ import asyncio
 import time
 
 import monarch.actor
+from monarch._src.actor.host_mesh import _spawn_admin
 from monarch._src.job.process import ProcessJob
 from monarch.actor import Actor, endpoint, this_host
 from monarch.mesh_controller import spawn_tensor_engine
@@ -68,7 +69,7 @@ async def main():
     host = this_host()
 
     # Spawn the admin agent so the TUI can attach.
-    admin_url = await host._spawn_admin()
+    admin_url = await _spawn_admin([host])
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "
@@ -81,7 +82,7 @@ async def main():
     print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print(
-        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
+        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
     print("\nPress Ctrl+C to stop.\n", flush=True)
 

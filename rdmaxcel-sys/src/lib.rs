@@ -52,6 +52,11 @@ mod inner {
         // Pointer attributes
         pub const CU_POINTER_ATTRIBUTE_MEMORY_TYPE: hipPointer_attribute =
             HIP_POINTER_ATTRIBUTE_MEMORY_TYPE;
+        pub const CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL: hipPointer_attribute =
+            HIP_POINTER_ATTRIBUTE_DEVICE_ORDINAL;
+
+        // Memory types
+        pub const CU_MEMORYTYPE_DEVICE: u32 = 2; // hipMemoryTypeDevice = 2
 
         // Memory handle types
         pub const CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD: hipMemRangeHandleType =

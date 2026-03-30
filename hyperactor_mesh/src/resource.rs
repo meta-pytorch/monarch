@@ -117,6 +117,20 @@ impl Status {
     pub fn is_healthy(&self) -> bool {
         matches!(self, Status::Initializing | Status::Running)
     }
+
+    /// Ensure this status is at least as terminal as `floor`.
+    ///
+    /// If `floor` is a terminating status (Stopping, Stopped, Failed,
+    /// Timeout) and `self` is not, returns `floor`. Otherwise returns
+    /// `self` unchanged. This is used to prevent a child resource
+    /// from appearing healthier than its parent.
+    pub fn clamp_min(self, floor: Status) -> Status {
+        if floor.is_terminating() && !self.is_terminating() {
+            floor
+        } else {
+            self
+        }
+    }
 }
 
 impl From<bootstrap::ProcStatus> for Status {
