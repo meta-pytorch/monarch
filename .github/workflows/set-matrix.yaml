@@ -28,10 +28,10 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
       build-matrix: ${{ steps.set.outputs.build-matrix }}
     env:
-      # Event flags evaluated by github actions before the step runs:
       IS_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads') }}
-      IS_SCHEDULE:  ${{ github.event_name == 'schedule' }}
-      IS_ROCM_TAG:  ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
+      IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
+      IS_ROCM_TAG: ${{ startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
+      HAS_ROCM_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ciflow/rocm') }}
 
     steps:
       - id: set
@@ -49,19 +49,28 @@ jobs:
           ROCM_71_PY310='{"name": "rocm7.1", "python-version": "3.10", "docker-image": "pytorch/almalinux-builder:rocm7.1", "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.1/"}'
           ROCM_72_PY310='{"name": "rocm7.2", "python-version": "3.10", "docker-image": "pytorch/almalinux-builder:rocm7.2", "torch-spec": "torch --extra-index-url https://download.pytorch.org/whl/nightly/rocm7.2/"}'
 
-          # Select matrices based on event type
+          # Build matrix logic:
+          # - ROCm tag: ROCm only (CUDA already built in PR run)
+          # - Push/schedule: CUDA + ROCm
+          # - PR with ciflow/rocm label: CUDA only (ROCm will be built by tag run)
+          # - PR without label: CUDA + ROCm (catch build failures early)
           if [[ "$IS_ROCM_TAG" == "true" ]]; then
-            # ROCm tag: ROCm only
-            TEST_MATRIX="[$ROCM_71, $ROCM_72]"
             BUILD_MATRIX="[$ROCM_71_PY310, $ROCM_72_PY310]"
           elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
-            # Push to branch or schedule: CUDA and ROCm
-            TEST_MATRIX="[$CUDA, $ROCM_71, $ROCM_72]"
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
-          else
-            # Default (PRs): CUDA only
-            TEST_MATRIX="[$CUDA]"
+          elif [[ "$HAS_ROCM_LABEL" == "true" ]]; then
             BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312]"
+          else
+            BUILD_MATRIX="[$CUDA_PY310, $CUDA_PY312, $ROCM_71_PY310, $ROCM_72_PY310]"
+          fi
+
+          # Test matrix: ROCm tested only on push/schedule/tag
+          if [[ "$IS_ROCM_TAG" == "true" ]]; then
+            TEST_MATRIX="[$ROCM_71, $ROCM_72]"
+          elif [[ "$IS_PUSH" == "true" || "$IS_SCHEDULE" == "true" ]]; then
+            TEST_MATRIX="[$CUDA, $ROCM_71, $ROCM_72]"
+          else
+            TEST_MATRIX="[$CUDA]"
           fi
 
           # Export matrices to job outputs
