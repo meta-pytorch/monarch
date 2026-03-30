@@ -43,14 +43,11 @@ function dashArray(status: string): string | undefined {
   return undefined;
 }
 
-/** Parent tiers that show subtitle on the node, label on hover. */
-const PARENT_TIERS = new Set(["host_mesh", "proc_mesh", "actor_mesh", "host", "proc"]);
-
 /** Single node rendered as an SVG group.
  *
- * All nodes render as rounded rectangles. Parent tiers (host, proc)
- * show their tier name on the node with the label on hover only.
- * Actor nodes show their full label on the node.
+ * All nodes render as rounded rectangles with two lines of text:
+ * a tier title (e.g. "Host", "Proc", "Actor") and a short name
+ * derived from the label. The full entity_id is shown on hover.
  */
 export function DagNodeComponent({
   node,
@@ -61,27 +58,26 @@ export function DagNodeComponent({
 }: DagNodeProps) {
   const color = statusColor(node.status);
   const r = node.radius;
-  const isParent = PARENT_TIERS.has(node.tier);
 
-  // Strip "-UUID" suffix from label to get a short name for parent nodes.
-  // e.g. "anon_0-13su5vJ2cg5v" -> "anon_0", "waiter_0-13nS21tyttpD" -> "waiter_0"
-  const shortName = isParent
-    ? node.label.replace(/-[A-Za-z0-9]{8,}(\[\d+\])?$/, "").replace(/\[\d+\]$/, "")
-    : "";
-  const shortNameMax = 10;
+  // Strip "-UUID" suffix and "[rank]" to get a short name.
+  // e.g. "anon_0-13su5vJ2cg5v" -> "anon_0"
+  //      "greeter-1yVhEBwKxr3i[0]" -> "greeter"
+  //      "host_agent[0]" -> "host_agent"
+  const shortName = node.label
+    .replace(/-[A-Za-z0-9]{8,}(\[\d+\])?$/, "")
+    .replace(/\[\d+\]$/, "");
+  const shortNameMax = 14;
   const shortNameDisplay = shortName.length > shortNameMax
     ? shortName.slice(0, shortNameMax - 1) + "\u2026"
     : shortName;
 
-  // All nodes are rounded rectangles. Parents show tier + short name (2 lines),
-  // actors are sized to fit their label text.
-  const w = isParent ? Math.max(r * 2.2, shortNameDisplay.length * 6 + 20) : Math.max(r * 2.2, node.label.length * 6 + 24);
-  const h = isParent ? r * 1.8 : r * 1.6;
+  // All nodes show tier title + short name (2 lines).
+  const w = Math.max(r * 2.2, shortNameDisplay.length * 6 + 20);
+  const h = r * 1.8;
   const rx = 6;
 
-  // Actor tiers show their full label.
-  const displayText = isParent ? node.subtitle : node.label;
-  const maxChars = isParent ? 16 : 20;
+  const displayText = node.subtitle;
+  const maxChars = 16;
   const truncated =
     displayText.length > maxChars
       ? displayText.slice(0, maxChars - 1) + "\u2026"
@@ -153,42 +149,27 @@ export function DagNodeComponent({
         />
       )}
 
-      {/* Primary text */}
-      {isParent ? (
-        <>
-          <text
-            textAnchor="middle"
-            dy="-0.2em"
-            fill="#fff"
-            fontSize="10px"
-            fontFamily="var(--font-display)"
-            fontWeight="600"
-          >
-            {truncated}
-          </text>
-          {shortNameDisplay && (
-            <text
-              textAnchor="middle"
-              dy="1.1em"
-              fill="var(--text-secondary)"
-              fontSize="8px"
-              fontFamily="var(--font-display)"
-              fontWeight="400"
-            >
-              {shortNameDisplay}
-            </text>
-          )}
-        </>
-      ) : (
+      {/* Primary text: tier title + short name */}
+      <text
+        textAnchor="middle"
+        dy="-0.2em"
+        fill="#fff"
+        fontSize="10px"
+        fontFamily="var(--font-display)"
+        fontWeight="600"
+      >
+        {truncated}
+      </text>
+      {shortNameDisplay && (
         <text
           textAnchor="middle"
-          dy="0.35em"
-          fill="#fff"
-          fontSize="9px"
+          dy="1.1em"
+          fill="var(--text-secondary)"
+          fontSize="8px"
           fontFamily="var(--font-display)"
-          fontWeight="500"
+          fontWeight="400"
         >
-          {truncated}
+          {shortNameDisplay}
         </text>
       )}
 

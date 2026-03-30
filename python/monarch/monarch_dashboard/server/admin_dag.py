@@ -160,8 +160,24 @@ def _is_system_by_name(label: str) -> bool:
 
 
 def _derive_label(payload: Dict[str, Any]) -> str:
-    """Derive a short display label from a node payload."""
+    """Derive a short display label from a node payload.
+
+    For hosts, extracts the IP:port from the ``addr`` property so
+    each host is visually distinguishable.  For procs and actors
+    the label is the name component of the identity string.
+    """
     identity = payload.get("identity", "")
+    props = payload.get("properties", {})
+
+    # Host: use addr from properties (e.g. "tcp:10.0.1.2:26600").
+    host_props = props.get("Host", {})
+    if isinstance(host_props, dict) and "addr" in host_props:
+        addr = host_props["addr"]
+        # Strip "tcp:" prefix -> "10.0.1.2:26600"
+        if ":" in addr:
+            addr = addr.split(":", 1)[1]
+        return addr
+
     if "ActorId" in identity:
         inner = identity.split("(", 1)[-1].rstrip(")")
         parts = inner.split(",")
@@ -374,5 +390,13 @@ def _add_message_edges(
                             "type": "message",
                         }
                     )
+        logger.info(
+            "message edge matching: %d messages, %d telemetry actors, "
+            "%d DAG actor nodes, %d edges added",
+            len(messages),
+            len(actors),
+            len(entity_to_node_id),
+            len(seen),
+        )
     except Exception as exc:
         logger.debug("Could not add message edges: %s", exc)

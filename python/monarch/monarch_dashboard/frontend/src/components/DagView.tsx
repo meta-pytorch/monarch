@@ -445,10 +445,14 @@ export function DagView() {
         </svg>
         {tooltip && !selectedNode && (() => {
           const n = tooltip.node;
-          const isParent = ["host_mesh", "proc_mesh", "actor_mesh", "host", "proc"].includes(n.tier);
+          const idParts = String(n.entityId).split(",");
           return (
             <div className="dag-tooltip" style={{ left: `${((tooltip.x - viewBox.x) / viewBox.w) * 100}%`, top: `${((tooltip.y - viewBox.y) / viewBox.h) * 100}%` }}>
-              <div className="dag-tooltip-name">{isParent ? n.label : n.subtitle}</div>
+              <div className="dag-tooltip-name">
+                {idParts.map((part, i) => (
+                  <div key={i}>{part}{i < idParts.length - 1 ? "," : ""}</div>
+                ))}
+              </div>
               <div className="dag-tooltip-info">
                 {n.status}
                 {hiddenChildCounts.has(n.id) && (

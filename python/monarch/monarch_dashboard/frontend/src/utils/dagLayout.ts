@@ -111,7 +111,7 @@ const NODE_RADIUS: Record<DagTier, number> = {
   proc_mesh: 36,
   proc_unit: 28,
   actor_mesh: 28,
-  actor: 18,
+  actor: 28,
   host: 40,
   proc: 32,
 };
