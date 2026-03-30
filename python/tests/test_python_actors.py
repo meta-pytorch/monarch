@@ -44,7 +44,7 @@ from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.actor_mesh import ActorMesh, Channel, context, Port
 from monarch._src.actor.future import Future
-from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
+from monarch._src.actor.host_mesh import _spawn_admin, HostMesh, this_host, this_proc
 from monarch._src.actor.proc_mesh import get_or_spawn_controller, HyProcMesh
 from monarch._src.job.job import LoginJob, ProcessState
 from monarch._src.job.process import ProcessJob
@@ -1485,7 +1485,7 @@ def test_config_propagates_to_host_agent():
         # spawns MeshAdminAgent on the host's system proc. The admin
         # agent reads MESH_ADMIN_ADDR from the host process's config.
         head = hosts.slice(hosts=0)
-        admin_addr = head._spawn_admin().get()
+        admin_addr = _spawn_admin([head]).get()
 
         assert ":9999" in admin_addr, (
             f"Expected :9999 in admin addr '{admin_addr}', "

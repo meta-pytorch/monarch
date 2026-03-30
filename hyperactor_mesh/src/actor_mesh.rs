@@ -1222,11 +1222,7 @@ mod tests {
             assert_eq!(failure.actor_mesh_name, Some(child_name.to_string()));
             assert_eq!(failure.event.actor_id.name(), child_name.to_string());
             if let ActorStatus::Failed(ActorErrorKind::Generic(msg)) = &failure.event.actor_status {
-                assert!(
-                    msg.contains("process exited with non-zero code 1"),
-                    "{}",
-                    msg
-                );
+                assert!(msg.contains("exited with non-zero code 1"), "{}", msg);
             } else {
                 panic!("actor status is not failed: {}", failure.event.actor_status);
             }

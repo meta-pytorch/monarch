@@ -20,7 +20,7 @@ Usage::
 
 Then, in another terminal::
 
-    buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr <addr>
+    buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr <addr>
 
 where ``<addr>`` is the address printed by the example.
 
@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import random
 
+from monarch._src.actor.host_mesh import _spawn_admin
 from monarch.actor import Actor, context, current_rank, endpoint, this_host
 
 
@@ -59,7 +60,7 @@ async def async_main(num_procs: int) -> None:
     host = this_host()
 
     # Spawn the admin agent so the TUI can attach.
-    admin_url = await host._spawn_admin()
+    admin_url = await _spawn_admin([host])
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "
@@ -72,7 +73,7 @@ async def async_main(num_procs: int) -> None:
     print(f"  - Mesh tree:     curl {mtls_flags}{admin_url}/v1/tree")
     print(f"  - API docs:      curl {mtls_flags}{admin_url}/SKILL.md")
     print(
-        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_admin_tui -- --addr {admin_url}"
+        f"  - TUI:           buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr {admin_url}"
     )
     print(f"\nSpawning batches of sleepers across {num_procs} procs.")
     print("Press Ctrl+C to stop.\n", flush=True)

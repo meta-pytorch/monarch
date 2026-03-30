@@ -71,6 +71,7 @@ def cleanup_callbacks():
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_record_batch_tracing(cleanup_callbacks) -> None:
     """Test that RecordBatchSink captures trace events as RecordBatches."""
     try:
@@ -112,7 +113,7 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
 def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn some worker actors - this should trigger notify_actor_created
     job = ProcessJob({"hosts": 1})
@@ -166,7 +167,7 @@ def test_actors_table() -> None:
 def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
     # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn some worker actors - this should trigger notify_mesh_created
     job = ProcessJob({"hosts": 1})
@@ -261,7 +262,7 @@ def test_meshes_table() -> None:
 @isolate_in_subprocess
 def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
     job = ProcessJob({"hosts": 1})
@@ -321,9 +322,10 @@ def test_proc_mesh_in_meshes_table() -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn actors — this populates both the actors and meshes tables
     job = ProcessJob({"hosts": 1})
@@ -369,9 +371,10 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 1})
@@ -429,9 +432,10 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn a named proc mesh and user actors
     job = ProcessJob({"hosts": 2})
@@ -507,7 +511,7 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn worker actors — actors go through status transitions during spawn
     job = ProcessJob({"hosts": 1})
@@ -564,9 +568,10 @@ def test_actor_status_events_table() -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     # Spawn 3 workers so we can slice a subset
     job = ProcessJob({"hosts": 1})
@@ -645,6 +650,7 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 @pytest.mark.parametrize(
     "send_path, expected_view_labels",
     [
@@ -671,7 +677,7 @@ def test_sent_messages_table(
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -750,9 +756,10 @@ def test_sent_messages_table(
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -803,9 +810,48 @@ def test_messages_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_messages_endpoint(cleanup_callbacks) -> None:
+    """Test that the messages table endpoint column is populated with the method name."""
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="ep_workers_procs")
+    workers = worker_procs.spawn("ep_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Call the "ping" endpoint
+    for _ in range(3):
+        workers.ping.call().get()
+
+    # Query for messages with a non-null endpoint received by our workers
+    result = engine.query(
+        "SELECT m.endpoint FROM messages m "
+        "JOIN actors a ON m.to_actor_id = a.id "
+        "JOIN meshes mesh ON a.mesh_id = mesh.id "
+        "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
+    )
+    result_dict = result.to_pydict()
+    endpoints = result_dict.get("endpoint", [])
+
+    # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
+    assert len(endpoints) == 6, (
+        f"Expected 6 messages with endpoint, got {len(endpoints)}"
+    )
+    assert all(ep == "ping" for ep in endpoints), (
+        f"Expected all endpoints to be 'ping', got {set(endpoints)}"
+    )
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_message_status_events_table(cleanup_callbacks) -> None:
     """Test that message_status_events captures queued/active/complete transitions."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -855,9 +901,10 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -910,10 +957,11 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -977,9 +1025,10 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -1054,6 +1103,7 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     """Test that stopping a user ActorMesh does not affect telemetry queries.
 
@@ -1062,7 +1112,7 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     ProcMesh remain alive, so all data (including process-local tables like
     messages) is still queryable.
     """
-    engine = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts
@@ -1141,9 +1191,10 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
     """Store a py-spy dump via actor endpoint, query it back via SQL."""
-    engine = start_telemetry(include_dashboard=False)
+    engine, _ = start_telemetry(include_dashboard=False)
 
     pyspy_json = json.dumps(
         {
@@ -1230,9 +1281,10 @@ def test_store_pyspy_dump_and_query(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
     """py-spy tables are visible in information_schema."""
-    engine = start_telemetry(include_dashboard=False)
+    engine, _ = start_telemetry(include_dashboard=False)
     result = engine.query(
         "SELECT table_name FROM information_schema.tables ORDER BY table_name"
     )
@@ -1244,12 +1296,281 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 
 
 @pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
+    """try_store_pyspy_dump routes to the correct child proc via _proc_id_index."""
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="pyspy_route_procs")
+    workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
+    workers.initialized.get()
+
+    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+
+    # Discover child proc_ids by querying ProcAgent actors from the actors table.
+    # ProcAgent full_name = "{proc_id},proc_agent[0]"
+    proc_agents = engine.query(
+        "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
+    )
+    child_proc_refs = [
+        row.rsplit(",proc_agent[0]", 1)[0]
+        for row in proc_agents.to_pydict()["full_name"]
+        if row.rsplit(",proc_agent[0]", 1)[0] != coordinator_proc_id
+    ]
+    assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
+    child_proc_ref = child_proc_refs[0]
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 9999,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 9999,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 200,
+                        "active": True,
+                        "owns_gil": True,
+                        "frames": [
+                            {
+                                "name": "child_fn",
+                                "filename": "child.py",
+                                "module": "child",
+                                "short_filename": "child.py",
+                                "line": 42,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    # Store a pyspy dump targeting the child proc_ref.
+    # Use 'try_store_pyspy_dump' to avoid fallback to root coordinator.
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "child-dump-1", child_proc_ref, pyspy_json
+    ).get()
+    assert result
+
+    # The dump should be queryable via distributed scan.
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["child_fn"]
+    assert frames_dict["line"] == [42]
+
+    # Verify the dump's proc_ref is stored correctly.
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores on root coordinator when proc_ref matches no child."""
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(
+        per_host={"workers": 2}, name="pyspy_fallback_procs"
+    )
+    workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Trigger child spawning.
+    engine.query("SELECT COUNT(*) AS cnt FROM actors")
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 7777,
+                "binary": "python3",
+                "stack_traces": [
+                    {
+                        "pid": 7777,
+                        "thread_id": 1,
+                        "thread_name": "MainThread",
+                        "os_thread_id": 300,
+                        "active": True,
+                        "owns_gil": False,
+                        "frames": [
+                            {
+                                "name": "orphan_fn",
+                                "filename": "orphan.py",
+                                "module": "orphan",
+                                "short_filename": "orphan.py",
+                                "line": 99,
+                                "locals": [],
+                                "is_entry": True,
+                            }
+                        ],
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+    )
+
+    # Store with a proc_ref that doesn't exist in the tree.
+    result = engine._actor.store_pyspy_dump.call_one(
+        "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
+    ).get()
+    assert result
+
+    # The dump should be queryable (stored on root).
+    frames = engine.query(
+        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
+    )
+    frames_dict = frames.to_pydict()
+    assert frames_dict["name"] == ["orphan_fn"]
+    assert frames_dict["line"] == [99]
+
+    # Verify proc_ref is preserved even though it didn't match any proc.
+    dumps = engine.query(
+        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
+    )
+    assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_store_pyspy_dump_returns_true(cleanup_callbacks) -> None:
+    """try_store_pyspy_dump returns True for match and False for unknown proc."""
+    engine, _ = start_telemetry(include_dashboard=False)
+
+    pyspy_json = json.dumps(
+        {
+            "Ok": {
+                "pid": 1,
+                "binary": "python3",
+                "stack_traces": [],
+                "warnings": [],
+            }
+        }
+    )
+
+    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "ret-local", coordinator_proc_id, pyspy_json
+    ).get()
+    assert result
+
+    result = engine._actor.try_store_pyspy_dump.call_one(
+        "ret-unknown", "does.not.exist[0]", pyspy_json
+    ).get()
+    assert not result
+
+    result = engine._actor.store_pyspy_dump.call_one(
+        "ret-unknown", "does.not.exist[0]", pyspy_json
+    ).get()
+    assert result
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_json_columns_are_valid_json() -> None:
+    """Test that all view_json and shape_json columns contain valid JSON."""
+    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+
+    # Spawn actors and send messages to populate all tables that have JSON columns:
+    # - meshes: shape_json, parent_view_json
+    # - sent_messages: view_json, shape_json
+    job = ProcessJob({"hosts": 1})
+    hosts = job.state(cached_path=None).hosts
+    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="json_test_procs")
+    workers = worker_procs.spawn("json_test_worker", WorkerActor)
+    workers.initialized.get()
+
+    # Send messages to populate sent_messages
+    workers.ping.call().get()
+
+    # -- Verify meshes.shape_json --
+    result = engine.query("SELECT given_name, shape_json FROM meshes")
+    result_dict = result.to_pydict()
+    for name, shape in zip(result_dict["given_name"], result_dict["shape_json"]):
+        assert shape is not None and shape != "", (
+            f"meshes.shape_json is empty for mesh '{name}'"
+        )
+        try:
+            json.loads(shape)
+        except json.JSONDecodeError as e:
+            raise AssertionError(
+                f"meshes.shape_json is not valid JSON for mesh '{name}': {shape!r}"
+            ) from e
+
+    # -- Verify meshes.parent_view_json (nullable) --
+    result = engine.query(
+        "SELECT given_name, parent_view_json FROM meshes "
+        "WHERE parent_view_json IS NOT NULL"
+    )
+    result_dict = result.to_pydict()
+    for name, view in zip(result_dict["given_name"], result_dict["parent_view_json"]):
+        try:
+            json.loads(view)
+        except json.JSONDecodeError as e:
+            raise AssertionError(
+                f"meshes.parent_view_json is not valid JSON for mesh '{name}': {view!r}"
+            ) from e
+
+    # -- Verify sent_messages.view_json --
+    result = engine.query("SELECT id, view_json FROM sent_messages")
+    result_dict = result.to_pydict()
+    assert len(result_dict["id"]) > 0, "Expected sent_messages rows"
+    for msg_id, view in zip(result_dict["id"], result_dict["view_json"]):
+        assert view is not None and view != "", (
+            f"sent_messages.view_json is empty for id={msg_id}"
+        )
+        try:
+            json.loads(view)
+        except json.JSONDecodeError as e:
+            raise AssertionError(
+                f"sent_messages.view_json is not valid JSON for id={msg_id}: {view!r}"
+            ) from e
+
+    # -- Verify sent_messages.shape_json --
+    result = engine.query("SELECT id, shape_json FROM sent_messages")
+    result_dict = result.to_pydict()
+    for msg_id, shape in zip(result_dict["id"], result_dict["shape_json"]):
+        assert shape is not None and shape != "", (
+            f"sent_messages.shape_json is empty for id={msg_id}"
+        )
+        try:
+            json.loads(shape)
+        except json.JSONDecodeError as e:
+            raise AssertionError(
+                f"sent_messages.shape_json is not valid JSON for id={msg_id}: {shape!r}"
+            ) from e
+
+    # Clean up
+    hosts.shutdown().get()
+
+
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
 def test_per_table_row_retention(cleanup_callbacks) -> None:
     """Test that time-based retention deletes old rows from message tables."""
     import time
 
     # Use a 1-second retention window so rows expire quickly.
-    engine = start_telemetry(batch_size=2, retention_secs=1, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=2, retention_secs=1, include_dashboard=False)
 
     job = ProcessJob({"hosts": 1})
     hosts = job.state(cached_path=None).hosts

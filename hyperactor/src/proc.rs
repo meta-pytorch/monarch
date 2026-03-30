@@ -1932,8 +1932,14 @@ impl<A: Actor> Instance<A> {
                 HandlerInfo::from_static(std::any::type_name::<M>(), None)
             }
         };
+
+        let endpoint = type_info.and_then(|info| {
+            // SAFETY: The caller promises to pass the correct type info.
+            unsafe { info.endpoint_name(&message as *const M as *const ()) }
+        });
+
         // Use a helper function for a better instrument log.
-        self.handle_message_with_handler_info(actor, handler_info, headers, message)
+        self.handle_message_with_handler_info(actor, handler_info, headers, message, endpoint)
             .await
     }
 
@@ -1945,6 +1951,7 @@ impl<A: Actor> Instance<A> {
         handler_info: HandlerInfo,
         headers: Flattrs,
         message: M,
+        endpoint: Option<String>,
     ) -> Result<(), anyhow::Error>
     where
         A: Handler<M>,
@@ -1971,8 +1978,7 @@ impl<A: Actor> Instance<A> {
                 id: message_id,
                 from_actor_id,
                 to_actor_id,
-                // TODO: populate endpoint
-                endpoint: None,
+                endpoint,
                 port_id,
             });
 
@@ -3903,7 +3909,7 @@ mod tests {
         assert_eq!(event.actor_id, actor_id);
         assert!(event.actor_status.is_failed());
         // Originated here, not propagated.
-        assert_eq!(event.actually_failing_actor().actor_id, actor_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, actor_id);
     }
 
     // Exercises FI-2 (see introspect.rs module-scope comment).
@@ -4024,7 +4030,7 @@ mod tests {
         );
         let event = event.unwrap();
         // Root cause is the child, not the parent.
-        assert_eq!(event.actually_failing_actor().actor_id, child_id);
+        assert_eq!(event.actually_failing_actor().unwrap().actor_id, child_id);
     }
 
     // Exercises S11 (see introspect.rs module doc).

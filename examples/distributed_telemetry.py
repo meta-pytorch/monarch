@@ -390,6 +390,14 @@ QUERIES = [
         "SELECT * FROM message_status_events ORDER BY timestamp_us LIMIT 10",
     ),
     (
+        "Messages by endpoint",
+        """SELECT m.endpoint, COUNT(*) as cnt
+           FROM messages m
+           WHERE m.endpoint IS NOT NULL
+           GROUP BY m.endpoint
+           ORDER BY cnt DESC""",
+    ),
+    (
         "Lifecycle: sender -> compute messages",
         """SELECT sender.display_name AS from_actor,
                   receiver.display_name AS to_actor,
@@ -471,7 +479,7 @@ def run_workload(job, summary=False, interactive=False):
     print("=" * 50)
     print()
 
-    engine = start_telemetry()
+    engine, _ = start_telemetry()
 
     hosts = job.state(cached_path=None).hosts
 

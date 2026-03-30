@@ -23,6 +23,7 @@ mod tensor_worker;
 mod blocking;
 mod chunked_fuse;
 mod fast_pack;
+mod gather_fuse;
 mod panic;
 mod tls_receiver;
 mod tls_sender;
@@ -247,6 +248,11 @@ pub fn mod_init(module: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::chunked_fuse::register_python_bindings(&get_or_add_new_module(
         module,
         "monarch_extension.chunked_fuse",
+    )?)?;
+
+    crate::gather_fuse::register_python_bindings(&get_or_add_new_module(
+        module,
+        "monarch_extension.gather_fuse",
     )?)?;
 
     monarch_hyperactor::logging::register_python_bindings(&get_or_add_new_module(

@@ -48,6 +48,12 @@ class DBAdapter(ABC):
         rows = self.query(sql)
         return rows[0] if rows else None
 
+    def store_pyspy_dump(  # noqa: B027
+        self, dump_id: str, proc_ref: str, pyspy_result_json: str
+    ) -> None:
+        """Store a py-spy dump result. No-op by default."""
+        pass
+
 
 # ---------------------------------------------------------------------------
 # SQLite adapter — local dev/testing
@@ -109,6 +115,16 @@ def _get_adapter() -> DBAdapter:
     if _adapter is None:
         raise RuntimeError("db.init() or db.set_adapter() must be called first")
     return _adapter
+
+
+def raw_query(sql: str) -> list[dict[str, Any]]:
+    """Execute a raw SQL query (no placeholder substitution)."""
+    return _get_adapter().query(sql)
+
+
+def store_pyspy_dump(dump_id: str, proc_ref: str, pyspy_result_json: str) -> None:
+    """Store a py-spy dump result via the current adapter."""
+    _get_adapter().store_pyspy_dump(dump_id, proc_ref, pyspy_result_json)
 
 
 def _sql_literal(value: Any) -> str:
@@ -545,9 +561,10 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"host_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "host_unit",
-                    "label": _leaf_name(agent["full_name"]),
+                    "label": f"Host Unit {agent['rank']}",
                     "subtitle": "Host",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -570,9 +587,10 @@ def get_dag_data() -> dict[str, Any]:
                     "id": f"proc_unit-{agent['id']}",
                     "entity_id": agent["id"],
                     "tier": "proc_unit",
-                    "label": _leaf_name(agent["full_name"]),
+                    "label": f"Proc Unit {agent['rank']}",
                     "subtitle": "Proc",
                     "status": actor_statuses.get(agent["id"], "unknown"),
+                    "rank": agent["rank"],
                 }
             )
 
@@ -597,6 +615,7 @@ def get_dag_data() -> dict[str, Any]:
                 "label": _leaf_name(a["full_name"]),
                 "subtitle": f"rank {a['rank']}",
                 "status": actor_statuses.get(a["id"], "unknown"),
+                "rank": a["rank"],
             }
         )
 

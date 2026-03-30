@@ -112,3 +112,19 @@ jobs:
           build-args: |
             PYTORCH_TAG=2.11.0-cuda12.8-cudnn9-runtime
             MONARCH_VERSION=${{ github.event.inputs.version }}
+
+  create-docs-branch:
+    name: Create docs release branch
+    needs: publish
+    if: ${{ github.event.inputs.is_prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create docs/v${{ github.event.inputs.version }} branch
+        run: |
+          git checkout -b "docs/v${{ github.event.inputs.version }}"
+          git push origin "docs/v${{ github.event.inputs.version }}"

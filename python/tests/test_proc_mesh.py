@@ -326,6 +326,7 @@ def test_root_client_does_not_leak_proc_meshes() -> None:
 
 
 @pytest.mark.timeout(60)
+@isolate_in_subprocess
 def test_actor_spawn_does_not_block_on_proc_mesh_init() -> None:
     async def sleep_then_mesh(pm: Shared[HyProcMesh]) -> HyProcMesh:
         time.sleep(15)
@@ -355,6 +356,17 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
     assert proc_mesh._proc_mesh.poll() is None
     cloudpickle.dumps(proc_mesh)
     assert proc_mesh._proc_mesh.poll() is not None
+
+
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+async def test_actor_spawn_then_immediate_shutdown() -> None:
+    state = ProcessJob({"hosts": 1}).state(cached_path=None)
+    proc_mesh = state.hosts.spawn_procs(name="test")
+    await proc_mesh.initialized
+    # spawn actor but do NOT await initialized — immediately shutdown
+    proc_mesh.spawn("test_actor", TestActor, 42)
+    state.hosts.shutdown().get()
 
 
 @pytest.mark.timeout(60)

@@ -6,26 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! TLS-aware `reqwest` client construction and MAST address
-//! resolution for the admin TUI.
+//! TLS-aware `reqwest` client construction for the admin TUI.
 //!
-//! This module builds `(base_url, reqwest::Client)` from CLI
-//! arguments, choosing HTTP vs HTTPS and configuring certificate
-//! verification when TLS material is available. It also resolves
-//! `mast_conda:///<job-name>` handles to concrete `https://fqdn:port`
-//! URLs using either the MAST Thrift API (Meta-internal) or the
-//! `mast` CLI (OSS / testing).
+//! This module builds `(base_url, reqwest::Client)` from a
+//! [`TuiConfig`], choosing HTTP vs HTTPS and configuring certificate
+//! verification when TLS material is available.
 //!
-//! # MAST resolution invariants
-//!
-//! - **MR-1 (dispatch):** In fbcode builds, the `--mast-resolver`
-//!   CLI arg selects the strategy via [`MastResolver`]. Default is
-//!   thrift; `"cli"` selects CLI. In OSS builds, CLI always.
-//!
-//! See `mesh_admin.rs` for MC-1..MC-5 (CLI contract, hostname
-//! extraction, FQDN qualification, admin port resolution).
-//!
-//! See mesh_admin.rs module doc for MC-5.
+//! MAST address resolution (`mast_conda:///` handles) is the
+//! responsibility of each binary, not this library. See the binary
+//! sources for `MastResolver` and `resolve_mast_addr`.
 //!
 //! # Address handling
 //!
@@ -48,88 +37,7 @@
 //! handshake. In OSS, the server falls back to plain HTTP when no
 //! certs are available, so the client's HTTP fallback still works.
 
-use crate::theme::Args;
-
-// -- MAST resolution dispatch (MR-1) --
-//
-// `MastResolver` is defined locally in each binary (here and in
-// `hyper`) rather than in `hyperactor_mesh`, to avoid pulling
-// `fbinit` into the shared library's dependency graph. The CLI
-// implementation lives in `hyperactor_mesh::mesh_admin`; the thrift
-// implementation lives in `hyperactor_meta::mesh_admin`. Each binary
-// owns the dispatch.
-//
-// TODO: a dedicated `hyperactor_mast` bridge crate could unify the
-// enum and dispatch if more binaries need this pattern.
-
-/// Resolution strategy for `mast_conda:///` handles.
-pub(crate) enum MastResolver {
-    /// Shell out to the `mast` CLI. Works in both Meta and OSS.
-    Cli,
-    /// Use the MAST Thrift API. Only available in Meta builds where
-    /// `fbinit` and `hyperactor_meta_lib` are present.
-    #[cfg(fbcode_build)]
-    Thrift(fbinit::FacebookInit),
-}
-
-impl MastResolver {
-    /// Construct from an optional `FacebookInit` and `--mast-resolver`
-    /// CLI arg. In fbcode builds, defaults to `Thrift` when `fb` is
-    /// available and `choice` is not `"cli"`. Otherwise `Cli`.
-    pub(crate) fn new(
-        #[allow(unused_variables)] fb: Option<fbinit::FacebookInit>,
-        choice: Option<&str>,
-    ) -> Self {
-        #[cfg(fbcode_build)]
-        if choice != Some("cli") {
-            if let Some(fb) = fb {
-                return MastResolver::Thrift(fb);
-            }
-        }
-        MastResolver::Cli
-    }
-}
-
-/// Resolve a `mast_conda:///<job-name>` handle to an
-/// `https://fqdn:port` URL (MR-1).
-///
-/// Two resolution strategies exist, selected by `MastResolver`:
-///
-/// - `Cli`: shells out to `mast get-status --json`
-///   (`hyperactor_mesh::mesh_admin::resolve_mast_handle`). Implements
-///   MC-1, MC-2, MC-3,
-///   MC-4.
-///
-/// - `Thrift` (fbcode only): queries the MAST HPC scheduler via
-///   Thrift (`hyperactor_meta::mesh_admin::resolve_mast_handle`).
-///   Requires `FacebookInit`.
-///
-/// The dispatch is duplicated here and in `hyper resolve` because
-/// `hyperactor_mesh` cannot depend on `hyperactor_meta` (it would
-/// create a cycle) and we avoid pulling `fbinit` into the shared
-/// library. See the module-level TODO.
-///
-/// On error, prints the message to stderr and calls
-/// `process::exit(1)` — this function never returns `Err`.
-pub(crate) async fn resolve_mast_addr(
-    resolver: &MastResolver,
-    addr: &str,
-    admin_port: Option<u16>,
-) -> String {
-    let result = match resolver {
-        MastResolver::Cli => {
-            hyperactor_mesh::mesh_admin::resolve_mast_handle(addr, admin_port).await
-        }
-        #[cfg(fbcode_build)]
-        MastResolver::Thrift(fb) => {
-            hyperactor_meta_lib::mesh_admin::resolve_mast_handle(*fb, addr, admin_port).await
-        }
-    };
-    result.unwrap_or_else(|e| {
-        eprintln!("{:#}", e);
-        std::process::exit(1);
-    })
-}
+use crate::TuiConfig;
 
 /// Read all bytes from a [`Pem`](hyperactor::config::Pem), returning
 /// `None` if it can't be opened/read or if the result is empty.
@@ -255,8 +163,8 @@ fn add_tls_from_bundle(
 ///
 /// Returns `(base_url, client)` where `base_url` always includes the
 /// scheme selected (`http://...` or `https://...`).
-pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
-    let (explicit_scheme, host) = parse_addr(&args.addr);
+pub(crate) fn build_client(config: &TuiConfig) -> (String, reqwest::Client) {
+    let (explicit_scheme, host) = parse_addr(&config.addr);
 
     let client_timeout =
         hyperactor_config::global::get(hyperactor_mesh::config::MESH_ADMIN_PYSPY_CLIENT_TIMEOUT);
@@ -264,12 +172,12 @@ pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
     let mut use_tls = explicit_scheme == Some("https");
 
     // 1. Explicit CLI cert paths.
-    if let Some(ca_path) = &args.tls_ca {
+    if let Some(ca_path) = &config.tls_ca {
         let (b, ok) = add_tls_from_paths(
             builder,
             ca_path,
-            args.tls_cert.as_deref(),
-            args.tls_key.as_deref(),
+            config.tls_cert.as_deref(),
+            config.tls_key.as_deref(),
         );
         builder = b;
         use_tls = use_tls || ok;
@@ -278,7 +186,7 @@ pub(crate) fn build_client(args: &Args) -> (String, reqwest::Client) {
     // 2. Auto-detect (when no CLI certs were provided).
     // This runs even with an explicit https:// scheme, so the client
     // picks up the mTLS identity from Meta well-known paths.
-    if args.tls_ca.is_none() {
+    if config.tls_ca.is_none() {
         if let Some(bundle) = hyperactor::channel::try_tls_pem_bundle() {
             let (b, ok) = add_tls_from_bundle(builder, &bundle);
             builder = b;
