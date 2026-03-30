@@ -6,10 +6,59 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Read-only FUSE filesystem backed by a Python `GatherClientActor`.
+//! Generic read-only FUSE filesystem backed by a Monarch actor.
 //!
-//! Every FUSE operation (getattr, readdir, read, …) calls the actor via:
-//!   1. Briefly acquire the GIL to call `actor.endpoint.call_one(args)`
+//! Mount any actor that implements the three filesystem endpoints below as a
+//! read-only FUSE filesystem at an arbitrary local path.
+//!
+//! # Actor endpoint API
+//!
+//! The actor passed to [`mount_read_only_filesystem`] must expose **three
+//! endpoints** that the FUSE driver calls for every kernel filesystem
+//! operation.  Each endpoint is called via the normal Monarch actor RPC
+//! mechanism (`actor.<endpoint>.call_one(args)`).
+//!
+//! ## `getattr_path(path: str) -> dict | int`
+//!
+//! Return the attributes of the file or directory at `path` (an absolute
+//! POSIX path string, e.g. `"/"`, `"/foo"`, `"/foo/bar.txt"`).
+//!
+//! **Return value:**
+//! - On success: a `dict` with the following keys (same semantics as
+//!   [`os.stat_result`]):
+//!   - `"st_mode"` (`int`) — file mode (type bits + permission bits)
+//!   - `"st_size"` (`int`) — file size in bytes
+//!   - `"st_atime"` (`float`) — access time as a Unix timestamp
+//!   - `"st_mtime"` (`float`) — modification time as a Unix timestamp
+//!   - `"st_ctime"` (`float`) — status-change time as a Unix timestamp
+//!   - `"st_nlink"` (`int`) — number of hard links
+//!   - `"st_uid"` (`int`) — owning user ID
+//!   - `"st_gid"` (`int`) — owning group ID
+//! - On error: an `int` errno value (e.g. `errno.ENOENT` for a missing path).
+//!
+//! ## `readdir_path(path: str) -> list[str] | int`
+//!
+//! Return the names (not full paths) of all entries in the directory at
+//! `path`.  The special entries `"."` and `".."` must **not** be included;
+//! the FUSE layer adds them automatically.
+//!
+//! **Return value:**
+//! - On success: a `list[str]` of entry names, e.g. `["file.txt", "subdir"]`.
+//! - On error: an `int` errno value (e.g. `errno.ENOTDIR`).
+//!
+//! ## `read_path(path: str, size: int, offset: int) -> bytes | int`
+//!
+//! Read up to `size` bytes from the regular file at `path` starting at byte
+//! `offset`.  The actor may return fewer bytes than `size` (e.g. at EOF).
+//!
+//! **Return value:**
+//! - On success: a `bytes` object containing the file data.
+//! - On error: an `int` errno value (e.g. `errno.EISDIR`).
+//!
+//! # GIL / async interaction
+//!
+//! Every FUSE operation executes as follows:
+//!   1. Briefly acquire the GIL to call `actor.<endpoint>.call_one(args)`
 //!      and extract the inner `PyPythonTask` Rust future.
 //!   2. Release the GIL entirely.
 //!   3. `.await` the Rust future on the Tokio runtime — the actor's asyncio
@@ -152,7 +201,7 @@ fn decode_read(result: Bound<'_, PyAny>) -> PyResult<FuseResult<Bytes>> {
 
 /// Maps Python errors and FUSE errors to a single `FuseResult<T>`.
 fn py_err_to_fuse(e: PyErr) -> Errno {
-    warn!("gather_fuse actor error: {e}");
+    warn!("readonly_fuse actor error: {e}");
     Errno::from(libc::EIO)
 }
 
@@ -197,11 +246,11 @@ fn join_path(parent: &OsStr, name: &OsStr) -> String {
 
 // ── FUSE filesystem ───────────────────────────────────────────────────────────
 
-struct GatherMountFs {
-    client_actor: Arc<Py<PyAny>>,
+struct ReadOnlyFs {
+    actor: Arc<Py<PyAny>>,
 }
 
-impl PathFilesystem for GatherMountFs {
+impl PathFilesystem for ReadOnlyFs {
     type DirEntryStream<'a> = stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntry>>>;
     type DirEntryPlusStream<'a> = stream::Iter<std::vec::IntoIter<FuseResult<DirectoryEntryPlus>>>;
 
@@ -215,7 +264,7 @@ impl PathFilesystem for GatherMountFs {
 
     async fn lookup(&self, _req: Request, parent: &OsStr, name: &OsStr) -> FuseResult<ReplyEntry> {
         let path = join_path(parent, name);
-        let attr = do_getattr(&self.client_actor, path).await?;
+        let attr = do_getattr(&self.actor, path).await?;
         Ok(ReplyEntry { ttl: TTL, attr })
     }
 
@@ -230,7 +279,7 @@ impl PathFilesystem for GatherMountFs {
             .ok_or_else(Errno::new_not_exist)?
             .to_string_lossy()
             .into_owned();
-        let attr = do_getattr(&self.client_actor, path_str).await?;
+        let attr = do_getattr(&self.actor, path_str).await?;
         Ok(ReplyAttr { ttl: TTL, attr })
     }
 
@@ -255,7 +304,7 @@ impl PathFilesystem for GatherMountFs {
             .ok_or_else(Errno::new_not_exist)?
             .to_string_lossy()
             .into_owned();
-        let data = do_read(&self.client_actor, path_str, size, offset).await?;
+        let data = do_read(&self.actor, path_str, size, offset).await?;
         Ok(ReplyData { data })
     }
 
@@ -271,7 +320,7 @@ impl PathFilesystem for GatherMountFs {
         offset: i64,
     ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
         let path_str = parent.to_string_lossy().into_owned();
-        let names = do_readdir(&self.client_actor, path_str).await?;
+        let names = do_readdir(&self.actor, path_str).await?;
 
         let mut entries: Vec<FuseResult<DirectoryEntry>> = Vec::new();
         let mut idx: i64 = 1;
@@ -321,7 +370,7 @@ impl PathFilesystem for GatherMountFs {
         let path_str = parent.to_string_lossy().into_owned();
 
         // Fetch parent attr and child names concurrently, then attrs for children.
-        let parent_attr = do_getattr(&self.client_actor, path_str.clone())
+        let parent_attr = do_getattr(&self.actor, path_str.clone())
             .await
             .unwrap_or(FileAttr {
                 size: 0,
@@ -338,9 +387,9 @@ impl PathFilesystem for GatherMountFs {
                 blksize: 4096,
             });
 
-        let names = do_readdir(&self.client_actor, path_str.clone()).await?;
+        let names = do_readdir(&self.actor, path_str.clone()).await?;
 
-        // Fetch attrs for each child (cached by GatherClientActor after first access).
+        // Fetch attrs for each child (actors may cache these after first access).
         let mut children: Vec<(String, Option<FileAttr>)> = Vec::with_capacity(names.len());
         for name in names {
             let child_path = if path_str == "/" {
@@ -348,7 +397,7 @@ impl PathFilesystem for GatherMountFs {
             } else {
                 format!("{path_str}/{name}")
             };
-            let attr = do_getattr(&self.client_actor, child_path).await.ok();
+            let attr = do_getattr(&self.actor, child_path).await.ok();
             children.push((name, attr));
         }
 
@@ -442,18 +491,18 @@ impl PathFilesystem for GatherMountFs {
 
 // ── PyO3 bindings ─────────────────────────────────────────────────────────────
 
-/// Handle to a running gather_mount FUSE session.  Call `unmount()` to stop.
+/// Handle to a running read-only FUSE filesystem session.  Call `unmount()` to stop.
 #[pyclass(
-    name = "GatherMountHandle",
-    module = "monarch._rust_bindings.monarch_extension.gather_fuse"
+    name = "ReadOnlyFilesystemHandle",
+    module = "monarch._rust_bindings.monarch_extension.readonly_fuse"
 )]
-struct PyGatherMountHandle {
+struct ReadOnlyFilesystemHandle {
     unmount_tx: Option<oneshot::Sender<()>>,
     mount_point: String,
 }
 
 #[pymethods]
-impl PyGatherMountHandle {
+impl ReadOnlyFilesystemHandle {
     /// Unmount the FUSE filesystem using `fusermount3 -uz` (lazy unmount).
     fn unmount(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.unmount_tx.take().is_none() {
@@ -485,27 +534,31 @@ impl PyGatherMountHandle {
     }
 }
 
-/// Mount a read-only gather_mount FUSE filesystem.
+/// Mount a read-only FUSE filesystem backed by a Monarch actor.
+///
+/// The actor must implement the three endpoints described in the module
+/// docstring: `getattr_path`, `readdir_path`, and `read_path`.
 ///
 /// Args:
-///     client_actor: the `GatherClientActor` Python object.
-///     mount_point: absolute path where the filesystem will be mounted.
+///     actor: a Monarch actor object that implements the filesystem endpoints.
+///     mount_point: absolute path of an existing directory where the
+///         filesystem will be mounted.
 ///
-/// Returns a `GatherMountHandle`.  Call `handle.unmount()` to unmount.
+/// Returns a `ReadOnlyFilesystemHandle`.  Call `handle.unmount()` to unmount.
 #[pyfunction]
-fn mount_gather_fuse(
+fn mount_read_only_filesystem(
     py: Python<'_>,
-    client_actor: Py<PyAny>,
+    actor: Py<PyAny>,
     mount_point: String,
-) -> PyResult<PyGatherMountHandle> {
+) -> PyResult<ReadOnlyFilesystemHandle> {
     if !mount_point.starts_with('/') {
         return Err(PyRuntimeError::new_err(
             "mount_point must be an absolute path",
         ));
     }
 
-    let fs = GatherMountFs {
-        client_actor: Arc::new(client_actor),
+    let fs = ReadOnlyFs {
+        actor: Arc::new(actor),
     };
 
     let mount_path = mount_point.clone();
@@ -524,11 +577,11 @@ fn mount_gather_fuse(
             Ok(handle) => {
                 let _ = ready_tx.send(Ok(()));
                 if let Err(e) = handle.await {
-                    warn!("gather_fuse session error: {e}");
+                    warn!("readonly_fuse session error: {e}");
                 }
             }
             Err(e) => {
-                warn!("gather_fuse mount failed: {e}");
+                warn!("readonly_fuse mount failed: {e}");
                 let _ = ready_tx.send(Err(format!("{e}")));
             }
         }
@@ -544,13 +597,13 @@ fn mount_gather_fuse(
                 match rx.try_recv() {
                     Ok(Err(e)) => {
                         return Err(PyRuntimeError::new_err(format!(
-                            "gather_fuse mount failed: {e}"
+                            "readonly_fuse mount failed: {e}"
                         )));
                     }
                     Ok(Ok(())) => ready_rx = None,
                     Err(oneshot::error::TryRecvError::Closed) => {
                         return Err(PyRuntimeError::new_err(
-                            "gather_fuse mount task exited without reporting status",
+                            "readonly_fuse mount task exited without reporting status",
                         ));
                     }
                     Err(oneshot::error::TryRecvError::Empty) => {}
@@ -570,22 +623,22 @@ fn mount_gather_fuse(
             std::thread::sleep(Duration::from_millis(100));
         }
         Err(PyRuntimeError::new_err(
-            "timed out waiting for gather_fuse mount",
+            "timed out waiting for readonly_fuse mount",
         ))
     })?;
 
-    Ok(PyGatherMountHandle {
+    Ok(ReadOnlyFilesystemHandle {
         unmount_tx: Some(unmount_tx),
         mount_point,
     })
 }
 
 pub fn register_python_bindings(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyGatherMountHandle>()?;
-    let f = wrap_pyfunction!(mount_gather_fuse, module)?;
+    module.add_class::<ReadOnlyFilesystemHandle>()?;
+    let f = wrap_pyfunction!(mount_read_only_filesystem, module)?;
     f.setattr(
         "__module__",
-        "monarch._rust_bindings.monarch_extension.gather_fuse",
+        "monarch._rust_bindings.monarch_extension.readonly_fuse",
     )?;
     module.add_function(f)?;
     Ok(())

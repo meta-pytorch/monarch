@@ -37,7 +37,7 @@ import time
 import pyarrow as pa
 from monarch.actor import Actor, endpoint
 from monarch.distributed_telemetry.actor import start_telemetry
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
 
 
 class ComputeActor(Actor):
@@ -473,15 +473,24 @@ def run_workload(job, summary=False, interactive=False):
 
     Args:
         job: JobTrait whose state has a "workers" HostMesh.
+            If the job was created with ``telemetry=TelemetryConfig()``, the
+            query engine is available via ``state.query_engine`` and
+            ``start_telemetry()`` does not need to be called separately.
         summary: If True, print summary output instead of full tables.
         interactive: If True, pause after setup so the dashboard can be browsed.
     """
     print("=" * 50)
     print()
 
-    engine, _ = start_telemetry()
+    state = job.state(cached_path=None)
 
-    hosts = job.state(cached_path=None).hosts
+    # Use engine from JobState if available (telemetry configured on job),
+    # otherwise fall back to manual start_telemetry() for backward compat.
+    engine = state.query_engine
+    if engine is None:
+        engine, _ = start_telemetry()
+
+    hosts = state.hosts
 
     procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers")
 
@@ -565,7 +574,7 @@ def run_workload(job, summary=False, interactive=False):
 
 def main(summary: bool = False, interactive: bool = False) -> None:
     run_workload(
-        ProcessJob({"hosts": 2}),
+        ProcessJob({"hosts": 2}, telemetry=TelemetryConfig()),
         summary=summary,
         interactive=interactive,
     )

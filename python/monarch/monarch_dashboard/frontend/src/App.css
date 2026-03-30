@@ -165,13 +165,28 @@ body::after {
 .header-subtitle {
   font-family: var(--font-body);
   font-size: 12px;
-  font-weight: 300;
-  color: var(--text-muted);
+  font-weight: 400;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-left: var(--space-xs);
   position: relative;
   top: 1px;
+}
+
+.header-release-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent-primary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-left: var(--space-sm);
+  position: relative;
+  top: -1px;
 }
 
 .header-tabs {

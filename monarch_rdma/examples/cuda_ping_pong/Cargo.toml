@@ -26,7 +26,7 @@ test = false
 anyhow = "1.0.102"
 async-trait = "0.1.86"
 buck-resources = "1"
-clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 hyperactor = { version = "0.0.0", path = "../../../hyperactor" }
 hyperactor_config = { version = "0.0.0", path = "../../../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../../../hyperactor_mesh" }

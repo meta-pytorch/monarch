@@ -23,7 +23,7 @@ from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
 from monarch._src.actor.host_mesh import this_host
-from monarch._src.job.job import JobState, JobTrait
+from monarch._src.job.job import JobState, JobTrait, MeshAdminConfig, TelemetryConfig
 from monarch._src.spmd.actor import SPMDActor
 from monarch._src.tools.commands import torchx_runner
 from torchx.runner import Runner
@@ -378,8 +378,10 @@ class SPMDJob(JobTrait):
         scheduler: str,
         workspace: Optional[str] = None,
         original_roles: Optional[List[Dict[str, Any]]] = None,
+        telemetry: Optional[TelemetryConfig] = None,
+        mesh_admin: Optional[MeshAdminConfig] = None,
     ):
-        super().__init__()
+        super().__init__(telemetry=telemetry, mesh_admin=mesh_admin)
         self._app_handle = handle
         self._scheduler = scheduler
         self._workspace = workspace
