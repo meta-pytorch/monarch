@@ -495,9 +495,13 @@ def _spawn_admin(
 
     async def task() -> str:
         hy_meshes = [await m._hy_host_mesh for m in host_meshes]
-        return await _hy_spawn_admin(
+        url = await _hy_spawn_admin(
             hy_meshes, context().actor_instance._as_rust(), admin_addr, telemetry_url
         )
+        # Export admin URL so the dashboard can discover system actors
+        # and build TUI-style DAG hierarchies.
+        os.environ["MONARCH_ADMIN_URL"] = url
+        return url
 
     return Future(coro=task())
 
