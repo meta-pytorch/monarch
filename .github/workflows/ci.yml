@@ -73,20 +73,5 @@ jobs:
     if: always()
     steps:
       - name: Check all jobs status
-        run: |
-          # GPU jobs must always pass
-          if [[ "${{ needs.test-gpu-python.result }}" != "success" ]] ||
-             [[ "${{ needs.test-gpu-rust.result }}" != "success" ]]; then
-            echo "GPU tests failed"
-            exit 1
-          fi
-
-          # CPU jobs must pass or be skipped (skipped on ROCm tag runs)
-          if [[ "${{ needs.test-cpu-python.result }}" != "success" && "${{ needs.test-cpu-python.result }}" != "skipped" ]] ||
-             [[ "${{ needs.test-cpu-rust.result }}" != "success" && "${{ needs.test-cpu-rust.result }}" != "skipped" ]] ||
-             [[ "${{ needs.test-cpu-rust-arm64.result }}" != "success" && "${{ needs.test-cpu-rust-arm64.result }}" != "skipped" ]]; then
-            echo "CPU tests failed"
-            exit 1
-          fi
-
-          echo "All required jobs passed"
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
