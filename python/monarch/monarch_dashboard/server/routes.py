@@ -11,11 +11,14 @@ actors, status events, messages, and sent messages.  Every handler returns
 JSON and uses standard HTTP status codes (200, 404).
 """
 
+import os
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 
 from . import db
+from .admin_dag import build_admin_dag
+from .system_actors import get_system_actor_names
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -64,11 +67,45 @@ def summary():
 
 @api.route("/dag")
 def dag():
-    """Classified nodes and edges for the DAG visualization."""
+    """Classified nodes and edges for the DAG visualization.
+
+    When the Mesh Admin API is available (MONARCH_ADMIN_URL env var),
+    uses the admin tree directly — same hierarchy as the TUI:
+    Host → Proc → Actor.  System actors are filtered using the admin
+    API's authoritative ``is_system`` flag and ``system_children``.
+
+    Falls back to the telemetry SQL layer if the admin API is unavailable.
+
+    Optional: ?hide_system=true (default) to filter system actors.
+    """
+    hide_system = request.args.get("hide_system", "true").lower() != "false"
     try:
-        return jsonify(_sanitize_for_js(db.get_dag_data()))
+        # Prefer the admin API for a clean TUI-like hierarchy.
+        if os.environ.get("MONARCH_ADMIN_URL"):
+            result = build_admin_dag(hide_system=hide_system)
+            if result.get("nodes"):
+                # Strip internal cache keys before returning.
+                return jsonify(
+                    _sanitize_for_js(
+                        {
+                            "nodes": result["nodes"],
+                            "edges": result["edges"],
+                        }
+                    )
+                )
+
+        # Fallback: telemetry SQL layer.
+        system_names = get_system_actor_names() if hide_system else set()
+        return jsonify(_sanitize_for_js(db.get_dag_data(system_names=system_names)))
     except Exception as exc:
         return jsonify({"error": str(exc), "nodes": [], "edges": []}), 500
+
+
+@api.route("/system-actors")
+def list_system_actors():
+    """Return the set of system actor names from the Mesh Admin API."""
+    names = get_system_actor_names()
+    return jsonify({"system_actors": sorted(names), "count": len(names)})
 
 
 # ---------------------------------------------------------------------------
