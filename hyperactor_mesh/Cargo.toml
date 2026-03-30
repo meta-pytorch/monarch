@@ -44,7 +44,7 @@ bincode = "1.3.3"
 bitmaps = "3.2.1"
 buck-resources = "1"
 chrono = { version = "0.4.44", features = ["clock", "serde", "std"], default-features = false }
-clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 enum-as-inner = "0.6.1"
 erased-serde = "0.4.10"

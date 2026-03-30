@@ -57,6 +57,7 @@ export function Header({ tabs, activeTab, onTabChange }: HeaderProps) {
         <MonarchLogo />
         <h1 className="header-title">Monarch</h1>
         <span className="header-subtitle">dashboard</span>
+        <span className="header-release-badge">Beta</span>
       </div>
       <nav className="header-tabs" role="tablist">
         {tabs.map((tab) => (

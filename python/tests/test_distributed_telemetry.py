@@ -22,7 +22,7 @@ from monarch._src.actor.proc_mesh import (
     unregister_proc_mesh_spawn_callback,
 )
 from monarch.distributed_telemetry.actor import start_telemetry
-from monarch.job import ProcessJob
+from monarch.job import ProcessJob, TelemetryConfig
 
 
 class WorkerActor(Actor):
@@ -112,12 +112,15 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_actors_table() -> None:
     """Test that the actors table is populated when actors are spawned."""
-    # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn some worker actors - this should trigger notify_actor_created
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("test_worker", WorkerActor)
     workers.initialized.get()
@@ -166,12 +169,15 @@ def test_actors_table() -> None:
 @isolate_in_subprocess
 def test_meshes_table() -> None:
     """Test that the meshes table is populated when actor meshes are spawned."""
-    # Start telemetry with real data (not fake) so RecordBatchSink receives events
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn some worker actors - this should trigger notify_mesh_created
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("test_mesh_worker", WorkerActor)
     workers.initialized.get()
@@ -262,11 +268,15 @@ def test_meshes_table() -> None:
 @isolate_in_subprocess
 def test_proc_mesh_in_meshes_table() -> None:
     """Test that ProcMesh creation is recorded in the meshes table with class 'Proc'."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn a named proc mesh — this should emit a mesh event with class "Proc"
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="proc_mesh_test")
     workers = worker_procs.spawn("proc_mesh_test_worker", WorkerActor)
     workers.initialized.get()
@@ -325,11 +335,15 @@ def test_proc_mesh_in_meshes_table() -> None:
 @isolate_in_subprocess
 def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
     """Test that actors.mesh_id matches meshes.id, enabling joins."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn actors — this populates both the actors and meshes tables
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("join_test_worker", WorkerActor)
     workers.initialized.get()
@@ -374,11 +388,15 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn a named proc mesh and user actors
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
     workers = worker_procs.spawn("worker_actors", WorkerActor)
     workers.initialized.get()
@@ -435,11 +453,15 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
     """Test that all actor meshes within a proc mesh have actors in the actors table."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn a named proc mesh and user actors
-    job = ProcessJob({"hosts": 2})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 2},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="workers_procs")
     workers = worker_procs.spawn("worker_actors", WorkerActor)
     workers.initialized.get()
@@ -511,11 +533,15 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_actor_status_events_table() -> None:
     """Test that the actor_status_events table is populated when actors change status."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn worker actors — actors go through status transitions during spawn
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     workers = worker_procs.spawn("status_test_worker", WorkerActor)
     workers.initialized.get()
@@ -571,11 +597,15 @@ def test_actor_status_events_table() -> None:
 @isolate_in_subprocess
 def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
     """Test that rank and parent_view_json are correct for sliced and full actor meshes."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
     # Spawn 3 workers so we can slice a subset
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 3}, name="rank_test_procs")
 
     # Full view: spawn on the unsliced proc mesh (all 3 workers)
@@ -677,10 +707,14 @@ def test_sent_messages_table(
       - view_json: serialized ndslice::Region of the current view
       - shape_json: serialized ndslice::Shape (converted from the Region)
     """
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2})
     mesh_name = f"sent_msg_{send_path}_worker"
     workers = worker_procs.spawn(mesh_name, WorkerActor)
@@ -759,10 +793,14 @@ def test_sent_messages_table(
 @isolate_in_subprocess
 def test_messages_table(cleanup_callbacks) -> None:
     """Test that the messages table is populated when messages are received."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="msg_workers_procs")
     workers = worker_procs.spawn("msg_test_worker", WorkerActor)
     workers.initialized.get()
@@ -813,10 +851,14 @@ def test_messages_table(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_messages_endpoint(cleanup_callbacks) -> None:
     """Test that the messages table endpoint column is populated with the method name."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="ep_workers_procs")
     workers = worker_procs.spawn("ep_test_worker", WorkerActor)
     workers.initialized.get()
@@ -851,10 +893,14 @@ def test_messages_endpoint(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_message_status_events_table(cleanup_callbacks) -> None:
     """Test that message_status_events captures queued/active/complete transitions."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(
         per_host={"workers": 1}, name="status_workers_procs"
     )
@@ -904,10 +950,14 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
     """Test that sent_messages view_json/shape_json reflect sliced vs full actor mesh casts."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 4}, name="sm_slice_procs")
 
     # Spawn actors on the full proc mesh
@@ -961,10 +1011,14 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
 def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
     """Test that sender_actor_id identifies the actor that initiated the cast,
     not the target actor, when one actor casts to another actor mesh."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="sender_test_procs")
 
     # Spawn target actors on the full proc mesh
@@ -1028,10 +1082,14 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
     """Test that query still works after a user-spawned actor's proc mesh is stopped."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="stop_test_procs")
 
     # Spawn and initialize a user actor
@@ -1112,10 +1170,14 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
     ProcMesh remain alive, so all data (including process-local tables like
     messages) is still queryable.
     """
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(
         per_host={"workers": 2}, name="actor_stop_test_procs"
     )
@@ -1299,10 +1361,14 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
     """try_store_pyspy_dump routes to the correct child proc via _proc_id_index."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="pyspy_route_procs")
     workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
     workers.initialized.get()
@@ -1382,10 +1448,14 @@ def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> None:
     """store_pyspy_dump stores on root coordinator when proc_ref matches no child."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=10),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(
         per_host={"workers": 2}, name="pyspy_fallback_procs"
     )
@@ -1488,7 +1558,7 @@ def test_store_pyspy_dump_returns_true(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_json_columns_are_valid_json() -> None:
     """Test that all view_json and shape_json columns contain valid JSON."""
-    engine, _ = start_telemetry(batch_size=10, include_dashboard=False)
+    engine, _ = start_telemetry(batch_size=10)
 
     # Spawn actors and send messages to populate all tables that have JSON columns:
     # - meshes: shape_json, parent_view_json
@@ -1570,10 +1640,14 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
     import time
 
     # Use a 1-second retention window so rows expire quickly.
-    engine, _ = start_telemetry(batch_size=2, retention_secs=1, include_dashboard=False)
-
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
+    job = ProcessJob(
+        {"hosts": 1},
+        telemetry=TelemetryConfig(batch_size=2, retention_secs=1),
+    )
+    state = job.state(cached_path=None)
+    engine = state.query_engine
+    assert engine is not None
+    hosts = state.hosts
     worker_procs = hosts.spawn_procs(per_host={"workers": 8}, name="worker_procs")
     workers = worker_procs.spawn("workers", WorkerActor)
     workers.initialized.get()

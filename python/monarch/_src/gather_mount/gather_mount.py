@@ -55,8 +55,8 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Union
 
-from monarch._rust_bindings.monarch_extension.gather_fuse import (  # pyre-ignore[21]
-    mount_gather_fuse,
+from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ignore[21]
+    mount_read_only_filesystem,
 )
 from monarch.actor import Actor, context, endpoint, HostMesh, Point, this_proc
 
@@ -568,7 +568,7 @@ class GatherMount:
 
         # The Rust FUSE session runs on the shared Tokio runtime; it calls
         # back into client_actor for every filesystem operation.
-        self._fuse_handle: object = mount_gather_fuse(  # pyre-ignore[16]
+        self._fuse_handle: object = mount_read_only_filesystem(  # pyre-ignore[16]
             client_actor, local_mount_point
         )
         self._mounted = True
