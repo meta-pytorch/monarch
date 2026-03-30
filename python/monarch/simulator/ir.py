@@ -23,8 +23,12 @@ from typing import (
     Sequence,
     Set,
     Tuple,
+    TYPE_CHECKING,
     Union,
 )
+
+if TYPE_CHECKING:
+    from monarch.simulator.communication_model import NetworkConfig
 
 import torch
 
@@ -619,6 +623,7 @@ class IRGraph:
         self,
         output_file: str,
         include_timing: bool = False,
+        network_config: Optional["NetworkConfig"] = None,
     ) -> None:
         """Export unique command types with metadata for external timing lookup.
 
@@ -693,12 +698,14 @@ class IRGraph:
         # Generate timing values if requested
         timing_dict: Dict[str, int] = {}
         if include_timing:
-            defaults = {
-                "CallFunction": 10000,  # 10ms fallback
-                "Reduce": 50000,  # 50ms
-                "SendTensor": 10000,  # 10ms
-                "Borrow": 100,  # 0.1ms
-            }
+            from monarch.simulator.communication_model import (
+                estimate_collective_time_us,
+                estimate_send_time_us,
+                NetworkConfig,
+            )
+
+            config = network_config if network_config is not None else NetworkConfig()
+
             for timing_key, entry in timing_key_data.items():
                 cmd_type = timing_key.split(":")[0]
                 if cmd_type == "CallFunction":
@@ -718,20 +725,29 @@ class IRGraph:
                         if shapes and func_path:
                             timing_us = profile_function(func_path, shapes)
                         else:
-                            timing_us = defaults["CallFunction"]
+                            timing_us = 10000  # 10ms fallback
                     except (RuntimeError, AttributeError, TypeError, ValueError) as e:
                         logger.warning(f"GPU profiling failed for {timing_key}: {e}")
-                        timing_us = defaults["CallFunction"]
-                else:
-                    # Use defaults for non-compute operations
-                    timing_us = next(
-                        (
-                            val
-                            for prefix, val in defaults.items()
-                            if cmd_type.startswith(prefix)
-                        ),
-                        100,
+                        timing_us = 10000
+                elif cmd_type == "Reduce":
+                    # Extract reduce_type from timing key
+                    key_parts = timing_key.split(":")
+                    reduce_type = key_parts[1] if len(key_parts) > 1 else "all_reduce"
+                    timing_us = estimate_collective_time_us(
+                        reduce_type=reduce_type,
+                        tensor_shape=entry.get("tensor_shape", []),
+                        dtype_str=entry.get("dtype", "float32"),
+                        num_devices=entry.get("num_devices", 1),
+                        config=config,
                     )
+                elif cmd_type == "SendTensor":
+                    timing_us = estimate_send_time_us(
+                        tensor_shape=entry.get("tensor_shape", []),
+                        dtype_str=entry.get("dtype", "float32"),
+                        config=config,
+                    )
+                else:
+                    timing_us = 100  # Borrow ops, etc.
                 timing_dict[timing_key] = timing_us
                 entry["timing_us"] = timing_us
 
