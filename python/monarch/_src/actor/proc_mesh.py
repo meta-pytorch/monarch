@@ -286,7 +286,7 @@ class ProcMesh(MeshTrait):
         self._logging_manager = LoggingManager()
         self._controller_controller: Optional["_ControllerController"] = None
         self._code_sync_client: Optional[CodeSyncMeshClient] = None
-        self._pending_actor_spawns: list = []
+        self._pending_actor_spawns: List[ActorMesh[Any]] = []
 
     @property
     def initialized(self) -> Future[Literal[True]]:
