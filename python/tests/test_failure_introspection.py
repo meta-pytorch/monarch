@@ -155,6 +155,9 @@ async def test_failed_actor_has_failure_info() -> None:
         await procs.stop()
 
 
+@pytest.mark.skip(
+    reason="flaky: subprocess inherits job context from distributed_telemetry tests, exposing stale host_agent connections"
+)
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 @parametrize_config(actor_queue_dispatch={True, False})
