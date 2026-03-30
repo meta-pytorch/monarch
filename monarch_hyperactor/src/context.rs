@@ -97,12 +97,6 @@ impl PyInstance {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// Deprecated alias for `stop`.
-    #[pyo3(signature = (reason = None))]
-    fn _stop_instance(&self, reason: Option<&str>) -> PyResult<()> {
-        self.stop(reason)
-    }
-
     /// Mark this actor as system/infrastructure.
     ///
     /// **PY-SYS-2:** Python actors use the `_is_system_actor = True`

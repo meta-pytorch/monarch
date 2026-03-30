@@ -268,10 +268,6 @@ class Instance(abc.ABC):
         """Mark this actor as system/infrastructure."""
         ...
 
-    def _stop_instance(self, reason: Optional[str] = None) -> None:
-        """Deprecated: use stop() instead."""
-        return self.stop(reason)
-
 
 @dataclass
 class CreatorInstance:
@@ -475,7 +471,7 @@ def shutdown_context() -> "Future[None]":
             pass
         # Stop the client actor after the host mesh shutdown completes.
         if c is not None:
-            c.actor_instance._stop_instance()
+            c.actor_instance.stop()
             _context.set(None)
 
     return Future(coro=_shutdown_sequence())
