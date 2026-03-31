@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="This section defines the mechanics of message delivery and failure in the mailbox system. Key components: MessageEnvelope: encapsulates a message, sender, and destination, DeliveryError: enumerates..." />
 
-    <title>Delivery Semantics &#8212; Monarch  documentation</title>
+    <title>Delivery Semantics &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -49,11 +49,17 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/delivery';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/delivery.html" />
     <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../../../genindex.html" />
@@ -61,6 +67,25 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Delivery Semantics - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -93,6 +118,25 @@
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -151,7 +195,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -164,25 +208,112 @@
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -194,6 +325,8 @@
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -201,6 +334,9 @@
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -210,7 +346,7 @@
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -255,36 +391,101 @@
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -293,65 +494,190 @@
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -464,8 +790,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -473,52 +833,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -526,6 +1000,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -618,10 +1103,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -682,22 +1167,22 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="Delivery Semantics">
-        <meta itemprop="position" content="1">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Delivery Semantics">
+      <meta itemprop="position" content="1">
     </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -929,8 +1414,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1044,17 +1529,23 @@ document.write(`
   <div class="sidebar-heading">PyTorch Libraries</div>
   <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
   
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
   
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
   
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
   
@@ -1110,7 +1601,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1122,7 +1613,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1172,7 +1663,7 @@ document.write(`
        "@type": "Article",
        "name": "Delivery Semantics",
        "headline": "Delivery Semantics",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/mailboxes/delivery.html",
        "articleBody": "Delivery Semantics# This section defines the mechanics of message delivery and failure in the mailbox system. Key components: MessageEnvelope: encapsulates a message, sender, and destination DeliveryError: enumerates failure modes (unroutable, broken link, etc.) Undeliverable handling: how messages are returned on failure Serialization and deserialization support These types form the foundation for how messages are transmitted, routed, and failed in a structured way. An envelope carries a message destined to a remote actor. The envelope contains a serialized message along with its destination and sender: #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Named)] pub struct MessageEnvelope { /// The sender of this message. sender: ActorId, /// The destination of the message. dest: PortId, /// The serialized message. data: Serialized, /// Error contains a delivery error when message delivery failed. error: Option\u003cDeliveryError\u003e, /// Additional context for this message. headers: Attrs, } MessageEnvelope::new creates a message envelope: impl MessageEnvelope { fn new(sender: ActorId, dest: PortId, data: Serialized, headers: Attrs) -\u003e Self { ... } } MessageEnvelope::new_unknown creates a new envelope when we don\u2019t know who the sender is: impl MessageEnvelope { fn new_unknown(dest: PortId, data: Serialized) -\u003e Self { Self::new(id!(unknown[0].unknown), dest, data) } } If a type T implements Serialize and Named, an envelope can be constructed while serializing the message data: impl MessageEnvelope { fn serialize\u003cT: Serialize + Named\u003e( source: ActorId, dest: PortId, value: \u0026T, headers: Attrs) -\u003e Result\u003cSelf, bincode::Error\u003e { Ok(Self { data: Serialized::serialize(value)?, sender: source, dest, error: None, }) } } We can use the fact that T implements DeserializeOwned to provide a function to deserialize the message data in an envelope: impl MessageEnvelope { fn deserialized\u003cT: DeserializedOwned\u003e(\u0026self) -\u003e Result\u003cT, anhyow::Error\u003e { self.data.deserialized() } } This function stamps an envelope with a delivery error: impl MessageEnvelope { fn error(\u0026mut self, error: DeliveryError) { self.error = Some(error); } } The undeliverable function on a MessageEnvelope can be called when a message has been determined to be undeliverable due to the provided error. It marks the envelope with the error and attempts to return it to the sender. impl MessageEnvelope { pub fn undeliverable( mut self, error: DeliveryError, return_handle: PortHandle\u003cUndeliverable\u003cMessageEnvelope\u003e\u003e, ) { self.try_set_error(error); undeliverable::return_undeliverable(return_handle, self); } } Delivery errors# Delivery errors can occur during message posting: #[derive(thiserror::Error, ...)] pub enum DeliveryError { /// The destination address is not reachable. #[error(\"address not routable: {0}\")] Unroutable(String), /// A broken link indicates that a link in the message /// delivery path has failed. #[error(\"broken link: {0}\")] BrokenLink(String), /// A (local) mailbox delivery error. #[error(\"mailbox error: {0}\")] Mailbox(String), } Mailbox Errors# Errors can occur during mailbox operations. Each error is associated with the mailbox\u2019s actor ID: pub struct MailboxError { actor_id: ActorId, kind: MailboxErrorKind, } #[non_exhaustive] pub enum MailboxErrorKind { /// An operation was attempted on a closed mailbox. #[error(\"mailbox closed\")] Closed, /// The port associated with an operation was invalid. #[error(\"invalid port: {0}\")] InvalidPort(PortId), /// There was no sender associated with the port. #[error(\"no sender for port: {0}\")] NoSenderForPort(PortId), /// There was no local sender associated with the port. /// Returned by operations that require a local port. #[error(\"no local sender for port: {0}\")] NoLocalSenderForPort(PortId), /// The port was closed. #[error(\"{0}: port closed\")] PortClosed(PortId), /// An error occured during a send operation. #[error(\"send {0}: {1}\")] Send(PortId, #[source] anyhow::Error), /// An error occured during a receive operation. #[error(\"recv {0}: {1}\")] Recv(PortId, #[source] anyhow::Error), /// There was a serialization failure. #[error(\"serialize: {0}\")] Serialize(#[source] anyhow::Error), /// There was a deserialization failure. #[error(\"deserialize {0}: {1}\")] Deserialize(\u0026\u0027static str, anyhow::Error), #[error(transparent)] Channel(#[from] ChannelError), } PortLocation describes the location of a port. It provides a uniform data type for ports that may or may not be bound. #[derive(Debug, Clone)] pub enum PortLocation { /// The port was bound: the location is its underlying bound ID. Bound(PortId), /// The port was not bound: we provide the actor ID and the message type. Unbound(ActorId, \u0026\u0027static str), } One place PortLocation is used is in the type MailboxSenderError which is specifically for errors that occur during mailbox send operations. Each error is associated with the port ID of the operation: #[derive(Debug)] pub struct MailboxSenderError { location: PortLocation, kind: MailboxSenderErrorKind, } /// The kind of mailbox sending errors. #[derive(thiserror::Error, Debug)] pub enum MailboxSenderErrorKind { /// Error during serialization. #[error(\"serialization error: {0}\")] Serialize(anyhow::Error), /// Error during deserialization. #[error(\"deserialization error for type {0}: {1}\")] Deserialize(\u0026\u0027static str, anyhow::Error), /// A send to an invalid port. #[error(\"invalid port\")] Invalid, /// A send to a closed port. #[error(\"port closed\")] Closed, // The following pass through underlying errors: /// An underlying mailbox error. #[error(transparent)] Mailbox(#[from] MailboxError), /// An underlying channel error. #[error(transparent)] Channel(#[from] ChannelError), /// An underlying message log error. #[error(transparent)] MessageLog(#[from] MessageLogError), /// An other, uncategorized error. #[error(\"send error: {0}\")] Other(#[from] anyhow::Error), /// The destination was unreachable. #[error(\"unreachable: {0}\")] Unreachable(anyhow::Error), }",
        "author": {

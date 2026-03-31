@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.common.remote &#8212; Monarch  documentation</title>
+    <title>monarch.common.remote &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -40,7 +40,7 @@
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -53,6 +53,12 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.es
 window.addEventListener("load", () => mermaid.run());
 </script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/common/remote';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/common/remote.html" />
     <link rel="icon" href="../../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../../genindex.html" />
@@ -60,6 +66,25 @@ window.addEventListener("load", () => mermaid.run());
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch.common.remote - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -92,6 +117,25 @@ window.addEventListener("load", () => mermaid.run());
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -150,7 +194,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -163,25 +207,112 @@ window.addEventListener("load", () => mermaid.run());
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -193,6 +324,8 @@ window.addEventListener("load", () => mermaid.run());
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -200,6 +333,9 @@ window.addEventListener("load", () => mermaid.run());
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -209,7 +345,7 @@ window.addEventListener("load", () => mermaid.run());
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -254,36 +390,101 @@ window.addEventListener("load", () => mermaid.run());
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../index.html">
+  
+    
+    <img src="../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -292,65 +493,190 @@ window.addEventListener("load", () => mermaid.run());
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -459,8 +785,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -468,52 +828,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -521,6 +995,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -613,10 +1098,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -680,28 +1165,28 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../../index.html">
-        <meta itemprop="name" content="Module code">
-        <meta itemprop="position" content="1">
-      </div>
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="monarch.common.remote">
-        <meta itemprop="position" content="2">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
     </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch.common.remote">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1082,8 +1567,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1195,7 +1680,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1207,7 +1692,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1257,7 +1742,7 @@ document.write(`
        "@type": "Article",
        "name": "monarch.common.remote",
        "headline": "monarch.common.remote",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/common/remote.html",
        "articleBody": "Source code for monarch.common.remote # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import functools import logging from logging import Logger from typing import ( Any, Callable, cast, Dict, Generic, Literal, Optional, overload, Protocol, Tuple, TYPE_CHECKING, TypeVar, ) import monarch.common.messages as messages import torch from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape from monarch._src.actor.actor_mesh import Port from monarch._src.actor.endpoint import Selection from monarch._src.actor.future import Future from monarch.common import _coalescing, device_mesh, stream from monarch.common.future import Future as OldFuture if TYPE_CHECKING: from monarch.common.client import Client from monarch._src.actor.endpoint import Endpoint from monarch.common.device_mesh import RemoteProcessGroup from monarch.common.fake import fake_call from monarch.common.function import ( Propagator, resolvable_function, ResolvableFunction, ResolvableFunctionFromPath, ) from monarch.common.function_caching import ( hashable_tensor_flatten, tensor_placeholder, TensorGroup, TensorPlaceholder, ) from monarch.common.messages import Dims from monarch.common.tensor import dtensor_check, dtensor_dispatch, InputChecker from monarch.common.tree import flatten, tree_map from torch import autograd, distributed as dist from typing_extensions import ParamSpec logger: Logger = logging.getLogger(__name__) P = ParamSpec(\"P\") R = TypeVar(\"R\") T = TypeVar(\"T\") class Remote(Generic[P, R], Endpoint[P, R]): def __init__(self, impl: Any, propagator_arg: Propagator): super().__init__(propagator_arg) self._remote_impl = impl def _call_name(self) -\u003e Any: return self._remote_impl def _send( self, args: Tuple[Any, ...], kwargs: Dict[str, Any], port: \"Optional[Port]\" = None, selection: Selection = \"all\", ) -\u003e Extent: ambient_mesh = device_mesh._active propagator = self._fetch_propagate rfunction = self._maybe_resolvable # a None rfunction is an optimization for the identity function (lambda x: x) if rfunction is None: preprocess_message = None rfunction = ResolvableFunctionFromPath(\"ident\") else: preprocess_message = rfunction _, dtensors, mutates, tensor_mesh = dtensor_check( propagator, rfunction, args, kwargs, ambient_mesh, stream._active ) if ambient_mesh is None: raise ValueError( \"Calling a \u0027remote\u0027 monarch function requires an active proc_mesh (`with proc_mesh.activate():`)\" ) if not ambient_mesh._is_subset_of(tensor_mesh): raise ValueError( f\"The current mesh {ambient_mesh} is not a subset of the mesh on which the tensors being used are defined {tensor_mesh}\" ) client: \"Client\" = ambient_mesh.client if _coalescing.is_active(client): raise NotImplementedError(\"NYI: fetching results during a coalescing block\") stream_ref = stream._active._to_ref(client) fut = (port, ambient_mesh._ndslice) ident = client.new_node(mutates, dtensors, cast(\"OldFuture\", fut)) client.send( ambient_mesh._ndslice, messages.SendValue( ident, None, mutates, preprocess_message, args, kwargs, stream_ref, ), ) # we have to ask for status updates # from workers to be sure they have finished # enough work to count this future as finished, # and all potential errors have been reported client._request_status() return Extent(ambient_mesh._labels, ambient_mesh._ndslice.sizes) @property def _resolvable(self): return resolvable_function(self._remote_impl) @property def _maybe_resolvable(self): return None if self._remote_impl is None else self._resolvable def _rref(self, args, kwargs): return dtensor_dispatch( self._resolvable, self._propagate, args, kwargs, device_mesh._active, stream._active, ) def __call__(self, *args: P.args, **kwargs: P.kwargs) -\u003e R: return self.rref(*args, **kwargs) # This can\u0027t just be Callable because otherwise we are not # allowed to use type arguments in the return value. class RemoteIfy(Protocol): def __call__(self, function: Callable[P, R]) -\u003e Remote[P, R]: ... @overload def remote( function: Callable[P, R], *, propagate: Propagator = None ) -\u003e \"Remote[P, R]\": ... @overload def remote( function: str, *, propagate: Literal[\"mocked\", \"cached\", \"inspect\"] | None = None ) -\u003e \"Remote\": ... @overload def remote(function: str, *, propagate: Callable[P, R]) -\u003e Remote[P, R]: ... @overload def remote(*, propagate: Propagator = None) -\u003e RemoteIfy: ... # type: ignore # ignore because otherwise it claims that the actual implementation doesn\u0027t # accept the above list of arguments [docs] def remote(function: Any = None, *, propagate: Propagator = None) -\u003e Any: if function is None: return functools.partial(remote, propagate=propagate) return Remote(function, propagate) remote_identity = Remote(None, lambda x: x) [docs] def call_on_shard_and_fetch( remote: Endpoint[P, R], *args, shard: Dict[str, int] | None = None, **kwargs ) -\u003e Future[R]: # We have to flatten the tensors twice: first to discover # which mesh we are working on to shard it, and then again when doing the # dtensor_check in send. This complexity is a consequence of doing # implicit inference of the mesh from the tensors. dtensors, unflatten = flatten((args, kwargs), lambda x: isinstance(x, torch.Tensor)) with InputChecker.from_flat_args( remote._call_name(), dtensors, unflatten ) as checker: checker.check_mesh_stream_local(device_mesh._active, stream._active) if not hasattr(checker.mesh.client, \"_mesh_controller\"): return cast( \"Future[R]\", _old_call_on_shard_and_fetch( cast(\"Remote[P, R]\", remote), *args, shard=shard, **kwargs, ), ) selected_slice = checker.mesh._process(shard) shard_mesh = checker.mesh._new_with_shape(Shape([\"_\"], selected_slice)) with shard_mesh.activate(): return remote.call_one(*args, **kwargs) def _old_call_on_shard_and_fetch( remote_obj: Remote[P, R], /, *args: object, shard: dict[str, int] | None = None, **kwargs: object, ) -\u003e OldFuture[R]: \"\"\" Call `function` at the coordinates `shard` of the current device mesh, and retrieve the result as a Future. function - the remote function to call *args/**kwargs - arguments to the function shard - a dictionary from mesh dimension name to coordinate of the shard If None, this will fetch from coordinate 0 for all dimensions (useful after all_reduce/all_gather) \"\"\" rfunction = remote_obj._maybe_resolvable propagator = remote_obj._fetch_propagate ambient_mesh = device_mesh._active if rfunction is None: preprocess_message = None rfunction = ResolvableFunctionFromPath(\"ident\") else: preprocess_message = rfunction _, dtensors, mutates, mesh = dtensor_check( propagator, rfunction, args, kwargs, ambient_mesh, stream._active ) client: \"Client\" = mesh.client if _coalescing.is_active(client): raise NotImplementedError(\"NYI: fetching results during a coalescing block\") stream_ref = stream._active._to_ref(client) return client.fetch( mesh, stream_ref, shard, preprocess_message, args, kwargs, mutates, dtensors ) @remote def _propagate( function: ResolvableFunction, args: Tuple[Any, ...], kwargs: Dict[str, Any] ): \"\"\" RF preprocess function \"\"\" fn = function.resolve() # XXX - in addition to the functional properties, # and info about if any of the input tensors got mutated. arg_tensors, _ = flatten((args, kwargs), lambda x: isinstance(x, torch.Tensor)) input_group = TensorGroup(arg_tensors) result = fn(*args, **kwargs) result_tensors, unflatten_result = flatten( result, lambda x: isinstance(x, torch.Tensor) ) output_group = TensorGroup(result_tensors, parent=input_group) the_result = unflatten_result([tensor_placeholder for _ in result_tensors]) return ( the_result, output_group.pattern, ) class DummyProcessGroup(dist.ProcessGroup): def __init__(self, dims: Dims, world_size: int): # pyre-ignore super().__init__(0, world_size) self.dims = dims self.world_size = world_size def allreduce(self, tensor, op=dist.ReduceOp.SUM, async_op=False): class DummyWork: def wait(self): return tensor return DummyWork() def _allgather_base(self, output_tensor, input_tensor, opts): class DummyWork: def wait(self): return output_tensor return DummyWork() def _reduce_scatter_base(self, output_tensor, input_tensor, opts): class DummyWork: def wait(self): return output_tensor return DummyWork() def __getstate__(self): return {\"dims\": self.dims, \"world_size\": self.world_size} def __setstate__(self, state): self.__init__(state[\"dims\"], state[\"world_size\"]) def _mock_pgs(x): if isinstance(x, autograd.function.FunctionCtx): for attr in dir(x): if not attr.startswith(\"__\") and isinstance(attr, RemoteProcessGroup): setattr(x, attr, DummyProcessGroup(attr.dims, attr.size())) return x if isinstance(x, RemoteProcessGroup): return DummyProcessGroup(x.dims, x.size()) return x # for testing _miss = 0 _hit = 0 def _cached_propagation(_cache, rfunction: ResolvableFunction, args, kwargs): tensors, shape_key = hashable_tensor_flatten(args, kwargs) # pyre-ignore inputs_group = TensorGroup([t._fake for t in tensors]) requires_grads = tuple(t.requires_grad for t in tensors) key = (shape_key, inputs_group.pattern, requires_grads) global _miss, _hit if key not in _cache: _miss += 1 args_no_pg, kwargs_no_pg = tree_map(_mock_pgs, (args, kwargs)) result_with_placeholders, output_pattern = call_on_shard_and_fetch( _propagate, function=rfunction, args=args_no_pg, kwargs=kwargs_no_pg ).result() _, unflatten_result = flatten( result_with_placeholders, lambda x: isinstance(x, TensorPlaceholder) ) _cache[key] = (unflatten_result, output_pattern) else: _hit += 1 # return fresh fake result every time to avoid spurious aliasing unflatten_result, output_pattern = _cache[key] output_tensors = fake_call(output_pattern.empty, [inputs_group.tensors]) return unflatten_result(output_tensors)",
        "author": {

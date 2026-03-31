@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Ports are the basic units of typed message delivery within a mailbox. Each port is a pair consisting of: a PortHandle&lt;M&gt;, used to send messages of type M, and, a PortReceiver&lt;M&gt;, used t..." />
 
-    <title>Ports &#8212; Monarch  documentation</title>
+    <title>Ports &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -49,11 +49,17 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-book/src/mailboxes/ports';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-book/src/mailboxes/ports.html" />
     <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../../../genindex.html" />
@@ -61,6 +67,25 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Ports - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -93,6 +118,25 @@
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -151,7 +195,7 @@
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -164,25 +208,112 @@
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -194,6 +325,8 @@
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -201,6 +334,9 @@
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -210,7 +346,7 @@
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -255,36 +391,101 @@
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -293,65 +494,190 @@
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -464,8 +790,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -473,52 +833,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -526,6 +1000,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -618,10 +1103,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -682,22 +1167,22 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="Ports">
-        <meta itemprop="position" content="1">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Ports">
+      <meta itemprop="position" content="1">
     </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1185,8 +1670,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1339,17 +1824,23 @@ document.write(`
   <div class="sidebar-heading">PyTorch Libraries</div>
   <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
   
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
   
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
   
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
   
@@ -1405,7 +1896,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1417,7 +1908,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1467,7 +1958,7 @@ document.write(`
        "@type": "Article",
        "name": "Ports",
        "headline": "Ports",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/books/hyperactor-book/src/mailboxes/ports.html",
        "articleBody": "Ports# Ports are the basic units of typed message delivery within a mailbox. Each port is a pair consisting of: a PortHandle\u003cM\u003e, used to send messages of type M, and a PortReceiver\u003cM\u003e, used to receive those messages asynchronously. Variants like OncePortHandle and OncePortReceiver support one-shot communication. All ports are associated with a unique PortId within an actor, and may be wrapped in a PortRef\u003cM\u003e for safe external use. This section defines the structure, behavior, and usage of ports. Delivery Backends# Each typed port uses an internal delivery mechanism to enqueue messages. This is abstracted by the UnboundedSenderPort\u003cM\u003e enum: enum UnboundedPortSender\u003cM: Message\u003e { Mpsc(mpsc::UnboundedSender\u003cM\u003e), Func(Arc\u003cdyn Fn(M) -\u003e Result\u003c(), anyhow::Error\u003e + Send + Sync\u003e), } Mpsc: Sends messages into a tokio unbounded channel Func: Custom logic, often used to enqueue messages onto actor work queues. Messages are sent via the .send(headers, message) method, which forwards to either the internal channel or the configured function. PortHandle\u003cM\u003e# A PortHandle\u003cM\u003e is used to send M-typed messages to a mailbox port. It represents the sending half of a typed port: pub struct PortHandle\u003cM: Message\u003e { mailbox: Mailbox, port_index: u64, sender: UnboundedPortSender\u003cM\u003e, bound: Arc\u003cOnceLock\u003cPortId\u003e\u003e, reducer_spec: Option\u003cReducerSpec\u003e, reducer_opts: Option\u003cReducerOpts\u003e, } Fields# mailbox: The Mailbox this port was created from. Stored so the handle can access the actor ID and bind itself into the mailbox\u2019s internal port map. port_index: The local index of the port within the mailbox. Used as the key in the mailbox\u2019s port map. sender: The internal message delivery mechanism (e.g., MPSC channel). This determines how messages of type M are actually enqueued. bound: A lazily initialized PortId stored in a OnceLock. This is populated when the port is formally bound into the mailbox, enabling external references via PortRef\u003cM\u003e. reducer_spec: An optional specification for a reducer function for accumulating messages. reducer_opts: Optional reducer configuration options. Construction and Use# impl\u003cM: Message\u003e PortHandle\u003cM\u003e { fn new(mailbox: Mailbox, port_index: u64, sender: UnboundedPortSender\u003cM\u003e) -\u003e Self { Self { mailbox, port_index, sender, bound: Arc::new(OnceLock::new()), reducer_spec: None, reducer_opts: None, } } fn location(\u0026self) -\u003e PortLocation { match self.bound.get() { Some(port_id) =\u003e PortLocation::Bound(port_id.clone()), None =\u003e PortLocation::new_unbound::\u003cM\u003e(self.mailbox.actor_id().clone()), } } pub fn send(\u0026self, message: M) -\u003e Result\u003c(), MailboxSenderError\u003e { let mut headers = Attrs::new(); // ... set headers ... self.sender.send(headers, message).map_err(|err| { MailboxSenderError::new_unbound::\u003cM\u003e( self.mailbox.actor_id().clone(), MailboxSenderErrorKind::Other(err), ) }) } } new constructs a port handle with the mailbox, port index and delivery backend location reports whether the port is currently bound send enqueues a message via the internal sender, wrapping errors as needed. Binding# To make a port externally addressable (e.g. for use remote delivery), it must be bound: impl\u003cM: RemoteMessage\u003e PortHandle\u003cM\u003e { pub fn bind(\u0026self) -\u003e PortRef\u003cM\u003e; } This registers the port in the owning Mailbox and returns a PortRef\u003cM\u003e. Binding is lazy and idempotent. For a detailed explanation of port binding, see Mailbox. PortLocation# PortLocation describes the logical address of a port. It is used in error messages and has two cases to represent whether or not a port is bound. pub enum PortLocation { /// The port was bound: the location is its underlying bound ID. Bound(PortId), /// The port was not bound: we provide the actor ID and the message type. Unbound(ActorId, \u0026\u0027static str), } OncePortHandle\u003cM\u003e# A OncePortHandle\u003cM\u003e is a one-shot sender for M-typed messages. Unlike PortHandle\u003cM\u003e, which supports unbounded delivery, this variant enqueues a single message using a one-time oneshot::Sender: pub struct OncePortHandle\u003cM: Message\u003e { mailbox: Mailbox, port_index: u64, port_id: PortId, sender: oneshot::Sender\u003cM\u003e, } Fields# mailbox: The Mailbox this port was created from. Stored so the handle can access the actor ID and register itself in the mailbox\u2019s port map. port_index: The local index of the port within the mailbox. Used as the key in the mailbox\u2019s port map. port_id: The globally unique identifier for this port. Assigned eagerly, since one-shot ports are always bound at creation. sender: The one-shot message delivery channel. Used to transmit a single M-typed message. Compared to PortHandle\u003cM\u003e, a OncePortHandle\u003cM\u003e is: bound eagerly at creation (it always has a PortId), non-reusable (it delivers at most one message), and uses a one-shot channel instead of an unbounded queue. Binding# Unlike PortHandle\u003cM\u003e, OncePortHandle\u003cM\u003e is already bound at creation. However, calling bind() produces a OncePortRef\u003cM\u003e that can be shared with remote actors: impl\u003cM: RemoteMessage\u003e OncePortHandle\u003cM\u003e { pub fn bind(self) -\u003e OncePortRef\u003cM\u003e; } PortRef and OncePortRef# A PortRef\u003cM\u003e is a cloneable, sendable reference to a bound typed port. These are used to send messages to an actor from outside its mailbox, typically after calling .bind() on a PortHandle\u003cM\u003e: pub struct PortRef\u003cM\u003e { port_id: PortId, reducer_spec: Option\u003cReducerSpec\u003e, reducer_opts: Option\u003cReducerOpts\u003e, phantom: PhantomData\u003cM\u003e, return_undeliverable: bool, } Fields# port_id: The globally unique identifier for this port. Used during message routing to locate the destination mailbox. reducer_spec: Optional specification for the reducer type, used to validate compatibility when delivering messages to reducer-style ports. reducer_opts: Optional reducer configuration options. phantom: Phantom data to retain the M type parameter. This enforces compile-time type safety without storing a value of type M. return_undeliverable: Whether undeliverable messages should be returned to the sender. A OncePortRef\u003cM\u003e is a reference to a one-shot port. Unlike PortRef, it allows exactly one message to be sent. These are created by binding a OncePortHandle\u003cM\u003e. pub struct OncePortRef\u003cM\u003e { port_id: PortId, phantom: PhantomData\u003cM\u003e, } Fields# port_id: The globally unique identifier for this port. Used during message routing to locate the destination mailbox. phantom: Phantom data to retain the M type parameter. This enforces compile-time type safety without storing a value of type M. PortReceiver\u003cM\u003e# A PortReceiver\u003cM\u003e is used to asynchronously receive M-typed messages from a port. It is the receiving half of a typed port pair: pub struct PortReceiver\u003cM\u003e { receiver: mpsc::UnboundedReceiver\u003cM\u003e, port_id: PortId, coalesce: bool, mailbox: Mailbox, } Fields# receiver: The unbounded MPSC channel receiver used to retrieve messages sent to this port. port_id: The unique identifier for the port associated with this receiver. Used to deregister the port when the receiver is dropped. coalesce: If true, enables coalescing behavior \u2014 only the most recent message is retained when multiple are queued, and earlier ones are discarded. mailbox: The owning mailbox. Used to cleanly deregister the port from the mailbox when the receiver is dropped. Usage# A PortReceiver\u003cM\u003e is returned when calling .open_port::\u003cM\u003e() on a Mailbox. The actor can await messages on the receiver using .recv().await, which yields Option\u003cM\u003e: let (port, mut receiver) = mailbox.open_port::\u003cMyMsg\u003e(); // ... if let Some(msg) = receiver.recv().await { handle(msg); } Construction and Use# A PortReceiver is created when calling .open_port::\u003cM\u003e() on a Mailbox. new just constructs aPortReceiver by wrapping the provided channel (receiver): impl\u003cM\u003e PortReceiver\u003cM\u003e { fn new( receiver: mpsc::UnboundedReceiver\u003cM\u003e, port_id: PortId, coalesce: bool, mailbox: Mailbox ) -\u003e Self { Self { receiver, port_id, coalesce, mailbox, } } } Dropping the PortReceiver\u003cM\u003e automatically deregisters the associated port, preventing further message delivery. impl\u003cM\u003e Drop for PortReceiver\u003cM\u003e { fn drop(\u0026mut self) { self.mailbox.inner.ports.remove(\u0026self.port()); } } try_recv# Attempts to receive a message from the port without blocking. This method polls the underlying channel and returns immediately: Ok(Some(msg)) if a message is available, Ok(None) if the queue is currently empty, Err(MailboxError) if the port is closed or disconnected. If the port was created with coalesce = true, try_recv() drains the queue and returns only the most recent message, discarding earlier ones: impl\u003cM\u003e PortReceiver\u003cM\u003e { pub fn try_recv(\u0026mut self) -\u003e Result\u003cOption\u003cM\u003e, MailboxError\u003e { let mut next = self.receiver.try_recv(); // To coalesce, drain the mpsc queue and only keep the last one. if self.coalesce { if let Some(latest) = self.drain().pop() { next = Ok(latest); } } match next { Ok(msg) =\u003e Ok(Some(msg)), Err(mpsc::error::TryRecvError::Empty) =\u003e Ok(None), Err(mpsc::error::TryRecvError::Disconnected) =\u003e Err(MailboxError::new( self.actor_id().clone(), MailboxErrorKind::Closed, )), } } } recv# Receives the next message from the port, waiting if necessary. This is the asynchronous counterpart to try_recv. It awaits a message and returns it once available. If the port has been closed, it returns a MailboxError. When coalesce = true, this method awaits one message, then drains the queue and returns only the most recent one. impl\u003cM\u003e PortReceiver\u003cM\u003e { pub async fn recv(\u0026mut self) -\u003e Result\u003cM, MailboxError\u003e { let mut next = self.receiver.recv().await; // To coalesce, get the last message from the queue if there are // more on the mpsc queue. if self.coalesce { if let Some(latest) = self.drain().pop() { next = Some(latest); } } next.ok_or(MailboxError::new( self.actor_id().clone(), MailboxErrorKind::Closed, )) } } drain# Drains all available messages from the port without blocking. This method is used internally by recv and try_recv when coalesce = true, but can also be used directly to consume multiple messages in a batch. If coalesce is enabled, all but the most recent message are discarded during the drain. impl\u003cM\u003e PortReceiver\u003cM\u003e { pub fn drain(\u0026mut self) -\u003e Vec\u003cM\u003e { let mut drained: Vec\u003cM\u003e = Vec::new(); while let Ok(msg) = self.receiver.try_recv() { // To coalesce, discard the old message if there is any. if self.coalesce { drained.pop(); } drained.push(msg); } drained } } OncePortReceiver\u003cM\u003e# A OncePortReceiver\u003cM\u003e is the receiving half of a one-shot port. It is returned when calling .open_once_port::\u003cM\u003e() on a Mailbox. Unlike PortReceiver, this variant: Receives exactly one message, Consumes itself on receive (i.e., recv takes self by value), Internally wraps a oneshot::Receiver\u003cM\u003e instead of an unbounded channel. pub struct OncePortReceiver\u003cM\u003e { receiver: Option\u003coneshot::Receiver\u003cM\u003e\u003e, port_id: PortId, state: Arc\u003cState\u003e, } Receiving# recv() consumes the OncePortReceiver and awaits a single message. If the port is closed before the message is sent, it returns a MailboxError. impl\u003cM\u003e OncePortReceiver\u003cM\u003e { pub async fn recv(mut self) -\u003e Result\u003cM, MailboxError\u003e { std::mem::take(\u0026mut self.receiver) .unwrap() .await .map_err(|err| { MailboxError::new( self.actor_id().clone(), MailboxErrorKind::Recv(self.port_id.clone(), err.into()), ) }) } } The recv method moves out the internal oneshot::Receiver using std::mem::take() and awaits it. Any error (e.g., if the sender was dropped) is converted into a MailboxError. Lifecycle and Deregistration# Like PortReceiver, dropping a OncePortReceiver deregisters the port from the mailbox\u2019s state: impl\u003cM\u003e Drop for OncePortReceiver\u003cM\u003e { fn drop(\u0026mut self) { self.state.ports.remove(\u0026self.port()); } } This ensures the port becomes unreachable and no further message delivery occurs once the receiver is dropped. Sending Messages# UnboundedSender and OnceSender# Every open port is backed by a sender, responsible for delivering messages to the corresponding receiver. For unbounded ports, this sender is: enum UnboundedPortSender\u003cM: Message\u003e { Mpsc(mpsc::UnboundedSender\u003cM\u003e), Func(Arc\u003cdyn Fn(M) -\u003e Result\u003c(), anyhow::Error\u003e + Send + Sync\u003e), } These are wrapped in: struct UnboundedSender\u003cM: Message\u003e { sender: UnboundedPortSender\u003cM\u003e, port_id: PortId, } The send method forwards messages and wraps errors in a MailboxSenderError: impl\u003cM: Message\u003e UnboundedSender\u003cM\u003e { fn send(\u0026self, message: M) -\u003e Result\u003c(), MailboxError\u003e { ... } } OnceSender\u003cM\u003e is similar, but uses a oneshot::Sender\u003cM\u003e under the hood: struct OnceSender\u003cM: Message\u003e { sender: Arc\u003cMutex\u003cOption\u003coneshot::Sender\u003cM\u003e\u003e\u003e\u003e, port_id: PortId, } Calling .send_once(message) on an OnceSender consumes the channel, and fails if the message has already been sent or the receiver is dropped. Type-Erased Delivery: SerializedSender# To enable uniform message routing, both UnboundedSender and OnceSender implement the SerializedSender trait: trait SerializedSender: Send + Sync { fn as_any(\u0026self) -\u003e \u0026dyn Any; fn send_serialized( \u0026self, headers: Attrs, serialized: Serialized, ) -\u003e Result\u003cbool, SerializedSenderError\u003e; This trait lets the mailbox deliver a Serialized message (a type-erased, encoded payload) by: Deserializing the payload into a concrete M using RemoteMessage trait, Sending it to the appropriate port, via its registered sender. All active ports in a mailbox internally tracked in a type-erased form: ports: DashMap\u003cu64, Box\u003cdyn SerializedSender\u003e\u003e, This enables the mailbox to deliver messages to any known port regardless of its specific message type, provided deserialization succeeds. If deserialization fails, or the underlying port is closed, an appropriate MailboxSenderError is returned via a SerializedSenderError. See the (Mailbox) State section for details on how the mailbox owns and manages this ports map. Example: SerializedSender for UnboundedSender\u003cM\u003e# Below is the canonical implementation of SerializedSender for UnboundedSender\u003cM\u003e: impl\u003cM: RemoteMessage\u003e SerializedSender for UnboundedSender\u003cM\u003e { fn send_serialized( \u0026self, headers: Attrs, serialized: Serialized, ) -\u003e Result\u003cbool, SerializedSenderError\u003e { match serialized.deserialized() { Ok(message) =\u003e { self.sender.send(headers.clone(), message).map_err(|err| { SerializedSenderError { data: serialized, error: MailboxSenderError::new_bound( self.port_id.clone(), MailboxSenderErrorKind::Other(err), ), headers, } })?; Ok(true) } Err(err) =\u003e Err(SerializedSenderError { data: serialized, error: MailboxSenderError::new_bound( self.port_id.clone(), MailboxSenderErrorKind::Deserialize(M::typename(), err), ), headers, }), } } } This implementation: Attempts to decode the payload into a concrete M, Sends the decoded message via the associated port, Returns Ok(true) on success, or wraps any failure into a SerializedSenderError. OnceSender\u003cM\u003e# OnceSender\u003cM\u003e implements SerializedSender similarly, deserializing the payload and forwarding it via a one-shot channel. It differs mainly in that the underlying port may only be used once and returns Ok(false) when consumed.",
        "author": {

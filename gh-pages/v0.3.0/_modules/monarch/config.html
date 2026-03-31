@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.config &#8212; Monarch  documentation</title>
+    <title>monarch.config &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -40,7 +40,7 @@
 <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../_static/doctools.js?v=888ff710"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../_static/design-tabs.js?v=f930bc37"></script>
@@ -53,6 +53,12 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.es
 window.addEventListener("load", () => mermaid.run());
 </script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/config';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/config.html" />
     <link rel="icon" href="../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../genindex.html" />
@@ -60,6 +66,25 @@ window.addEventListener("load", () => mermaid.run());
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch.config - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -92,6 +117,25 @@ window.addEventListener("load", () => mermaid.run());
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -150,7 +194,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -163,25 +207,112 @@ window.addEventListener("load", () => mermaid.run());
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -193,6 +324,8 @@ window.addEventListener("load", () => mermaid.run());
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -200,6 +333,9 @@ window.addEventListener("load", () => mermaid.run());
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -209,7 +345,7 @@ window.addEventListener("load", () => mermaid.run());
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -254,36 +390,101 @@ window.addEventListener("load", () => mermaid.run());
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+    
+    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -292,65 +493,190 @@ window.addEventListener("load", () => mermaid.run());
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -459,8 +785,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -468,52 +828,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -521,6 +995,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -613,10 +1098,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -680,28 +1165,28 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../index.html">
-        <meta itemprop="name" content="Module code">
-        <meta itemprop="position" content="1">
-      </div>
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="monarch.config">
-        <meta itemprop="position" content="2">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
     </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch.config">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1148,8 +1633,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1261,7 +1746,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1273,7 +1758,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1323,7 +1808,7 @@ document.write(`
        "@type": "Article",
        "name": "monarch.config",
        "headline": "monarch.config",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/config.html",
        "articleBody": "Source code for monarch.config # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe \"\"\"Configuration utilities for Monarch. This module provides utilities for managing Monarch\u0027s runtime configuration, particularly useful for testing and temporary configuration overrides. \"\"\" import contextlib from typing import Any, Callable, Dict, Iterator from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport from monarch._rust_bindings.monarch_hyperactor.config import ( clear_runtime_config as _clear_runtime_config, configure as _configure, Encoding, get_global_config as _get_global_config, get_runtime_config as _get_runtime_config, ) __all__ = [ \"clear_runtime_config\", \"configure\", \"configured\", \"Encoding\", \"get_global_config\", \"get_runtime_config\", \"parametrize_config\", ] [docs] def configure( *, default_transport: ChannelTransport | None = None, enable_log_forwarding: bool | None = None, enable_file_capture: bool | None = None, tail_log_lines: int | None = None, codec_max_frame_length: int | None = None, message_delivery_timeout: str | None = None, host_spawn_ready_timeout: str | None = None, mesh_proc_spawn_max_idle: str | None = None, process_exit_timeout: str | None = None, message_ack_time_interval: str | None = None, message_ack_every_n_messages: int | None = None, message_ttl_default: int | None = None, split_max_buffer_size: int | None = None, split_max_buffer_age: str | None = None, stop_actor_timeout: str | None = None, cleanup_timeout: str | None = None, remote_allocator_heartbeat_interval: str | None = None, default_encoding: Encoding | None = None, channel_net_rx_buffer_full_check_interval: str | None = None, message_latency_sampling_rate: float | None = None, enable_dest_actor_reordering_buffer: bool | None = None, mesh_bootstrap_enable_pdeathsig: bool | None = None, mesh_terminate_concurrency: int | None = None, mesh_terminate_timeout: str | None = None, shared_asyncio_runtime: bool | None = None, small_write_threshold: int | None = None, max_cast_dimension_size: int | None = None, remote_alloc_bind_to_inaddr_any: bool | None = None, remote_alloc_bootstrap_addr: str | None = None, remote_alloc_allowed_port_range: slice | None = None, read_log_buffer: int | None = None, force_file_log: bool | None = None, prefix_with_rank: bool | None = None, actor_spawn_max_idle: str | None = None, get_actor_state_max_idle: str | None = None, supervision_watchdog_timeout: str | None = None, proc_stop_max_idle: str | None = None, get_proc_state_max_idle: str | None = None, actor_queue_dispatch: bool | None = None, **kwargs: object, ) -\u003e None: \"\"\"Configure Hyperactor runtime defaults for this process. This updates the **Runtime** configuration layer from Python, setting transports, logging behavior, timeouts, and other runtime parameters. All duration parameters accept humantime strings like ``\"30s\"``, ``\"5m\"``, ``\"2h\"``, or ``\"1h 30m\"``. Args: Transport configuration: default_transport: Default channel transport for actor communication. Can be a ChannelTransport enum or explicit address string. Basic logging behavior: enable_log_forwarding: Forward child stdout/stderr through the mesh. enable_file_capture: Persist child stdout/stderr to per-host files. tail_log_lines: Number of log lines to retain in memory. Message encoding and delivery: codec_max_frame_length: Maximum serialized message size in bytes. message_delivery_timeout: Max delivery time (humantime). Core mesh timeouts: host_spawn_ready_timeout: Max host bootstrapping time (humantime). mesh_proc_spawn_max_idle: Max idle time while spawning procs (humantime). Hyperactor timeouts and message handling: process_exit_timeout: Timeout for process exit (humantime). message_ack_time_interval: Time interval for message acknowledgments (humantime). message_ack_every_n_messages: Acknowledge every N messages. message_ttl_default: Default message time-to-live. split_max_buffer_size: Maximum buffer size for message splitting (bytes). split_max_buffer_age: Maximum age for split message buffers (humantime). stop_actor_timeout: Timeout for stopping actors (humantime). cleanup_timeout: Timeout for cleanup operations (humantime). remote_allocator_heartbeat_interval: Heartbeat interval for remote allocator (humantime). default_encoding: Default message encoding (Encoding.Bincode, Encoding.Json, or Encoding.Multipart). channel_net_rx_buffer_full_check_interval: Network receive buffer check interval (humantime). message_latency_sampling_rate: Sampling rate for message latency tracking (0.0 to 1.0). enable_dest_actor_reordering_buffer: Enable reordering buffer in dest actor. Mesh bootstrap configuration: mesh_bootstrap_enable_pdeathsig: Enable parent-death signal for spawned processes. mesh_terminate_concurrency: Maximum concurrent terminations during shutdown. mesh_terminate_timeout: Timeout per child during graceful termination (humantime). Runtime and buffering: shared_asyncio_runtime: Share asyncio runtime across actors. small_write_threshold: Threshold below which writes are copied (bytes). Mesh configuration: max_cast_dimension_size: Maximum dimension size for cast operations. Remote allocation: remote_alloc_bind_to_inaddr_any: Bind remote allocators to INADDR_ANY. remote_alloc_bootstrap_addr: Bootstrap address for remote allocators. remote_alloc_allowed_port_range: Allowed port range as slice(start, stop). Logging configuration: read_log_buffer: Buffer size for reading logs (bytes). force_file_log: Force file-based logging regardless of environment. prefix_with_rank: Prefix log lines with rank information. Proc mesh timeouts: actor_spawn_max_idle: Maximum idle time while spawning actors (humantime). get_actor_state_max_idle: Maximum idle time for actor state queries (humantime). supervision_watchdog_timeout: Watchdog timeout for the actor-mesh supervision stream; prolonged silence is interpreted as the controller being unreachable (humantime). Host mesh timeouts: proc_stop_max_idle: Maximum idle time while stopping procs (humantime). get_proc_state_max_idle: Maximum idle time for proc state queries (humantime). **kwargs: Reserved for future configuration keys exposed by Rust bindings. \"\"\" params: Dict[str, Any] = dict(kwargs) if default_transport is not None: params[\"default_transport\"] = default_transport if enable_log_forwarding is not None: params[\"enable_log_forwarding\"] = enable_log_forwarding if enable_file_capture is not None: params[\"enable_file_capture\"] = enable_file_capture if tail_log_lines is not None: params[\"tail_log_lines\"] = tail_log_lines if codec_max_frame_length is not None: params[\"codec_max_frame_length\"] = codec_max_frame_length if message_delivery_timeout is not None: params[\"message_delivery_timeout\"] = message_delivery_timeout if host_spawn_ready_timeout is not None: params[\"host_spawn_ready_timeout\"] = host_spawn_ready_timeout if mesh_proc_spawn_max_idle is not None: params[\"mesh_proc_spawn_max_idle\"] = mesh_proc_spawn_max_idle if process_exit_timeout is not None: params[\"process_exit_timeout\"] = process_exit_timeout if message_ack_time_interval is not None: params[\"message_ack_time_interval\"] = message_ack_time_interval if message_ack_every_n_messages is not None: params[\"message_ack_every_n_messages\"] = message_ack_every_n_messages if message_ttl_default is not None: params[\"message_ttl_default\"] = message_ttl_default if split_max_buffer_size is not None: params[\"split_max_buffer_size\"] = split_max_buffer_size if split_max_buffer_age is not None: params[\"split_max_buffer_age\"] = split_max_buffer_age if stop_actor_timeout is not None: params[\"stop_actor_timeout\"] = stop_actor_timeout if cleanup_timeout is not None: params[\"cleanup_timeout\"] = cleanup_timeout if remote_allocator_heartbeat_interval is not None: params[\"remote_allocator_heartbeat_interval\"] = ( remote_allocator_heartbeat_interval ) if default_encoding is not None: params[\"default_encoding\"] = default_encoding if channel_net_rx_buffer_full_check_interval is not None: params[\"channel_net_rx_buffer_full_check_interval\"] = ( channel_net_rx_buffer_full_check_interval ) if message_latency_sampling_rate is not None: params[\"message_latency_sampling_rate\"] = message_latency_sampling_rate if enable_dest_actor_reordering_buffer is not None: params[\"enable_dest_actor_reordering_buffer\"] = ( enable_dest_actor_reordering_buffer ) if mesh_bootstrap_enable_pdeathsig is not None: params[\"mesh_bootstrap_enable_pdeathsig\"] = mesh_bootstrap_enable_pdeathsig if mesh_terminate_concurrency is not None: params[\"mesh_terminate_concurrency\"] = mesh_terminate_concurrency if mesh_terminate_timeout is not None: params[\"mesh_terminate_timeout\"] = mesh_terminate_timeout if shared_asyncio_runtime is not None: params[\"shared_asyncio_runtime\"] = shared_asyncio_runtime if small_write_threshold is not None: params[\"small_write_threshold\"] = small_write_threshold if max_cast_dimension_size is not None: params[\"max_cast_dimension_size\"] = max_cast_dimension_size # Forward new alloc config keys if remote_alloc_bind_to_inaddr_any is not None: params[\"remote_alloc_bind_to_inaddr_any\"] = remote_alloc_bind_to_inaddr_any if remote_alloc_bootstrap_addr is not None: params[\"remote_alloc_bootstrap_addr\"] = remote_alloc_bootstrap_addr if remote_alloc_allowed_port_range is not None: params[\"remote_alloc_allowed_port_range\"] = remote_alloc_allowed_port_range if read_log_buffer is not None: params[\"read_log_buffer\"] = read_log_buffer if force_file_log is not None: params[\"force_file_log\"] = force_file_log if prefix_with_rank is not None: params[\"prefix_with_rank\"] = prefix_with_rank if actor_spawn_max_idle is not None: params[\"actor_spawn_max_idle\"] = actor_spawn_max_idle if get_actor_state_max_idle is not None: params[\"get_actor_state_max_idle\"] = get_actor_state_max_idle if supervision_watchdog_timeout is not None: params[\"supervision_watchdog_timeout\"] = supervision_watchdog_timeout if proc_stop_max_idle is not None: params[\"proc_stop_max_idle\"] = proc_stop_max_idle if get_proc_state_max_idle is not None: params[\"get_proc_state_max_idle\"] = get_proc_state_max_idle if actor_queue_dispatch is not None: params[\"actor_queue_dispatch\"] = actor_queue_dispatch _configure(**params) [docs] def get_global_config() -\u003e Dict[str, Any]: \"\"\"Return a merged view of all configuration layers. The resulting dict includes defaults, environment overrides, file-based settings, and the current Runtime layer. Mutating the returned dict does *not* change the active configuration; use :func:`configure` instead. \"\"\" return _get_global_config() [docs] def get_runtime_config() -\u003e Dict[str, Any]: \"\"\"Return a snapshot of just the Runtime layer configuration. Useful for snapshot/restore flows (see :func:`configured`) or for inspecting which keys were last set via Python. \"\"\" return _get_runtime_config() [docs] def clear_runtime_config() -\u003e None: \"\"\"Remove every key from the Runtime configuration layer. Environment variables, config files, and defaults are untouched. This is typically paired with :func:`configure` to reset overrides in long-lived processes. \"\"\" _clear_runtime_config() [docs] @contextlib.contextmanager def configured(**overrides) -\u003e Iterator[Dict[str, Any]]: \"\"\"Temporarily apply Python-side config overrides for this process. This context manager: * snapshots the current **Runtime** configuration layer (`get_runtime_config()`), * applies the given `overrides` via `configure(**overrides)`, and * yields the **merged** view of config (`get_global_config()`), including defaults, env, file, and Runtime. On exit it restores the previous Runtime layer by: * clearing all Runtime entries, and * re-applying the saved snapshot. `configured` alters the global configuration; thus other threads will be subject to the overridden configuration while the context manager is active. Thus: this is intended for tests, which run as single threads; per-test overrides do not leak into other tests. Args: **overrides: Configuration key-value pairs to override for the duration of the context. Yields: Dict[str, Any]: The merged global configuration including all layers (defaults, environment, file, and runtime). Example: \u003e\u003e\u003e from monarch.config import configured \u003e\u003e\u003e with configured(enable_log_forwarding=True, tail_log_lines=100): ... # Configuration is temporarily overridden ... assert get_global_config()[\"enable_log_forwarding\"] is True \u003e\u003e\u003e # Configuration is automatically restored after the context \"\"\" # Retrieve runtime prev = get_runtime_config() try: # Merge overrides into runtime configure(**overrides) # Snapshot of merged config (all layers) yield get_global_config() finally: # Restore previous runtime clear_runtime_config() configure(**prev) def parametrize_config( **config_options: set[Any], ) -\u003e Callable[[Callable[..., Any]], Callable[..., Any]]: \"\"\"Create a pytest parametrize decorator for configuration cross-products. This decorator runs the test function under every combination of the specified configuration values. Each test invocation wraps the test body in a `configured(...)` context manager with the corresponding settings. Args: **config_options: Configuration keys mapped to sets of values to test. Each key should be a valid argument to `configure()`. Returns: A decorator that parametrizes and wraps the test function. Example: \u003e\u003e\u003e from monarch.config import parametrize_config \u003e\u003e\u003e \u003e\u003e\u003e @parametrize_config( ... actor_queue_dispatch={True, False}, ... shared_asyncio_runtime={True, False}, ... ) ... async def test_actor_feature(): ... # Test runs 4 times: all combinations of the two bool options ... pass \"\"\" import asyncio import functools import inspect import itertools import pytest # pyre-ignore[21]: pytest is a test-only dependency if not config_options: raise ValueError(\"parametrize_config requires at least one config option\") keys = list(config_options.keys()) value_lists = [list(config_options[k]) for k in keys] combinations = list(itertools.product(*value_lists)) # Create parameter IDs for clearer test output param_ids = [ \"-\".join(f\"{k}={v}\" for k, v in zip(keys, combo)) for combo in combinations ] # Create the config dicts for each combination config_dicts = [dict(zip(keys, combo)) for combo in combinations] def decorator(fn: Callable[..., Any]) -\u003e Callable[..., Any]: # Get original function\u0027s signature and add _config_overrides as first param orig_sig = inspect.signature(fn) new_params = [ inspect.Parameter( \"_config_overrides\", inspect.Parameter.POSITIONAL_OR_KEYWORD ) ] + list(orig_sig.parameters.values()) new_sig = orig_sig.replace(parameters=new_params) if asyncio.iscoroutinefunction(fn): async def async_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return await fn(*args, **kwargs) functools.update_wrapper(async_wrapper, fn) async_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = async_wrapper else: def sync_wrapper( _config_overrides: Dict[str, Any], *args: Any, **kwargs: Any ) -\u003e Any: with configured(**_config_overrides): return fn(*args, **kwargs) functools.update_wrapper(sync_wrapper, fn) sync_wrapper.__signature__ = new_sig # type: ignore[attr-defined] wrapped = sync_wrapper return pytest.mark.parametrize( \"_config_overrides\", config_dicts, ids=param_ids )(wrapped) return decorator",
        "author": {

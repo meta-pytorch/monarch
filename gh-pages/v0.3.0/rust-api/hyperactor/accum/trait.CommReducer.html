@@ -6,7 +6,7 @@
         &amp;self,
         left: Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>,
         right: Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>,
-    ) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.100/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>&gt;;
+    ) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.102/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>&gt;;
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Commutative reducer for an accumulator. This is used to coallesce updates.
 For example, if the accumulator is a sum, its reducer calculates and returns
 the sum of 2 updates. This is helpful in split ports, where a large number
@@ -17,5 +17,5 @@ to the parent port.</p>
     &amp;self,
     left: Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>,
     right: Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>,
-) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.100/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>&gt;</h4></section></summary><div class="docblock"><p>Reduce 2 updates into a single update.</p>
+) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.102/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;Self::<a class="associatedtype" href="trait.CommReducer.html#associatedtype.Update" title="type hyperactor::accum::CommReducer::Update">Update</a>&gt;</h4></section></summary><div class="docblock"><p>Reduce 2 updates into a single update.</p>
 </div></details></div><h2 id="implementors" class="section-header">Implementors<a href="#implementors" class="anchor">§</a></h2><div id="implementors-list"></div><script src="../../trait.impl/hyperactor/accum/trait.CommReducer.js" async></script></section></div></main></body></html>

@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.job.job &#8212; Monarch  documentation</title>
+    <title>monarch._src.job.job &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -40,7 +40,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -53,6 +53,12 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.es
 window.addEventListener("load", () => mermaid.run());
 </script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/job/job';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/job/job.html" />
     <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../../../genindex.html" />
@@ -60,6 +66,25 @@ window.addEventListener("load", () => mermaid.run());
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch._src.job.job - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -92,6 +117,25 @@ window.addEventListener("load", () => mermaid.run());
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -150,7 +194,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -163,25 +207,112 @@ window.addEventListener("load", () => mermaid.run());
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -193,6 +324,8 @@ window.addEventListener("load", () => mermaid.run());
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -200,6 +333,9 @@ window.addEventListener("load", () => mermaid.run());
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -209,7 +345,7 @@ window.addEventListener("load", () => mermaid.run());
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -254,36 +390,101 @@ window.addEventListener("load", () => mermaid.run());
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -292,65 +493,190 @@ window.addEventListener("load", () => mermaid.run());
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -459,8 +785,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -468,52 +828,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -521,6 +995,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -613,10 +1098,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -680,28 +1165,28 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../../../index.html">
-        <meta itemprop="name" content="Module code">
-        <meta itemprop="position" content="1">
-      </div>
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="monarch._src.job.job">
-        <meta itemprop="position" content="2">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../../../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
     </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch._src.job.job">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1269,8 +1754,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1382,7 +1867,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1394,7 +1879,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1444,7 +1929,7 @@ document.write(`
        "@type": "Article",
        "name": "monarch._src.job.job",
        "headline": "monarch._src.job.job",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/job/job.html",
        "articleBody": "Source code for monarch._src.job.job # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import logging import os import pickle import shlex import signal import subprocess import sys import tempfile from abc import ABC, abstractmethod from typing import Dict, List, Literal, NamedTuple, Optional, Sequence from monarch._src.actor.bootstrap import attach_to_workers # note: the jobs api is intended as a library so it should # only be importing _public_ monarch API functions. from monarch.actor import enable_transport, HostMesh, this_host [docs] class JobState: \"\"\" Container for the current state of a job. Provides access to the HostMesh objects for each mesh requested in the job specification. Each mesh is accessible as an attribute. Example:: state = job.state() state.trainers # HostMesh for the \"trainers\" mesh state.dataloaders # HostMesh for the \"dataloaders\" mesh \"\"\" [docs] def __init__(self, hosts: Dict[str, HostMesh]): self._hosts = hosts def __getattr__(self, attr: str) -\u003e HostMesh: try: return self._hosts[attr] except KeyError: raise AttributeError(attr) class CachedRunning(NamedTuple): job: \"JobTrait\" logger = logging.getLogger(__name__) logger.setLevel(logging.INFO) logger.addHandler(logging.StreamHandler(sys.stderr)) logger.propagate = False [docs] class JobTrait(ABC): \"\"\" A job object represents a specification and set of machines that can be used to create monarch HostMeshes and run actors on them. A job object comprises a declarative specification for the job and optionally the job\u0027s *state*. The ``apply()`` operation applies the job\u0027s specification to the scheduler, creating or updating the job as required. If the job exists and there are no changes in its specification, ``apply()`` is a no-op. Once applied, we can query the job\u0027s *state*. The state of the job contains the set of hosts currently allocated, arranged into the requested host meshes. Conceptually, the state can be retrieved directly from the scheduler, but we may also cache snapshots of the state locally. The state is the interface to the job consumed by Monarch: Monarch bootstraps host meshes from the state alone, and is not concerned with any other aspect of the job. Conceptually, dynamic jobs (e.g., to enable consistently fast restarts, elasticity, etc.) can simply poll the state for changes. In practice, notification mechanisms would be developed so that polling isn\u0027t required. The model allows for late resolution of some parts of the job\u0027s *specification*. For example, a job that does not specify a name may instead resolve the name on the first ``apply()``. In this way, jobs can also be \"templates\". But the model also supports having the job refer to a *specific instance* by including the resolved job name in the specification itself. Note: Subclasses must NOT set ``_status`` directly. The ``state()`` method manages status transitions and pickle caching. If a subclass pre-emptively sets ``_status = \"running\"``, the ``state()`` method will skip the cache dump, breaking job persistence. Instead, let ``apply()`` set the status after ``_create()`` returns. \"\"\" def __init__(self): super().__init__() self._status: Literal[\"running\", \"not_running\"] | CachedRunning = \"not_running\" @property def _running(self) -\u003e \"Optional[JobTrait]\": match self._status: case \"not_running\": return None case \"running\": return self case CachedRunning(job=job): return job [docs] def apply(self, client_script: Optional[str] = None): \"\"\" Request the job as specified is brought into existence or modified to the current specification/ The worker machines launched in the job should call run_worker_forever to join the job. Calling apply when the job as specified has already been applied is a no-op. If client_script is not None, then creating the job arranges for the job to run train.py as the client. Implementation note: To batch launch the job, we will first write .monarch/job_state.pkl with a Job that instructs the client to connect to the job that it is running in. Then we will schedule the job including that .monarch/job_state.pkl. When the client calls `.state()`, it will find the .monarch/job_state.pkl and connect to it. \"\"\" if self._running is None: self._create(client_script) self._status = \"running\" @property def active(self) -\u003e bool: return self._running is not None [docs] def state(self, cached_path: Optional[str] = \".monarch/job_state.pkl\") -\u003e JobState: \"\"\" Get the current state of this job, containing the host mesh objects of its requires that were requested host_meshes = self.state() # properties of state hold the requested host meshes: host_meshes.trainers host_meshes.dataloaders This is a dictionary so that meshes can hold different machine types. cached_path: if cached_path is not None and the job has yet to be applied, we will first check `cached_path` for an existing created job state. If it exists and `saved_job.can_run(self)`, we will connect to the cached job. Otherwise, we will apply this job and connect to it, saving the job in `cached_path` if it is not None. Raises: JobExpiredException - when the job has finished and this connection cannot be made. \"\"\" # this is implemented uniquely for each scheduler, but it will ultimately make # calls to attach_to_workers and return the HostMeshes running_job = self._running if running_job is not None: logger.info(\"Job is running, returning current state\") return running_job._state() cached = self._load_cached(cached_path) if cached is not None: self._status = CachedRunning(cached) logger.info(\"Connecting to cached job\") return cached._state() logger.info(\"Applying current job\") self.apply() logger.info(\"Job has started, connecting to current state\") result = self._state() if cached_path is not None: # Create the directory for cached_path if it doesn\u0027t exist cache_dir = os.path.dirname(cached_path) if cache_dir: # Only create if there\u0027s a directory component os.makedirs(cache_dir, exist_ok=True) logger.info(\"Saving job to cache at %s\", cached_path) self.dump(cached_path) return result def _load_cached(self, cached_path: Optional[str]) -\u003e \"Optional[JobTrait]\": if cached_path is None: logger.info(\"No cached path provided\") return None try: job = job_load(cached_path) logger.info(\"Found cached job at path: %s\", cached_path) except FileNotFoundError: logger.info(\"No cached job found at path: %s\", cached_path) return None running = job._running if running is None: logger.info(\"Cached job is not running\") return None if not running.can_run(self): logger.info(\"Cached job cannot run this spec, removing cache\") try: running._kill() except NotImplementedError as e: logger.info(\"Failed to kill cached job: %s\", e) os.remove(cached_path) return None return job [docs] def dump(self, filename: str): \"\"\" Save job to a file. Helper to make it more apparent Jobs are serializable across processes. \"\"\" with open(filename, \"wb\") as file: # @lint-ignore PYTHONPICKLEISBAD pickle.dump(self, file) [docs] def dumps(self) -\u003e bytes: # @lint-ignore PYTHONPICKLEISBAD return pickle.dumps(self) [docs] def kill(self): running = self._running if running is not None: running._kill() self._status = \"not_running\" @abstractmethod def _state(self) -\u003e JobState: ... @abstractmethod def _create(self, client_script: Optional[str]): \"\"\"Create the job resources. Called by `apply()` when the job is not yet running. Implementations should schedule the job with the appropriate scheduler but must NOT set `_status` directly; `apply()` handles status transitions after this method returns. \"\"\" ... [docs] @abstractmethod def can_run(self, spec: \"JobTrait\") -\u003e bool: \"\"\" Is this job capable of running the job spec? This is used to check if a cached job can be used to run `spec` instead of creating a new reserveration. It is also used by the batch run infrastructure to indicate that the batch job can certainly run itself. \"\"\" ... @abstractmethod def _kill(self): \"\"\" Stop the job/reservation. \"\"\" ... [docs] def job_loads(data: bytes) -\u003e JobTrait: \"\"\" Deserialize a job from bytes. Args: data: Pickled job bytes, typically from :meth:`JobTrait.dumps`. Returns: The deserialized job object. \"\"\" # @lint-ignore PYTHONPICKLEISBAD return pickle.loads(data) [docs] def job_load(filename: str) -\u003e JobTrait: \"\"\" Load a job from a file. Args: filename: Path to the pickled job file, typically from :meth:`JobTrait.dump`. Returns: The deserialized job object. \"\"\" with open(filename, \"rb\") as file: # @lint-ignore PYTHONPICKLEISBAD job: \"JobTrait\" = pickle.load(file) return job [docs] class LocalJob(JobTrait): \"\"\" Job that runs on the local host. This job calls ``this_host()`` for each host mesh requested. It serves as a stand-in in configuration so a job can be switched between remote and local execution by changing the job configuration. \"\"\" def __init__(self, hosts: Sequence[\"str\"] = (\"hosts\",)): \"\"\" Args: hosts: Names of the host meshes to create. \"\"\" self._host_names = hosts # if launched with client_script, the proc corresponding to the # locally running client, and the log_dir it is writing to. self._proc: Optional[subprocess.Popen] = None self._log_dir: Optional[str] = None super().__init__() def _kill(self): pass [docs] def can_run(self, spec: \"JobTrait\"): \"\"\" Local jobs are the same regardless of what was saved, so just use the spec, which has the correct \u0027hosts\u0027 sequence. \"\"\" return False def _state(self) -\u003e JobState: return JobState({k: this_host() for k in self._host_names}) def _create(self, client_script: Optional[str]): if client_script is None: return # noop, because LocalJob always \u0027exists\u0027 b = BatchJob(self) b.dump(\".monarch/job_state.pkl\") log_dir = self._setup_log_directory() self._run_client_as_daemon(client_script, log_dir) logger.info( \"Started client script %s with PID: %d\", client_script, self.process.pid ) logger.info(\"Logs available at: %s\", log_dir) def _setup_log_directory(self) -\u003e str: \"\"\"Create a log directory for the batch job.\"\"\" log_base_dir = \".monarch/logs\" os.makedirs(log_base_dir, exist_ok=True) # Create a unique subdirectory for this job run self._log_dir = tempfile.mkdtemp(prefix=\"job_\", dir=log_base_dir) return self._log_dir def _run_client_as_daemon(self, client_script: str, log_dir: str) -\u003e None: \"\"\" Run the client script as a daemon process. Args: client_script: Path to the client script to run log_dir: Directory to store log files Returns: The process ID of the daemon \"\"\" # Prepare log files stdout_log = os.path.join(log_dir, \"stdout.log\") stderr_log = os.path.join(log_dir, \"stderr.log\") # Create environment with MONARCH_BATCH_JOB=1 env = os.environ.copy() env[\"MONARCH_BATCH_JOB\"] = \"1\" # Open log files with open(stdout_log, \"w\") as stdout_file, open(stderr_log, \"w\") as stderr_file: # Start the process with Python interpreter self._proc = subprocess.Popen( [sys.executable, client_script], env=env, stdout=stdout_file, stderr=stderr_file, # Detach the process from parent (daemonize) start_new_session=True, ) @property def process(self): if self._proc is None: raise ValueError(\"no local batch job\") return self._proc class BatchJob(JobTrait): \"\"\" Wrapper that can be put around other job traits to make make it always load from the job_state.pkl when MONARCH_BATCH_JOB is set. \"\"\" def __init__(self, job: JobTrait): super().__init__() self._job = job def can_run(self, spec: JobTrait): if \"MONARCH_BATCH_JOB\" in os.environ: import atexit atexit.register(self._kill) return True return False @property def _running(self) -\u003e Optional[JobTrait]: return self def _state(self): return self._job._state() def _create(self, client_script: Optional[str] = None): return self._job._create(client_script) def _kill(self): logger.info(\"Stopping Batch Job\") return self._job._kill() class ProcessState(NamedTuple): pid: int channel: str class LoginJob(JobTrait): \"\"\" Makes a connections directly to hosts via an explicit list. \"\"\" def __init__(self): super().__init__() self._meshes: Dict[str, List[str]] = {} self._host_to_pid: Dict[str, ProcessState] = {} def add_mesh(self, name: str, hosts: List[str]): self._meshes[name] = hosts def _state(self) -\u003e JobState: if not self._pids_active(): raise RuntimeError(\"lost connection\") hosts = { name: attach_to_workers( name=name, ca=\"trust_all_connections\", workers=[self._host_to_pid[v].channel for v in values], ) for name, values in self._meshes.items() } return JobState(hosts) def _create(self, client_script: Optional[str]): if client_script is not None: raise RuntimeError(\"LoginJob cannot run batch-mode scripts\") for hosts in self._meshes.values(): for host in hosts: self._host_to_pid[host] = self._start_host(host) @abstractmethod def _start_host(self, host: str) -\u003e ProcessState: ... def can_run(self, spec: \"JobTrait\") -\u003e bool: \"\"\" Is this job capable of running the job spec? This is used to check if a cached job can be used to run `spec` instead of creating a new reserveration. It is also used by the batch run infrastructure to indicate that the batch job can certainly run itself. \"\"\" return ( isinstance(spec, LoginJob) and spec._meshes == self._meshes and self._pids_active() ) def _pids_active(self) -\u003e bool: if not self.active: return False for _, p in self._host_to_pid.items(): try: # Check if process exists by sending signal 0 os.kill(p.pid, 0) except OSError: # Process doesn\u0027t exist or we don\u0027t have permission to signal it return False return True def _kill(self): for p in self._host_to_pid.values(): try: os.kill(p.pid, signal.SIGKILL) except OSError: pass class SSHJob(LoginJob): def __init__( self, python_exe: str = \"python\", ssh_args: Sequence[str] = (), monarch_port: int = 22222, ): enable_transport(\"tcp\") self._python_exe = python_exe self._ssh_args = ssh_args self._port = monarch_port super().__init__() def _start_host(self, host: str) -\u003e ProcessState: addr = f\"tcp://{host}:{self._port}\" startup = f\u0027from monarch.actor import run_worker_loop_forever; run_worker_loop_forever(address={repr(addr)}, ca=\"trust_all_connections\")\u0027 command = f\"{shlex.quote(self._python_exe)} -c {shlex.quote(startup)}\" proc = subprocess.Popen( [\"ssh\", *self._ssh_args, host, \"-n\", command], start_new_session=True, ) return ProcessState(proc.pid, addr) def can_run(self, spec): return ( isinstance(spec, SSHJob) and spec._python_exe == self._python_exe and self._port == spec._port and self._ssh_args == spec._ssh_args and super().can_run(spec) )",
        "author": {

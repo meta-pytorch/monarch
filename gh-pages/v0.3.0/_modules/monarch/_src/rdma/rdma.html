@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch._src.rdma.rdma &#8212; Monarch  documentation</title>
+    <title>monarch._src.rdma.rdma &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -40,7 +40,7 @@
 <link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -53,6 +53,12 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.es
 window.addEventListener("load", () => mermaid.run());
 </script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/_src/rdma/rdma';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/_src/rdma/rdma.html" />
     <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../../../genindex.html" />
@@ -60,6 +66,25 @@ window.addEventListener("load", () => mermaid.run());
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch._src.rdma.rdma - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -92,6 +117,25 @@ window.addEventListener("load", () => mermaid.run());
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -150,7 +194,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -163,25 +207,112 @@ window.addEventListener("load", () => mermaid.run());
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -193,6 +324,8 @@ window.addEventListener("load", () => mermaid.run());
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -200,6 +333,9 @@ window.addEventListener("load", () => mermaid.run());
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -209,7 +345,7 @@ window.addEventListener("load", () => mermaid.run());
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -254,36 +390,101 @@ window.addEventListener("load", () => mermaid.run());
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -292,65 +493,190 @@ window.addEventListener("load", () => mermaid.run());
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -459,8 +785,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -468,52 +828,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -521,6 +995,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -613,10 +1098,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -680,28 +1165,28 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../../../index.html">
-        <meta itemprop="name" content="Module code">
-        <meta itemprop="position" content="1">
-      </div>
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="monarch._src.rdma.rdma">
-        <meta itemprop="position" content="2">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../../../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
     </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch._src.rdma.rdma">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1354,8 +1839,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1467,7 +1952,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1479,7 +1964,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1529,7 +2014,7 @@ document.write(`
        "@type": "Article",
        "name": "monarch._src.rdma.rdma",
        "headline": "monarch._src.rdma.rdma",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/_src/rdma/rdma.html",
        "articleBody": "Source code for monarch._src.rdma.rdma # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import ctypes import functools import logging import warnings from collections import defaultdict from typing import Any, cast, List, Optional, Tuple import torch from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared from monarch._src.actor.proc_mesh import ProcMesh from typing_extensions import Self try: from monarch._rust_bindings.rdma import _RdmaBuffer, _RdmaManager except ImportError as e: logging.error(\"RDMA is not available: {}\".format(e)) raise e from enum import Enum from typing import Dict from monarch._src.actor.actor_mesh import Actor, context from monarch._src.actor.endpoint import endpoint from monarch._src.actor.future import Future from monarch._src.actor.proc_mesh import get_or_spawn_controller from pyre_extensions import none_throws # RDMARead/WriteTransferWarnings are warnings that are only printed once per process. # Remove these once GPU support is added. class RDMAReadTransferWarning(Warning): pass class RDMAWriteTransferWarning(Warning): pass warnings.simplefilter(\"once\", RDMAReadTransferWarning) warnings.simplefilter(\"once\", RDMAWriteTransferWarning) [docs] def is_rdma_available(): return _RdmaBuffer.rdma_supported() # Cached so that we don\u0027t have to call out to the root client every time, # which may be on a different host. @functools.cache def _ensure_init_rdma_manager() -\u003e Shared[None]: async def task() -\u003e None: # Ensure the proc mesh is initialized before we can send it over the wire, # since pickling the proc mesh before it is initiliazed would block the # tokio runtime and cause a panic. await context().actor_instance.proc_mesh.initialized await ( await get_or_spawn_controller(\"rdma_controller\", RdmaController) ).init_rdma_on_mesh.call_one(none_throws(context().actor_instance.proc_mesh)) return PythonTask.from_coroutine(task()).spawn() def _get_error(buf) -\u003e ValueError: return ValueError( \"RDMABuffer only supports 1d contiguous torch.Tensor or 1d c-contiguous memoryview. Got: {}\".format( buf ) ) def _assert_1d_contiguous(buf: torch.Tensor | memoryview) -\u003e None: if isinstance(buf, torch.Tensor): if buf.dim() != 1 or not buf.is_contiguous(): raise _get_error(buf) elif isinstance(buf, memoryview): if buf.ndim != 1 or not buf.c_contiguous: raise _get_error(buf) else: raise _get_error(buf) def _get_memoryview_addr_and_size(buf: memoryview) -\u003e tuple[int, int]: addr = ctypes.addressof(ctypes.c_char.from_buffer(buf)) size = buf.nbytes return addr, size def _get_tensor_addr_and_size(tensor: torch.Tensor) -\u003e tuple[int, int]: data_ptr: int = tensor.untyped_storage().data_ptr() # Calculate the actual starting address of the tensor data # storage_offset() can return either int or torch.SymInt in newer PyTorch versions try: storage_offset = int(tensor.storage_offset()) except Exception as e: raise RuntimeError(\"Failed to convert tensor.storage_offset() to int.\") from e offset: int = storage_offset * tensor.element_size() addr: int = data_ptr + offset size: int = tensor.element_size() * tensor.numel() return addr, size def _get_addr_and_size(buf: torch.Tensor | memoryview) -\u003e tuple[int, int]: _assert_1d_contiguous(buf) if isinstance(buf, memoryview): return _get_memoryview_addr_and_size(buf) elif isinstance(buf, torch.Tensor): return _get_tensor_addr_and_size(buf) # This shouldn\u0027t happen unless there is a bug, handle the type in caller. raise RuntimeError( \"Trying to get address and size of unsupported type. Expected memoryview or torch.Tensor. Got: {}\".format( type(buf) ) ) class RdmaController(Actor): def __init__(self) -\u003e None: self._manager_futures: Dict[ProcMesh, Future[_RdmaManager]] = {} @endpoint async def init_rdma_on_mesh(self, proc_mesh: ProcMesh) -\u003e None: # Note: RdmaController acts as coordinator and can run on any node # The RDMA support check should happen on the target proc_mesh nodes, not on RdmaController\u0027s node if proc_mesh not in self._manager_futures: async def create_manager() -\u003e _RdmaManager: proc_mesh_result = await Future( coro=cast(\"PythonTask[Any]\", proc_mesh._proc_mesh.task()) ) return none_throws( await _RdmaManager.create_rdma_manager_nonblocking( proc_mesh_result, context().actor_instance ) ) self._manager_futures[proc_mesh] = Future(coro=create_manager()) await self._manager_futures[proc_mesh] def pt_cuda_allocator_compatibility() -\u003e bool: \"\"\" Check if PyTorch CUDA caching allocator is compatible with RDMA. This checks if both the CUDA caching allocator is enabled AND expandable segments are enabled, which is required for RDMA operations with CUDA tensors. Returns: bool: True if both conditions are met, False otherwise \"\"\" if not torch.cuda.is_available(): return False # Get allocator snapshot which contains settings snapshot = torch.cuda.memory._snapshot() allocator_settings = snapshot.get(\"allocator_settings\", {}) # Check if expandable_segments is enabled return allocator_settings.get(\"expandable_segments\", False) @functools.cache def _check_cuda_expandable_segments_enabled() -\u003e bool: \"\"\" Check if PyTorch CUDA caching allocator is using expandable segments. Returns: bool: True if expandable segments are enabled, False otherwise \"\"\" try: # Call the Python implementation of pt_cuda_allocator_compatibility pt_cuda_compat = pt_cuda_allocator_compatibility() if not pt_cuda_compat: warnings.warn( \"CUDA caching allocator is not using expandable segments.\\n\" \"This is required to maximize RDMA performance with CUDA tensors.\\n\\n\" \"To fix this, set the environment variable BEFORE importing PyTorch:\\n\" \"1. In shell:\\n\" \u0027 export PYTORCH_CUDA_ALLOC_CONF=\"expandable_segments:True\"\\n\u0027 \"2. Or in Python script (BEFORE any PyTorch imports):\\n\" \" import os\\n\" \u0027 os.environ[\"PYTORCH_CUDA_ALLOC_CONF\"] = \"expandable_segments:True\"\\n\u0027 \" import torch # Must come after setting the env var\\n\\n\", UserWarning, stacklevel=2, ) return False return True except Exception as e: warnings.warn( \"Unable to verify CUDA allocator configuration.\\n\" \"Please ensure expandable segments are enabled for best RDMA performance with CUDA tensors:\\n\" \u0027 export PYTORCH_CUDA_ALLOC_CONF=\"expandable_segments:True\"\\n\u0027 \"Set this environment variable before importing PyTorch.\", UserWarning, stacklevel=2, ) return False [docs] class RDMABuffer: [docs] def __init__( self, data: torch.Tensor | memoryview, ) -\u003e None: \"\"\" RDMABuffer supports 1d contiguous tensors (including tensor views/slices) or 1d c-contiguous memoryviews. Args: data: torch.Tensor or memoryview to create the buffer from. Must be 1d and contiguous. If provided, addr and size must not be specified. Raises: ValueError: If data is not 1d contiguous, if size is 0, or if data is a GPU tensor. RuntimeError: If RDMA is not available on this platform. Note: Currently only CPU tensors are supported. GPU tensor support will be added in the future. TODO: Create TensorBuffer, which will be main user API supporting non-contiguous tensors \"\"\" if isinstance(data, torch.Tensor) and data.device.type == \"cuda\": # Check if CUDA caching allocator is using expandable segments _check_cuda_expandable_segments_enabled() assert is_rdma_available(), ( \"Tried to create an RDMABuffer, but RDMA is not available on this platform.\" ) # We need to ensure that _RdmaManager is initialized at this point, because under the hood # _RdmaBuffer.create_rdma_buffer_blocking relies on this being the case. _ensure_init_rdma_manager().block_on() addr, size = _get_addr_and_size(data) try: if size == 0: raise ValueError(\"Cannot create RDMABuffer with size 0.\") ctx = context() self._buffer: _RdmaBuffer = _RdmaBuffer.create_rdma_buffer_blocking( addr=addr, size=size, proc_id=ctx.actor_instance.proc_id, client=ctx.actor_instance, ) # TODO - specific exception except Exception as e: logging.error(\"Failed to create buffer %s\", e) raise e [docs] def size(self) -\u003e int: return self._buffer.size() [docs] def read_into( self, dst: torch.Tensor | memoryview, *, timeout: int = 3, ) -\u003e Future[Optional[int]]: \"\"\" Read data from the RDMABuffer into a destination tensor. The destination tensor must be contiguous (including tensor views/slices). Args: dst: Destination tensor or memoryview to read into. Keyword Args: timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s. Returns: Future[Optional[int]]: A Monarch Future that can be awaited or called with .get() for blocking operation. Raises: ValueError: If the destination tensor size is smaller than the RDMA buffer size. Note: Currently only CPU tensors are fully supported. GPU tensors will be temporarily copied to CPU, which may impact performance. \"\"\" dst_addr, dst_size = _get_addr_and_size(dst) if self.size() \u003e dst_size: raise ValueError( f\"Destination tensor size ({dst_size}) must be \u003e= RDMA buffer size ({self.size()})\" ) local_proc_id = context().actor_instance.proc_id client = context().actor_instance async def read_into_nonblocking() -\u003e Optional[int]: await _ensure_init_rdma_manager() res = await self._buffer.read_into( addr=dst_addr, size=dst_size, local_proc_id=local_proc_id, client=client, timeout=timeout, ) return res return Future(coro=read_into_nonblocking()) [docs] def write_from( self, src: torch.Tensor | memoryview, *, timeout: int = 3, ) -\u003e Future[None]: \"\"\" Write data from a source tensor into the RDMABuffer. Args: src: Source tensor containing data to be written to the RDMA buffer. Must be a contiguous tensor (including tensor views/slices). Either src or addr/size must be provided. Keyword Args: timeout (int, optional): Timeout in seconds for the operation. Defaults to 3s. Returns: Future[None]: A Monarch Future object that can be awaited or called with .get() for blocking operation. Returns None when completed successfully. Raises: ValueError: If the source tensor size exceeds the RDMA buffer size. Note: Currently only CPU tensors are fully supported. GPU tensors will be temporarily copied to CPU, which may impact performance. \"\"\" src_addr, src_size = _get_addr_and_size(src) if src_size \u003e self.size(): raise ValueError( f\"Source tensor size ({src_size}) must be \u003c= RDMA buffer size ({self.size()})\" ) local_proc_id = context().actor_instance.proc_id client = context().actor_instance async def write_from_nonblocking() -\u003e None: await _ensure_init_rdma_manager() res = await self._buffer.write_from( addr=src_addr, size=src_size, local_proc_id=local_proc_id, client=client, timeout=timeout, ) return res return Future(coro=write_from_nonblocking()) [docs] def drop(self) -\u003e Future[None]: \"\"\" Release the handle on the memory that the src holds to this memory. \"\"\" local_proc_id = context().actor_instance.proc_id client = context().actor_instance async def drop_nonblocking() -\u003e None: await _ensure_init_rdma_manager() await self._buffer.drop( local_proc_id=local_proc_id, client=client, ) return Future(coro=drop_nonblocking()) @property def owner(self) -\u003e str: \"\"\" The owner reference (str) \"\"\" return self._buffer.owner_actor_id() LocalMemory = torch.Tensor | memoryview [docs] class RDMAAction: \"\"\" Schedule a bunch of actions at once. This provides an opportunity to optimize bulk RDMA transactions without exposing complexity to users. \"\"\" [docs] class RDMAOp(Enum): \"\"\"Enumeration of RDMA operation types.\"\"\" READ_INTO = \"read_into\" WRITE_FROM = \"write_from\" FETCH_ADD = \"fetch_add\" COMPARE_AND_SWAP = \"compare_and_swap\" [docs] def __init__(self) -\u003e None: self._instructs: List[Tuple[RDMAAction.RDMAOp, RDMABuffer, LocalMemory]] = [] self._memory_dependencies: Dict[Tuple[int, int], RDMAAction.RDMAOp] = {} def _check_and_merge_overlapping_range( self, addr: int, size: int, op: \"RDMAAction.RDMAOp\" ) -\u003e None: \"\"\" Check for overlapping ranges and merge if found. Returns the final range to use (either new_range or expanded merged range). Updates self._memory_dependencies in place if merging occurs. \"\"\" new_start, new_end = addr, addr + size # Find overlapping range overlapping_range = None for existing_start, existing_end in self._memory_dependencies: # Check if ranges overlap if not (new_end \u003c= existing_start or existing_end \u003c= new_start): overlapping_range = (existing_start, existing_end) break # No overlap found - good to go if overlapping_range is None: self._memory_dependencies[(new_start, new_end)] = op return # Overlap found - merge ranges existing_op = self._memory_dependencies[overlapping_range] # Merge ops, only safe if neither is write_from at the moment if existing_op == self.RDMAOp.WRITE_FROM or op == self.RDMAOp.WRITE_FROM: raise ValueError( f\"Same data range already has a write_from within RDMAAction: {existing_op} vs {op}\" ) # Create expanded range that covers both expanded_range = ( min(overlapping_range[0], new_start), max(overlapping_range[1], new_end), ) # range is unchanged - no need to update if expanded_range == (new_start, new_end): return # Update dictionary: remove old range, add expanded range del self._memory_dependencies[overlapping_range] self._memory_dependencies[expanded_range] = op # now since merged, possible need to merge again return self._check_and_merge_overlapping_range( expanded_range[0], expanded_range[1] - expanded_range[0], op ) [docs] def read_into(self, src: RDMABuffer, dst: LocalMemory | List[LocalMemory]) -\u003e Self: \"\"\" Read from src RDMA buffer into dst memory. Args: src: Source RDMA buffer to read from dst: Destination local memory to read into If dst is a list, it is the concatenation of the data in the list \"\"\" # Throw NotImplementedError for lists to simplify logic if isinstance(dst, list): raise NotImplementedError(\"List destinations not yet supported\") addr, size = _get_addr_and_size(dst) if size \u003c src.size(): raise ValueError( f\"dst memory size ({size}) must be \u003e= src buffer size ({src.size()})\" ) self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.READ_INTO) self._instructs.append((self.RDMAOp.READ_INTO, src, dst)) return self [docs] def write_from(self, src: RDMABuffer, dst: LocalMemory | List[LocalMemory]) -\u003e Self: \"\"\" Write from dst memory to src RDMA buffer. Args: src: Destination RDMA buffer to write to dst: Source local memory to write from If local is a list, it is the concatenation of the data in the list \"\"\" # Throw NotImplementedError for lists to simplify logic if isinstance(dst, list): raise NotImplementedError(\"List sources not yet supported\") addr, size = _get_addr_and_size(dst) if size \u003e src.size(): raise ValueError( f\"Local memory size ({size}) must be \u003c= src buffer size ({src.size()})\" ) self._check_and_merge_overlapping_range(addr, size, self.RDMAOp.WRITE_FROM) self._instructs.append((self.RDMAOp.WRITE_FROM, src, dst)) return self [docs] def fetch_add(self, src: RDMABuffer, dst: LocalMemory, add: int) -\u003e Self: \"\"\" Perform atomic fetch-and-add operation on src RDMA buffer. Args: src: src RDMA buffer to perform operation on dst: Local memory to store the original value add: Value to add to the src buffer Atomically: *dst = *src *src = *src + add Note: src/dst are 8 bytes \"\"\" raise NotImplementedError(\"Not yet supported\") [docs] def compare_and_swap( self, src: RDMABuffer, dst: LocalMemory, compare: int, swap: int ) -\u003e Self: \"\"\" Perform atomic compare-and-swap operation on src RDMA buffer. Args: src: src RDMA buffer to perform operation on dst: Local memory to store the original value compare: Value to compare against swap: Value to swap in if comparison succeeds Atomically: *dst = *src; if (*src == compare) { *src = swap } Note: src/dst are 8 bytes \"\"\" raise NotImplementedError(\"Not yet supported\") [docs] def submit(self) -\u003e Future[None]: \"\"\" Schedules the work (can be called multiple times to schedule the same work more than once). Future completes when all the work is done. Executes futures for each src actor independently and concurrently for optimal performance. \"\"\" async def submit_all_work() -\u003e None: if not self._instructs: return work = defaultdict(list) # Group operations by owner for concurrent execution per owner for op, src, dst in self._instructs: if op == self.RDMAOp.READ_INTO: fut = src.read_into(dst) elif op == self.RDMAOp.WRITE_FROM: fut = src.write_from(dst) else: raise NotImplementedError(f\"Unknown RDMA operation: {op}\") work[src.owner].append(fut) # Create a list of tasks, one per owner, that wait for all that owner\u0027s futures sequentially owner_tasks = [] for _, futures in work.items(): # Create a coroutine that processes all futures for a qp sequentially async def process_owner_futures(owner_futures_list=futures): \"\"\"Process all futures for a single qp sequentially\"\"\" for future in owner_futures_list: await future # Convert to PythonTask for Monarch\u0027s native concurrency owner_task = PythonTask.from_coroutine(process_owner_futures()) owner_tasks.append(owner_task) # Spawn all owner tasks concurrently and collect their shared handles shared_tasks = [task.spawn() for task in owner_tasks] # Wait for all owner tasks to complete concurrently for shared_task in shared_tasks: await shared_task return Future(coro=submit_all_work())",
        "author": {
