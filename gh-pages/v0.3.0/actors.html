@@ -16,7 +16,7 @@
 <meta property="og:image:alt" content="Monarch" />
 <meta name="description" content="Table of Contents: Introduction, What is an Actor?, Actor Lifecycle, Endpoints and Messaging, Actor Context, ActorMesh, Error Handling in Meshes, Advanced Patterns, Best Practices. Introduction: Ac..." />
 
-    <title>Monarch Actors: Complete Guide &#8212; Monarch  documentation</title>
+    <title>Monarch Actors: Complete Guide &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -37,7 +37,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -49,7 +49,7 @@
 <link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="_static/documentation_options.js?v=19ed39ba"></script>
     <script src="_static/doctools.js?v=888ff710"></script>
     <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
@@ -62,6 +62,12 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.es
 window.addEventListener("load", () => mermaid.run());
 </script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'actors';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/actors.html" />
     <link rel="icon" href="_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="genindex.html" />
@@ -70,6 +76,25 @@ window.addEventListener("load", () => mermaid.run());
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Monarch Actors: Complete Guide - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -102,6 +127,25 @@ window.addEventListener("load", () => mermaid.run());
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -160,7 +204,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -173,25 +217,112 @@ window.addEventListener("load", () => mermaid.run());
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -203,6 +334,8 @@ window.addEventListener("load", () => mermaid.run());
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -210,6 +343,9 @@ window.addEventListener("load", () => mermaid.run());
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -219,7 +355,7 @@ window.addEventListener("load", () => mermaid.run());
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -264,36 +400,101 @@ window.addEventListener("load", () => mermaid.run());
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="index.html">
+  
+    
+    <img src="_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="index.html">
   
-  
-  
-  
-  
+    
+    <img src="_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -302,65 +503,190 @@ window.addEventListener("load", () => mermaid.run());
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" current active">
-  <a class="nav-link dropdown-item nav-internal" href="#">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="current active">
+              <a class="nav-link dropdown-item nav-internal" href="#">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -471,8 +797,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -480,52 +840,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item current active">
+        
+          
+          <a class="nav-link nav-internal active" href="#">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -533,6 +1007,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -634,10 +1119,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -698,22 +1183,22 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="Monarch Actors: Complete Guide">
-        <meta itemprop="position" content="1">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Monarch Actors: Complete Guide">
+      <meta itemprop="position" content="1">
     </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1799,8 +2284,8 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -2019,17 +2504,23 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
   <div class="sidebar-heading">PyTorch Libraries</div>
   <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
   
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchrec" style="color: var(--pst-color-text-muted)">torchrec</a></li>
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchft" style="color: var(--pst-color-text-muted)">torchft</a></li>
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/torchcodec" style="color: var(--pst-color-text-muted)">TorchCodec</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
   
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
   
-   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
   
    <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
   
@@ -2085,7 +2576,7 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -2097,7 +2588,7 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -2147,7 +2638,7 @@ If you own a mesh of N actors, each of which generates a supervision error, it m
        "@type": "Article",
        "name": "Monarch Actors: Complete Guide",
        "headline": "Monarch Actors: Complete Guide",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/actors.html",
        "articleBody": "Monarch Actors: Complete Guide# Table of Contents# Introduction What is an Actor? Actor Lifecycle Endpoints and Messaging Actor Context ActorMesh Error Handling in Meshes Advanced Patterns Best Practices Introduction# Actors are the fundamental building blocks of Monarch applications. They are isolated, concurrent state machines that communicate through asynchronous message passing. This document provides a comprehensive guide to understanding and using actors in Monarch. For deeper technical details on the Hyperactor actor system implementation, see the Hyperactor Book which provides comprehensive information on the underlying actor runtime and system architecture. What is an Actor?# Definition# An Actor in Monarch is: An isolated unit of computation with private state A message handler that processes messages sequentially A participant in the supervision tree A typed entity with endpoints for remote method invocation Core Characteristics# graph LR A[Actor] --\u003e B[Private State] A --\u003e C[Message Mailbox] A --\u003e D[Endpoints] A --\u003e E[Lifecycle Hooks] style A fill:#855b9d,stroke:#333,stroke-width:2px style B fill:#007c88 style C fill:#007c88 style D fill:#007c88 style E fill:#007c88 1. Isolation Each actor has its own private state State is never directly accessed by other actors All interaction happens through messages 2. Sequential Processing Messages are processed one at a time Next message waits until current message completes Guarantees consistent state within actor 3. Asynchronous Communication Messages are sent asynchronously Sender doesn\u2019t block waiting for response Results returned as Futures 4. Location Transparency Actors can be local or remote Same API regardless of location Framework handles serialization and routing Actor Lifecycle# Lifecycle Stages# stateDiagram-v2 [*] --\u003e Creating: spawn() Creating --\u003e Constructing: allocate resources Constructing --\u003e Running: __init__() Running --\u003e Running: handle messages Running --\u003e Terminating: stop/error Terminating --\u003e [*]: cleanup Constructing --\u003e Failed: __init__ error Running --\u003e Failed: unhandled error Failed --\u003e [*]: propagate to parent 1. Creation Phase# Spawning an Actor: from monarch.actor import Actor, endpoint, this_proc class MyActor(Actor): def __init__(self, param1: int, param2: str): self.param1 = param1 self.param2 = param2 self.state = {} # Spawn on current process actor = this_proc().spawn(\"my_actor\", MyActor, param1=42, param2=\"hello\") What Happens: Runtime allocates resources for the actor Actor is registered in the runtime Mailbox is created for message delivery Actor ID is assigned 2. Construction Phase# The __init__ Method: class DataProcessor(Actor): def __init__(self, buffer_size: int): # Initialize state self.buffer_size = buffer_size self.buffer = [] self.processed_count = 0 Important Notes: __init__ is called during actor construction Arguments passed to spawn() are forwarded to __init__ Initialize all actor state here After __init__ completes, the actor is ready to receive messages 3. Running Phase# Once initialized, the actor enters its main lifecycle where it processes messages. sequenceDiagram participant Mailbox participant ActorInstance participant Handler loop Message Processing Mailbox-\u003e\u003eActorInstance: Deliver next message ActorInstance-\u003e\u003eHandler: Invoke endpoint Handler-\u003e\u003eHandler: Execute logic Handler--\u003e\u003eActorInstance: Return result ActorInstance-\u003e\u003eActorInstance: Process result end Message Processing: Actor waits for messages in mailbox Processes one message at a time Invokes corresponding endpoint handler Returns result or sends to port 4. Termination Phase# Normal Termination: All child actors terminated Mailbox drained Resources cleaned up Parent notified Error Termination: Unhandled exception in handler Propagated to supervisor Supervision tree handles recovery (see Error Handling in Meshes) All child actors terminated Endpoints and Messaging# What are Endpoints?# Endpoints are methods decorated with @endpoint that define an actor\u2019s public API. from monarch.actor import Actor, endpoint class Calculator(Actor): def __init__(self): self.history = [] @endpoint def add(self, a: int, b: int) -\u003e int: result = a + b self.history.append((\"add\", a, b, result)) return result @endpoint def multiply(self, a: int, b: int) -\u003e int: result = a * b self.history.append((\"multiply\", a, b, result)) return result @endpoint def get_history(self) -\u003e list: return self.history Messaging Adverbs# Endpoints support different invocation patterns called adverbs: 1. call_one() - Single Actor Call# Call a single actor and get response. calc = this_proc().spawn(\"calc\", Calculator) # Synchronous wait for result result = calc.add.call_one(5, 3).get() print(result) # 8 # Async await result = await calc.add.call_one(5, 3) Use When: Calling exactly one actor Need the result Point-to-point communication Flow Diagram: sequenceDiagram participant Client participant ActorInstance Client-\u003e\u003eActorInstance: call_one(args) Note over ActorInstance: Process message ActorInstance--\u003e\u003eClient: Future[Result] Client-\u003e\u003eClient: .get() waits Note over Client: Result available 2. call() - Broadcast and Collect# Broadcast to all actors in mesh and collect responses. calcs = procs.spawn(\"calcs\", Calculator) # Multiple actors # Call all and collect results results = calcs.add.call(10, 5).get() print(results) # [15, 15, 15, 15, 15, 15, 15, 15] Use When: Broadcasting to multiple actors Need all responses Parallel computation Flow Diagram: sequenceDiagram participant Client participant Mesh participant A1 as Actor 1 participant A2 as Actor 2 participant An as Actor N Client-\u003e\u003eMesh: call(args) par Broadcast Mesh-\u003e\u003eA1: message Mesh-\u003e\u003eA2: message Mesh-\u003e\u003eAn: message end par Responses A1--\u003e\u003eMesh: result A2--\u003e\u003eMesh: result An--\u003e\u003eMesh: result end Mesh--\u003e\u003eClient: Future[List[Result]] 3. broadcast() - Fire and Forget# Send to all actors without waiting for responses. trainers = procs.spawn(\"trainers\", Trainer) # Fire and forget trainers.update_learning_rate.broadcast(0.001) # Continues immediately, no waiting next_operation() Use When: Don\u2019t need responses Side effects only Maximum throughput needed Flow Diagram: sequenceDiagram participant Client participant Mesh participant Actors Client-\u003e\u003eMesh: broadcast(args) Note over Client: Returns immediately Mesh-\u003e\u003eActors: messages Note over Actors: Process async 4. rref() - Distributed Tensor Reference# Return distributed tensor from actor endpoint. class LinearActor(Actor): def __init__(self): self.weights = torch.rand(100, 100) @endpoint(propagate=lambda x: x) def forward(self, input): return input @ self.weights linear = procs.spawn(\"linear\", LinearActor) # Returns distributed tensor reference with procs.activate(): x = torch.rand(10, 100) output = linear.forward.rref(x) # Distributed tensor result = torch.relu(output) Use When: Working with distributed tensors Need tensor operations across actors Building neural network layers 5. stream() - Streaming Responses# Stream responses as they arrive. # Process responses as they come async for result in workers.compute.stream(data): print(f\"Got result: {result}\") process_result(result) Use When: Want to process results as they arrive Don\u2019t want to wait for all responses Pipeline processing Message Ordering# Monarch guarantees FIFO (First-In-First-Out) message ordering: actor.method1.call_one(arg1) # Message M1 actor.method2.call_one(arg2) # Message M2 actor.method3.call_one(arg3) # Message M3 # Actor processes: M1, then M2, then M3 (in order) Ordering Diagram: sequenceDiagram participant Sender participant ActorMailbox participant ActorInstance Sender-\u003e\u003eActorMailbox: M1 Sender-\u003e\u003eActorMailbox: M2 Sender-\u003e\u003eActorMailbox: M3 Note over ActorMailbox: FIFO Queue: [M1, M2, M3] ActorMailbox-\u003e\u003eActorInstance: Deliver M1 Note over ActorInstance: Process M1 ActorMailbox-\u003e\u003eActorInstance: Deliver M2 Note over ActorInstance: Process M2 ActorMailbox-\u003e\u003eActorInstance: Deliver M3 Note over ActorInstance: Process M3 Actor Context# What is Context?# The Context provides runtime information about the current execution environment. from monarch.actor import context, Actor, endpoint class ContextAwareActor(Actor): @endpoint def get_info(self): ctx = context() # Get current rank rank = ctx.message_rank # Get actor instance actor_inst = ctx.actor_instance # Get process reference proc = ctx.proc return { \"rank\": rank, \"actor_id\": actor_inst.actor_id, \"proc_id\": actor_inst.proc_id } Context Information# 1. Message Rank# The position in the mesh for the current message. @endpoint def process(self): rank = context().message_rank # rank is a dict: {\"hosts\": 0, \"gpus\": 3} if rank[\"gpus\"] == 0: print(\"I\u0027m the first GPU!\") Important: Message rank may differ from actor rank when slicing: # Actor mesh: {\"hosts\": 4, \"gpus\": 8} actors = procs.spawn(\"actors\", MyActor) # Slice to first 2 GPUs subset = actors.slice(gpus=slice(0, 2)) # Inside actor: # - actor_instance.rank = {\"hosts\": X, \"gpus\": Y} (original position) # - message_rank = {\"hosts\": X, \"gpus\": 0 or 1} (position in slice) 2. Actor Instance# Information about the actor itself. @endpoint def get_details(self): inst = context().actor_instance return { \"actor_id\": inst.actor_id, # Unique actor ID \"rank\": inst.rank, # Position in mesh \"proc\": inst.proc, # Process reference } 3. Process Reference# Reference to the process hosting this actor. @endpoint def spawn_sibling(self): # Get our process proc = context().proc # Spawn sibling actor on same process sibling = proc.spawn(\"sibling\", SiblingActor) return sibling Context Usage Diagram# graph TD A[context] --\u003e B[message_rank] A --\u003e C[actor_instance] A --\u003e D[proc] C --\u003e C1[actor_id] C --\u003e C2[rank] C --\u003e C3[proc_id] D --\u003e D1[spawn] D --\u003e D2[host_mesh] style A fill:#007c88,stroke:#333,stroke-width:2px ActorMesh# What is ActorMesh?# An ActorMesh is a collection of actor instances organized in a multidimensional structure. It provides: Structured organization of actors Slicing and indexing operations Broadcast messaging Point-to-point references Creating ActorMesh# # Create process mesh procs = this_host().spawn_procs(per_host={\"gpus\": 8}) # Spawn actors (creates ActorMesh) actors = procs.spawn(\"my_actors\", MyActor, init_param=value) print(type(actors)) # ActorMesh print(actors.extent) # {\"gpus\": 8} Mesh Structure# graph TD subgraph ActorMesh subgraph Row1[GPU 0] A0[Actor Instance] end subgraph Row2[GPU 1] A1[Actor Instance] end subgraph Row3[GPU 2] A2[Actor Instance] end subgraph Row4[GPU 3] A3[Actor Instance] end subgraph Row5[GPU 4] A4[Actor Instance] end subgraph Row6[GPU 5] A5[Actor Instance] end subgraph Row7[GPU 6] A6[Actor Instance] end subgraph Row8[GPU 7] A7[Actor Instance] end end style A0 fill:#007c88 style A1 fill:#007c88 style A2 fill:#007c88 style A3 fill:#007c88 style A4 fill:#007c88 style A5 fill:#007c88 style A6 fill:#007c88 style A7 fill:#007c88 Slicing Operations# Basic Slicing# # Get single actor by index actor_0 = actors.slice(gpus=0) # Get range of actors first_four = actors.slice(gpus=slice(0, 4)) # Multidimensional slicing subset = actors.slice(hosts=slice(0, 2), gpus=slice(0, 4)) Slicing Patterns# # All actors in mesh actors.method.call() # First GPU on each host actors.slice(gpus=0).method.call() # GPUs 0-3 on all hosts actors.slice(gpus=slice(0, 4)).method.call() # Specific point actors.slice(hosts=1, gpus=3).method.call_one() Slicing Visualization: graph TB subgraph Full Mesh [8x4] direction LR subgraph R0[Host 0] H0G0[GPU 0] H0G1[GPU 1] H0G2[GPU 2] H0G3[GPU 3] end subgraph R1[Host 1] H1G0[GPU 0] H1G1[GPU 1] H1G2[GPU 2] H1G3[GPU 3] end end subgraph Slice Example [hosts=0, gpus=0:2] S0[Host 0, GPU 0] S1[Host 0, GPU 1] end H0G0 -.-\u003e|selected| S0 H0G1 -.-\u003e|selected| S1 style H0G0 fill:#007c88 style H0G1 fill:#007c88 style S0 fill:#855b9d style S1 fill:#855b9d Passing Actor References# Actors can be passed as arguments to other actors: class Server(Actor): @endpoint def serve(self): return \"data\" class Client(Actor): def __init__(self, server: Server): # Select corresponding server rank = context().actor_instance.rank self.server = server.slice(**rank) @endpoint def fetch(self): return self.server.serve.call_one().get() # Create both meshes servers = server_procs.spawn(\"servers\", Server) clients = client_procs.spawn(\"clients\", Client, servers) # Clients can now communicate with servers data = clients.fetch.call().get() Error Handling in Meshes# When you spawn procs and actors, you need to know when they encounter errors, and have a chance to recover from them. This process is called \u201csupervision\u201d, because the owner of the resource (meshes of hosts, procs, actors) supervises them to make sure they are making progress. Principles of ownership# We start with a set of principles we want to be true about ownership of resources, such that we can make the guarantees for a good user experience: Creating new meshes always results in an owned mesh. For example, if the holder of a ProcMesh reference spawns an actor, that operation returns an owned ActorMesh. All meshes are owned by at most one actor. We do not support transfer or suspension of ownership. An actor can own multiple resources. A mesh cannot outlive its owner \u2013 that is, when the owner stops or dies, so does the mesh. If a mesh stops or dies, it will no longer handle any messages except for a final \u201ccleanup\u201d message. A stopped mesh will accept no new message, but drain all of its existing pending messages before cleanup. The owned mesh will run cleanup before its owner runs cleanup. From these principles, we can also derive that ownership follows a strict hierarchy. We can always draw a single path from any mesh to some \u201croot\u201d owner. This makes the supervision hierarchy a tree. There are no orphan (managed) objects in the system: all failures must propagate. The following is a further axiomitization, separating actor supervision from mesh lifecycle management: Actors# Actors form a strict hierarchy of ownership. Typically the root of the hierarchy is the main script\u2019s client actor. We say that an actor is owned by its parent. A root actor is not owned. When an actor fails, the failure propagates to its parent. The parent can handle the failure. When a failure is not handled, the parent actor fails. (Which causes its failure to be propagated in turn.) When the root actor fails, it invokes the user fault handler, which by default will exit the process. Meshes:# All (host, proc, actor) meshes are owned by an actor. In turn, the lifecycle of the mesh is tied to that actor. If the actor stops (whether through failure or grace), then its own meshes are also stopped. Mesh lifecycle events (for example, the failure of an actor in an actor mesh) generate failures that are also propagated to its owner actor; the rules from above apply. Supervision# From these follow the rules of supervision. We say that the owner of a mesh supervises the mesh. This means that it is responsible for responding to failures in that mesh. In principle, it does not matter how failures are instigated; the supervisor is always responsible for determining how to handle it. Another important principle at play here is encapsulation: only the owner of a mesh knows how to handle mesh failure. No other component should need to know. Thus, when a mesh fails in some way (for example, an actor failed), the owning actor receives a failure notification. In response to such failures, the actor must recover from the failure. If it fails to do so (either because it did not handle the event, or because it failed to recover the mesh properly), the actor itself must fail, cascading the failure up the ownership hierarchy. This causes all meshes owned by the actor to also fail. It is then up to the owner of the mesh to which that actor belongs to recover again. This is similar to exception handling mechanisms: one can choose to handle exceptions at the appropriate level in the hierarchy (call stack), and failure to handle an exception propagates the failure (and thus terminates the remainder of functions in the call stack). Supervision Python API# Actors can handle failures by providing an implementation of the __supervise__ method: class ManagerActor(Actor): def __init__(self, worker_procs: ProcMesh): # \"workers\" is now owned by this actor. If this actor fails, then # the \"workers\" mesh will also fail. self.workers = worker_procs.spawn(\"workers\", WorkerActor) def __supervise__(self, failure: MeshFailure) -\u003e bool: # This is invoked whenever an owned mesh fails. # The failure object can be stringified, and will contain the error message, # the actor name, and (sometimes) the rank that failed, if it can be determined. # The full API can be found on the MeshFailure typing stub: # monarch/python/monarch/_rust_bindings/monarch_hyperactor/supervision.pyi logging.error(f\"failure encountered: {failure}\") # To handle the event, return a truthy object. To consider it unhandled, # return a falsey object (such as None or False). return None __supervise__ is special: Because it handles \u201cexceptions\u201d, we have to be able to invoke it at any (safe) point. This is because otherwise we might run into a deadlock: for example, an actor might be waiting for a result from a failed actor. Thus, we define safe points (e.g., waiting for channel receives) at which we may safely invoke the supervision handler. This means that supervise handlers have to be written carefully: it can potentially change the state of the actor in the middle of handling a message. If __supervise__ returns a truthy value, the failure will be considered handled and not delivered further up the chain. If it returns a falsey value (including None, if there is no return), the failure will be delivered to that Actor\u2019s owner recursively until it reaches the original client. If it reaches the original client with no handling, it will crash. If __supervise__ raises an Exception of any kind, it will be considered a new supervision event to be delivered to that Actor\u2019s owner. Its cause will be set to the supervision event it was handling. This behavior matches the special method __exit__ for context managers. We make no guarantees about how many times __supervise__ will be called. If you own a mesh of N actors, each of which generates a supervision error, it may be called anywhere between 1 and N times inclusive. Advanced Patterns# 1. Explicit Response Ports# For out-of-order responses or background processing: from monarch.actor import Port, endpoint import threading from queue import Queue class AsyncProcessor(Actor): def __init__(self): self.queue = Queue() self.worker = threading.Thread(target=self._process_loop) self.worker.start() @endpoint(explicit_response_port=True) def process(self, port: Port[str], data: str): # Add to queue with response port self.queue.put((port, data)) def _process_loop(self): while True: port, data = self.queue.get() # Process data result = self._heavy_computation(data) # Send response when ready port.send(result) 2. Actor Supervision# Custom supervision for fine-grained error handling: class SupervisorActor(Actor): def __init__(self): self.children = [] def __supervise__(self, event): print(f\"Supervision event: {event}\") if event.is_recoverable(): # Restart failed actor self.restart_child(event.actor_id) return True # Handled else: # Propagate to parent return False @endpoint def spawn_worker(self): # Spawn supervised child worker = context().proc.spawn(\"worker\", WorkerActor) self.children.append(worker) return worker 3. Channels for Direct Communication# Low-level messaging with channels: from monarch.actor import Channel, Port, PortReceiver class Producer(Actor): def __init__(self): self.consumers = [] @endpoint def register_consumer(self, port: Port): self.consumers.append(port) @endpoint def produce(self, data): # Send to all registered consumers for port in self.consumers: port.send(data) class Consumer(Actor): def __init__(self, producer: Producer): # Create channel self.port, self.receiver = Channel.open() # Register with producer producer = producer.slice(gpus=0) producer.register_consumer.call_one(self.port) @endpoint async def consume(self): # Receive from channel data = await self.receiver.recv() return data 4. Value Mesh for State Sharing# Share readonly state across actor mesh: from monarch.actor import ValueMesh class ConfigActor(Actor): def __init__(self, config_mesh: ValueMesh[dict]): # Each actor gets corresponding config rank = context().actor_instance.rank self.config = config_mesh[rank] @endpoint def get_config(self): return self.config # Create value mesh configs = [{\"id\": i, \"param\": i * 10} for i in range(8)] config_mesh = ValueMesh.from_list(configs, extent={\"gpus\": 8}) # Spawn actors with value mesh actors = procs.spawn(\"actors\", ConfigActor, config_mesh) Best Practices# 1. Actor Design# \u2705 DO: Keep actors focused on single responsibility Use immutable messages when possible Handle errors gracefully Document endpoint contracts \u274c DON\u2019T: Share mutable state between actors Block in endpoints (use async) Ignore supervision events Create circular dependencies 2. State Management# class GoodActor(Actor): def __init__(self): # All state in __init__ self.counter = 0 self.data = [] @endpoint def update(self, value): # Modify state atomically self.counter += 1 self.data.append(value) return self.counter # Bad: External state global_state = {} # \u274c Don\u0027t do this class BadActor(Actor): @endpoint def update(self, key, value): global_state[key] = value # \u274c Race conditions! 3. Endpoint Design# class WellDesignedActor(Actor): # \u2705 Clear, typed endpoints @endpoint def process_batch(self, batch_id: int, data: list[float]) -\u003e dict: \"\"\" Process a batch of data. Args: batch_id: Unique batch identifier data: List of data points to process Returns: Dictionary with processing results \"\"\" results = self._process(data) return { \"batch_id\": batch_id, \"results\": results, \"processed_at\": time.time() } 4. Error Handling# class ResilientActor(Actor): @endpoint def risky_operation(self, data): try: result = self._process(data) return {\"success\": True, \"result\": result} except ValueError as e: # Log and return error logger.error(f\"Invalid data: {e}\") return {\"success\": False, \"error\": str(e)} except Exception as e: # Unexpected error - let supervision handle it logger.error(f\"Unexpected error: {e}\") raise 5. Performance Tips# class OptimizedActor(Actor): def __init__(self): # \u2705 Pre-allocate resources self.buffer = torch.zeros(1000, 1000) self.cache = {} @endpoint def compute(self, input_data): # \u2705 Reuse buffers self.buffer.copy_(input_data) result = self._compute(self.buffer) # \u2705 Cache expensive computations if input_data.id in self.cache: return self.cache[input_data.id] self.cache[input_data.id] = result return result 6. Testing Actors# import pytest from monarch.actor import this_proc @pytest.mark.asyncio async def test_calculator(): # Spawn actor calc = this_proc().spawn(\"test_calc\", Calculator) # Test endpoint result = await calc.add.call_one(5, 3) assert result == 8 # Test history history = await calc.get_history.call_one() assert len(history) == 1 assert history[0] == (\"add\", 5, 3, 8) Summary# Key Takeaways# Actors are Isolated: Private state, message-based communication Sequential Processing: One message at a time, FIFO ordering Typed Endpoints: Clear API with type hints Location Transparent: Same code for local/remote actors Supervision Tree: Automatic error propagation and handling ActorMesh: Multidimensional organization with slicing Context API: Runtime information and services Actor Lifecycle Recap# graph LR A[Spawn] --\u003e B[__init__] B --\u003e C[Running] C --\u003e D[Handle Messages] D --\u003e C C --\u003e E[Terminate] style A fill:#855b9d style B fill:#007c88 style C fill:#007c88 style D fill:#13a3a4 style E fill:#0072c7 Quick Reference Card# Basic Actor# from monarch.actor import Actor, endpoint, this_proc class MyActor(Actor): def __init__(self, param): self.param = param @endpoint def method(self, arg): return self.param + arg actor = this_proc().spawn(\"name\", MyActor, param=10) result = actor.method.call_one(5).get() # 15 Actor Mesh# # Spawn mesh actors = procs.spawn(\"actors\", MyActor, param=10) # Broadcast and collect results = actors.method.call(5).get() # Fire and forget actors.method.broadcast(5) # Slice subset = actors.slice(gpus=slice(0, 4)) Context# from monarch.actor import context @endpoint def my_endpoint(self): ctx = context() rank = ctx.message_rank proc = ctx.proc Supervision# class MySupervisor(Actor): def __supervise__(self, event): # Handle or propagate return True # Handled",
        "author": {

@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>monarch.common.tensor &#8212; Monarch  documentation</title>
+    <title>monarch.common.tensor &#8212; Monarch v0.3.0 documentation</title>
   
   
   
@@ -28,7 +28,7 @@
 <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=36fba2ff" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=6977116a" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery.css?v=61a4c737" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
@@ -40,7 +40,7 @@
 <link rel="preload" as="script" href="../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
   <script src="../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
 
-    <script src="../../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../../_static/documentation_options.js?v=19ed39ba"></script>
     <script src="../../../_static/doctools.js?v=888ff710"></script>
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
@@ -53,6 +53,12 @@ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.es
 window.addEventListener("load", () => mermaid.run());
 </script>
     <script>DOCUMENTATION_OPTIONS.pagename = '_modules/monarch/common/tensor';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.3.0';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
     <link rel="canonical" href="https://meta-pytorch.org/monarch/_modules/monarch/common/tensor.html" />
     <link rel="icon" href="../../../_static/torch-monarch-icons.svg"/>
     <link rel="index" title="Index" href="../../../genindex.html" />
@@ -60,6 +66,25 @@ window.addEventListener("load", () => mermaid.run());
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="monarch.common.tensor - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.3.0">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -92,6 +117,25 @@ window.addEventListener("load", () => mermaid.run());
   :root {
     --header-height: 0px !important;
     --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
   }
 </style>
 
@@ -150,7 +194,7 @@ window.addEventListener("load", () => mermaid.run());
   fbq('track', 'PageView');
 </script>
 <script>
-  document.documentElement.setAttribute('data-version', '');
+  document.documentElement.setAttribute('data-version', 'v0.3.0');
 </script>
 <noscript>
   <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
@@ -163,25 +207,112 @@ window.addEventListener("load", () => mermaid.run());
 <!-- End Facebook Pixel Code -->
 <!-- Repository configuration for tutorials -->
 
-<!-- Script to Fix scrolling -->
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // Fix anchor scrolling
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
       anchor.addEventListener('click', function (e) {
-        e.preventDefault();
         const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
         const targetElement = document.getElementById(targetId);
 
         if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
           const headerHeight =
             (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
             (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
 
           const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
-          window.scrollTo({
-            top: targetPosition,
-            behavior: 'smooth'
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
           });
 
           // Update URL hash without scrolling
@@ -193,6 +324,8 @@ window.addEventListener("load", () => mermaid.run());
 </script>
 
 <script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -200,6 +333,9 @@ window.addEventListener("load", () => mermaid.run());
   </head>
 
 <body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
   
   
   
@@ -209,7 +345,7 @@ window.addEventListener("load", () => mermaid.run());
   
   
   <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
-  
+
   
   <div id="pst-scroll-pixel-helper"></div>
   
@@ -254,36 +390,101 @@ window.addEventListener("load", () => mermaid.run());
 
   
     <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
 <div class="bd-header__inner bd-page-width">
   <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
     <span class="fa-solid fa-bars"></span>
   </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../index.html">
+  
+    
+    <img src="../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
   
   
   <div class=" navbar-header-items__start">
     
-      <div class="navbar-item">
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
 
   
-    
   
+  
+
 
 <a class="navbar-brand logo" href="../../../index.html">
   
-  
-  
-  
-  
+    
+    <img src="../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
     
     
+    <script>document.write(`<img src="../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
       
     
-    
-    <img src="../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch  documentation - Home"/>
-    <script>document.write(`<img src="../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch  documentation - Home"/>`);</script>
-  
-  
-</a></div>
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
     
   </div>
   
@@ -292,65 +493,190 @@ window.addEventListener("load", () => mermaid.run());
     <div class="me-auto navbar-header-items__center">
       
         <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../installation.html">
-    Installation
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-            <li class="nav-item dropdown">
-                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
-                    More
-                </button>
-                <ul id="pst-nav-more-links" class="dropdown-menu">
-                    
-<li class=" ">
-  <a class="nav-link dropdown-item nav-internal" href="../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
-                </ul>
-            </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
             
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
   </ul>
-</nav></div>
+</nav>
+</div>
       
     </div>
     
     
     <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
       
       
         <div class="navbar-item">
@@ -459,8 +785,42 @@ document.write(`
       <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
         
 
+
+
+
   
   <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
     
     
       <div class="sidebar-header-items__center">
@@ -468,52 +828,166 @@ document.write(`
           
           
             <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <nav>
   <ul class="bd-navbar-elements navbar-nav">
     
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../installation.html">
-    Installation
-  </a>
-</li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/crawler.html">
+                  Distributed Web Crawler Example With Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP Examples Using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes Using Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/grpo_actor.html">
+                  Distributed PPO-like Reinforcement Learning with Monarch Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
 
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/getting_started.html">
-    Getting Started
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../generated/examples/index.html">
-    Examples
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../api/index.html">
-    Python API
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../rust-api.html">
-    Internal APIs
-  </a>
-</li>
-
-
-<li class="nav-item ">
-  <a class="nav-link nav-internal" href="../../../actors.html">
-    Monarch Actors: Complete Guide
-  </a>
-</li>
-
+    
+    
   </ul>
-</nav></div>
+</nav>
+</div>
           
         
       </div>
@@ -521,6 +995,17 @@ document.write(`
     
     
       <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
         
           <div class="navbar-item">
   
@@ -613,10 +1098,10 @@ document.write(`
   
   <div class="sidebar-primary-items__end sidebar-primary__section">
   </div>
-  
-  <div id="rtd-footer-container"></div>
 
 
+
+<div id="rtd-footer-container"></div>
       </div>
       
       <main id="main-content" class="bd-main" role="main">
@@ -680,28 +1165,28 @@ document.write(`
 </div>
               
               
-  
+
 <div id="searchbox"></div>
-  <article class="bd-article" id="pytorch-article">
-    <!-- Hidden breadcrumb schema for SEO only -->
-    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <link itemprop="item" href="../../index.html">
-        <meta itemprop="name" content="Module code">
-        <meta itemprop="position" content="1">
-      </div>
-      
-      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
-        <meta itemprop="name" content="monarch.common.tensor">
-        <meta itemprop="position" content="2">
-      </div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="../../index.html">
+      <meta itemprop="name" content="Module code">
+      <meta itemprop="position" content="1">
     </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="monarch.common.tensor">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
 
-    
-    
+  
+  
 
-    
+  
               
                 
 <div id="searchbox"></div>
@@ -1603,8 +2088,8 @@ document.write(`
 
                 </article>
               
-  </article>
-  
+</div>
+
               
               
                 <footer class="bd-footer-article">
@@ -1716,7 +2201,7 @@ document.write(`
       <div class="copyright">
       
         <p>
-           Copyright © 2025 Meta Platforms, Inc
+           Copyright © Meta Platforms, Inc
         </p>
         
       </div>
@@ -1728,7 +2213,7 @@ document.write(`
 
 <div class="cookie-banner-wrapper">
   <div class="container">
-    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
     <img class="close-button" src="../../../_static/img/pytorch-x.svg">
   </div>
 </div>
@@ -1778,7 +2263,7 @@ document.write(`
        "@type": "Article",
        "name": "monarch.common.tensor",
        "headline": "monarch.common.tensor",
-       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
        "url": "/_modules/monarch/common/tensor.html",
        "articleBody": "Source code for monarch.common.tensor # Copyright (c) Meta Platforms, Inc. and affiliates. # All rights reserved. # # This source code is licensed under the BSD-style license found in the # LICENSE file in the root directory of this source tree. # pyre-unsafe import itertools import re import traceback import typing import warnings from collections import defaultdict from typing import ( Any, Callable, cast, Dict, Iterable, List, Literal, NamedTuple, Optional, runtime_checkable, Sequence, TYPE_CHECKING, TypeVar, Union, ) import torch import torch._ops from monarch.common._C import get_built_pytorch_version from monarch.common.function import ResolvableFunctionFromPath from torch._subclasses.fake_tensor import FakeTensor from torch.utils._pytree import tree_map from . import messages, stream from .base_tensor import BaseTensor from .borrows import StorageAliases if TYPE_CHECKING: from monarch.common.device_mesh import DeviceMesh from monarch._src.actor.shape import NDSlice from .fake import fake_call from .function import Propagator, ResolvableFunction from .invocation import Invocation from .messages import Dims from .reference import Referenceable from .stream import Stream from .tree import flatten _valid_reduce = Literal[ \"stack\", \"sum\", \"avg\", \"product\", \"min\", \"max\", \"band\", \"bor\", \"bxor\" ] T = TypeVar(\"T\") @runtime_checkable class HasDeviceMesh(typing.Protocol): @property def _device_mesh(self) -\u003e \"DeviceMesh\": ... class DropLocation(NamedTuple): tensor_id: int traceback: List[traceback.FrameSummary] def __repr__(self) -\u003e str: return f\"tensor {self.tensor_id} is dropped at: \\n\" + \"\".join( traceback.format_list(self.traceback) ) [docs] class Tensor(Referenceable, BaseTensor): \"\"\"A distributed tensor for distributed computation across device meshes. Tensor represents a distributed tensor that spans across multiple devices in a device mesh. It provides the same interface as PyTorch tensors but enables distributed operations and communication patterns. \"\"\" # pyre-fixme[13]: Attribute `stream` is never initialized. stream: Stream # pyre-fixme[13]: Attribute `mesh` is never initialized. mesh: \"DeviceMesh\" ref: Optional[int] # pyre-fixme[13]: Attribute `_invocation` is never initialized. _invocation: Optional[Invocation] # pyre-fixme[13]: Attribute `_fake` is never initialized. _fake: torch.Tensor # pyre-fixme[13]: Attribute `_aliases` is never initialized. _aliases: StorageAliases # pyre-fixme[13]: Attribute `_on_first_use` is never initialized. _on_first_use: Optional[Callable] # pyre-fixme[13]: Attribute `_drop_location` is never initialized. _drop_location: Optional[DropLocation] # _seq represents the sequence number of the concrete invocation that # created this tensor, or the most recent invocation that mutated it. # Unlike the _invocation field, this will be set for both the rust and # python backends. # pyre-fixme[13]: Attribute `_seq` is never initialized. _seq: Optional[int] def __new__(cls, fake: torch.Tensor, mesh: \"DeviceMesh\", stream: \"Stream\"): # pyre-ignore[16] r = torch.Tensor._make_wrapper_subclass( cls, fake.size(), strides=fake.stride(), storage_offset=fake.storage_offset(), device=fake.device, # This is the device of of either input tensor or first tensor of a list dtype=fake.dtype, layout=fake.layout, requires_grad=fake.requires_grad, ) assert isinstance(fake, FakeTensor) r._fake = fake client = mesh.client r.ref = client.new_ref() r.mesh = mesh r.stream = stream storage = fake.untyped_storage() client = mesh.client if storage not in client.aliases: client.aliases[storage] = StorageAliases() r._aliases = client.aliases[storage] r._aliases.register(r) r._invocation = None r._on_first_use = None r._drop_location = None r._seq = None return r @classmethod def __torch_dispatch__(cls, func, types, args=(), kwargs=None): from monarch.common.remote import remote # device_mesh \u003c-\u003e tensor \u003c-\u003e remote are mututally recursive # we break the dependency to allow for separate files by # having device_mesh and tensor locally import the `remote` # entrypoint return remote(func, propagate=func)(*args, **kwargs) def __init__( self, fake: Optional[torch.Tensor] = None, mesh: Optional[\"DeviceMesh\"] = None, stream: Optional[Stream] = None, ): pass def __repr__(self, *, tensor_contents=None): return f\"monarch.Tensor(mesh={self.mesh}, stream={self.stream}, fake={repr(self._fake)})\" [docs] def drop(self): if self.ref is None: return for alias in self._aliases.aliases: alias._drop_ref() # we should be in the tensors list as well assert self.ref is None @property def dropped(self): return self.ref is None def _drop_ref(self): if self.ref is None: return self.delete_ref(self.ref) self._drop_location = DropLocation(self.ref, traceback.extract_stack()) self.ref = None @property def _access_permissions(self): return self._aliases.access def _use(self): if self._on_first_use: self._on_first_use(self) self._on_first_use = None [docs] def to_mesh( self, mesh: Union[\"DeviceMesh\", \"HasDeviceMesh\"], stream: Optional[\"Stream\"] = None, ): \"\"\" Move data between one device mesh and another. Sizes of named dimensions must match. If mesh has dimensions that self.mesh does not, it will broadcast to those dimensions. broadcast: t.slice_mesh(batch=0).to_mesh(t.mesh) \"\"\" if isinstance(mesh, HasDeviceMesh): mesh = mesh._device_mesh return MeshSliceTensor(self, self.mesh).to_mesh(mesh, stream) [docs] def reduce_( self, dims: Dims | str, reduction: _valid_reduce = \"sum\", scatter=False, mesh=None, ): return self.reduce(dims, reduction, scatter, mesh, _inplace=True) [docs] def reduce( self, dims: Dims | str, reduction: _valid_reduce = \"sum\", scatter: bool = False, mesh: Optional[\"DeviceMesh\"] = None, _inplace: bool = False, out: Optional[\"Tensor\"] = None, ): \"\"\" Perform a reduction operation along dim, and move the data to mesh. If mesh=None, then mesh=self.mesh \u0027stack\u0027 (gather) will concat the values along dim, and produce a local result tensor with an addition outer dimension of len(dim). If scatter=True, the local result tensor will be evenly split across dim. allreduce: t.reduce(dims=\u0027gpu\u0027, reduction=\u0027sum\u0027) First reduces dim \u0027gpu\u0027 creating a local tensor with the \u0027gpu\u0027 dimension, then because output_mesh=input_mesh, and it still has dim \u0027gpu\u0027, we broadcast the result reduced tensor to all members of gpu. reducescatter: t.reduce(dims=\u0027gpu\u0027, reduction=\u0027sum\u0027, scatter=True) Same as above except that scatter=True introduces a new \u0027gpu\u0027 dimension that is the result of splitting the local tensor across \u0027gpu\u0027 allgather: t.reduce(dims=\u0027gpu\u0027, reduction=\u0027stack\u0027) First reduces dim \u0027gpu\u0027 creating a bigger local tensor, then because output_mesh=input_mesh, and it still has dim \u0027gpu\u0027, broadcasts the result concatenated tensor to all members of gpu. alltoall: t.reduce(dims=\u0027gpu\u0027, reduction=\u0027stack\u0027, scatter=True) First reduces dim \u0027gpu\u0027 creating a bigger local tensor, then introduces a new \u0027gpu\u0027 dimension that is the result of splitting this (bigger) tensor across \u0027gpu\u0027. The result is the same dimension as the original tensor, but with each rank sending to all other ranks. gather (to dim 0): t.reduce(dims=\u0027gpu\u0027, reduction=\u0027stack\u0027, mesh=device_mesh(gpu=0)) First gathers dim \u0027gpu\u0027 and then places it on the first rank. t.mesh.gpu[0] doesn\u0027t have a \u0027gpu\u0027 dimension, but this is ok because we eliminated the \u0027gpu\u0027 dim via reduction. reduce: t.reduce(dims=\u0027gpu\u0027, reduction=\u0027sum\u0027, mesh=device_mesh(gpu=0)) First reduces dim \u0027gpu\u0027 and then places it on the first rank. t.mesh.gpu[0] doesn\u0027t have a \u0027gpu\u0027 dimension, but this is ok because we eliminated the \u0027gpu\u0027 dim via reduction. Args: dims (Dims | str): The dimensions along which to perform the reduction. reduction (_valid_reduce): The type of reduction to perform. Defaults to \"sum\". scatter (bool): If True, the local result tensor will be evenly split across dimensions. Defaults to False. mesh (Optional[\"DeviceMesh\"], optional): The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool): If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. out (Optional[\"Tensor\"]): The output tensor to store the result. If None, a new tensor will be created on the stream where the reduce operation executes. Defaults to None. Returns: Tensor: The result of the reduction operation. \"\"\" if mesh is not None: raise NotImplementedError() if isinstance(dims, str): dims = (dims,) for d in dims: if d not in self.mesh.names: raise KeyError(f\"dim {d} not found in {self.mesh}\") if len(dims) == 0: dims = self.mesh.names if len(set(dims)) != len(dims): raise ValueError(f\"reducing the same dimension twice: {dims}\") if len(dims) \u003e 1: if reduction == \"stack\" or scatter: raise ValueError( f\"reduction {reduction} or scatter = {scatter} is not valid for multiple dimensions\" ) if reduction not in _valid_reduce.__args__: raise ValueError( f\"reduction {reduction} not supported, reductions are {_valid_reduce.__args__}\" ) if mesh is None: mesh = self.mesh ts: List[torch.Tensor] = [self] if out is not None: ts.append(out) with InputChecker( ts, lambda ts: ( f\"reduce({next(ts)}, {dims}, reduction={reduction}, out={next(ts, None)})\" ), ) as checker: checker.check_no_requires_grad() checker.check_cuda() checker.check_mesh_stream_local(self.mesh, stream._active) checker.check_permission((out,) if out is not None else ()) if _inplace: if out is not None: raise ValueError(\"`out` cannot be used with inplace reduce.\") inplace_valid = (reduction == \"gather\" and scatter) or not scatter if not inplace_valid: raise ValueError( f\"reduction {reduction} is not valid for in-place operation because \" \"the output size will not match the input size.\" ) fake_output = self._fake else: N = ( self.mesh.processes.sizes[self.mesh.names.index(dims[0])] if reduction == \"stack\" or scatter else -1 ) fake_output = fake_call( _fake_reduce, self._fake, self.mesh, N, reduction, scatter ) if out is not None: if out.shape != fake_output.shape: raise ValueError( f\"The given output shape, {out.shape}, is incorrect. \" f\"Reduce expects the shape to be {fake_output.shape}.\" ) fake_output = out._fake r = Tensor(fake_output, self.mesh, self.stream) assert r.ref is not None self.mesh.define_remotely() defines = (r,) if out is None else (r, out) self.mesh.client.new_node(defines, (self,)) self.mesh.client.backend_network_init() self.mesh.client.split_comm(dims, self.mesh, self.stream._to_ref(mesh.client)) self.mesh._send( messages.Reduce( r, self, self._factory(), self.mesh, self.stream._to_ref(mesh.client), dims, reduction, scatter, _inplace, out, ) ) return r [docs] def slice_mesh(self, **kwargs: Union[int, slice]) -\u003e \"MeshSliceTensor\": # technically a slice of a device mesh and a device mesh are not same thing # because a device mesh also has caches for doing collectives. # but this is an easy way to create a MeshSliceTensor until we optimize # how we represent mesh slices. slicing = self.mesh.slice(**kwargs) return MeshSliceTensor(self, slicing) [docs] def delete_ref(self, ref: int): mesh = self.mesh if not mesh.client.has_shutdown: self._aliases.unregister(self) mesh.client.delete_ref(mesh, ref) def _factory(self): return messages.TensorFactory.from_tensor(self._fake) class MeshSliceTensor: def __init__(self, tensor: \"Tensor\", slicing: \"DeviceMesh\"): self.tensor = tensor self.slicing = slicing def to_mesh( self, mesh: Union[\"DeviceMesh\", \"HasDeviceMesh\"], stream: Optional[\"Stream\"] = None, ) -\u003e \"Tensor\": if isinstance(mesh, HasDeviceMesh): mesh = mesh._device_mesh if stream is None: stream = self.tensor.stream with InputChecker( [self.tensor], lambda ts: f\"{next(ts)}.to_mesh({mesh})\" ) as checker: checker.check_no_requires_grad() checker.check_cuda() checker.check_permission(mutated_tensors=()) sizes = [] strides = [] broadcast_dims = [] for name, size in zip(mesh.names, mesh.processes.sizes): if name not in self.slicing.names: broadcast_dims.append(name) warnings.warn( f\"to_mesh is broadcasting along {name} dimension.\" \"This is implemented inefficiently and should only be used for initialization before it is fixed.\", stacklevel=2, ) continue index = self.slicing.names.index(name) if self.slicing.processes.sizes[index] != size: raise ValueError( f\"dimension {name} of destination device_mesh has a different length than the source tensor\" ) sizes.append(size) strides.append(self.slicing.processes.strides[index]) if len(sizes) != len(self.slicing.names): missing = set(self.slicing.names) - set(mesh.names) raise ValueError(f\"destination mesh does not have dimensions {missing}\") # Optimized algorithm where: # 1. We can represent submeshes as NDSlice(offet, sizes, strides) on rank. # 2. A message can be efficiently broadcast to List[NDSlice] ranks by a smart tree based algorithm that can # figure out which subtrees need the message. # 3. The message itself will uses List[NDSlice] objects to express the send/recv set and so it is very small # so basically both the way the message is broadcast and its size will be compressed but the # send pattern and the meaning of the message will be the same as this ineffiecient form from_ranks = NDSlice( offset=self.slicing.processes.offset, sizes=sizes, strides=strides ) # Ensure the destination mesh is defined remotely so it has a proper ref mesh.define_remotely() r = Tensor(fake_call(self.tensor._fake.clone), mesh, stream) assert r.ref is not None client = self.tensor.mesh.client from_stream_ref = self.tensor.stream._to_ref(client) to_stream_ref = stream._to_ref(client) client.backend_network_init() client.backend_network_point_to_point_init(from_stream_ref, to_stream_ref) client.new_node((r,), (self.tensor,)) if broadcast_dims: mesh_sizes = mesh.sizes dim_sequences = [ zip(itertools.repeat(dim), range(mesh_sizes[dim])) for dim in broadcast_dims ] destinations = [ mesh.slice(**dict(dim_settings)).processes for dim_settings in itertools.product(*dim_sequences) ] else: destinations = [mesh.processes] for to_ranks in destinations: client.send( [from_ranks, to_ranks], messages.SendTensor( r, from_ranks, to_ranks, self.tensor, self.tensor._factory(), from_stream_ref, to_stream_ref, ), ) return r def _fake_reduce( tensor, source_mesh: \"DeviceMesh\", group_size: int, reduction, scatter: bool ): if scatter: if tensor.ndim == 0 or tensor.size(0) != group_size: raise TypeError( f\"When scattering results the outer most dimension of tensor with sizes ({list(tensor.size())} must match the size ({group_size})\" ) if reduction == \"stack\": # scatter removes a dimension of mesh size # but gather adds the dimension back return tensor return tensor.sum(dim=0) else: if reduction == \"stack\": return torch.empty( [group_size, *tensor.shape], dtype=tensor.dtype, device=tensor.device, layout=tensor.layout, ) return tensor.add(tensor) _explain = \"\"\"\\ LOCAL_TENSOR This tensor is a local (non-distributed) tensor being used while a device_mesh is active. If you want to do local tensor compute use `with no_mesh.activate():` WRONG_MESH This tensor is on a device mesh that is not the current device_mesh. Use `with m.activate():` to switch the active mesh, or move the tensor to the correct device mesh with `to_mesh`/`on_mesh`. WRONG_STREAM This tensor is on a stream that is not the current active stream. Use with `stream.activate()` to switch streams, or move the tensor to the correct stream with `.borrow`. DROPPED This tensor, or a view of it, was explicitly deleted with the t.drop() function and is no longer usable. BORROWED This tensor cannot be read because it is being used mutably in another stream. MUTATING_BORROW This tensor would be mutated by this operator but it is read only because it is being borrowed. REQUIRES_GRAD This tensor requires gradients but this operation does not work with autograd. CROSS_DEVICE_REQUIRES_CUDA Operations that send tensors across devices currently require CUDA tensors. \"\"\" explain = {} for entry in _explain.split(\"\\n\\n\"): lines = entry.split(\"\\n\") explain[lines[0]] = \"\".join(f\" {l}\\n\" for l in lines) def handle_lift_fresh_dispatch( propagate, rfunction, args, kwargs, ambient_mesh, stream ): assert ambient_mesh is not None fake_result = fake_call( torch.zeros, args[0].shape, device=args[0].device, dtype=args[0].dtype ) return fake_result, (), (), ambient_mesh special_ops_handler = {\"torch.ops.aten.lift_fresh.default\": handle_lift_fresh_dispatch} class _Symbol(NamedTuple): name: str def __repr__(self): return self.name class InputChecker: @staticmethod def from_flat_args(func: Any, tensors: Sequence[torch.Tensor], unflatten: Callable): def format(tensor_values: Iterable[str]): args, kwargs = unflatten(tensor_values) actuals = \", \".join( itertools.chain( map(repr, args), (f\"{key}={repr(value)}\" for key, value in kwargs.items()), ) ) return f\"{func}({actuals})\" return InputChecker(tensors, format) def __init__( self, tensors: Sequence[torch.Tensor], format: Callable[[Iterable[Any]], str] ): self.tensors = tensors self.format = format self.errors: Dict[torch.Tensor, List[str]] = defaultdict(list) self.overall_errors = [] # we set this here just so we have stream to report as the current # stream in errors where the stream does not matter. # If the stream matters for this call, we # get the right stream in `check_stream`. self.stream = stream._active self._mesh = None def check_mesh_stream_local( self, ambient_mesh: Optional[\"DeviceMesh\"], stream: \"Stream\" ): self.stream = stream for t in self.tensors: if isinstance(t, Tensor): self._mesh = t.mesh break if self._mesh is None: self._mesh = ambient_mesh if self._mesh is None: self.overall_errors.append( \"Remote functions require an active device mesh, use `with mesh.activate():`\" ) for t in self.tensors: if isinstance(t, Tensor): if t.mesh is not self._mesh: self.errors[t].append(explain[\"WRONG_MESH\"]) if t.stream is not self.stream: self.errors[t].append(explain[\"WRONG_STREAM\"]) else: self.errors[t].append(explain[\"LOCAL_TENSOR\"]) @property def mesh(self) -\u003e \"DeviceMesh\": assert self._mesh is not None return self._mesh def raise_current_errors(self): if not self.errors and not self.overall_errors: return error_info: List[str] = [ f\"active_mesh = {self._mesh}\\n\", f\"active_stream = {self.stream}\\n\", *self.overall_errors, ] error_names: Dict[\"Tensor\", \"str\"] = {} for i, (t, errors) in enumerate(self.errors.items()): name = f\"ERROR_{i}\" error_names[t] = name error_info.append(f\"{name}:\\n\") error_info.extend(errors) call = self.format(_Symbol(error_names.get(t, \".\")) for t in self.tensors) msg = f\"Incorrect arguments to monarch operation:\\n\\n {call}\\n\\n{\u0027\u0027.join(error_info)}\" raise TypeError(msg) def _borrow_tracebacks(self, t: Tensor): lines = [] for b in t._aliases.live_borrows: lines.append(\" Traceback of borrow (most recent frame last):\\n\") lines.extend(f\" {line}\\n\" for line in b.traceback_string.split(\"\\n\")) return lines def check_permission(self, mutated_tensors: Sequence[\"Tensor\"]): for t in self.tensors: if not isinstance(t, Tensor): continue if \"r\" not in t._access_permissions: errors = self.errors[t] errors.append(explain[\"BORROWED\"]) errors.extend(self._borrow_tracebacks(t)) if t.dropped: self.errors[t].append(explain[\"DROPPED\"]) if t._drop_location: self.errors[t].append(str(t._drop_location)) for t in mutated_tensors: if \"w\" not in t._access_permissions: errors = self.errors[t] errors.append(explain[\"MUTATING_BORROW\"]) errors.extend(self._borrow_tracebacks(t)) def check_no_requires_grad(self): for t in self.tensors: if torch.is_grad_enabled() and t.requires_grad: self.errors[t].append(explain[\"REQUIRES_GRAD\"]) def check_cuda(self): for t in self.tensors: if not t.is_cuda: self.errors[t].append(explain[\"CROSS_DEVICE_REQUIRES_CUDA\"]) def __enter__(self) -\u003e \"InputChecker\": return self def __exit__(self, exc_type, exc_value, traceback): if exc_type is not None: return self.raise_current_errors() def dtensor_check( propagate: \"Propagator\", rfunc: \"ResolvableFunction\", args, kwargs, ambient_mesh: Optional[\"DeviceMesh\"], stream: Stream, ): dtensors, unflatten = flatten((args, kwargs), lambda x: isinstance(x, torch.Tensor)) with InputChecker.from_flat_args(rfunc, dtensors, unflatten) as checker: checker.check_mesh_stream_local(ambient_mesh, stream) # ensure tensors are correct enough to do propagation with them. checker.raise_current_errors() # the distinction is we only check permissions on the first level mutates # but have to record error-tracking dependency edges for all parent borrows. # future diff will change how we track this and then simplify this code. mutates = [] fake_input_tensors = [d._fake for d in dtensors] before_versions = [f._version for f in fake_input_tensors] fake_args, fake_kwargs = unflatten(fake_input_tensors) result = propagate(args, kwargs, fake_args, fake_kwargs) for i in range(len(dtensors)): if before_versions[i] \u003c fake_input_tensors[i]._version: mutates.extend(dtensors[i]._aliases.aliases) checker.check_permission(mutates) return result, dtensors, tuple(mutates), checker.mesh def dtensor_dispatch( rfunction: ResolvableFunction, propagate: Propagator, args, kwargs, ambient_mesh: Optional[\"DeviceMesh\"], stream: Stream, ): from .device_mesh import RemoteProcessGroup op_handler = dtensor_check if isinstance(rfunction, ResolvableFunctionFromPath): op_handler = special_ops_handler.get(rfunction.path, dtensor_check) fake_result, dtensors, mutates, device_mesh = op_handler( propagate, rfunction, args, kwargs, ambient_mesh, stream ) assert device_mesh is not None fake_result_dtensors, unflatten_result = flatten( fake_result, lambda x: isinstance(x, torch.Tensor) ) result_dtensors = tuple( Tensor(fake, device_mesh, stream) for fake in fake_result_dtensors ) seq = device_mesh.client.new_node(result_dtensors + mutates, dtensors) assert all(t.ref is not None for t in result_dtensors) assert all(t.ref is not None for t in mutates) result = result_msg = unflatten_result(result_dtensors) if len(result_dtensors) == 0: result_msg = None # note the device mesh has to be defined regardles so the remote functions # can invoke device_mesh.rank(\"...\") device_mesh.define_remotely() # if there\u0027s a process group anywhere in the args, kwargs we need to initialize the backend network # if it hasn\u0027t already been done. process_groups, _ = flatten( (args, kwargs), lambda x: isinstance(x, RemoteProcessGroup) ) if len(process_groups) \u003e 0: device_mesh.client.backend_network_init() for pg in process_groups: assert not pg.dropped pg.ensure_split_comm_remotely(stream._to_ref(device_mesh.client)) device_mesh._send( messages.CallFunction( seq, result_msg, tuple(mutates), rfunction, args, kwargs, stream._to_ref(device_mesh.client), device_mesh, process_groups, ) ) # XXX - realistically this would be done on a non-python thread, keeping our messages up to date # but we can approximate it by checking for all ready meassages whenever we schedule new work while device_mesh.client.handle_next_message(0): pass return result [docs] def reduce( tensors: T, dims: Dims | str, reduction: _valid_reduce = \"sum\", scatter: bool = False, mesh: Optional[\"DeviceMesh\"] = None, _inplace: bool = False, ) -\u003e T: \"\"\" Performs the tensor reduction operation for each tensor in tensors. Args: tensors (pytree[\"Tensor\"]): The pytree of input tensors to reduce. dims (Dims | str): The dimensions along which to perform the reduction. reduction (_valid_reduce): The type of reduction to perform. Defaults to \"sum\". scatter (bool): If True, the local result tensor will be evenly split across dimensions. Defaults to False. mesh (Optional[\"DeviceMesh\"], optional): The target mesh to move the data to. If None, uses self.mesh. Defaults to None. _inplace (bool): If True, performs the operation in-place. Defaults to False. Note that not all the reduction operations support in-place. \"\"\" def _reduce(tensor: \"Tensor\") -\u003e \"Tensor\": return tensor.reduce(dims, reduction, scatter, mesh, _inplace) return tree_map(_reduce, tensors) [docs] def reduce_( tensors: T, dims: Dims | str, reduction: _valid_reduce = \"sum\", scatter: bool = False, mesh: Optional[\"DeviceMesh\"] = None, ) -\u003e T: return reduce(tensors, dims, reduction, scatter, mesh, _inplace=True) def check_torch_version() -\u003e None: \"\"\" Check if the runtime PyTorch version matches the build-time PyTorch version. This check is necessary because if the runtime PyTorch version is different from the build-time PyTorch version, it may cause unexpected behavior or errors, especially when using the monarch library to perform tensor operations. The check is performed by comparing the major, minor, and patch versions of the runtime PyTorch version with the build-time PyTorch version. If they do not match, a RuntimeError is raised. \"\"\" # torch version as a string may contain optional suffixes like \"+cu128\", and # we can only compare the major/minor/patch version. Parse into a tuple of # integers. runtime_torch_version = torch.__version__.split(\".\") runtime_torch_major = int(runtime_torch_version[0]) runtime_torch_minor = int(runtime_torch_version[1]) # Exclude any suffix past the patch version. runtime_torch_patch = runtime_torch_version[2] if match := re.search(\"[0-9]+\", runtime_torch_patch): runtime_torch_patch = int(match.group(0)) else: raise RuntimeError( f\"Could not parse patch version from torch version {torch.__version__}\" ) runtime_torch_version = ( runtime_torch_major, runtime_torch_minor, runtime_torch_patch, ) if runtime_torch_version != get_built_pytorch_version(): raise RuntimeError( f\"PyTorch version mismatch: runtime {runtime_torch_version} != build-time {get_built_pytorch_version()}. \" \"Make sure to download a version of monarch that matches your PyTorch version. \" \"This matters because you were using a feature that requires a matched libtorch.so symbol.\" )",
        "author": {

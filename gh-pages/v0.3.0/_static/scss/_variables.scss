@@ -10,11 +10,21 @@ $background-dark: #000000;
 $pytorch-indigo: #812CE5;
 $pytorch-violet: #B932CC;
 $pytorch-light-gray: #F6F6F6;
+$pytorch-fuchsia: #CC2FAA;
+$pytorch-fuchsia-dark: #a8258c;
 
 
 :root {
   --header-height: 45px;
   --header-height-desktop: 45px;
+
+  // Override pydata-sphinx-theme sidebar widths
+  // Make sidebars smaller to give more space to content
+  --pst-sidebar-secondary: 15rem;
+
+  // Navbar brand (logo) width - used to align content with navbar-header-items
+  // This should match the width of the .navbar-brand element (logo + version text)
+  --navbar-brand-width: 140px;
 }
 
 // Theme color variables
