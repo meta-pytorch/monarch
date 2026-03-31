@@ -30,8 +30,8 @@ import argparse
 import asyncio
 import random
 
-from monarch._src.actor.host_mesh import _spawn_admin
-from monarch.actor import Actor, context, current_rank, endpoint, this_host
+from monarch.actor import Actor, context, current_rank, endpoint
+from monarch.job import MeshAdminConfig, ProcessJob
 
 
 class Sleeper(Actor):
@@ -57,10 +57,12 @@ MAX_SLEEP = 5.0
 
 
 async def async_main(num_procs: int) -> None:
-    host = this_host()
+    job = ProcessJob({"hosts": 1}, mesh_admin=MeshAdminConfig())
+    state = job.state(cached_path=None)
+    host = state.hosts
 
-    # Spawn the admin agent so the TUI can attach.
-    admin_url = await _spawn_admin([host])
+    admin_url = state.admin_url
+    assert admin_url is not None
     mtls_flags = (
         "--cacert /var/facebook/rootcanal/ca.pem "
         "--cert /var/facebook/x509_identities/server.pem "
