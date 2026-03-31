@@ -1288,10 +1288,14 @@ impl ProcMeshRef {
                 initial_update_interval: None,
             },
         );
+        // Use WaitRankStatus instead of GetRankStatus so agents defer
+        // their reply until the actor reaches terminal state, rather
+        // than replying immediately with Stopping.
         agent_mesh.cast(
             cx,
-            resource::GetRankStatus {
+            resource::WaitRankStatus {
                 name: mesh_name,
+                min_status: Status::Stopped,
                 reply: port.bind(),
             },
         )?;
