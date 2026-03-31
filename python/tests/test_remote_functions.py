@@ -499,6 +499,8 @@ class TestMeshSpecific(RemoteFunctionsTestBase):
             y = device_mesh.rank("gpu")
             r = return_them.call(x, y).get()
 
-            for p, (h, g) in r:
-                assert p["host"] == h.item()
-                assert p["gpu"] == g.item()
+        # Iterate outside of activate() context to avoid FakeTensor dispatch
+        # intercepting tensor unpickling (aten.set_ on meta vs cpu storage).
+        for p, (h, g) in r:
+            assert p["host"] == h.item()
+            assert p["gpu"] == g.item()
