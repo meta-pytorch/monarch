@@ -116,7 +116,6 @@ jobs:
   create-docs-branch:
     name: Create docs release branch
     needs: publish
-    if: ${{ github.event.inputs.is_prerelease != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

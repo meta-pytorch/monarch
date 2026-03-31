@@ -17,14 +17,10 @@ import pytorch_sphinx_theme2
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-# Detect docs version from CI environment (set by doc_build workflow)
-docs_version = os.getenv("DOCS_VERSION", "dev")
-
 project = "Monarch"
 copyright = "2025"
 author = ""
-version = docs_version
-release = docs_version
+release = ""
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -109,12 +105,6 @@ html_theme_options = {
     ],
     "use_edit_page_button": True,
     "navbar_center": "navbar-nav",
-    "switcher": {
-        "json_url": "https://meta-pytorch.org/monarch/versions.json",
-        "version_match": docs_version,
-    },
-    "show_version_warning_banner": True,
-    "navbar_start": ["navbar-logo", "version-switcher"],
 }
 
 html_favicon = "_static/torch-monarch-icons.svg"
