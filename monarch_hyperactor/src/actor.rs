@@ -269,7 +269,7 @@ impl PythonMessage {
     ///
     /// Handles both already-collected responses and leaf `Result`/`Exception`
     /// messages by wrapping them in a single-run overlay.
-    pub(crate) fn into_overlay(self) -> anyhow::Result<ValueOverlay<PythonResponseMessage>> {
+    pub fn into_overlay(self) -> anyhow::Result<ValueOverlay<PythonResponseMessage>> {
         match self.kind {
             PythonMessageKind::AccumulatedResponses(overlay) => Ok(overlay.0),
             PythonMessageKind::Result { rank, .. } => {

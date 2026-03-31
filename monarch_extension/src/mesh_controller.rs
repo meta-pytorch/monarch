@@ -37,8 +37,11 @@ use hyperactor::supervision::ActorSupervisionEvent;
 use hyperactor_mesh::ActorMesh;
 use hyperactor_mesh::ProcMeshRef;
 use hyperactor_mesh::supervision::MeshFailure;
+use hyperactor_mesh::value_mesh::ValueOverlay;
+use hyperactor_mesh::value_mesh::rle;
 use monarch_hyperactor::actor::PythonMessage;
 use monarch_hyperactor::actor::PythonMessageKind;
+use monarch_hyperactor::actor::PythonResponseMessage;
 use monarch_hyperactor::context::PyInstance;
 use monarch_hyperactor::local_state_broker::LocalStateBrokerActor;
 use monarch_hyperactor::mailbox::PyPortId;
@@ -350,10 +353,9 @@ impl Invocation {
         match old_status {
             Status::Incomplete { results, .. } => match &self.response_port {
                 Some(PortInfo { port, ranks }) => {
-                    assert!(ranks.len() == results.iter().len());
-                    for result in results.into_iter() {
-                        port.send(sender, result)?;
-                    }
+                    assert!(ranks.len() == results.len());
+                    let merged = Self::merge_messages(results);
+                    port.send(sender, merged)?;
                 }
                 None => {}
             },
@@ -362,6 +364,24 @@ impl Invocation {
             }
         }
         Ok(())
+    }
+
+    /// Merge multiple `PythonMessage` results into a single accumulated message
+    /// using `ValueOverlay`. This is needed because the response port is a
+    /// reduce `OncePort` that only accepts a single delivery.
+    fn merge_messages(messages: Vec<PythonMessage>) -> PythonMessage {
+        let mut overlay: ValueOverlay<PythonResponseMessage> = ValueOverlay::new();
+        for msg in messages {
+            let msg_overlay = msg
+                .into_overlay()
+                .expect("failed to convert PythonMessage to overlay");
+            overlay = ValueOverlay::try_from_runs(rle::merge_value_runs(
+                overlay.into_runs(),
+                msg_overlay.into_runs(),
+            ))
+            .expect("failed to merge response overlays");
+        }
+        overlay.into()
     }
 
     /// Changes the status of this invocation to an Errored. If this invocation was
@@ -385,10 +405,12 @@ impl Invocation {
                         match &invocation.response_port {
                             Some(PortInfo { port, ranks }) => {
                                 *unreported_exception = None;
-                                for rank in ranks.iter() {
-                                    let msg = exception.as_ref().clone().into_rank(rank);
-                                    port.send(sender, msg)?;
-                                }
+                                let messages: Vec<PythonMessage> = ranks
+                                    .iter()
+                                    .map(|rank| exception.as_ref().clone().into_rank(rank))
+                                    .collect();
+                                let merged = Invocation::merge_messages(messages);
+                                port.send(sender, merged)?;
                             }
                             None => {}
                         };
