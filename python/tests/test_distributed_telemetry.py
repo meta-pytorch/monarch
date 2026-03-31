@@ -105,9 +105,6 @@ def test_record_batch_tracing(cleanup_callbacks) -> None:
         final_count = get_record_batch_flush_count()
         assert final_count >= 0, "Flush count should be non-negative"
 
-        # Clean up
-        hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
@@ -160,9 +157,6 @@ def test_actors_table() -> None:
         assert "<root>" in display_names, (
             f"Expected bootstrap client actor with display_name '<root>', got: {display_names}"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -259,9 +253,6 @@ def test_meshes_table() -> None:
                     f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
                 )
 
-        # Clean up
-        hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
@@ -325,9 +316,6 @@ def test_proc_mesh_in_meshes_table() -> None:
                     f"Expected 2 workers in shape, got: {sizes[workers_idx]}"
                 )
 
-        # Clean up
-        hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
@@ -376,9 +364,6 @@ def test_actors_join_meshes_on_mesh_id(cleanup_callbacks) -> None:
         assert joined_count == 2, (
             f"Expected 2 joined rows for 2 workers, got: {joined_count}"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -446,9 +431,6 @@ def test_all_actors_in_proc_mesh(cleanup_callbacks) -> None:
                 f"Expected 2 actors for mesh '{mesh_name}' (class={mesh_class}), "
                 f"got {actor_count}"
             )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -532,9 +514,6 @@ def test_all_actors_in_host_mesh(cleanup_callbacks) -> None:
                 f"got {actor_count}"
             )
 
-        # Clean up
-        hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
@@ -594,9 +573,6 @@ def test_actor_status_events_table() -> None:
         assert new_statuses.issubset(valid_statuses), (
             f"Found unexpected status values: {new_statuses - valid_statuses}"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -681,9 +657,6 @@ def test_sliced_vs_full_view_rank(cleanup_callbacks) -> None:
         )
         sliced_ranks = sliced_actors_result.to_pydict()["rank"]
         assert sliced_ranks == [0, 1], f"Expected ranks [0, 1], got {sliced_ranks}"
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -791,9 +764,6 @@ def test_sent_messages_table(
                 f"got {view['slice']['sizes'][workers_idx]}"
             )
 
-        # Clean up
-        hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
@@ -850,50 +820,45 @@ def test_messages_table(cleanup_callbacks) -> None:
             f"Expected 10 messages received by msg_test_worker, got {joined_count}"
         )
 
-        # Clean up
-        hosts.shutdown().get()
-
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_messages_endpoint(cleanup_callbacks) -> None:
     """Test that the messages table endpoint column is populated with the method name."""
-    job = ProcessJob(
-        {"hosts": 1},
-        telemetry=TelemetryConfig(batch_size=10),
-    )
-    state = job.state(cached_path=None)
-    engine = state.query_engine
-    assert engine is not None
-    hosts = state.hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="ep_workers_procs")
-    workers = worker_procs.spawn("ep_test_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}, telemetry=TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="ep_workers_procs"
+        )
+        workers = worker_procs.spawn("ep_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Call the "ping" endpoint
-    for _ in range(3):
-        workers.ping.call().get()
+        # Call the "ping" endpoint
+        for _ in range(3):
+            workers.ping.call().get()
 
-    # Query for messages with a non-null endpoint received by our workers
-    result = engine.query(
-        "SELECT m.endpoint FROM messages m "
-        "JOIN actors a ON m.to_actor_id = a.id "
-        "JOIN meshes mesh ON a.mesh_id = mesh.id "
-        "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
-    )
-    result_dict = result.to_pydict()
-    endpoints = result_dict.get("endpoint", [])
+        # Query for messages with a non-null endpoint received by our workers
+        result = engine.query(
+            "SELECT m.endpoint FROM messages m "
+            "JOIN actors a ON m.to_actor_id = a.id "
+            "JOIN meshes mesh ON a.mesh_id = mesh.id "
+            "WHERE mesh.given_name = 'ep_test_worker' AND m.endpoint IS NOT NULL"
+        )
+        result_dict = result.to_pydict()
+        endpoints = result_dict.get("endpoint", [])
 
-    # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
-    assert len(endpoints) == 6, (
-        f"Expected 6 messages with endpoint, got {len(endpoints)}"
-    )
-    assert all(ep == "ping" for ep in endpoints), (
-        f"Expected all endpoints to be 'ping', got {set(endpoints)}"
-    )
-
-    # Clean up
-    hosts.shutdown().get()
+        # 3 casts x 2 workers = 6 messages, all with endpoint "ping"
+        assert len(endpoints) == 6, (
+            f"Expected 6 messages with endpoint, got {len(endpoints)}"
+        )
+        assert all(ep == "ping" for ep in endpoints), (
+            f"Expected all endpoints to be 'ping', got {set(endpoints)}"
+        )
 
 
 @pytest.mark.timeout(120)
@@ -947,9 +912,6 @@ def test_message_status_events_table(cleanup_callbacks) -> None:
         assert len(result_dict.get("message_id", [])) > 0, (
             "Expected at least one message with all 3 status events"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -1006,9 +968,6 @@ def test_sent_messages_with_sliced_mesh(cleanup_callbacks) -> None:
         assert sliced_view["slice"]["offset"] > 0, (
             f"Expected sliced view offset > 0, got {sliced_view['slice']['offset']}"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -1079,9 +1038,6 @@ def test_sent_messages_sender_actor_id(cleanup_callbacks) -> None:
             assert sender_id not in target_actor_ids, (
                 f"sender_actor_id {sender_id} should NOT be a target actor"
             )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -1162,9 +1118,6 @@ def test_query_after_stopping_proc_mesh(cleanup_callbacks) -> None:
             f"Expected 0 received messages after stopping proc mesh, "
             f"got {post_stop_msg_count} (was {pre_stop_msg_count} before stop)"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -1253,9 +1206,6 @@ def test_query_after_stopping_actor_mesh(cleanup_callbacks) -> None:
             f"Expected {pre_stop_msg_count} received messages after stopping ActorMesh, "
             f"got {post_stop_msg_count} (data should be preserved)"
         )
-
-        # Clean up
-        hosts.shutdown().get()
 
 
 @pytest.mark.timeout(60)
@@ -1367,163 +1317,157 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 @isolate_in_subprocess
 def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
     """try_store_pyspy_dump routes to the correct child proc via _proc_id_index."""
-    job = ProcessJob(
-        {"hosts": 1},
-        telemetry=TelemetryConfig(batch_size=10),
-    )
-    state = job.state(cached_path=None)
-    engine = state.query_engine
-    assert engine is not None
-    hosts = state.hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="pyspy_route_procs")
-    workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}, telemetry=TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="pyspy_route_procs"
+        )
+        workers = worker_procs.spawn("pyspy_route_worker", WorkerActor)
+        workers.initialized.get()
 
-    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
+        coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
 
-    # Discover child proc_ids by querying ProcAgent actors from the actors table.
-    # ProcAgent full_name = "{proc_id},proc_agent[0]"
-    proc_agents = engine.query(
-        "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
-    )
-    child_proc_refs = [
-        row.rsplit(",proc_agent[0]", 1)[0]
-        for row in proc_agents.to_pydict()["full_name"]
-        if row.rsplit(",proc_agent[0]", 1)[0] != coordinator_proc_id
-    ]
-    assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
-    child_proc_ref = child_proc_refs[0]
+        # Discover child proc_ids by querying ProcAgent actors from the actors table.
+        # ProcAgent full_name = "{proc_id},proc_agent[0]"
+        proc_agents = engine.query(
+            "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
+        )
+        child_proc_refs = [
+            row.rsplit(",proc_agent[0]", 1)[0]
+            for row in proc_agents.to_pydict()["full_name"]
+            if row.rsplit(",proc_agent[0]", 1)[0] != coordinator_proc_id
+        ]
+        assert len(child_proc_refs) > 0, f"Expected child proc_refs, got: {proc_agents}"
+        child_proc_ref = child_proc_refs[0]
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 9999,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 9999,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 200,
-                        "active": True,
-                        "owns_gil": True,
-                        "frames": [
-                            {
-                                "name": "child_fn",
-                                "filename": "child.py",
-                                "module": "child",
-                                "short_filename": "child.py",
-                                "line": 42,
-                                "locals": [],
-                                "is_entry": True,
-                            }
-                        ],
-                    }
-                ],
-                "warnings": [],
+        pyspy_json = json.dumps(
+            {
+                "Ok": {
+                    "pid": 9999,
+                    "binary": "python3",
+                    "stack_traces": [
+                        {
+                            "pid": 9999,
+                            "thread_id": 1,
+                            "thread_name": "MainThread",
+                            "os_thread_id": 200,
+                            "active": True,
+                            "owns_gil": True,
+                            "frames": [
+                                {
+                                    "name": "child_fn",
+                                    "filename": "child.py",
+                                    "module": "child",
+                                    "short_filename": "child.py",
+                                    "line": 42,
+                                    "locals": [],
+                                    "is_entry": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "warnings": [],
+                }
             }
-        }
-    )
+        )
 
-    # Store a pyspy dump targeting the child proc_ref.
-    # Use 'try_store_pyspy_dump' to avoid fallback to root coordinator.
-    result = engine._actor.try_store_pyspy_dump.call_one(
-        "child-dump-1", child_proc_ref, pyspy_json
-    ).get()
-    assert result
+        # Store a pyspy dump targeting the child proc_ref.
+        # Use 'try_store_pyspy_dump' to avoid fallback to root coordinator.
+        result = engine._actor.try_store_pyspy_dump.call_one(
+            "child-dump-1", child_proc_ref, pyspy_json
+        ).get()
+        assert result
 
-    # The dump should be queryable via distributed scan.
-    frames = engine.query(
-        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
-    )
-    frames_dict = frames.to_pydict()
-    assert frames_dict["name"] == ["child_fn"]
-    assert frames_dict["line"] == [42]
+        # The dump should be queryable via distributed scan.
+        frames = engine.query(
+            "SELECT name, line FROM pyspy_frames WHERE dump_id = 'child-dump-1'"
+        )
+        frames_dict = frames.to_pydict()
+        assert frames_dict["name"] == ["child_fn"]
+        assert frames_dict["line"] == [42]
 
-    # Verify the dump's proc_ref is stored correctly.
-    dumps = engine.query(
-        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
-    )
-    assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
-
-    # Clean up
-    hosts.shutdown().get()
+        # Verify the dump's proc_ref is stored correctly.
+        dumps = engine.query(
+            "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'child-dump-1'"
+        )
+        assert dumps.to_pydict()["proc_ref"] == [child_proc_ref]
 
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
 def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> None:
     """store_pyspy_dump stores on root coordinator when proc_ref matches no child."""
-    job = ProcessJob(
-        {"hosts": 1},
-        telemetry=TelemetryConfig(batch_size=10),
-    )
-    state = job.state(cached_path=None)
-    engine = state.query_engine
-    assert engine is not None
-    hosts = state.hosts
-    worker_procs = hosts.spawn_procs(
-        per_host={"workers": 2}, name="pyspy_fallback_procs"
-    )
-    workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
-    workers.initialized.get()
+    with scoped_state(
+        ProcessJob({"hosts": 1}, telemetry=TelemetryConfig(batch_size=10)),
+        cached_path=None,
+    ) as state:
+        engine = state.query_engine
+        assert engine is not None
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="pyspy_fallback_procs"
+        )
+        workers = worker_procs.spawn("pyspy_fallback_worker", WorkerActor)
+        workers.initialized.get()
 
-    # Trigger child spawning.
-    engine.query("SELECT COUNT(*) AS cnt FROM actors")
+        # Trigger child spawning.
+        engine.query("SELECT COUNT(*) AS cnt FROM actors")
 
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 7777,
-                "binary": "python3",
-                "stack_traces": [
-                    {
-                        "pid": 7777,
-                        "thread_id": 1,
-                        "thread_name": "MainThread",
-                        "os_thread_id": 300,
-                        "active": True,
-                        "owns_gil": False,
-                        "frames": [
-                            {
-                                "name": "orphan_fn",
-                                "filename": "orphan.py",
-                                "module": "orphan",
-                                "short_filename": "orphan.py",
-                                "line": 99,
-                                "locals": [],
-                                "is_entry": True,
-                            }
-                        ],
-                    }
-                ],
-                "warnings": [],
+        pyspy_json = json.dumps(
+            {
+                "Ok": {
+                    "pid": 7777,
+                    "binary": "python3",
+                    "stack_traces": [
+                        {
+                            "pid": 7777,
+                            "thread_id": 1,
+                            "thread_name": "MainThread",
+                            "os_thread_id": 300,
+                            "active": True,
+                            "owns_gil": False,
+                            "frames": [
+                                {
+                                    "name": "orphan_fn",
+                                    "filename": "orphan.py",
+                                    "module": "orphan",
+                                    "short_filename": "orphan.py",
+                                    "line": 99,
+                                    "locals": [],
+                                    "is_entry": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "warnings": [],
+                }
             }
-        }
-    )
+        )
 
-    # Store with a proc_ref that doesn't exist in the tree.
-    result = engine._actor.store_pyspy_dump.call_one(
-        "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
-    ).get()
-    assert result
+        # Store with a proc_ref that doesn't exist in the tree.
+        result = engine._actor.store_pyspy_dump.call_one(
+            "orphan-dump-1", "nonexistent.proc[999]", pyspy_json
+        ).get()
+        assert result
 
-    # The dump should be queryable (stored on root).
-    frames = engine.query(
-        "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
-    )
-    frames_dict = frames.to_pydict()
-    assert frames_dict["name"] == ["orphan_fn"]
-    assert frames_dict["line"] == [99]
+        # The dump should be queryable (stored on root).
+        frames = engine.query(
+            "SELECT name, line FROM pyspy_frames WHERE dump_id = 'orphan-dump-1'"
+        )
+        frames_dict = frames.to_pydict()
+        assert frames_dict["name"] == ["orphan_fn"]
+        assert frames_dict["line"] == [99]
 
-    # Verify proc_ref is preserved even though it didn't match any proc.
-    dumps = engine.query(
-        "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
-    )
-    assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
-
-    # Clean up
-    hosts.shutdown().get()
+        # Verify proc_ref is preserved even though it didn't match any proc.
+        dumps = engine.query(
+            "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
+        )
+        assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
 
 
 @pytest.mark.timeout(60)
@@ -1569,74 +1513,75 @@ def test_json_columns_are_valid_json() -> None:
     # Spawn actors and send messages to populate all tables that have JSON columns:
     # - meshes: shape_json, parent_view_json
     # - sent_messages: view_json, shape_json
-    job = ProcessJob({"hosts": 1})
-    hosts = job.state(cached_path=None).hosts
-    worker_procs = hosts.spawn_procs(per_host={"workers": 2}, name="json_test_procs")
-    workers = worker_procs.spawn("json_test_worker", WorkerActor)
-    workers.initialized.get()
-
-    # Send messages to populate sent_messages
-    workers.ping.call().get()
-
-    # -- Verify meshes.shape_json --
-    result = engine.query("SELECT given_name, shape_json FROM meshes")
-    result_dict = result.to_pydict()
-    for name, shape in zip(result_dict["given_name"], result_dict["shape_json"]):
-        assert shape is not None and shape != "", (
-            f"meshes.shape_json is empty for mesh '{name}'"
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        hosts = state.hosts
+        worker_procs = hosts.spawn_procs(
+            per_host={"workers": 2}, name="json_test_procs"
         )
-        try:
-            json.loads(shape)
-        except json.JSONDecodeError as e:
-            raise AssertionError(
-                f"meshes.shape_json is not valid JSON for mesh '{name}': {shape!r}"
-            ) from e
+        workers = worker_procs.spawn("json_test_worker", WorkerActor)
+        workers.initialized.get()
 
-    # -- Verify meshes.parent_view_json (nullable) --
-    result = engine.query(
-        "SELECT given_name, parent_view_json FROM meshes "
-        "WHERE parent_view_json IS NOT NULL"
-    )
-    result_dict = result.to_pydict()
-    for name, view in zip(result_dict["given_name"], result_dict["parent_view_json"]):
-        try:
-            json.loads(view)
-        except json.JSONDecodeError as e:
-            raise AssertionError(
-                f"meshes.parent_view_json is not valid JSON for mesh '{name}': {view!r}"
-            ) from e
+        # Send messages to populate sent_messages
+        workers.ping.call().get()
 
-    # -- Verify sent_messages.view_json --
-    result = engine.query("SELECT id, view_json FROM sent_messages")
-    result_dict = result.to_pydict()
-    assert len(result_dict["id"]) > 0, "Expected sent_messages rows"
-    for msg_id, view in zip(result_dict["id"], result_dict["view_json"]):
-        assert view is not None and view != "", (
-            f"sent_messages.view_json is empty for id={msg_id}"
+        # -- Verify meshes.shape_json --
+        result = engine.query("SELECT given_name, shape_json FROM meshes")
+        result_dict = result.to_pydict()
+        for name, shape in zip(result_dict["given_name"], result_dict["shape_json"]):
+            assert shape is not None and shape != "", (
+                f"meshes.shape_json is empty for mesh '{name}'"
+            )
+            try:
+                json.loads(shape)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"meshes.shape_json is not valid JSON for mesh '{name}': {shape!r}"
+                ) from e
+
+        # -- Verify meshes.parent_view_json (nullable) --
+        result = engine.query(
+            "SELECT given_name, parent_view_json FROM meshes "
+            "WHERE parent_view_json IS NOT NULL"
         )
-        try:
-            json.loads(view)
-        except json.JSONDecodeError as e:
-            raise AssertionError(
-                f"sent_messages.view_json is not valid JSON for id={msg_id}: {view!r}"
-            ) from e
+        result_dict = result.to_pydict()
+        for name, view in zip(
+            result_dict["given_name"], result_dict["parent_view_json"]
+        ):
+            try:
+                json.loads(view)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"meshes.parent_view_json is not valid JSON for mesh '{name}': {view!r}"
+                ) from e
 
-    # -- Verify sent_messages.shape_json --
-    result = engine.query("SELECT id, shape_json FROM sent_messages")
-    result_dict = result.to_pydict()
-    for msg_id, shape in zip(result_dict["id"], result_dict["shape_json"]):
-        assert shape is not None and shape != "", (
-            f"sent_messages.shape_json is empty for id={msg_id}"
-        )
-        try:
-            json.loads(shape)
-        except json.JSONDecodeError as e:
-            raise AssertionError(
-                f"sent_messages.shape_json is not valid JSON for id={msg_id}: {shape!r}"
-            ) from e
+        # -- Verify sent_messages.view_json --
+        result = engine.query("SELECT id, view_json FROM sent_messages")
+        result_dict = result.to_pydict()
+        assert len(result_dict["id"]) > 0, "Expected sent_messages rows"
+        for msg_id, view in zip(result_dict["id"], result_dict["view_json"]):
+            assert view is not None and view != "", (
+                f"sent_messages.view_json is empty for id={msg_id}"
+            )
+            try:
+                json.loads(view)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"sent_messages.view_json is not valid JSON for id={msg_id}: {view!r}"
+                ) from e
 
-    # Clean up
-    hosts.shutdown().get()
+        # -- Verify sent_messages.shape_json --
+        result = engine.query("SELECT id, shape_json FROM sent_messages")
+        result_dict = result.to_pydict()
+        for msg_id, shape in zip(result_dict["id"], result_dict["shape_json"]):
+            assert shape is not None and shape != "", (
+                f"sent_messages.shape_json is empty for id={msg_id}"
+            )
+            try:
+                json.loads(shape)
+            except json.JSONDecodeError as e:
+                raise AssertionError(
+                    f"sent_messages.shape_json is not valid JSON for id={msg_id}: {shape!r}"
+                ) from e
 
 
 @pytest.mark.timeout(120)
@@ -1676,6 +1621,3 @@ def test_per_table_row_retention(cleanup_callbacks) -> None:
         assert after_count < before_count, (
             f"Expected fewer rows after retention, got {after_count} vs {before_count}"
         )
-
-        # Clean up
-        hosts.shutdown().get()

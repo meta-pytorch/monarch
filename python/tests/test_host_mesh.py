@@ -182,7 +182,6 @@ def test_shutdown_unpickled_host_mesh_throws_exception() -> None:
         hm_unpickled = cloudpickle.loads(cloudpickle.dumps(hm))
         with pytest.raises(RuntimeError):
             hm_unpickled.shutdown().get()
-        hm.shutdown().get()
 
 
 @pytest.mark.timeout(120)
@@ -312,14 +311,16 @@ def test_root_client_does_not_leak_host_meshes() -> None:
 
 @pytest.mark.timeout(60)
 def test_spawn_procs_proc_bind_length_mismatch() -> None:
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    with pytest.raises(
-        ValueError, match=r"proc_bind length \(1\) must equal procs_per_host \(4\)"
-    ):
-        host.spawn_procs(
-            per_host={"gpus": 4},
-            proc_bind=[{"cpunodebind": "0"}],
-        )
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        with pytest.raises(
+            ValueError,
+            match=r"proc_bind length \(1\) must equal procs_per_host \(4\)",
+        ):
+            host.spawn_procs(
+                per_host={"gpus": 4},
+                proc_bind=[{"cpunodebind": "0"}],
+            )
 
 
 @pytest.mark.timeout(120)
@@ -335,20 +336,21 @@ def test_spawn_procs_with_numactl_bind() -> None:
     node0_cpus = _parse_cpu_list((numa_node0 / "cpulist").read_text())
     assert node0_cpus, "node0 has no CPUs"
 
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    proc_mesh = host.spawn_procs(
-        name="numa_bound",
-        per_host={"gpus": 2},
-        proc_bind=[{"cpunodebind": "0"}, {"cpunodebind": "0"}],
-    )
-    am = proc_mesh.spawn("affinity", CpuAffinityActor)
-    affinities = am.get_affinity.call().get()
-    for rank, cpus in affinities.items():
-        cpu_set = set(cpus)
-        assert cpu_set, f"rank {rank} has empty affinity"
-        assert cpu_set <= node0_cpus, (
-            f"rank {rank} affinity {cpu_set} is not a subset of node0 CPUs {node0_cpus}"
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        proc_mesh = host.spawn_procs(
+            name="numa_bound",
+            per_host={"gpus": 2},
+            proc_bind=[{"cpunodebind": "0"}, {"cpunodebind": "0"}],
         )
+        am = proc_mesh.spawn("affinity", CpuAffinityActor)
+        affinities = am.get_affinity.call().get()
+        for rank, cpus in affinities.items():
+            cpu_set = set(cpus)
+            assert cpu_set, f"rank {rank} has empty affinity"
+            assert cpu_set <= node0_cpus, (
+                f"rank {rank} affinity {cpu_set} is not a subset of node0 CPUs {node0_cpus}"
+            )
 
 
 @pytest.mark.timeout(120)
@@ -361,18 +363,19 @@ def test_spawn_procs_with_taskset_bind() -> None:
     cpu_a = available[0]
     cpu_b = available[1]
 
-    host = ProcessJob({"hosts": 1}).state(cached_path=None).hosts
-    proc_mesh = host.spawn_procs(
-        name="taskset_bound",
-        per_host={"gpus": 2},
-        proc_bind=[{"cpus": str(cpu_a)}, {"cpus": str(cpu_b)}],
-    )
-    am = proc_mesh.spawn("affinity", CpuAffinityActor)
-    affinities = am.get_affinity.call().get()
-    observed = {frozenset(cpus) for cpus in affinities.values()}
-    assert observed == {frozenset({cpu_a}), frozenset({cpu_b})}, (
-        f"expected affinities {{{cpu_a}}} and {{{cpu_b}}}, got {affinities}"
-    )
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        host = state.hosts
+        proc_mesh = host.spawn_procs(
+            name="taskset_bound",
+            per_host={"gpus": 2},
+            proc_bind=[{"cpus": str(cpu_a)}, {"cpus": str(cpu_b)}],
+        )
+        am = proc_mesh.spawn("affinity", CpuAffinityActor)
+        affinities = am.get_affinity.call().get()
+        observed = {frozenset(cpus) for cpus in affinities.values()}
+        assert observed == {frozenset({cpu_a}), frozenset({cpu_b})}, (
+            f"expected affinities {{{cpu_a}}} and {{{cpu_b}}}, got {affinities}"
+        )
 
 
 class WrapperMarkerActor(Actor):

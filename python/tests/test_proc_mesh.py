@@ -375,12 +375,11 @@ def test_raw_proc_mesh_pickle_blocks_on_proc_mesh_init() -> None:
 @pytest.mark.timeout(60)
 @isolate_in_subprocess
 async def test_actor_spawn_then_immediate_shutdown() -> None:
-    state = ProcessJob({"hosts": 1}).state(cached_path=None)
-    proc_mesh = state.hosts.spawn_procs(name="test")
-    await proc_mesh.initialized
-    # spawn actor but do NOT await initialized — immediately shutdown
-    proc_mesh.spawn("test_actor", TestActor, 42)
-    state.hosts.shutdown().get()
+    with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
+        proc_mesh = state.hosts.spawn_procs(name="test")
+        await proc_mesh.initialized
+        # spawn actor but do NOT await initialized — immediately shutdown
+        proc_mesh.spawn("test_actor", TestActor, 42)
 
 
 @pytest.mark.timeout(60)
