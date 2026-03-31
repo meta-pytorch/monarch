@@ -29,12 +29,16 @@ use anyhow::bail;
 use hyperactor_mesh::introspect::NodePayload;
 use reqwest::Client;
 use reqwest::Response;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
 use tokio::process::Command;
+
+pub(crate) const QUERY_RETRY_ATTEMPTS: usize = 5;
+pub(crate) const QUERY_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 /// Classified service and worker proc references. See MIT-7
 /// (proc-classification).
@@ -127,7 +131,7 @@ impl WorkloadFixture {
     }
 
     /// POST a path with a JSON body relative to the admin URL.
-    pub(crate) async fn post(&self, path: &str, body: &impl serde::Serialize) -> Result<Response> {
+    pub(crate) async fn post(&self, path: &str, body: &impl Serialize) -> Result<Response> {
         let url = format!("{}{}", self.admin_url, path);
         let resp = self
             .client
@@ -143,7 +147,7 @@ impl WorkloadFixture {
     pub(crate) async fn post_json<T: DeserializeOwned>(
         &self,
         path: &str,
-        body: &impl serde::Serialize,
+        body: &impl Serialize,
     ) -> Result<T> {
         let url = format!("{}{}", self.admin_url, path);
         let resp = self
@@ -161,6 +165,29 @@ impl WorkloadFixture {
         serde_json::from_str(&text).with_context(|| {
             format!("deserialize response from POST {url} (HTTP {status}): {text}")
         })
+    }
+
+    /// Retry `post_json` with fixed backoff. The DataFusion dashboard
+    /// backend can take longer to initialize in opt builds, so queries
+    /// issued right after the admin sentinel may time out.
+    pub(crate) async fn post_json_with_retry<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T> {
+        let mut last_err = None;
+        for attempt in 0..QUERY_RETRY_ATTEMPTS {
+            match self.post_json::<T>(path, body).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt + 1 < QUERY_RETRY_ATTEMPTS {
+                        tokio::time::sleep(QUERY_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("post_json_with_retry: no attempts made")))
     }
 
     /// Walk root → hosts → procs → actors and classify service vs
@@ -292,6 +319,8 @@ pub(crate) async fn start_workload(
         .env("HYPERACTOR_TLS_KEY", &combined_path)
         .env("HYPERACTOR_TLS_CA", &ca_path)
         .env("HYPERACTOR_MESH_ADMIN_ADDR", "[::]:0")
+        .env("HYPERACTOR_MESH_PROC_SPAWN_MAX_IDLE", "120s")
+        .env("HYPERACTOR_MESH_ACTOR_SPAWN_MAX_IDLE", "120s")
         .stdout(std::process::Stdio::piped());
 
     // Match the old shell tests: prefer an fbpkg-fetched py-spy and

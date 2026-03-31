@@ -52,7 +52,7 @@ pub async fn run_query_success() {
         sql: "SELECT 1 AS n".to_string(),
     };
     let resp: QueryResponse = fixture
-        .post_json("/v1/query", &req)
+        .post_json_with_retry("/v1/query", &req)
         .await
         .expect("query proxy should return rows");
     let rows = resp.rows.as_array().expect("rows should be an array");
@@ -104,7 +104,7 @@ pub async fn run_query_telemetry_tables() {
         sql: "SELECT COUNT(*) AS cnt FROM meshes".to_string(),
     };
     let resp: QueryResponse = fixture
-        .post_json("/v1/query", &req)
+        .post_json_with_retry("/v1/query", &req)
         .await
         .expect("meshes query should succeed");
     let rows = resp.rows.as_array().expect("rows should be an array");
@@ -127,7 +127,7 @@ pub async fn run_pyspy_dump_and_query() {
     // 1. Use SQL to discover a worker proc_ref from ProcAgent actors.
     //    ProcAgent full_name = "{proc_id},proc_agent[0]"
     let resp: QueryResponse = fixture
-        .post_json(
+        .post_json_with_retry(
             "/v1/query",
             &QueryRequest {
                 sql: "SELECT full_name FROM actors WHERE full_name LIKE '%,proc_agent[0]'"
@@ -164,7 +164,7 @@ pub async fn run_pyspy_dump_and_query() {
 
     // 3. Verify the dump exists in the pyspy_dumps table via SQL.
     let resp: QueryResponse = fixture
-        .post_json(
+        .post_json_with_retry(
             "/v1/query",
             &QueryRequest {
                 sql: format!(
