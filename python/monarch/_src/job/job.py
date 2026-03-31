@@ -16,16 +16,121 @@ import sys
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Literal, NamedTuple, Optional, Sequence
+from typing import Dict, List, Literal, NamedTuple, Optional, Sequence, TYPE_CHECKING
 
 from monarch._src.actor.bootstrap import attach_to_workers
+
+if TYPE_CHECKING:
+    from monarch.remotemount.remotemount import MountHandler
+
 from monarch._src.actor.host_mesh import _spawn_admin
 
 # note: the jobs api is intended as a library so it should
 # only be importing _public_ monarch API functions.
-from monarch.actor import enable_transport, HostMesh, this_host
+from monarch.actor import (
+    Actor,
+    current_rank,
+    enable_transport,
+    endpoint,
+    HostMesh,
+    Port,
+    this_host,
+)
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
+
+
+class BashActor(Actor):
+    """Actor that executes bash scripts on remote workers.
+
+    Two execution modes:
+
+    1. **Blocking** — ``run(script)`` runs the script to completion and
+       returns ``{"returncode", "stdout", "stderr"}``.  Output is also
+       printed on the worker for log-forwarding visibility.
+
+    2. **Streaming** — ``start(script)`` launches the script in the
+       background and returns immediately.  The client then calls
+       ``poll_output()`` in a loop to receive incremental stdout/stderr
+       until the process exits.
+    """
+
+    @endpoint
+    def run(self, script: str, target_ranks: Optional[list] = None):
+        my_rank = current_rank().rank
+        if target_ranks is not None and my_rank not in target_ranks:
+            return {"returncode": 0, "stdout": "", "stderr": "", "skipped": True}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
+            f.write(script)
+            f.flush()
+            result = subprocess.run(["bash", f.name], capture_output=True, text=True)
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+
+    @endpoint
+    def run_streaming(
+        self,
+        script: str,
+        output_port: Port[str],
+        target_ranks: list,
+    ):
+        """Run *script* on targeted ranks, streaming output via *output_port*.
+
+        Only actors whose ``current_rank().rank`` is in *target_ranks*
+        execute the script.  Non-targeted actors send ``"skip:<rank>"``
+        and return immediately.
+
+        Each message sent through the port is a tagged line:
+        ``"out:<line>"`` for stdout, ``"err:<line>"`` for stderr,
+        ``"rc:<code>"`` on exit, and ``"skip:<rank>"`` for skipped ranks.
+
+        Args:
+            script: Bash script text to execute.
+            output_port: A :class:`Port` obtained from
+                ``Channel[str].open()``.  Each line of output is pushed
+                through this port as it is produced.
+            target_ranks: List of flat rank indices that should run the
+                script.
+        """
+        my_rank = current_rank().rank
+
+        if my_rank not in target_ranks:
+            output_port.send(f"skip:{my_rank}")
+            return
+
+        import selectors
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
+            f.write(script)
+            f.flush()
+            proc = subprocess.Popen(
+                ["bash", f.name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout = proc.stdout
+            stderr = proc.stderr
+            assert stdout is not None
+            assert stderr is not None
+            sel = selectors.DefaultSelector()
+            sel.register(stdout, selectors.EVENT_READ, "stdout")
+            sel.register(stderr, selectors.EVENT_READ, "stderr")
+            while sel.get_map():
+                for key, _ in sel.select():
+                    # pyre-ignore[16]: fileobj is IO[str] here, not int
+                    line = key.fileobj.readline()
+                    if not line:
+                        sel.unregister(key.fileobj)
+                        continue
+                    tag = "out" if key.data == "stdout" else "err"
+                    output_port.send(f"{my_rank}:{tag}:{line}")
+            sel.close()
+            proc.wait()
+        output_port.send(f"{my_rank}:rc:{proc.returncode}")
 
 
 @dataclass
@@ -332,6 +437,116 @@ class JobTrait(ABC):
             running._kill()
         self._status = "not_running"
 
+    def remote_mount(
+        self,
+        host_mesh: "HostMesh",
+        source: str,
+        mntpoint: Optional[str] = None,
+    ) -> "MountHandler":  # pyre-ignore[11]
+        """Mount a local directory on workers via remotemount.
+
+        Subclasses may override to customize address rewriting or
+        transfer parameters.
+
+        Args:
+            host_mesh: The HostMesh whose workers will receive the mount.
+            source: Local directory path to mount.
+            mntpoint: Mount point on workers. Defaults to ``source``.
+
+        Returns:
+            A :class:`MountHandler` (already opened).
+        """
+        from monarch.remotemount.remotemount import remotemount
+
+        handler = remotemount(host_mesh, source, mntpoint=mntpoint)
+        handler.open()
+        return handler
+
+    def python_path(
+        self,
+        source: str,
+        mntpoint: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return a PYTHONPATH entry for a .venv in the source directory.
+
+        Detects ``.venv/lib/pythonX.Y/site-packages`` in ``source``
+        and returns the corresponding path relative to ``mntpoint``
+        (or ``source`` if ``mntpoint`` is None).
+
+        Args:
+            source: Local directory path (the one being mounted).
+            mntpoint: Mount point on workers. Defaults to ``source``.
+
+        Returns:
+            A PYTHONPATH string for the worker, or ``None`` if no
+            ``.venv`` is found.
+        """
+        import glob
+
+        venv_sp = glob.glob(
+            os.path.join(source, ".venv", "lib", "python*", "site-packages")
+        )
+        if not venv_sp:
+            return None
+        rel = os.path.relpath(venv_sp[0], source)
+        mp = mntpoint or source
+        return os.path.join(mp, rel)
+
+    def exec_command(
+        self,
+        host_mesh: "HostMesh",
+        cmd: List[str],
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+        run_all: bool = False,
+    ) -> int:
+        """Execute a command on workers via BashActor.
+
+        Spawns a BashActor on worker procs and runs the command as a
+        bash script.  If ``run_all`` is False only rank 0 runs the
+        command; otherwise all ranks run with DDP env vars set.
+
+        Subclasses (e.g. LocalJob) may override with a more direct
+        mechanism (subprocess, kubectl exec, etc.).
+
+        Args:
+            host_mesh: The HostMesh to run on.
+            cmd: Command and arguments.
+            env: Extra environment variables.
+            workdir: Working directory on worker.
+            run_all: If True, run on all workers with DDP env vars.
+
+        Returns:
+            Exit code (max returncode across ranks, 0 = success).
+        """
+        lines: List[str] = ["#!/bin/bash", "set -e"]
+        if env:
+            for k, v in env.items():
+                lines.append(f"export {k}={shlex.quote(v)}")
+        if workdir:
+            lines.append(f"cd {shlex.quote(workdir)}")
+        lines.append(shlex.join(cmd))
+        script = "\n".join(lines) + "\n"
+
+        procs = host_mesh.spawn_procs()
+        bash_actors = procs.spawn("BashActor", BashActor)
+        target_ranks = None if run_all else [0]
+        results = bash_actors.run.call(script, target_ranks=target_ranks).get()
+
+        max_rc = 0
+        for i, (_rank, result) in enumerate(results):
+            if result.get("skipped"):
+                continue
+            stdout = result.get("stdout", "")
+            stderr = result.get("stderr", "")
+            rc = result.get("returncode", 1)
+            if stdout:
+                print(f"== rank {i} stdout ==\n{stdout}")
+            if stderr:
+                print(f"== rank {i} stderr ==\n{stderr}", file=sys.stderr)
+            max_rc = max(max_rc, rc)
+        return max_rc
+
     @abstractmethod
     def _state(self) -> JobState: ...
 
@@ -395,6 +610,38 @@ def job_load(filename: str) -> JobTrait:
         return job
 
 
+DEFAULT_JOB_PATH: str = ".monarch/job_state.pkl"
+
+
+def open_cached(job_path: Optional[str] = None) -> JobTrait:
+    """Load a cached job and connect to it.
+
+    This is the primary entry point for Python scripts that want to use
+    a job previously created by ``monarch serve``.
+
+    Args:
+        job_path: Path to the pickled job file. Defaults to
+            ``.monarch/job_state.pkl``.
+
+    Returns:
+        A connected :class:`JobTrait` whose ``state()`` returns
+        the available host meshes.
+
+    Example::
+
+        from monarch.job import open_cached
+
+        job = open_cached()
+        state = job.state()
+        host_mesh = state.workers  # HostMesh
+        job.remote_mount(host_mesh, "/path/to/code")
+        job.exec_command(host_mesh, ["python", "train.py"])
+    """
+    if job_path is None:
+        job_path = DEFAULT_JOB_PATH
+    return job_load(job_path)
+
+
 class LocalJob(JobTrait):
     """
     Job that runs on the local host.
@@ -435,6 +682,25 @@ class LocalJob(JobTrait):
 
     def _state(self) -> JobState:
         return JobState({k: this_host() for k in self._host_names})
+
+    def exec_command(
+        self,
+        host_mesh: "HostMesh",
+        cmd: List[str],
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+        run_all: bool = False,
+    ) -> int:
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
+        if run_all:
+            run_env["RANK"] = "0"
+            run_env["WORLD_SIZE"] = "1"
+            run_env["MASTER_ADDR"] = "127.0.0.1"
+            run_env["MASTER_PORT"] = "29500"
+        result = subprocess.run(cmd, env=run_env, cwd=workdir)
+        return result.returncode
 
     def _create(self, client_script: Optional[str]):
         if client_script is None:

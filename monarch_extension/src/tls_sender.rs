@@ -30,50 +30,115 @@ use crate::fast_pack::compute_block_hashes;
 use crate::fast_pack::mmap_anonymous;
 use crate::fast_pack::pack_files_into;
 
-const CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
-const CERT_PATH: &str = "/var/facebook/x509_identities/server.pem";
+// Default paths used by the Python caller (monarch.remotemount).
+// Kept here as documentation; actual values are passed via make_tls_config().
+#[allow(dead_code)]
+const DEFAULT_CA_PATH: &str = "/var/facebook/rootcanal/ca.pem";
+#[allow(dead_code)]
+const DEFAULT_CERT_PATH: &str = "/var/facebook/x509_identities/server.pem";
 
-/// Build a `rustls::ClientConfig` with full certificate verification.
-fn make_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+/// A `ServerCertVerifier` that accepts any server certificate.
+///
+/// Used when `ca_path` is not provided (e.g. self-signed certs in K8s pods).
+#[derive(Debug)]
+struct AcceptAnyCert;
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Build a `rustls::ClientConfig`.
+///
+/// If `ca_path` is provided, server certs are verified against that CA.
+/// If `ca_path` is `None`, any server cert is accepted (for self-signed certs).
+/// If `cert_path` is provided, it's used for client auth; otherwise no client auth.
+fn make_tls_config(
+    cert_path: Option<&str>,
+    ca_path: Option<&str>,
+) -> Result<Arc<rustls::ClientConfig>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let ca_pem = std::fs::read(CA_PATH).map_err(|e| format!("read {CA_PATH} failed: {e}"))?;
-    let cert_pem = std::fs::read(CERT_PATH).map_err(|e| format!("read {CERT_PATH} failed: {e}"))?;
+    let builder = rustls::ClientConfig::builder();
 
-    let mut root_store = rustls::RootCertStore::empty();
-    let ca_certs = rustls_pemfile::certs(&mut BufReader::new(&ca_pem[..]))
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    root_store.add_parsable_certificates(ca_certs);
-
-    let certs = rustls_pemfile::certs(&mut BufReader::new(&cert_pem[..]))
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-
-    let key = {
-        let mut reader = BufReader::new(&cert_pem[..]);
-        loop {
-            match rustls_pemfile::read_one(&mut reader) {
-                Ok(Some(rustls_pemfile::Item::Pkcs1Key(k))) => {
-                    break rustls::pki_types::PrivateKeyDer::Pkcs1(k);
-                }
-                Ok(Some(rustls_pemfile::Item::Pkcs8Key(k))) => {
-                    break rustls::pki_types::PrivateKeyDer::Pkcs8(k);
-                }
-                Ok(Some(rustls_pemfile::Item::Sec1Key(k))) => {
-                    break rustls::pki_types::PrivateKeyDer::Sec1(k);
-                }
-                Ok(Some(_)) => continue,
-                Ok(None) => return Err(format!("no private key found in {CERT_PATH}")),
-                Err(e) => return Err(format!("parse {CERT_PATH} failed: {e}")),
-            }
+    let builder = match ca_path {
+        Some(ca) => {
+            let ca_pem = std::fs::read(ca).map_err(|e| format!("read {ca} failed: {e}"))?;
+            let mut root_store = rustls::RootCertStore::empty();
+            let ca_certs = rustls_pemfile::certs(&mut BufReader::new(&ca_pem[..]))
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+            root_store.add_parsable_certificates(ca_certs);
+            builder.with_root_certificates(root_store)
         }
+        None => builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert)),
     };
 
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_client_auth_cert(certs, key)
-        .map_err(|e| format!("client auth cert failed: {e}"))?;
+    let config = match cert_path {
+        Some(cp) => {
+            let cert_pem = std::fs::read(cp).map_err(|e| format!("read {cp} failed: {e}"))?;
+            let certs = rustls_pemfile::certs(&mut BufReader::new(&cert_pem[..]))
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+            let key = {
+                let mut reader = BufReader::new(&cert_pem[..]);
+                loop {
+                    match rustls_pemfile::read_one(&mut reader) {
+                        Ok(Some(rustls_pemfile::Item::Pkcs1Key(k))) => {
+                            break rustls::pki_types::PrivateKeyDer::Pkcs1(k);
+                        }
+                        Ok(Some(rustls_pemfile::Item::Pkcs8Key(k))) => {
+                            break rustls::pki_types::PrivateKeyDer::Pkcs8(k);
+                        }
+                        Ok(Some(rustls_pemfile::Item::Sec1Key(k))) => {
+                            break rustls::pki_types::PrivateKeyDer::Sec1(k);
+                        }
+                        Ok(Some(_)) => continue,
+                        Ok(None) => return Err(format!("no private key found in {cp}")),
+                        Err(e) => return Err(format!("parse {cp} failed: {e}")),
+                    }
+                }
+            };
+            builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| format!("client auth cert failed: {e}"))?
+        }
+        None => builder.with_no_client_auth(),
+    };
 
     Ok(Arc::new(config))
 }
@@ -119,8 +184,10 @@ fn send_blocks_impl(
     cache_path: &str,
     block_size: usize,
     tls_hostname: Option<&str>,
+    cert_path: Option<&str>,
+    ca_path: Option<&str>,
 ) -> PyResult<()> {
-    let tls_config = make_tls_config().map_err(PyRuntimeError::new_err)?;
+    let tls_config = make_tls_config(cert_path, ca_path).map_err(PyRuntimeError::new_err)?;
 
     let num_streams = addresses.len();
 
@@ -272,7 +339,7 @@ impl PackedBuffer {
     /// Each address in `addresses` gets its own TCP+TLS stream. Blocks
     /// are distributed round-robin across streams. The wire protocol
     /// matches the Python `SenderShardActor` exactly.
-    #[pyo3(signature = (dirty_blocks, addresses, cache_path, hash_block_size=None, tls_hostname=None))]
+    #[pyo3(signature = (dirty_blocks, addresses, cache_path, hash_block_size=None, tls_hostname=None, cert_path=None, ca_path=None))]
     fn send_blocks(
         &self,
         py: Python<'_>,
@@ -281,6 +348,8 @@ impl PackedBuffer {
         cache_path: String,
         hash_block_size: Option<usize>,
         tls_hostname: Option<String>,
+        cert_path: Option<String>,
+        ca_path: Option<String>,
     ) -> PyResult<()> {
         let block_size = hash_block_size.unwrap_or(HASH_BLOCK_SIZE);
         let buf_ptr = self.ptr as usize;
@@ -295,6 +364,8 @@ impl PackedBuffer {
                 &cache_path,
                 block_size,
                 tls_hostname.as_deref(),
+                cert_path.as_deref(),
+                ca_path.as_deref(),
             )
         })
     }
@@ -305,7 +376,7 @@ impl PackedBuffer {
 /// Like `PackedBuffer.send_blocks()` but operates on any buffer (e.g. a
 /// memoryview from `pack_directory_chunked`), avoiding a second pack step.
 #[pyfunction]
-#[pyo3(signature = (buffer, total_size, dirty_blocks, addresses, cache_path, hash_block_size=None, tls_hostname=None))]
+#[pyo3(signature = (buffer, total_size, dirty_blocks, addresses, cache_path, hash_block_size=None, tls_hostname=None, cert_path=None, ca_path=None))]
 fn send_blocks_from_buffer(
     py: Python<'_>,
     buffer: pyo3::buffer::PyBuffer<u8>,
@@ -315,6 +386,8 @@ fn send_blocks_from_buffer(
     cache_path: String,
     hash_block_size: Option<usize>,
     tls_hostname: Option<String>,
+    cert_path: Option<String>,
+    ca_path: Option<String>,
 ) -> PyResult<()> {
     let block_size = hash_block_size.unwrap_or(HASH_BLOCK_SIZE);
     let buf_ptr = buffer.buf_ptr() as usize;
@@ -328,6 +401,8 @@ fn send_blocks_from_buffer(
             &cache_path,
             block_size,
             tls_hostname.as_deref(),
+            cert_path.as_deref(),
+            ca_path.as_deref(),
         )
     })
 }

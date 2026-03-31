@@ -12,6 +12,7 @@ from monarch._src.job.job import (
     JobTrait,
     LocalJob,
     MeshAdminConfig,
+    open_cached,
     TelemetryConfig,
 )
 from monarch._src.job.process import ProcessJob
@@ -25,6 +26,7 @@ __all__ = [
     "JobState",
     "LocalJob",
     "MeshAdminConfig",
+    "open_cached",
     "ProcessJob",
     "SlurmJob",
     "TelemetryConfig",

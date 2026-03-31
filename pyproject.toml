@@ -133,6 +133,7 @@ packages = {find = {where = ["python"]}}
 
 [tool.setuptools.package-data]
 "monarch.monarch_dashboard" = ["frontend/build/**/*"]
+"monarch.tools" = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 markers = [

@@ -401,14 +401,14 @@ class FUSEActor(Actor):
         return self._pack_index
 
     @endpoint
-    def prepare_receiver(self, num_streams, total_size):
+    def prepare_receiver(self, num_streams, total_size, cert_path=None, port=0):
         """Create a Rust TLS receiver and return its address."""
         from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
 
         if self._chunk_storage is None or self._total_size != total_size:
             self._alloc_storage(total_size)
 
-        self._tls_receiver = TlsReceiver(num_streams)
+        self._tls_receiver = TlsReceiver(num_streams, cert_path=cert_path, port=port)
         return (
             self._tls_receiver.addr,
             self._tls_receiver.tls_hostname,
@@ -444,11 +444,29 @@ class FUSEActor(Actor):
 
     @endpoint
     def unmount(self, mount_point):
-        """Unmount a FUSE filesystem. Returns (returncode, stderr)."""
+        """Unmount a FUSE filesystem.
+
+        Returns (status, detail) where status is one of:
+          "ok"          — unmounted successfully
+          "not_mounted" — path was not a mountpoint (nothing to unmount)
+          "busy"        — mountpoint is in use by another process
+          "error"       — unexpected failure
+        """
+        check = subprocess.run(
+            ["mountpoint", "-q", mount_point],
+            capture_output=True,
+        )
+        if check.returncode != 0:
+            return "not_mounted", ""
+
         result = subprocess.run(
             ["fusermount3", "-u", mount_point], capture_output=True, text=True
         )
-        return result.returncode, result.stderr
+        if result.returncode == 0:
+            return "ok", ""
+        if "busy" in result.stderr.lower():
+            return "busy", result.stderr.strip()
+        return "error", result.stderr.strip()
 
 
 class MountHandler:
@@ -461,6 +479,8 @@ class MountHandler:
         backend: str = "slurm",
         num_parallel_streams: int = 8,
         transfer_mode: str = "rust_tls",
+        cert_path: Optional[str] = None,
+        tls_port: int = 0,
     ):
         self.sourcepath = sourcepath
         if mntpoint is None:
@@ -481,6 +501,8 @@ class MountHandler:
                 f"transfer_mode must be 'rust_tls' or 'actor', got {transfer_mode!r}"
             )
         self.transfer_mode = transfer_mode
+        self.cert_path = cert_path
+        self.tls_port = tls_port
         self._staging_mv = None
         self._pack_shm_path = None
 
@@ -573,13 +595,21 @@ class MountHandler:
         )
 
         # Unmount workers that need updating.
+        busy_ranks = []
         for rank in worker_dirty:
             result = flat_actors.slice(rank=rank).unmount.call(self.mntpoint).get()
-            for _point, (rc, stderr) in result:
-                if rc != 0:
-                    logger.warning(
-                        f"fusermount3 -u failed on rank {rank} (rc={rc}): {stderr.strip()}"
-                    )
+            for _point, (status, detail) in result:
+                if status == "busy":
+                    busy_ranks.append((rank, detail))
+                elif status == "error":
+                    logger.warning(f"Unmount failed on rank {rank}: {detail}")
+        if busy_ranks:
+            details = "; ".join(f"rank {r}: {e}" for r, e in busy_ranks)
+            raise RuntimeError(
+                f"Cannot update mount at {self.mntpoint}: path is busy on "
+                f"{len(busy_ranks)} worker(s). Kill processes using the "
+                f"mount before re-running. Details: {details}"
+            )
 
         t_unmount_done = time.time()
 
@@ -680,14 +710,27 @@ class MountHandler:
 
         # 1. Start receiver on worker (returns address, tls_hostname, cache path).
         t_start = time.time()
-        result = fuse_actor.prepare_receiver.call(num_streams, total_size).get()
+        result = fuse_actor.prepare_receiver.call(
+            num_streams,
+            total_size,
+            cert_path=self.cert_path,
+            port=self.tls_port,
+        ).get()
         addr, tls_hostname, cache_path = [v for _, v in result][0]
         addresses = [addr] * num_streams
+
+        # Hook: let callers rewrite addresses (e.g. for port-forwarding).
+        if hasattr(self, "_address_rewriter") and self._address_rewriter is not None:
+            addresses, tls_hostname = self._address_rewriter(
+                addr, num_streams, tls_hostname
+            )
 
         # 2. Fire receive_blocks (non-blocking) so worker starts waiting.
         recv_future = fuse_actor.receive_blocks.call()
 
         # 3. Send blocks directly from the staging buffer.
+        #    Receiver uses a self-signed cert (or custom cert_path), so
+        #    skip CA verification on the sender side.
         t_setup = time.time()
         send_blocks_from_buffer(
             self._staging_mv,
@@ -696,6 +739,7 @@ class MountHandler:
             addresses,
             cache_path,
             tls_hostname=tls_hostname,
+            ca_path=None,
         )
         t_send = time.time()
 
@@ -913,9 +957,9 @@ class MountHandler:
         """Unmount FUSE but keep actors alive for incremental updates."""
         if self.fuse_actors is not None:
             result = self.fuse_actors.unmount.call(self.mntpoint).get()
-            for _point, (rc, stderr) in result:
-                if rc != 0:
-                    logger.warning(f"fusermount3 -u failed (rc={rc}): {stderr.strip()}")
+            for _point, (status, detail) in result:
+                if status not in ("ok", "not_mounted"):
+                    logger.warning(f"unmount failed ({status}): {detail}")
 
     def __enter__(self) -> "MountHandler":
         self.open()
@@ -934,6 +978,8 @@ def remotemount(
     backend: str = "slurm",
     num_parallel_streams: int = 8,
     transfer_mode: str = "rust_tls",
+    cert_path: Optional[str] = None,
+    tls_port: int = 0,
 ) -> MountHandler:
     """Mount a local directory on remote hosts via RDMA transfer and FUSE.
 
@@ -941,6 +987,13 @@ def remotemount(
         transfer_mode: "rust_tls" (default) uses custom Rust TLS sender/receiver
             for maximum throughput. "actor" uses monarch's built-in actor message
             passing — slower but works without Meta TLS certs (e.g. CI, local testing).
+        cert_path: Path to a PEM file containing cert + private key for TLS.
+            Used by the receiver (server identity). If None, falls back to
+            Meta's default cert paths. When set, the sender skips server
+            verification (for self-signed certs).
+        tls_port: Port for the TLS receiver to bind to. Default 0 picks a
+            random port. Set to a known port when using pre-established
+            port-forward tunnels.
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -952,4 +1005,6 @@ def remotemount(
         backend,
         num_parallel_streams,
         transfer_mode,
+        cert_path,
+        tls_port,
     )

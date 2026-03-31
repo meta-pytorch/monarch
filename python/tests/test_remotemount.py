@@ -1542,6 +1542,60 @@ def test_actor_incremental_partial() -> None:
             rm.close()
 
 
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_unmount_not_mounted_returns_status() -> None:
+    """Unmounting a path that isn't mounted returns ('not_mounted', '')."""
+    from monarch.actor import this_host
+    from monarch.remotemount.remotemount import FUSEActor
+
+    host = this_host()
+    procs = host.spawn_procs()
+    actors = procs.spawn("FUSEActor", FUSEActor, 1024, "slurm")
+
+    with tempfile.TemporaryDirectory() as d:
+        result = actors.unmount.call(d).get()
+        for _rank, (status, detail) in result:
+            assert status == "not_mounted"
+            assert detail == ""
+
+
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_unmount_after_mount_returns_ok() -> None:
+    """Mount via remotemount, unmount via actor endpoint, check 'ok' status."""
+    from monarch.actor import this_host
+    from monarch.remotemount import remotemount
+
+    with tempfile.TemporaryDirectory() as src:
+        with open(os.path.join(src, "f.txt"), "wb") as f:
+            f.write(b"test content")
+
+        with tempfile.TemporaryDirectory() as mnt:
+            host = this_host()
+            rm = remotemount(host, src, mnt, transfer_mode="actor")
+            rm.open()
+
+            # Verify mount works
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == b"test content"
+
+            # Unmount via the actor endpoint — should return 'ok'
+            result = rm.fuse_actors.unmount.call(mnt).get()
+            for _rank, (status, _detail) in result:
+                assert status == "ok"
+                assert _detail == ""
+
+            # Second unmount — should return 'not_mounted'
+            result = rm.fuse_actors.unmount.call(mnt).get()
+            for _rank, (status, _detail) in result:
+                assert status == "not_mounted"
+
+
 _tls_certs_available: bool = os.path.exists("/var/facebook/x509_identities/server.pem")
 
 

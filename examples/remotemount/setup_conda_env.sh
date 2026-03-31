@@ -120,7 +120,7 @@ echo "  Worker wheel: $WORKER_WHL"
 echo ""
 echo "--- Installing client env ---"
 CLIENT_PIP="$DEST/client/conda/bin/python3.12 -m pip"
-$CLIENT_PIP install fire
+$CLIENT_PIP install fire flask
 
 # Remove stale dist-info from previous installs — fbpkg fetch overwrites the
 # conda dir but leaves pip metadata behind, causing "No such file" errors
@@ -142,6 +142,11 @@ if [ "$WORKER_ARCH" = "aarch64" ]; then
         --target "$DEST/worker/conda/lib/python3.12/site-packages" \
         --no-deps --only-binary :all: --force-reinstall \
         "$WORKER_WHL"
+
+    # Install pure-Python deps missing from the fbpkg base (flask for dashboard).
+    $CLIENT_PIP install \
+        --target "$DEST/worker/conda/lib/python3.12/site-packages" \
+        --no-deps flask werkzeug markupsafe itsdangerous blinker 2>/dev/null || true
 
     # Extract entrypoint + bootstrap scripts from the wheel.
     python3 -c "

@@ -503,3 +503,48 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
                     mock.call("slurm:///456"),
                 ],
             )
+
+
+class TestExecOnJobSignature(unittest.TestCase):
+    """Tests for exec_on_job parameters."""
+
+    def test_exec_on_job_has_refresh_mount(self) -> None:
+        import inspect
+
+        sig = inspect.signature(commands.exec_on_job)
+        self.assertIn("refresh_mount", sig.parameters)
+        self.assertFalse(sig.parameters["refresh_mount"].default)
+
+    def test_exec_on_job_has_ranks(self) -> None:
+        import inspect
+
+        sig = inspect.signature(commands.exec_on_job)
+        self.assertIn("ranks", sig.parameters)
+        self.assertIsNone(sig.parameters["ranks"].default)
+
+    def test_exec_on_job_has_hosts(self) -> None:
+        import inspect
+
+        sig = inspect.signature(commands.exec_on_job)
+        self.assertIn("hosts", sig.parameters)
+        self.assertIsNone(sig.parameters["hosts"].default)
+
+    def test_exec_on_job_has_per_host(self) -> None:
+        import inspect
+
+        sig = inspect.signature(commands.exec_on_job)
+        self.assertIn("per_host", sig.parameters)
+        self.assertFalse(sig.parameters["per_host"].default)
+
+    def test_force_unmount_exists(self) -> None:
+        import inspect
+
+        self.assertTrue(hasattr(commands, "_force_unmount"))
+        sig = inspect.signature(commands._force_unmount)
+        self.assertIn("procs", sig.parameters)
+        self.assertIn("mount_point", sig.parameters)
+
+    def test_bash_actor_has_run_streaming(self) -> None:
+        from monarch._src.job.job import BashActor
+
+        self.assertTrue(hasattr(BashActor, "run_streaming"))
