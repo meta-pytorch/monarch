@@ -21,7 +21,10 @@ from collections.abc import Generator
 
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_extension.chunked_fuse import mount_chunked_fuse
+from monarch._rust_bindings.monarch_extension.chunked_fuse import (
+    FuseMountHandle,
+    mount_chunked_fuse,
+)
 from monarch._rust_bindings.monarch_extension.fast_pack import (
     load_file_and_hash,
     pack_files_with_offsets,
@@ -654,7 +657,8 @@ def _fuse_mount(
     chunks: list[memoryview],
     chunk_size: int,
     mount_point: str,
-) -> Generator[object, None, None]:
+    # pyre-ignore[24]
+) -> Generator[FuseMountHandle, None, None]:
     """Mount a FUSE filesystem and unmount on exit for test isolation."""
     handle = mount_chunked_fuse(metadata, chunks, chunk_size, mount_point)
     yield handle
@@ -1002,6 +1006,355 @@ class TestFuseMount:
             with _fuse_mount(metadata2, [memoryview(content2)], len(content2), mnt):
                 with open(os.path.join(mnt, "g.txt"), "rb") as f:
                     assert f.read() == content2
+
+
+@pytest.mark.skipif(
+    not _fuse_available,
+    reason="FUSE not available (missing fusermount3, /dev/fuse, or permissions)",
+)
+class TestFuseRefresh:
+    """Tests for live FUSE refresh (atomic data swap without unmount)."""
+
+    def test_unchanged_file(self) -> None:
+        """File content identical before/after refresh — reads are correct."""
+        content = b"unchanged data here"
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.txt"]},
+            "/f.txt": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(content)], len(content), mnt) as handle,
+        ):
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == content
+            # Refresh with identical data.
+            handle.refresh(metadata, [memoryview(content)], len(content))
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == content
+
+    def test_changed_file(self) -> None:
+        """File content changes — new reads see new data."""
+        v1 = b"version one"
+        meta1: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.txt"]},
+            "/f.txt": {
+                "attr": _file_attr(len(v1)),
+                "global_offset": 0,
+                "file_len": len(v1),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+        ):
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == v1
+            v2 = b"version two!!"
+            meta2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["f.txt"]},
+                "/f.txt": {
+                    "attr": _file_attr(len(v2)),
+                    "global_offset": 0,
+                    "file_len": len(v2),
+                },
+            }
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == v2
+
+    def test_added_file(self) -> None:
+        """New file appears after refresh."""
+        v1 = b"aaa"
+        meta1: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["a.txt"]},
+            "/a.txt": {
+                "attr": _file_attr(3),
+                "global_offset": 0,
+                "file_len": 3,
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta1, [memoryview(v1)], 3, mnt) as handle,
+        ):
+            assert os.listdir(mnt) == ["a.txt"]
+            v2 = b"aaabbb"
+            meta2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["a.txt", "b.txt"]},
+                "/a.txt": {
+                    "attr": _file_attr(3),
+                    "global_offset": 0,
+                    "file_len": 3,
+                },
+                "/b.txt": {
+                    "attr": _file_attr(3),
+                    "global_offset": 3,
+                    "file_len": 3,
+                },
+            }
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
+            assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
+            with open(os.path.join(mnt, "b.txt"), "rb") as f:
+                assert f.read() == b"bbb"
+
+    def test_deleted_file(self) -> None:
+        """File disappears after refresh."""
+        v1 = b"aaabbb"
+        meta1: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["a.txt", "b.txt"]},
+            "/a.txt": {
+                "attr": _file_attr(3),
+                "global_offset": 0,
+                "file_len": 3,
+            },
+            "/b.txt": {
+                "attr": _file_attr(3),
+                "global_offset": 3,
+                "file_len": 3,
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+        ):
+            assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
+            v2 = b"aaa"
+            meta2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["a.txt"]},
+                "/a.txt": {
+                    "attr": _file_attr(3),
+                    "global_offset": 0,
+                    "file_len": 3,
+                },
+            }
+            handle.refresh(meta2, [memoryview(v2)], 3)
+            assert os.listdir(mnt) == ["a.txt"]
+            with pytest.raises(FileNotFoundError):
+                open(os.path.join(mnt, "b.txt"), "rb")
+
+    def test_file_size_grows(self) -> None:
+        """File grows after refresh."""
+        v1 = b"small"
+        meta1: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(len(v1)),
+                "global_offset": 0,
+                "file_len": len(v1),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+        ):
+            assert os.stat(os.path.join(mnt, "f.bin")).st_size == 5
+            v2 = b"much larger content now"
+            meta2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+                "/f.bin": {
+                    "attr": _file_attr(len(v2)),
+                    "global_offset": 0,
+                    "file_len": len(v2),
+                },
+            }
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
+            with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                assert f.read() == v2
+            assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v2)
+
+    def test_file_size_shrinks(self) -> None:
+        """File shrinks after refresh."""
+        v1 = b"large content here!!"
+        meta1: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(len(v1)),
+                "global_offset": 0,
+                "file_len": len(v1),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta1, [memoryview(v1)], len(v1), mnt) as handle,
+        ):
+            assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v1)
+            v2 = b"tiny"
+            meta2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+                "/f.bin": {
+                    "attr": _file_attr(len(v2)),
+                    "global_offset": 0,
+                    "file_len": len(v2),
+                },
+            }
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
+            with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                assert f.read() == v2
+            assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v2)
+
+    def test_sequential_read_unchanged_file_across_refresh(self) -> None:
+        """Read first half, refresh, read second half of an unchanged file."""
+        content = b"A" * 4096 + b"B" * 4096
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(len(content)),
+                "global_offset": 0,
+                "file_len": len(content),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(content)], len(content), mnt) as handle,
+        ):
+            fh = open(os.path.join(mnt, "f.bin"), "rb")
+            first_half = fh.read(4096)
+            assert first_half == b"A" * 4096
+            # Refresh with same content.
+            handle.refresh(metadata, [memoryview(content)], len(content))
+            second_half = fh.read(4096)
+            assert second_half == b"B" * 4096
+            fh.close()
+
+    def test_defrag_offset_shift_unchanged_content(self) -> None:
+        """File's global_offset changes (defrag) but content is same.
+
+        global_offset is a FUSE implementation detail — the kernel never
+        sees it. Reads should return the correct file content regardless
+        of where the file sits in the packed buffer.
+        """
+        file_data = b"the file content"
+        # v1: file at offset 100 (preceded by 100 bytes of padding).
+        buf1 = b"\x00" * 100 + file_data
+        meta1: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+            "/f.bin": {
+                "attr": _file_attr(len(file_data)),
+                "global_offset": 100,
+                "file_len": len(file_data),
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta1, [memoryview(buf1)], len(buf1), mnt) as handle,
+        ):
+            with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                assert f.read() == file_data
+            # v2: file at offset 0 (defragged, no padding).
+            buf2 = file_data
+            meta2: dict[str, object] = {
+                "/": {"attr": _dir_attr(), "children": ["f.bin"]},
+                "/f.bin": {
+                    "attr": _file_attr(len(file_data)),
+                    "global_offset": 0,
+                    "file_len": len(file_data),
+                },
+            }
+            handle.refresh(meta2, [memoryview(buf2)], len(buf2))
+            with open(os.path.join(mnt, "f.bin"), "rb") as f:
+                assert f.read() == file_data
+
+    def test_multiple_rapid_refreshes(self) -> None:
+        """Refresh several times rapidly, reads always see latest data."""
+
+        def meta_fn(n: str, sz: int) -> dict[str, object]:
+            return {
+                "/": {"attr": _dir_attr(), "children": [n]},
+                f"/{n}": {
+                    "attr": _file_attr(sz),
+                    "global_offset": 0,
+                    "file_len": sz,
+                },
+            }
+
+        content = b"v00"
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(meta_fn("f.txt", 3), [memoryview(content)], 3, mnt) as handle,
+        ):
+            for i in range(20):
+                new_content = f"v{i:02d}".encode()
+                handle.refresh(
+                    meta_fn("f.txt", len(new_content)),
+                    [memoryview(new_content)],
+                    len(new_content),
+                )
+                with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                    assert f.read() == new_content
+
+    def test_many_files_one_changed(self) -> None:
+        """Many files, only one changes — unchanged files unaffected."""
+        num_files = 50
+        file_size = 64
+        data = os.urandom(num_files * file_size)
+        children = [f"f_{i:03d}.bin" for i in range(num_files)]
+        metadata: dict[str, object] = {
+            "/": {"attr": _dir_attr(), "children": children},
+        }
+        for i in range(num_files):
+            metadata[f"/f_{i:03d}.bin"] = {
+                "attr": _file_attr(file_size),
+                "global_offset": i * file_size,
+                "file_len": file_size,
+            }
+
+        with (
+            tempfile.TemporaryDirectory() as mnt,
+            _fuse_mount(metadata, [memoryview(data)], len(data), mnt) as handle,
+        ):
+            # Read all files.
+            for i in range(num_files):
+                with open(os.path.join(mnt, f"f_{i:03d}.bin"), "rb") as f:
+                    expected = data[i * file_size : (i + 1) * file_size]
+                    assert f.read() == expected
+
+            # Change only file 25.
+            new_data = bytearray(data)
+            new_content = os.urandom(file_size)
+            new_data[25 * file_size : 26 * file_size] = new_content
+            new_data = bytes(new_data)
+
+            handle.refresh(metadata, [memoryview(new_data)], len(new_data))
+
+            # All files should read correctly.
+            for i in range(num_files):
+                with open(os.path.join(mnt, f"f_{i:03d}.bin"), "rb") as f:
+                    expected = new_data[i * file_size : (i + 1) * file_size]
+                    assert f.read() == expected
+
+    def test_end_to_end_pack_refresh_read(self) -> None:
+        """Full round-trip: pack, mount, modify source, re-pack, refresh, read."""
+        with tempfile.TemporaryDirectory() as src:
+            with open(os.path.join(src, "data.txt"), "wb") as f:
+                f.write(b"original content")
+
+            meta, staging_mv, chunks, _hashes, _pi = pack_directory_chunked(src)
+
+            with (
+                tempfile.TemporaryDirectory() as mnt,
+                _fuse_mount(
+                    meta,
+                    chunks,
+                    len(bytes(chunks[0])) if chunks else 1,
+                    mnt,
+                ) as handle,
+            ):
+                with open(os.path.join(mnt, "data.txt"), "rb") as f:
+                    assert f.read() == b"original content"
+
+                with open(os.path.join(src, "data.txt"), "wb") as f:
+                    f.write(b"updated content!")
+                meta2, staging_mv2, chunks2, _h2, _pi2 = pack_directory_chunked(src)
+                chunk_size2 = len(bytes(chunks2[0])) if chunks2 else 1
+                handle.refresh(meta2, chunks2, chunk_size2)
+
+                with open(os.path.join(mnt, "data.txt"), "rb") as f:
+                    assert f.read() == b"updated content!"
 
 
 class TestClassifyWorkers:
@@ -1687,4 +2040,136 @@ def test_tls_incremental_partial() -> None:
             rm.open()
             with open(os.path.join(mnt, "config.json")) as f:
                 assert f.read() == '{"lr": 0.01, "epochs": 20}'
+            rm.close()
+
+
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_actor_refresh() -> None:
+    """End-to-end: open with refreshable=True, modify source, refresh without unmounting."""
+    from monarch.actor import this_host
+    from monarch.remotemount import remotemount
+
+    with tempfile.TemporaryDirectory() as src:
+        path = os.path.join(src, "config.json")
+        with open(path, "w") as f:
+            f.write('{"lr": 0.001}')
+
+        with tempfile.TemporaryDirectory() as mnt:
+            host = this_host()
+            rm = remotemount(host, src, mnt, transfer_mode="actor")
+
+            rm.open()
+            with open(os.path.join(mnt, "config.json")) as f:
+                assert f.read() == '{"lr": 0.001}'
+
+            # Modify the source file.
+            with open(path, "w") as f:
+                f.write('{"lr": 0.01, "epochs": 20}')
+
+            # Refresh (no close/open cycle).
+            rm.refresh(src)
+            with open(os.path.join(mnt, "config.json")) as f:
+                assert f.read() == '{"lr": 0.01, "epochs": 20}'
+
+            rm.close()
+
+
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_actor_refresh_with_open_handles() -> None:
+    """Refresh while file handles are open — reads see updated data."""
+    from monarch.actor import this_host
+    from monarch.remotemount import remotemount
+
+    with tempfile.TemporaryDirectory() as src:
+        path = os.path.join(src, "data.bin")
+        with open(path, "wb") as f:
+            f.write(b"AAAA")
+
+        with tempfile.TemporaryDirectory() as mnt:
+            host = this_host()
+            rm = remotemount(host, src, mnt, transfer_mode="actor")
+
+            rm.open()
+
+            # Open a file handle before refresh.
+            fh = open(os.path.join(mnt, "data.bin"), "rb")
+            assert fh.read() == b"AAAA"
+
+            # Modify source and refresh.
+            with open(path, "wb") as f:
+                f.write(b"BBBB")
+            rm.refresh(src)
+
+            # Re-read from existing handle — should see new data.
+            fh.seek(0)
+            assert fh.read() == b"BBBB"
+            fh.close()
+
+            rm.close()
+
+
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_actor_refresh_no_change() -> None:
+    """Refresh with no source changes — should be a no-op."""
+    from monarch.actor import this_host
+    from monarch.remotemount import remotemount
+
+    with tempfile.TemporaryDirectory() as src:
+        with open(os.path.join(src, "f.txt"), "wb") as f:
+            f.write(b"unchanged")
+
+        with tempfile.TemporaryDirectory() as mnt:
+            host = this_host()
+            rm = remotemount(host, src, mnt, transfer_mode="actor")
+
+            rm.open()
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == b"unchanged"
+
+            # Refresh without changes.
+            rm.refresh(src)
+            with open(os.path.join(mnt, "f.txt"), "rb") as f:
+                assert f.read() == b"unchanged"
+
+            rm.close()
+
+
+@pytest.mark.skipif(not _fuse_available, reason="FUSE not available")
+# pyre-ignore[56]: Pyre can't infer pytest.mark.timeout decorator type
+@pytest.mark.timeout(60)
+@isolate_in_subprocess
+def test_actor_refresh_add_file() -> None:
+    """Refresh after adding a new file to the source directory."""
+    from monarch.actor import this_host
+    from monarch.remotemount import remotemount
+
+    with tempfile.TemporaryDirectory() as src:
+        with open(os.path.join(src, "a.txt"), "wb") as f:
+            f.write(b"aaa")
+
+        with tempfile.TemporaryDirectory() as mnt:
+            host = this_host()
+            rm = remotemount(host, src, mnt, transfer_mode="actor")
+
+            rm.open()
+            assert os.listdir(mnt) == ["a.txt"]
+
+            # Add a new file and refresh.
+            with open(os.path.join(src, "b.txt"), "wb") as f:
+                f.write(b"bbb")
+            rm.refresh(src)
+
+            assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
+            with open(os.path.join(mnt, "b.txt"), "rb") as f:
+                assert f.read() == b"bbb"
+
             rm.close()
