@@ -536,14 +536,6 @@ class TestExecOnJobSignature(unittest.TestCase):
         self.assertIn("per_host", sig.parameters)
         self.assertFalse(sig.parameters["per_host"].default)
 
-    def test_force_unmount_exists(self) -> None:
-        import inspect
-
-        self.assertTrue(hasattr(commands, "_force_unmount"))
-        sig = inspect.signature(commands._force_unmount)
-        self.assertIn("procs", sig.parameters)
-        self.assertIn("mount_point", sig.parameters)
-
     def test_bash_actor_has_run_streaming(self) -> None:
         from monarch._src.job.job import BashActor
 

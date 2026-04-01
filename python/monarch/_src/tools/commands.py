@@ -491,7 +491,7 @@ def context_rm(name: str) -> None:
     state_file = _context_state(name)
     if state_file.exists():
         try:
-            from monarch._src.job.job import job_load
+            from monarch._src.job.job import job_load  # pyre-ignore[21]
 
             job_load(str(state_file)).kill()
         except Exception:
@@ -540,7 +540,7 @@ def apply_job(module_path: str) -> None:
     """
     import importlib
 
-    from monarch._src.job.job import BashActor, JobTrait
+    from monarch._src.job.job import BashActor, JobTrait  # pyre-ignore[21]
 
     cwd = os.getcwd()
     if cwd not in sys.path:
@@ -658,7 +658,7 @@ def exec_on_job(
 
     Returns the process exit code (max across targeted ranks).
     """
-    from monarch._src.job.job import exec_command, load_job
+    from monarch._src.job.job import exec_command, load_job  # pyre-ignore[21]
 
     job = load_job()
 

@@ -107,9 +107,10 @@ class ProcessGuard:
 
     def _connect(self) -> None:
         if self._conn is None:
-            self._conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self._conn.connect(self._socket_path)
-            self._file = self._conn.makefile("rb")
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            conn.connect(self._socket_path)
+            self._conn = conn
+            self._file = conn.makefile("rb")
 
     def send(self, obj: object) -> "ProcessGuard":
         """Pickle *obj* and send it to the process."""
