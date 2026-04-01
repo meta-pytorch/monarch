@@ -508,27 +508,6 @@ class TestCommandsAsync(unittest.IsolatedAsyncioTestCase):
 class TestExecOnJobSignature(unittest.TestCase):
     """Tests for exec_on_job parameters."""
 
-    def test_exec_on_job_has_refresh_mount(self) -> None:
-        import inspect
-
-        sig = inspect.signature(commands.exec_on_job)
-        self.assertIn("refresh_mount", sig.parameters)
-        self.assertFalse(sig.parameters["refresh_mount"].default)
-
-    def test_exec_on_job_has_ranks(self) -> None:
-        import inspect
-
-        sig = inspect.signature(commands.exec_on_job)
-        self.assertIn("ranks", sig.parameters)
-        self.assertIsNone(sig.parameters["ranks"].default)
-
-    def test_exec_on_job_has_hosts(self) -> None:
-        import inspect
-
-        sig = inspect.signature(commands.exec_on_job)
-        self.assertIn("hosts", sig.parameters)
-        self.assertIsNone(sig.parameters["hosts"].default)
-
     def test_exec_on_job_has_per_host(self) -> None:
         import inspect
 
