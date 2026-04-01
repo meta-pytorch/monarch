@@ -7,6 +7,26 @@ on:
         description: 'Wheel artifact name from build workflow'
         required: true
         type: string
+      torch-spec:
+        description: 'PyTorch install spec (e.g. --pre torch --extra-index-url ...)'
+        required: true
+        type: string
+      gpu-arch-type:
+        description: 'GPU architecture type (e.g. cuda)'
+        required: true
+        type: string
+      gpu-arch-version:
+        description: 'GPU architecture version (e.g. 12.8, 13.1)'
+        required: true
+        type: string
+      python-version:
+        description: 'Python version (e.g. 3.10, 3.12)'
+        required: true
+        type: string
+      docker-image:
+        description: 'Docker image to use for the test'
+        required: true
+        type: string
 
 concurrency:
   group: test-gpu-python-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -14,22 +34,14 @@ concurrency:
 
 jobs:
   test-gpu-python:
-    name: Test GPU Python (cuda12.8-py3.10)
+    name: Test GPU Python (cuda${{ inputs.gpu-arch-version }}-py${{ inputs.python-version }})
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - name: 4xlargegpu
-            runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
     with:
       timeout: 120
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      runner: linux.g5.4xlarge.nvidia.gpu
+      gpu-arch-type: ${{ inputs.gpu-arch-type }}
+      gpu-arch-version: ${{ inputs.gpu-arch-version }}
+      docker-image: ${{ inputs.docker-image }}
       submodules: recursive
       download-artifact: ${{ inputs.artifact-name }}
       script: |
@@ -51,7 +63,7 @@ jobs:
 
         # Install torch nightly before installing the wheel,
         # so that we can test the wheel against the latest nightly
-        pip install ${{ matrix.torch-spec }}
+        pip install ${{ inputs.torch-spec }}
 
         # Install the built wheel from artifact
         install_wheel_from_artifact

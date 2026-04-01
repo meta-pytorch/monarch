@@ -3,8 +3,24 @@ name: Test GPU Rust
 on:
   workflow_call:
     inputs:
-      artifact-name:
-        description: 'Wheel artifact name from build workflow'
+      torch-spec:
+        description: 'PyTorch install spec (e.g. --pre torch --extra-index-url ...)'
+        required: true
+        type: string
+      gpu-arch-type:
+        description: 'GPU architecture type (e.g. cuda)'
+        required: true
+        type: string
+      gpu-arch-version:
+        description: 'GPU architecture version (e.g. 12.8, 13.1)'
+        required: true
+        type: string
+      python-version:
+        description: 'Python version (e.g. 3.10, 3.12)'
+        required: true
+        type: string
+      docker-image:
+        description: 'Docker image to use for the test'
         required: true
         type: string
 
@@ -14,24 +30,15 @@ concurrency:
 
 jobs:
   test-gpu-rust:
-    name: Test GPU Rust (cuda12.8)
+    name: Test GPU Rust (cuda${{ inputs.gpu-arch-version }}-py${{ inputs.python-version }})
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - name: 4xlargegpu
-            runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
     with:
       timeout: 120
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      runner: linux.g5.4xlarge.nvidia.gpu
+      gpu-arch-type: ${{ inputs.gpu-arch-type }}
+      gpu-arch-version: ${{ inputs.gpu-arch-version }}
+      docker-image: ${{ inputs.docker-image }}
       submodules: recursive
-      download-artifact: ${{ inputs.artifact-name }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
@@ -56,7 +63,7 @@ jobs:
         setup_cuda_environment
 
         # Setup PyTorch with C++ headers using common-setup utility
-        setup_pytorch_with_headers "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
+        setup_pytorch_with_headers "${{ inputs.gpu-arch-version }}" "${{ inputs.torch-spec }}"
 
         # Run GPU Rust tests
         echo "Running OSS Rust tests..."

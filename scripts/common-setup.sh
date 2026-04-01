@@ -139,18 +139,23 @@ setup_pytorch_with_headers() {
     local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
     local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
 
-    echo "Downloading libtorch from: ${libtorch_url}"
-    wget -q "${libtorch_url}"
-    unzip -q "libtorch-cxx11-abi-shared-with-deps-latest.zip"
-
-    # Set environment variables for libtorch
-    export LIBTORCH_ROOT="$PWD/libtorch"
-    export LD_LIBRARY_PATH="$LIBTORCH_ROOT/lib:${LD_LIBRARY_PATH:-}"
-    export CMAKE_PREFIX_PATH="$LIBTORCH_ROOT:${CMAKE_PREFIX_PATH:-}"
-
-    # Install PyTorch Python package using provided torch-spec
+    # Install PyTorch Python package first (needed as fallback for headers)
     echo "Installing PyTorch Python package with: ${torch_spec}"
     pip install ${torch_spec}
+
+    echo "Downloading libtorch from: ${libtorch_url}"
+    if wget -q "${libtorch_url}" && unzip -q "libtorch-cxx11-abi-shared-with-deps-latest.zip"; then
+        export LIBTORCH_ROOT="$PWD/libtorch"
+    else
+        # Libtorch zip not available (e.g. newer CUDA versions); fall back to
+        # the pip-installed torch package which includes C++ headers and libs.
+        echo "Libtorch download unavailable, using pip-installed torch for C++ headers"
+        export LIBTORCH_ROOT=$(python -c "import torch; print(torch.utils.cmake_prefix_path)")/../../
+    fi
+
+    # Set environment variables for libtorch
+    export LD_LIBRARY_PATH="$LIBTORCH_ROOT/lib:${LD_LIBRARY_PATH:-}"
+    export CMAKE_PREFIX_PATH="$LIBTORCH_ROOT:${CMAKE_PREFIX_PATH:-}"
 
     # Verify installation
     echo "LibTorch C++ headers available at: $LIBTORCH_ROOT/include"

@@ -2,41 +2,53 @@ name: Build CUDA
 
 on:
   workflow_call:
+    inputs:
+      cuda-version:
+        description: 'CUDA version (e.g. 12.8, 13.1)'
+        required: true
+        type: string
+      python-version:
+        description: 'Python version (e.g. 3.10, 3.12)'
+        required: true
+        type: string
+      torch-spec:
+        description: 'PyTorch install spec (e.g. --pre torch --extra-index-url ...)'
+        required: true
+        type: string
+      artifact-name:
+        description: 'Name for the uploaded wheel artifact'
+        required: true
+        type: string
+      docker-image:
+        description: 'Docker image to use for the build'
+        required: true
+        type: string
 
 concurrency:
-  group: build-cuda-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: build-cuda-${{ inputs.cuda-version }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   build-cuda:
-    name: Build CUDA (cuda12.8)
+    name: Build CUDA (cuda${{ inputs.cuda-version }}-py${{ inputs.python-version }})
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ['3.10', '3.12']
-        include:
-          - name: 4xlargegpu
-            runs-on: linux.g5.4xlarge.nvidia.gpu
-            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
-            gpu-arch-type: "cuda"
-            gpu-arch-version: "12.8"
     with:
       timeout: 60
-      runner: ${{ matrix.runs-on }}
-      gpu-arch-type: ${{ matrix.gpu-arch-type }}
-      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      runner: linux.g5.4xlarge.nvidia.gpu
+      gpu-arch-type: cuda
+      gpu-arch-version: ${{ inputs.cuda-version }}
+      docker-image: ${{ inputs.docker-image }}
       submodules: recursive
-      upload-artifact: monarch-cuda-${{ github.sha }}-py${{ matrix.python-version }}
+      upload-artifact: ${{ inputs.artifact-name }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment ${{ matrix.python-version }}
+        setup_build_environment ${{ inputs.python-version }}
 
         # Install torch nightly
-        pip install ${{ matrix.torch-spec }}
+        pip install ${{ inputs.torch-spec }}
         pip install -r build-requirements.txt
 
         # Setup Tensor Engine
