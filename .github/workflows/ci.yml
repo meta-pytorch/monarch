@@ -66,6 +66,7 @@ jobs:
     if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
     uses: ./.github/workflows/build-docker.yml
     with:
+      # Docker image requires python 3.12
       artifact-name: monarch-cuda-${{ github.sha }}-py3.12
 
   status-check:
