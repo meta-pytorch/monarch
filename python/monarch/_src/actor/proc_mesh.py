@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import sys
-import warnings
 from contextlib import AbstractContextManager
 from functools import cache
 from pathlib import Path
@@ -39,7 +38,7 @@ from monarch._rust_bindings.monarch_hyperactor.actor import MethodSpecifier
 from monarch._rust_bindings.monarch_hyperactor.context import Instance as HyInstance
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Region, Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Region, Shape, Slice
 from monarch._rust_bindings.monarch_hyperactor.supervision import MeshFailure
 from monarch._src.actor.actor_mesh import (
     _Actor,
@@ -50,7 +49,6 @@ from monarch._src.actor.actor_mesh import (
     ActorMesh,
     context,
 )
-from monarch._src.actor.allocator import AllocHandle
 from monarch._src.actor.code_sync import (
     CodeSyncMeshClient,
     CodeSyncMethod,
@@ -801,32 +799,6 @@ class ProcMesh(MeshTrait):
             workspaces=list(workspaces.values()),
             auto_reload=auto_reload,
         )
-
-    @classmethod
-    def _from_alloc(
-        self,
-        alloc: AllocHandle,
-        setup: Callable[[], None] | None = None,
-        _attach_controller_controller: bool = True,
-    ) -> "ProcMesh":
-        warnings.warn(
-            (
-                "DEPRECATION WARNING: this function is deprecated. "
-                "Use `attach_to_workers` instead, or if applicable, one of the "
-                "JobTrait classes directly."
-            ),
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-        from monarch._src.actor.host_mesh import HostMesh
-
-        return HostMesh._allocate_nonblocking(
-            "host_mesh_from_alloc",
-            Extent(*zip(*alloc._extent.items())),
-            alloc._allocator,
-            alloc._constraints,
-        ).spawn_procs(bootstrap=setup)
 
 
 class _ControllerController(Actor):
