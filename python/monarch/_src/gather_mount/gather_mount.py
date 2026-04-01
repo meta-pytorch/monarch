@@ -53,12 +53,11 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
-from typing import Callable, Union
 
 from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ignore[21]
     mount_read_only_filesystem,
 )
-from monarch.actor import Actor, context, endpoint, HostMesh, Point, this_proc
+from monarch.actor import Actor, context, endpoint, HostMesh, this_proc
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -152,12 +151,9 @@ class _Inotify:
 class GatherSourceActor(Actor):
     """Runs on each remote process; serves files from the remote mount path."""
 
-    def __init__(self, remote_path: Union[str, Callable[[Point], str]]) -> None:
-        rank: Point = context().actor_instance.rank
-        if callable(remote_path):
-            self._root: str = remote_path(rank)
-        else:
-            self._root = str(remote_path)
+    def __init__(self, remote_path: str) -> None:
+        rank = context().actor_instance.rank
+        self._root: str = remote_path.replace("$SUBDIR", _point_to_key(dict(rank)))
 
         self._shard_key: str = _point_to_key(dict(rank))
         self._pending_rdma: dict[int, tuple[_mmap.mmap, memoryview[bytes]]] = {}
@@ -546,9 +542,10 @@ class GatherMount:
     def __init__(
         self,
         host_mesh: HostMesh,
+        remote_mount_point: str,
         local_mount_point: str,
-        remote_mount_point: Union[str, Callable[[Point], str]],
     ) -> None:
+        local_mount_point = os.path.abspath(local_mount_point)
         self._local_mount_point = local_mount_point
         self._mounted: bool = False
 
@@ -593,8 +590,8 @@ class GatherMount:
 
 def gather_mount(
     host_mesh: HostMesh,
+    remote_mount_point: str,
     local_mount_point: str,
-    remote_mount_point: Union[str, Callable[[Point], str]],
 ) -> GatherMount:
     """Mount the file systems of hosts in a Monarch mesh as a local directory.
 
@@ -608,6 +605,12 @@ def gather_mount(
     host) files are mounted directly inside ``local_mount_point`` with no
     sub-directory.
 
+    The special token ``$SUBDIR`` in *remote_mount_point* is replaced on each
+    remote host with that host's sub-directory key (e.g. ``hosts_0``).  Use
+    this to serve a different path on each host::
+
+        gather_mount(host_mesh, "/data/$SUBDIR/train.log", "/mnt/logs")
+
     Cached files are watched individually via inotify — no directory scans or
     recursive tree walks.  Stat entries are evicted and re-fetched only when
     inotify reports a change for that specific file.  Invalidation
@@ -617,19 +620,18 @@ def gather_mount(
     Args:
         host_mesh: A :class:`~monarch.actor.HostMesh` providing the remote
             hosts.  One process per host is spawned internally.
+        remote_mount_point: The absolute path served from each remote host.
+            The token ``$SUBDIR`` is replaced with the host's mesh-coordinate
+            key (e.g. ``hosts_0``).
         local_mount_point: Local directory path where the FUSE filesystem is
             mounted.  Created automatically if it does not exist.
-        remote_mount_point: The absolute path (or a callable
-            ``rank -> str``) that is served from each remote host.
-            The callable receives the host's :class:`~monarch.actor.Point`:
-            ``lambda rank: f"/tmp/data/gpu_{rank['gpu']}"``
 
     Returns:
         A :class:`GatherMount` that is already mounted.
 
     Example::
 
-        with gather_mount(host_mesh, "/mnt/logs", "/var/log/training") as m:
+        with gather_mount(host_mesh, "/var/log/training", "/mnt/logs") as m:
             subprocess.run(["tail", "-f", "/mnt/logs/machine_0/train.log"])
     """
-    return GatherMount(host_mesh, local_mount_point, remote_mount_point)
+    return GatherMount(host_mesh, remote_mount_point, local_mount_point)

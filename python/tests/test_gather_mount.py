@@ -57,7 +57,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(os.path.join(src, "hello.txt"), "w") as f:
             f.write("hello world\n")
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             self.assertEqual(
                 open(os.path.join(mnt, "hello.txt")).read(),
                 "hello world\n",
@@ -76,7 +76,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(os.path.join(src, "subdir", "nested.txt"), "w") as f:
             f.write("nested content\n")
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             nested = os.path.join(mnt, "subdir", "nested.txt")
             self.assertEqual(open(nested).read(), "nested content\n")
 
@@ -92,7 +92,7 @@ class GatherMountBasicTest(unittest.TestCase):
         for name in ("a.txt", "b.txt", "c.txt"):
             open(os.path.join(src, name), "w").close()
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             self.assertCountEqual(os.listdir(mnt), ["a.txt", "b.txt", "c.txt"])
 
     def test_0dim_read_only(self) -> None:
@@ -107,7 +107,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(os.path.join(src, "x.txt"), "w") as f:
             f.write("x")
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             with self.assertRaises(OSError):
                 open(os.path.join(mnt, "new.txt"), "w").write("oops")
 
@@ -118,16 +118,18 @@ class GatherMountBasicTest(unittest.TestCase):
         from monarch._src.job.process import ProcessJob
         from monarch.gather_mount import gather_mount
 
-        src_dirs = [self._tmpdir() for _ in range(2)]
-        for i, d in enumerate(src_dirs):
-            with open(os.path.join(d, "shard.txt"), "w") as f:
+        base = self._tmpdir()
+        for i in range(2):
+            subdir = os.path.join(base, f"hosts_{i}")
+            os.makedirs(subdir)
+            with open(os.path.join(subdir, "shard.txt"), "w") as f:
                 f.write(f"shard {i}\n")
 
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
         host_mesh = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             subdirs = sorted(os.listdir(mnt))
             self.assertEqual(subdirs, ["hosts_0", "hosts_1"])
 
@@ -136,16 +138,18 @@ class GatherMountBasicTest(unittest.TestCase):
         from monarch._src.job.process import ProcessJob
         from monarch.gather_mount import gather_mount
 
-        src_dirs = [self._tmpdir() for _ in range(2)]
-        for i, d in enumerate(src_dirs):
-            with open(os.path.join(d, "data.txt"), "w") as f:
+        base = self._tmpdir()
+        for i in range(2):
+            subdir = os.path.join(base, f"hosts_{i}")
+            os.makedirs(subdir)
+            with open(os.path.join(subdir, "data.txt"), "w") as f:
                 f.write(f"shard={i}\n")
 
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
         host_mesh = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             for i in range(2):
                 content = open(os.path.join(mnt, f"hosts_{i}", "data.txt")).read()
                 self.assertEqual(content, f"shard={i}\n")
@@ -164,7 +168,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(os.path.join(src, "data.txt"), "w") as f:
             f.write("cached content\n")
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             path = os.path.join(mnt, "data.txt")
             first = open(path).read()
             second = open(path).read()
@@ -185,7 +189,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(log, "w") as f:
             f.write("line1\n")
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             mnt_log = os.path.join(mnt, "log.txt")
 
             # Initial read.
@@ -217,7 +221,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(path, "w") as f:
             f.write("version1\n")
 
-        with gather_mount(this_host(), mnt, src):
+        with gather_mount(this_host(), src, mnt):
             mnt_path = os.path.join(mnt, "data.txt")
             self.assertEqual(open(mnt_path).read(), "version1\n")
 
@@ -228,26 +232,30 @@ class GatherMountBasicTest(unittest.TestCase):
             time.sleep(_NOTIFY_BATCH_S * 3)
             self.assertEqual(open(mnt_path).read(), "v2\n")
 
-    # ── Callable remote path ──────────────────────────────────────────────
+    # ── $SUBDIR substitution ──────────────────────────────────────────────
 
-    def test_callable_remote_path(self) -> None:
-        """A callable remote_mount_point receives the rank Point and returns a path."""
-        from monarch.actor import this_host
+    def test_subdir_substitution(self) -> None:
+        """$SUBDIR in remote_mount_point is replaced with the host's shard key."""
+        from monarch._src.job.process import ProcessJob
         from monarch.gather_mount import gather_mount
 
-        src = self._tmpdir()
+        base = self._tmpdir()
+        for i in range(2):
+            subdir = os.path.join(base, f"hosts_{i}")
+            os.makedirs(subdir)
+            with open(os.path.join(subdir, "info.txt"), "w") as f:
+                f.write(f"host {i}\n")
+
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
-        with open(os.path.join(src, "info.txt"), "w") as f:
-            f.write("rank-based path\n")
-
-        # Callable ignores rank and always returns src; valid for 0-dim.
-        with gather_mount(this_host(), mnt, lambda rank: src):
-            self.assertEqual(
-                open(os.path.join(mnt, "info.txt")).read(),
-                "rank-based path\n",
-            )
+        host_mesh = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
+            for i in range(2):
+                self.assertEqual(
+                    open(os.path.join(mnt, f"hosts_{i}", "info.txt")).read(),
+                    f"host {i}\n",
+                )
 
     # ── Context manager ───────────────────────────────────────────────────
 
@@ -262,7 +270,7 @@ class GatherMountBasicTest(unittest.TestCase):
         with open(os.path.join(src, "f.txt"), "w") as f:
             f.write("x")
 
-        m = gather_mount(this_host(), mnt, src)
+        m = gather_mount(this_host(), src, mnt)
         self.assertTrue(os.path.ismount(mnt))
         with m:
             pass
@@ -297,19 +305,21 @@ class GatherMountProcessJobTest(unittest.TestCase):
         from monarch.gather_mount import gather_mount
 
         num_hosts = 3
-        src_dirs = [self._tmpdir() for _ in range(num_hosts)]
+        base = self._tmpdir()
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
-        for i, d in enumerate(src_dirs):
-            with open(os.path.join(d, "info.txt"), "w") as f:
+        for i in range(num_hosts):
+            subdir = os.path.join(base, f"hosts_{i}")
+            os.makedirs(subdir)
+            with open(os.path.join(subdir, "info.txt"), "w") as f:
                 f.write(f"host={i}\n")
-            with open(os.path.join(d, "data.bin"), "wb") as f:
+            with open(os.path.join(subdir, "data.bin"), "wb") as f:
                 f.write(bytes(range(i * 10, i * 10 + 10)))
 
         host_mesh = ProcessJob({"hosts": num_hosts}).state(cached_path=None).hosts
 
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             subdirs = sorted(os.listdir(mnt))
             self.assertEqual(subdirs, [f"hosts_{i}" for i in range(num_hosts)])
 
@@ -327,18 +337,22 @@ class GatherMountProcessJobTest(unittest.TestCase):
         from monarch._src.job.process import ProcessJob
         from monarch.gather_mount import gather_mount
 
-        src_dirs = [self._tmpdir(), self._tmpdir()]
+        base = self._tmpdir()
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
+        host0 = os.path.join(base, "hosts_0")
+        host1 = os.path.join(base, "hosts_1")
+        os.makedirs(host0)
+        os.makedirs(host1)
         for fname in ("a.txt", "b.txt"):
-            open(os.path.join(src_dirs[0], fname), "w").close()
+            open(os.path.join(host0, fname), "w").close()
         for fname in ("c.txt", "d.txt"):
-            open(os.path.join(src_dirs[1], fname), "w").close()
+            open(os.path.join(host1, fname), "w").close()
 
         host_mesh = ProcessJob({"hosts": 2}).state(cached_path=None).hosts
 
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             self.assertEqual(
                 sorted(os.listdir(os.path.join(mnt, "hosts_0"))), ["a.txt", "b.txt"]
             )
@@ -353,18 +367,22 @@ class GatherMountProcessJobTest(unittest.TestCase):
         from monarch.gather_mount import gather_mount
 
         num_hosts = 2
-        src_dirs = [self._tmpdir() for _ in range(num_hosts)]
+        base = self._tmpdir()
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
-        log_paths = [os.path.join(d, "log.txt") for d in src_dirs]
-        for i, p in enumerate(log_paths):
+        log_paths = []
+        for i in range(num_hosts):
+            subdir = os.path.join(base, f"hosts_{i}")
+            os.makedirs(subdir)
+            p = os.path.join(subdir, "log.txt")
+            log_paths.append(p)
             with open(p, "w") as f:
                 f.write(f"initial line host={i}\n")
 
         host_mesh = ProcessJob({"hosts": num_hosts}).state(cached_path=None).hosts
 
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             # Prime the cache.
             for i in range(num_hosts):
                 content = open(os.path.join(mnt, f"hosts_{i}", "log.txt")).read()
@@ -391,18 +409,22 @@ class GatherMountProcessJobTest(unittest.TestCase):
         from monarch.gather_mount import gather_mount
 
         num_hosts = 2
-        src_dirs = [self._tmpdir() for _ in range(num_hosts)]
+        base = self._tmpdir()
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
-        file_paths = [os.path.join(d, "state.txt") for d in src_dirs]
-        for i, p in enumerate(file_paths):
+        file_paths = []
+        for i in range(num_hosts):
+            subdir = os.path.join(base, f"hosts_{i}")
+            os.makedirs(subdir)
+            p = os.path.join(subdir, "state.txt")
+            file_paths.append(p)
             with open(p, "w") as f:
                 f.write(f"version1 host={i}\n")
 
         host_mesh = ProcessJob({"hosts": num_hosts}).state(cached_path=None).hosts
 
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             # Prime cache.
             for i in range(num_hosts):
                 content = open(os.path.join(mnt, f"hosts_{i}", "state.txt")).read()
@@ -426,19 +448,19 @@ class GatherMountProcessJobTest(unittest.TestCase):
         from monarch.gather_mount import gather_mount
 
         num_hosts = 2
-        src_dirs = [self._tmpdir() for _ in range(num_hosts)]
+        base = self._tmpdir()
         mnt = self._tmpdir()
         shutil.rmtree(mnt)
 
-        for i, d in enumerate(src_dirs):
-            sub = os.path.join(d, "checkpoints", "step_100")
+        for i in range(num_hosts):
+            sub = os.path.join(base, f"hosts_{i}", "checkpoints", "step_100")
             os.makedirs(sub)
             with open(os.path.join(sub, "model.pt"), "w") as f:
                 f.write(f"weights_host_{i}\n")
 
         host_mesh = ProcessJob({"hosts": num_hosts}).state(cached_path=None).hosts
 
-        with gather_mount(host_mesh, mnt, lambda rank: src_dirs[rank["hosts"]]):
+        with gather_mount(host_mesh, os.path.join(base, "$SUBDIR"), mnt):
             for i in range(num_hosts):
                 path = os.path.join(
                     mnt, f"hosts_{i}", "checkpoints", "step_100", "model.pt"

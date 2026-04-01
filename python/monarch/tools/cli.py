@@ -9,19 +9,21 @@ import argparse
 import importlib.resources
 import json
 import sys
-from pathlib import Path
 
 from monarch.tools.commands import (
+    apply_job,
     bounce,
     component_args_from_cli,
+    context_create,
+    context_ls,
+    context_rm,
+    context_use,
     create,
-    CURRENT_FILE,
     exec_on_job,
     info,
     kill,
-    serve_module,
     stop,
-    torchx_runner,
+    torchx_runner,  # noqa: F401
 )
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
     Config,
@@ -149,58 +151,61 @@ class StopCmd:
 # ── New commands ──────────────────────────────────────────────────────────
 
 
-class ServeCmd:
+class ApplyCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument(
             "module_path",
             type=str,
-            help="Dotted Python module path with a serve() function (e.g. jobs.mast)",
-        )
-        subparser.add_argument(
-            "--name",
-            type=str,
-            default=None,
-            help="Name for this job (default: derived from module path)",
+            help="Dotted import path to a job object (e.g. myjob.job).",
         )
 
     def run(self, args: argparse.Namespace) -> None:
-        serve_module(args.module_path, name=args.name, job_path=args.job)
+        apply_job(args.module_path)
 
 
 class ExecCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
-        # ── Rank targeting (mutually exclusive) ──
+        # ── Targeting (mutually exclusive; default is --one) ──────────────
         target = subparser.add_mutually_exclusive_group()
         target.add_argument(
-            "--ranks",
-            type=str,
-            default=None,
-            help="Comma-separated list of flat ranks to run on (default: 0). "
-            "Output is streamed with [rank N] prefix when multiple ranks.",
-        )
-        target.add_argument(
-            "-a",
             "--all",
             action="store_true",
             default=False,
             dest="run_all",
-            help="Run on all ranks, write per-rank logs to .monarch/logs/",
+            help="Run on all meshes and all ranks. Output is redirected to per-rank files.",
         )
         target.add_argument(
-            "--per-host",
-            action="store_true",
-            default=False,
-            help="Run once per host (rank 0 on each host). "
-            "Output is streamed with [host N] prefix.",
-        )
-        target.add_argument(
-            "--hosts",
+            "--mesh",
             type=str,
             default=None,
-            help="Comma-separated list of host indices to run on (one process "
-            "per host). Output is streamed with [host N] prefix.",
+            metavar="NAME",
+            help="Run on all ranks of the named mesh. Output is redirected to per-rank files.",
+        )
+        target.add_argument(
+            "--one",
+            action="store_true",
+            default=False,
+            help="Run on rank 0 of the first mesh and stream output (default).",
+        )
+        target.add_argument(
+            "--point",
+            type=str,
+            default=None,
+            metavar="DIM=N,DIM=N",
+            help="Run on a specific coordinate, e.g. --point host=4,gpu=3. Streams output.",
         )
 
+        subparser.add_argument(
+            "--per-host",
+            type=str,
+            default=None,
+            metavar="DIM=N",
+            dest="per_host",
+            help="Spawn N processes per host along the given dimension before executing "
+            "(e.g. --per-host gpu=4). Each process receives MONARCH_RANK_<DIM>=<rank> "
+            "and MONARCH_SIZE_<DIM>=<size> environment variables for every dimension "
+            "of its rank.",
+        )
         subparser.add_argument(
             "-e",
             "--env",
@@ -209,23 +214,10 @@ class ExecCmd:
             help="Extra environment variables as KEY=VALUE (can be repeated)",
         )
         subparser.add_argument(
-            "-v",
-            "--verbose",
-            action="store_true",
-            default=False,
-            help="Enable verbose logging for remotemount transfers",
-        )
-        subparser.add_argument(
-            "--source-dir",
+            "--workdir",
             type=str,
             default=None,
-            help="Directory to mount on workers (default: current directory)",
-        )
-        subparser.add_argument(
-            "--mount-point",
-            type=str,
-            default=None,
-            help="Mount point on workers (default: same as --source-dir)",
+            help="Working directory on workers",
         )
         subparser.add_argument(
             "--kill",
@@ -237,13 +229,7 @@ class ExecCmd:
             "--script",
             type=str,
             default=None,
-            help="Read a bash script from FILE instead of cmd args (use '-' for stdin)",
-        )
-        subparser.add_argument(
-            "--refresh-mount",
-            action="store_true",
-            default=False,
-            help="Force-unmount stale FUSE mounts before remounting (recovers from busy mounts)",
+            help="Read a bash script from FILE (use '-' for stdin)",
         )
         subparser.add_argument(
             "cmd",
@@ -262,46 +248,54 @@ class ExecCmd:
             )
             sys.exit(1)
 
-        # Parse --ranks / --hosts into a list of ints.
-        target_ranks = None
-        if args.ranks is not None:
-            target_ranks = [int(r.strip()) for r in args.ranks.split(",")]
-
-        target_hosts = None
-        if args.hosts is not None:
-            target_hosts = [int(h.strip()) for h in args.hosts.split(",")]
-
+        per_host: dict[str, int] | None = None
+        if args.per_host:
+            k, v = args.per_host.split("=", 1)
+            per_host = {k.strip(): int(v.strip())}
         rc = exec_on_job(
             cmd,
-            run_all=args.run_all,  # --all
-            per_host=args.per_host,  # --per-host
-            ranks=target_ranks,  # --ranks
-            hosts=target_hosts,  # --hosts
+            run_all=args.run_all,
+            mesh_name=args.mesh,
+            point_str=args.point,
             env=args.env or None,
-            verbose=args.verbose,
-            job_path=args.job,
-            source_dir=args.source_dir,
-            mount_point=args.mount_point,
-            kill=args.kill,  # --kill
+            workdir=args.workdir,
+            kill=args.kill,
             script=args.script,
-            refresh_mount=args.refresh_mount,
+            per_host=per_host,
         )
         if rc != 0:
             sys.exit(rc)
 
 
-class UseCmd:
+class ContextCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
-        subparser.add_argument(
-            "name",
-            type=str,
-            help="Job name to activate (see 'monarch serve --name')",
-        )
+        sub = subparser.add_subparsers(title="CONTEXT COMMANDS", dest="context_cmd")
+
+        # create
+        p_create = sub.add_parser("create", help="Create a new context")
+        p_create.add_argument("name", type=str, help="Context name")
+        p_create.set_defaults(context_func=lambda a: context_create(a.name))
+
+        # use
+        p_use = sub.add_parser("use", help="Switch .monarch/job_state.pkl to a context")
+        p_use.add_argument("name", type=str, help="Context name to activate")
+        p_use.set_defaults(context_func=lambda a: context_use(a.name))
+
+        # rm
+        p_rm = sub.add_parser("rm", help="Remove a context (kills the job)")
+        p_rm.add_argument("name", type=str, help="Context name to remove")
+        p_rm.set_defaults(context_func=lambda a: context_rm(a.name))
+
+        # ls
+        p_ls = sub.add_parser("ls", help="List contexts")
+        p_ls.set_defaults(context_func=lambda a: context_ls())
 
     def run(self, args: argparse.Namespace) -> None:
-        Path(CURRENT_FILE).parent.mkdir(parents=True, exist_ok=True)
-        Path(CURRENT_FILE).write_text(args.name)
-        print(f"Active job set to '{args.name}'")
+        if not hasattr(args, "context_func"):
+            # No subcommand given — print help
+            args._subparser.print_help()  # pyre-ignore
+            sys.exit(1)
+        args.context_func(args)
 
 
 class KillCmd:
@@ -310,27 +304,22 @@ class KillCmd:
             "name",
             nargs="?",
             default=None,
-            help="Job name to kill (default: active job)",
+            help="Context name to kill (default: active context)",
         )
 
     def run(self, args: argparse.Namespace) -> None:
-        from monarch._src.job.job import job_load
-        from monarch._src.tools.commands import (
-            _active_job_name,
-            _job_path,
-            DEFAULT_JOB_PATH,
-        )
+        from monarch._src.job.job import job_load, load_job
+        from monarch._src.tools.commands import _context_state, _current_context
 
-        name = args.name or _active_job_name()
-        if name is None:
-            print("No active job. Specify a job name.", file=sys.stderr)
-            sys.exit(1)
-        path = _job_path(name)
-        if not Path(path).exists():
-            path = args.job or DEFAULT_JOB_PATH
-        job = job_load(path)
-        job.kill()
-        print(f"Killed job '{name}'")
+        name = args.name or _current_context()
+        if name is not None:
+            state_file = _context_state(name)
+            if state_file.exists():
+                job_load(str(state_file)).kill()
+                print(f"Killed context '{name}'")
+                return
+        load_job().kill()
+        print("Killed job")
 
 
 def _load_skill_md() -> str:
@@ -345,22 +334,24 @@ def get_parser() -> argparse.ArgumentParser:
         epilog=_load_skill_md(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "-j",
-        "--job",
-        type=str,
-        default=None,
-        help="Path to cached job pickle (default: .monarch/job_state.pkl)",
-    )
     subparser = parser.add_subparsers(title="COMMANDS")
 
-    for cmd_name, cmd in {
-        "serve": ServeCmd(),
-        "exec": ExecCmd(),
-        "use": UseCmd(),
-        "kill": KillCmd(),
-    }.items():
-        cmd_parser = subparser.add_parser(cmd_name)
+    context_cmd = ContextCmd()
+    context_parser = subparser.add_parser("context", help="Manage job contexts")
+    context_cmd.add_arguments(context_parser)
+    context_parser.set_defaults(func=context_cmd.run, _subparser=context_parser)
+
+    for cmd_name, cmd, cmd_help in [
+        ("apply", ApplyCmd(), "Provision workers from a job object (e.g. myjob.job)"),
+        (
+            "exec",
+            ExecCmd(),
+            "Run a command on workers. Sets MONARCH_RANK_<DIM> and MONARCH_SIZE_<DIM> "
+            "env vars for each rank dimension.",
+        ),
+        ("kill", KillCmd(), "Kill the active job"),
+    ]:
+        cmd_parser = subparser.add_parser(cmd_name, help=cmd_help)
         cmd.add_arguments(cmd_parser)
         cmd_parser.set_defaults(func=cmd.run)
     return parser

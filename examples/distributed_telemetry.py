@@ -574,7 +574,7 @@ def run_workload(job, summary=False, interactive=False):
 
 def main(summary: bool = False, interactive: bool = False) -> None:
     run_workload(
-        ProcessJob({"hosts": 2}, telemetry=TelemetryConfig()),
+        ProcessJob({"hosts": 2}).enable_telemetry(TelemetryConfig()),
         summary=summary,
         interactive=interactive,
     )
