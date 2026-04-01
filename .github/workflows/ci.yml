@@ -21,7 +21,7 @@ jobs:
     name: Build GPU
     uses: ./.github/workflows/build-gpu.yml
 
-  # CPU jobs skip on ROCm tags since they already run in the PR workflow
+  # CPU jobs skip on ciflow/rocm tag push since they already run for the pull_request trigger
   build-cpu:
     name: Build CPU
     if: ${{ !startsWith(github.ref, 'refs/tags/ciflow/rocm/') }}
@@ -74,6 +74,7 @@ jobs:
     needs: [test-cpu-python, test-gpu-python, test-cpu-rust, test-cpu-rust-arm64, test-gpu-rust]
     if: always()
     steps:
+      # Fail if any job failed or was cancelled; skipped jobs are OK
       - name: Check all jobs status
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: exit 1

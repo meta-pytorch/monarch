@@ -14,7 +14,7 @@ on:
         type: string
         default: linux.g5.4xlarge.nvidia.gpu
     outputs:
-      matrix:
+      test-matrix:
         description: Test matrix (py3.10 only)
         value: ${{ jobs.set.outputs.matrix }}
       build-matrix:
@@ -25,7 +25,7 @@ jobs:
   set:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set.outputs.matrix }}
+      test-matrix: ${{ steps.set.outputs.matrix }}
       build-matrix: ${{ steps.set.outputs.build-matrix }}
     env:
       IS_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads') }}
@@ -75,7 +75,7 @@ jobs:
 
           # Export matrices to job outputs
           {
-            echo 'matrix<<EOF'
+            echo 'test-matrix<<EOF'
             echo "{\"include\": $TEST_MATRIX}"
             echo 'EOF'
             echo 'build-matrix<<EOF'

@@ -17,7 +17,7 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.set-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.set-matrix.outputs.test-matrix) }}
     with:
       timeout: 120
       runner: ${{ matrix.runner }}
