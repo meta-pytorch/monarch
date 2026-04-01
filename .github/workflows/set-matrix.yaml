@@ -7,7 +7,7 @@ on:
         description: 'Override default ROCm runner label'
         required: false
         type: string
-        default: linux.rocm.gpu.gfx942.1
+        default: linux.rocm.gpu.gfx942.1.meta-pytorch
       runner-cuda:
         description: 'Override default CUDA runner label'
         required: false
