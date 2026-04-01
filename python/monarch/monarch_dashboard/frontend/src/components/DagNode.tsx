@@ -56,16 +56,20 @@ export function DagNodeComponent({
   onHover,
   hiddenChildCount,
 }: DagNodeProps) {
-  const color = statusColor(node.status);
+  const isController = node.label.includes("(controller)");
+  const color = isController ? "#6b8afd" : statusColor(node.status);
   const r = node.radius;
 
   // Strip "-UUID" suffix and "[rank]" to get a short name.
   // e.g. "anon_0-13su5vJ2cg5v" -> "anon_0"
   //      "greeter-1yVhEBwKxr3i[0]" -> "greeter"
   //      "host_agent[0]" -> "host_agent"
-  const shortName = node.label
-    .replace(/-[A-Za-z0-9]{8,}(\[\d+\])?$/, "")
-    .replace(/\[\d+\]$/, "");
+  // Controller hosts show "Controller" instead of the IP.
+  const shortName = isController
+    ? "Controller"
+    : node.label
+        .replace(/-[A-Za-z0-9]{8,}(\[\d+\])?$/, "")
+        .replace(/\[\d+\]$/, "");
   const shortNameMax = 14;
   const shortNameDisplay = shortName.length > shortNameMax
     ? shortName.slice(0, shortNameMax - 1) + "\u2026"
@@ -164,10 +168,11 @@ export function DagNodeComponent({
         <text
           textAnchor="middle"
           dy="1.1em"
-          fill="var(--text-secondary)"
+          fill="#fff"
           fontSize="8px"
           fontFamily="var(--font-display)"
           fontWeight="400"
+          opacity={0.75}
         >
           {shortNameDisplay}
         </text>

@@ -93,9 +93,10 @@ function computeFitViewBox(
   const containerAspect = containerRect.width / containerRect.height;
   const isLR = graph?.direction === "LR";
 
+  // Padding around nodes for comfortable fit.
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const n of nodes) {
-    const r = n.radius + 10;
+    const r = n.radius + 12;
     minX = Math.min(minX, n.x - r);
     maxX = Math.max(maxX, n.x + r);
     minY = Math.min(minY, n.y - r);
@@ -123,10 +124,14 @@ function computeFitViewBox(
     }
   }
 
+  // Extra top margin for the toolbar overlay.
+  const toolbarSvgMargin = 35;
+  minY -= toolbarSvgMargin;
+
   const contentW = maxX - minX;
   const contentH = maxY - minY;
   const contentAspect = contentW / contentH;
-  const margin = 40;
+  const margin = 15;
 
   let vw: number, vh: number;
   if (contentAspect > containerAspect) {
@@ -324,8 +329,13 @@ export function DagView() {
 
   const handleNodeHover = useCallback((node: DagNode | null) => {
     if (!node) { setTooltip(null); return; }
-    setTooltip({ node, x: node.x, y: node.y - node.radius - 14 });
-  }, []);
+    // Place tooltip above the node; flip to below if too close to the top.
+    const aboveY = node.y - node.radius - 14;
+    const belowY = node.y + node.radius + 14;
+    const topPct = (aboveY - viewBox.y) / viewBox.h;
+    const y = topPct < 0.08 ? belowY : aboveY;
+    setTooltip({ node, x: node.x, y });
+  }, [viewBox]);
 
   const toggleDirection = useCallback(() => {
     needsFit.current = true;
@@ -400,7 +410,7 @@ export function DagView() {
             onClick={toggleSystem}
             title={hideSystem ? "Show system actors" : "Hide system actors"}
           >
-            {hideSystem ? "◉ System Hidden" : "○ Show All"}
+            {hideSystem ? "Show System" : "Hide System"}
           </button>
         </div>
         <svg
@@ -424,7 +434,6 @@ export function DagView() {
             </filter>
           </defs>
           <rect x={viewBox.x - 1000} y={viewBox.y - 1000} width={viewBox.w + 2000} height={viewBox.h + 2000} fill="url(#dag-grid)" />
-{/* Tier labels removed — node subtitles already show the tier */}
           <g className="dag-edges-hierarchy">{hierEdges.map((e) => <DagEdgeComponent key={e.id} edge={e} nodes={nodeMap} direction={direction} />)}</g>
           <g className="dag-edges-messages">{msgEdges.map((e) => <DagEdgeComponent key={e.id} edge={e} nodes={nodeMap} direction={direction} />)}</g>
           <g className="dag-nodes">
@@ -443,20 +452,23 @@ export function DagView() {
             })}
           </g>
         </svg>
-        {tooltip && !selectedNode && (() => {
+        {tooltip && (() => {
           const n = tooltip.node;
           const idParts = String(n.entityId).split(",");
           return (
-            <div className="dag-tooltip" style={{ left: `${((tooltip.x - viewBox.x) / viewBox.w) * 100}%`, top: `${((tooltip.y - viewBox.y) / viewBox.h) * 100}%` }}>
-              <div className="dag-tooltip-name">
+            <div className="dag-tooltip" style={{ left: `${((tooltip.x - viewBox.x) / viewBox.w) * 100}%`, top: `${((tooltip.y - viewBox.y) / viewBox.h) * 100}%`, color: "#fff" }}>
+              <div className="dag-tooltip-name" style={{ fontFamily: "var(--font-mono, monospace)", fontSize: "9px" }}>
                 {idParts.map((part, i) => (
-                  <div key={i}>{part}{i < idParts.length - 1 ? "," : ""}</div>
+                  <div key={i} style={i > 0 ? { paddingLeft: "2ch" } : undefined}>
+                    {i === 0 ? "ID: " : ""}{part}{i < idParts.length - 1 ? "," : ""}
+                  </div>
                 ))}
               </div>
-              <div className="dag-tooltip-info">
-                {n.status}
+              <div className="dag-tooltip-info" style={{ color: "#fff" }}>
+                <div>Status: {n.status}</div>
+                {n.meshName && <div>Mesh: {n.meshName}</div>}
                 {hiddenChildCounts.has(n.id) && (
-                  <> &middot; click to expand ({hiddenChildCounts.get(n.id)} hidden)</>
+                  <div>click to expand ({hiddenChildCounts.get(n.id)} hidden)</div>
                 )}
               </div>
             </div>

@@ -193,6 +193,42 @@ def _derive_label(payload: Dict[str, Any]) -> str:
     return identity.rsplit("/", 1)[-1].rsplit(",", 1)[-1] or identity
 
 
+def _resolve_mesh_names(nodes: List[Dict[str, Any]]) -> None:
+    try:
+        # Get the full name of all actors and their meshes.
+        rows = db._query(
+            "SELECT a.full_name, m.full_name AS mesh_full_name"
+            " FROM actors a"
+            " LEFT JOIN meshes m ON a.mesh_id = m.id"
+        )
+        if not rows:
+            return
+
+        # Map actor full_name -> mesh full_name (includes unique suffix).
+        fname_to_mesh: Dict[str, str] = {}
+        for r in rows:
+            mname = r.get("mesh_full_name")
+            if mname:
+                fname_to_mesh[r["full_name"]] = mname
+
+        # Iterate over graph nodes and try to look up mesh names.
+        for n in nodes:
+            entity = n["entity_id"]
+            # Strip "host:" prefix — admin API uses it but telemetry doesn't.
+            bare = entity[5:] if entity.startswith("host:") else entity
+            # Direct match (actors, and host_agent actors).
+            if bare in fname_to_mesh:
+                n["mesh_name"] = fname_to_mesh[bare]
+                continue
+            # Procs: try appending proc_agent suffix.
+            agent_name = bare + ",proc_agent[0]"
+            if agent_name in fname_to_mesh:
+                n["mesh_name"] = fname_to_mesh[agent_name]
+
+    except Exception:
+        logger.debug("Could not resolve mesh names from telemetry", exc_info=True)
+
+
 def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
     """Walk the Admin API and build a DAG matching the TUI hierarchy.
 
@@ -216,6 +252,7 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
     edges: List[Dict[str, Any]] = []
     visited: Set[str] = set()
     ref_to_node_id: Dict[str, str] = {}
+    controller_host_ref: Optional[str] = None
 
     queue: List[Tuple[str, Optional[str], int]] = [("root", None, 0)]
 
@@ -259,16 +296,15 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
         node_id = f"{tier}-{ref}"
         ref_to_node_id[ref] = node_id
 
-        nodes.append(
-            {
-                "id": node_id,
-                "entity_id": ref,
-                "tier": tier,
-                "label": label,
-                "subtitle": tier.capitalize(),
-                "status": status,
-            }
-        )
+        node_data: Dict[str, Any] = {
+            "id": node_id,
+            "entity_id": ref,
+            "tier": tier,
+            "label": label,
+            "subtitle": tier.capitalize(),
+            "status": status,
+        }
+        nodes.append(node_data)
 
         if parent_ref is not None and parent_ref in ref_to_node_id:
             parent_node_id = ref_to_node_id[parent_ref]
@@ -281,11 +317,27 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
                 }
             )
 
+        # Detect the controller host by looking for the root client
+        # actor (client[0]) in proc children. Every Monarch process
+        # has exactly one client actor on its local proc, so this is
+        # a stable identifier. This can be removed once the admin API
+        # and telemetry SQL endpoints converge into a single schema
+        # that exposes host roles directly.
+        if ntype == "proc" and any(c.endswith(",client[0]") for c in children_refs):
+            controller_host_ref = parent_ref
+
         if depth < _MAX_TREE_DEPTH:
             for child_ref in children_refs:
                 if hide_system and child_ref in system_children:
                     continue
                 queue.append((child_ref, ref, depth + 1))
+
+    # Tag the controller host with "(controller)" in its label.
+    if controller_host_ref is not None:
+        for n in nodes:
+            if n["tier"] == "host" and n["entity_id"] == controller_host_ref:
+                n["label"] += " (controller)"
+                break
 
     # Resolve telemetry actor IDs so the detail panel can query messages.
     try:
@@ -301,6 +353,9 @@ def build_admin_dag(hide_system: bool = True) -> Dict[str, Any]:
                         n["telemetry_actor_id"] = tel_id
     except Exception:
         logger.debug("Could not resolve telemetry actor IDs", exc_info=True)
+
+    # Resolve mesh names (host mesh, proc mesh, actor mesh) from telemetry.
+    _resolve_mesh_names(nodes)
 
     # Prune procs that have no actor children after system filtering.
     if hide_system:

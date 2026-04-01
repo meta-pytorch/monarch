@@ -897,7 +897,7 @@ button:focus:not(:focus-visible) {
 .dag-tooltip-info {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-muted);
+  color: #fff;
   margin-top: 2px;
 }
 

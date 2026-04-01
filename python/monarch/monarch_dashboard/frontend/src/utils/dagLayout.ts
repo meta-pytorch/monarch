@@ -43,6 +43,8 @@ export interface ApiDagNode {
   rank?: number;
   /** Telemetry actor ID for querying messages/status (admin DAG only). */
   telemetry_actor_id?: number | string;
+  /** Mesh name this node belongs to (proc/actor tiers). */
+  mesh_name?: string;
 }
 
 /** An edge from the /api/dag response. */
@@ -72,6 +74,8 @@ export interface DagNode {
   entityId: number | string;
   /** Telemetry actor ID for querying messages/status (admin DAG only). */
   telemetryActorId?: number | string;
+  /** Mesh name this node belongs to. */
+  meshName?: string;
 }
 
 /** An edge connecting two nodes (camelCase for frontend use). */
@@ -191,9 +195,16 @@ export function computeLayout(data: ApiDagData, direction: DagDirection = "TB"):
     hasParent.add(e.target_id);
   }
 
-  // Roots = nodes with no incoming hierarchy edge.
+  // Roots = nodes with no incoming hierarchy edge, sorted by mesh name
+  // so nodes in the same mesh are placed adjacent in the layout.
   const roots = data.nodes
     .filter((n) => !hasParent.has(n.id))
+    .sort((a, b) => {
+      const ma = a.mesh_name ?? "\uffff";
+      const mb = b.mesh_name ?? "\uffff";
+      if (ma !== mb) return ma < mb ? -1 : 1;
+      return (a.rank ?? 0) - (b.rank ?? 0);
+    })
     .map((n) => n.id);
 
   // --- Two-pass layout ---
@@ -211,6 +222,10 @@ export function computeLayout(data: ApiDagData, direction: DagDirection = "TB"):
 
     const tierPos = dynamicTierPos[node.tier] ?? TIER_POSITION[node.tier];
     const kids = (children[id] ?? []).slice().sort((a, b) => {
+      // Sort by mesh name so siblings in the same mesh are adjacent.
+      const ma = nodeMap[a]?.mesh_name ?? "\uffff";
+      const mb = nodeMap[b]?.mesh_name ?? "\uffff";
+      if (ma !== mb) return ma < mb ? -1 : 1;
       const ra = nodeMap[a]?.rank ?? 0;
       const rb = nodeMap[b]?.rank ?? 0;
       return ra - rb;
@@ -323,6 +338,7 @@ export function computeLayout(data: ApiDagData, direction: DagDirection = "TB"):
       status: n.status,
       entityId: n.entity_id,
       telemetryActorId: n.telemetry_actor_id,
+      meshName: n.mesh_name,
     }));
 
   // Map edges from snake_case to camelCase.
