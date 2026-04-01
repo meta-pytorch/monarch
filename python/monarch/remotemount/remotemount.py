@@ -27,6 +27,24 @@ from monarch.remotemount.fast_pack import (  # noqa: F401
 logger: logging.Logger = logging.getLogger(__name__)
 
 CACHE_DIR = "/tmp/monarch_remotemount_cache"
+
+
+def _point_to_key(point: dict) -> str:
+    if not point:
+        return ""
+    return "_".join(f"{k}_{v}" for k, v in point.items())
+
+
+def _resolve_path(path: str) -> str:
+    """Replace ``$SUBDIR`` with this actor's mesh-coordinate key, if present."""
+    if "$SUBDIR" not in path:
+        return path
+    from monarch.actor import context
+
+    rank = context().actor_instance.rank
+    return path.replace("$SUBDIR", _point_to_key(dict(rank)))
+
+
 RDMA_PARALLEL_TLS_THRESHOLD = (
     8  # blocks <= this: TLS to all workers; above: RDMA fan-out
 )
@@ -376,6 +394,7 @@ class FUSEActor(Actor):
     @endpoint
     def mount(self, mount_point, new_block_hashes=None, total_size=0, pack_index=None):
         """Mount an empty FUSE filesystem and populate it via refresh."""
+        mount_point = _resolve_path(mount_point)
         from monarch._rust_bindings.monarch_extension.chunked_fuse import (
             mount_chunked_fuse,
         )
@@ -469,7 +488,7 @@ class FUSEActor(Actor):
     @endpoint
     def mkdir(self, path):
         """Create a directory on the worker."""
-        os.makedirs(path, exist_ok=True)
+        os.makedirs(_resolve_path(path), exist_ok=True)
 
     @endpoint
     def unmount(self, mount_point):
@@ -481,6 +500,7 @@ class FUSEActor(Actor):
           "busy"        — mountpoint is in use by another process
           "error"       — unexpected failure
         """
+        mount_point = _resolve_path(mount_point)
         check = subprocess.run(
             ["mountpoint", "-q", mount_point],
             capture_output=True,
@@ -511,10 +531,10 @@ class MountHandler:
         cert_path: Optional[str] = None,
         tls_port: int = 0,
     ):
-        self.sourcepath = sourcepath
+        self.sourcepath = os.path.abspath(sourcepath)
         if mntpoint is None:
-            mntpoint = sourcepath
-        self.mntpoint = mntpoint
+            mntpoint = self.sourcepath
+        self.mntpoint = os.path.abspath(mntpoint)
         self.fuse_actors = None
         self.host_mesh = host_mesh
         self.procs = None
@@ -631,7 +651,7 @@ class MountHandler:
         # Reuse existing actors if available (preserves block hashes
         # and pack index for incremental update checks).
         if self.fuse_actors is None:
-            self.procs = self.host_mesh.spawn_procs(per_host={"gpus": 1})
+            self.procs = self.host_mesh.spawn_procs()
             self.fuse_actors = self.procs.spawn(
                 "FUSEActor", FUSEActor, self.chunk_size, self.backend
             )

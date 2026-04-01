@@ -11,7 +11,6 @@ import asyncio
 import inspect
 import logging
 import os
-import shlex
 import sys
 import tempfile
 import time
@@ -427,141 +426,157 @@ def stop(server_handle: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Job registry
+# Job registry / context
 # ---------------------------------------------------------------------------
 
-DEFAULT_JOB_PATH: str = ".monarch/job_state.pkl"
-DEFAULT_JOB_DIR: str = ".monarch/jobs"
-CURRENT_FILE: str = ".monarch/current"
+MONARCH_DIR: str = ".monarch"
+DEFAULT_JOB_PATH: str = f"{MONARCH_DIR}/job_state.pkl"
+_CONTEXT_STATE_FILE: str = "state.pkl"
 
 
-def _job_path(name: str) -> str:
-    return os.path.join(DEFAULT_JOB_DIR, f"{name}.pkl")
+def _context_dir(name: str) -> Path:
+    return Path(MONARCH_DIR) / name
 
 
-def _active_job_name() -> Optional[str]:
-    try:
-        text = Path(CURRENT_FILE).read_text().strip()
-        return text or None
-    except FileNotFoundError:
+def _context_state(name: str) -> Path:
+    return _context_dir(name) / _CONTEXT_STATE_FILE
+
+
+def _current_context() -> Optional[str]:
+    """Return the name of the currently active context, or None."""
+    link = Path(DEFAULT_JOB_PATH)
+    if not link.is_symlink():
         return None
+    target = Path(os.readlink(str(link)))
+    # Symlink is relative like "default/state.pkl"
+    parts = target.parts
+    if len(parts) >= 2 and parts[-1] == _CONTEXT_STATE_FILE:
+        return parts[0]
+    return None
 
 
-def _unique_job_name(base: str) -> str:
-    jobs_dir = Path(DEFAULT_JOB_DIR)
-    if not (jobs_dir / f"{base}.pkl").exists():
-        return base
-    i = 1
-    while (jobs_dir / f"{base}-{i}.pkl").exists():
-        i += 1
-    return f"{base}-{i}"
+def _ensure_symlink_setup() -> None:
+    """If job_state.pkl is a plain file, migrate it to the 'default' context."""
+    link = Path(DEFAULT_JOB_PATH)
+    if link.exists() and not link.is_symlink():
+        default_dir = _context_dir("default")
+        default_dir.mkdir(parents=True, exist_ok=True)
+        target = default_dir / _CONTEXT_STATE_FILE
+        link.rename(target)
+        # Symlink is relative so it stays valid if .monarch/ is moved
+        link.symlink_to(Path("default") / _CONTEXT_STATE_FILE)
 
 
-# ---------------------------------------------------------------------------
-# serve_module / exec_on_job
-# ---------------------------------------------------------------------------
+def context_create(name: str) -> None:
+    """Create a new context directory under .monarch/."""
+    _context_dir(name).mkdir(parents=True, exist_ok=True)
+    print(f"Created context '{name}'")
 
 
-def serve_module(
-    module_path: str,
-    name: Optional[str] = None,
-    job_path: Optional[str] = None,
-) -> None:
-    """Import a user module, call its ``serve()`` function, and cache the job.
+def context_use(name: str) -> None:
+    """Switch .monarch/job_state.pkl to point at <name>/state.pkl."""
+    _ensure_symlink_setup()
+    _context_dir(name).mkdir(parents=True, exist_ok=True)
+    link = Path(DEFAULT_JOB_PATH)
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(Path(name) / _CONTEXT_STATE_FILE)
+    print(f"Switched to context '{name}'")
 
-    The module must expose a ``serve()`` function that returns a
-    :class:`~monarch.job.JobTrait`.
 
-    Args:
-        module_path: Dotted Python module path (e.g. ``jobs.mast``).
-        name: Name for this job. Defaults to the last component of
-            ``module_path``, made unique within ``.monarch/jobs/``.
-        job_path: Override path for the default ``.monarch/job_state.pkl``.
-    """
-    import importlib
+def context_rm(name: str) -> None:
+    """Remove a context, killing its job if still running."""
     import shutil
 
-    from monarch._src.job.job import JobTrait  # pyre-ignore[21]
+    state_file = _context_state(name)
+    if state_file.exists():
+        try:
+            from monarch._src.job.job import job_load  # pyre-ignore[21]
 
-    # Ensure CWD is importable (like python -c / python -m do).
+            job_load(str(state_file)).kill()  # pyre-ignore[16]
+        except Exception:
+            pass
+    shutil.rmtree(str(_context_dir(name)), ignore_errors=True)
+    # If the symlink pointed at this context, restore it to default/state.pkl
+    link = Path(DEFAULT_JOB_PATH)
+    if link.is_symlink():
+        target = Path(os.readlink(str(link)))
+        if target.parts and target.parts[0] == name:
+            link.unlink()
+            link.symlink_to(Path("default") / _CONTEXT_STATE_FILE)
+    print(f"Removed context '{name}'")
+
+
+def context_ls() -> None:
+    """List all contexts, marking the active one."""
+    monarch_dir = Path(MONARCH_DIR)
+    if not monarch_dir.exists():
+        print("No contexts.")
+        return
+    current = _current_context()
+    contexts = sorted(d.name for d in monarch_dir.iterdir() if d.is_dir())
+    if not contexts:
+        print("No contexts.")
+        return
+    for name in contexts:
+        marker = "* " if name == current else "  "
+        print(f"{marker}{name}")
+
+
+# ---------------------------------------------------------------------------
+# apply_job / exec_on_job
+# ---------------------------------------------------------------------------
+
+
+def apply_job(module_path: str) -> None:
+    """Apply a job and wait for workers to be ready.
+
+    Imports *module_path* as a dotted Python module path (e.g. ``myjob.job``),
+    reads its named attribute (a :class:`~monarch.job.JobTrait`), then calls
+    ``job.apply()``.
+
+    Readiness is confirmed by spawning BashActors on all ranks and waiting
+    for them to return.
+    """
+    import importlib
+
+    from monarch._src.job.job import BashActor, JobTrait  # pyre-ignore[21]
+
     cwd = os.getcwd()
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
-
-    mod = importlib.import_module(module_path)
-    serve_fn = getattr(mod, "serve", None)
-    if serve_fn is None:
-        raise AttributeError(f"Module '{module_path}' has no 'serve()' function")
-
-    job = serve_fn()
+    # Split on the last '.' to get (module, attr).
+    # "job_a.job"           → module="job_a",       attr="job"
+    # "path.to.module.cfg"  → module="path.to.module", attr="cfg"
+    if "." not in module_path:
+        raise ValueError(f"module_path must be 'module.attr', got {module_path!r}")
+    mod_name, attr_name = module_path.rsplit(".", 1)
+    mod = importlib.import_module(mod_name)
+    job = getattr(mod, attr_name, None)
+    if job is None:
+        raise AttributeError(f"Module '{mod_name}' has no '{attr_name}' attribute")
     if not isinstance(job, JobTrait):  # pyre-ignore[16]
-        raise TypeError(f"serve() must return a JobTrait, got {type(job).__name__}")
+        raise TypeError(
+            f"'{mod_name}.{attr_name}' must be a JobTrait, got {type(job).__name__}"
+        )
 
-    if not job.active:
-        job.apply()
-
-    # Wait for workers to be connectable so the first exec doesn't
-    # spend minutes waiting for allocation.
-    _t_wait = time.time()
-    _state = job.state(cached_path=job_path or DEFAULT_JOB_PATH)
-    # Access a host mesh to verify workers are connectable.
-    _mesh_name = next(iter(_state._hosts))
-    _ = _state._hosts[_mesh_name]
-    _wait_secs = time.time() - _t_wait
-    print(f"Job is ready. Total wait time: {_wait_secs:.0f}s")
-
-    # Derive a unique name if not provided.
-    if name is None:
-        base = module_path.rsplit(".", 1)[-1]
-        name = _unique_job_name(base)
-
-    # Write to named registry.
-    Path(DEFAULT_JOB_DIR).mkdir(parents=True, exist_ok=True)
-    named_path = _job_path(name)
-    job.dump(named_path)
-
-    # Update the active job pointer.
-    Path(CURRENT_FILE).write_text(name)
-
-    # Keep default path in sync.
-    default = job_path or DEFAULT_JOB_PATH
-    Path(default).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(named_path, default)
-
-    print(f"Job '{name}' cached to {named_path} (active)")
-
-
-def _force_unmount(procs: Any, mount_point: str) -> None:
-    """Force-unmount a FUSE mount, killing processes that hold it."""
-    from monarch._src.job.job import BashActor  # pyre-ignore[21]
-
-    script = f"""#!/bin/bash
-# Kill processes using the mount
-fuser -k {shlex.quote(mount_point)} 2>/dev/null || true
-sleep 1
-# Lazy unmount (detaches immediately)
-fusermount3 -uz {shlex.quote(mount_point)} 2>/dev/null || \
-    umount -l {shlex.quote(mount_point)} 2>/dev/null || true
-echo "force-unmount done"
-"""
-    actors = procs.spawn("_ForceUnmount", BashActor)  # pyre-ignore[16]
-    results = actors.run.call(script).get()
-    for _rank, result in results:
-        stdout = result.get("stdout", "")
-        if stdout.strip():
-            print(f"  {stdout.strip()}")
-
-
-def _resolve_job_path(job_path: Optional[str]) -> str:
-    """Resolve job path from explicit arg, active job registry, or default."""
-    if job_path is not None:
-        return job_path
-    active = _active_job_name()
-    if active:
-        named = _job_path(active)
-        if os.path.exists(named):
-            return named
-    return DEFAULT_JOB_PATH
+    t0 = time.time()
+    state = job.state()
+    # When reusing existing workers with a different spec (e.g. different
+    # mounts), update the cached running job's config and dump it so future
+    # exec calls use the current spec.  We dump the *running* job (which has
+    # live worker PIDs), not the fresh module-loaded job (empty _host_to_pid),
+    # to avoid creating broken CachedRunning nesting.
+    running = job._running
+    if running is not None and running is not job:
+        running._mounts = job._mounts
+        running._default_python_exe = job._default_python_exe
+        running._python_executables = dict(job._python_executables)
+        running.dump(".monarch/job_state.pkl")
+    mesh = next(iter(state._hosts.values()))
+    procs = mesh.spawn_procs()
+    procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
+    print(f"Job is ready ({time.time() - t0:.0f}s)")
 
 
 def _parse_env(env: Optional[list[str]]) -> dict[str, str]:
@@ -586,206 +601,141 @@ def _read_script(script: Optional[str]) -> Optional[str]:
         return f.read()
 
 
-def _build_bash_script(cmd: list[str], env_dict: dict[str, str], workdir: str) -> str:
-    """Build a bash script string from command, env vars, and workdir."""
-    lines: list[str] = ["#!/bin/bash", "set -e", "export PYTHONUNBUFFERED=1"]
-    for k, v in env_dict.items():
-        lines.append(f"export {k}={shlex.quote(v)}")
-    lines.append(f"cd {shlex.quote(workdir)}")
-    lines.append(shlex.join(cmd))
-    return "\n".join(lines) + "\n"
+def _parse_point(s: str) -> dict[str, int]:
+    """Parse ``"dim=N,dim=N"`` into a coordinate dict."""
+    result: dict[str, int] = {}
+    for pair in s.split(","):
+        k, v = pair.split("=", 1)
+        result[k.strip()] = int(v.strip())
+    return result
 
 
-def _host_to_ranks(procs: Any, host_indices: list[int]) -> list[int]:
-    """Map host indices to flat rank 0 on each host."""
-    mesh_sizes = procs.sizes
-    dims = list(mesh_sizes.keys())
-    if len(dims) == 1:
-        return host_indices
-    total = 1
-    for s in mesh_sizes.values():
-        total *= s
-    host_dim = dims[0]
-    n_hosts = mesh_sizes[host_dim]
-    procs_per_host = total // n_hosts
-    for h in host_indices:
-        if h < 0 or h >= n_hosts:
-            raise ValueError(f"Host index {h} out of range (0-{n_hosts - 1})")
-    return [h * procs_per_host for h in host_indices]
+def _output_dir_for_job(job: "Any") -> tuple[str, str]:
+    """Return ``(output_dir_on_workers, human_report)`` for a multi-rank exec.
 
-
-def _resolve_ranks(
-    procs: Any,
-    run_all: bool,
-    per_host: bool,
-    ranks: Optional[list[int]],
-    hosts: Optional[list[int]],
-) -> Optional[list[int]]:
-    """Resolve targeting flags into a list of flat rank indices.
-
-    Returns None when run_all is True (all ranks, no filtering).
+    If the job has a gather mount with a string remote_mount_point, the output
+    directory is placed inside the gathered path so files are accessible on
+    the client via the FUSE mount.  Otherwise falls back to a temp dir in
+    ``/tmp`` on the workers.
     """
-    if run_all:
-        return None
-    if per_host:
-        mesh_sizes = procs.sizes
-        dims = list(mesh_sizes.keys())
-        n_hosts = mesh_sizes[dims[0]]
-        return _host_to_ranks(procs, list(range(n_hosts)))
-    if hosts is not None:
-        return _host_to_ranks(procs, hosts)
-    return ranks if ranks is not None else [0]
+    import uuid as _uuid
 
-
-def _exec_all(bash_actors: Any, bash_script: str, rm: Any) -> int:
-    """Run on all ranks, write per-rank log files. Returns max exit code."""
-    results = bash_actors.run.call(bash_script).get()
-    rm.close()
-
-    if len(results) > 1:
-        from datetime import datetime
-
-        job_name = _active_job_name() or "default"
-        exec_id = datetime.now().strftime("%H%M%S-%f")
-        log_dir = os.path.join(".monarch", "logs", job_name, f"exec-{exec_id}")
-        os.makedirs(log_dir, exist_ok=True)
-        for i, (_rank, result) in enumerate(results):
-            Path(os.path.join(log_dir, f"rank{i}.stdout.log")).write_text(
-                result.get("stdout", "")
+    run_id = _uuid.uuid4().hex[:8]
+    entries = job._mounts._gather_entries
+    if entries:
+        entry = entries[0]
+        remote = entry.remote_mount_point
+        if isinstance(remote, str):
+            output_dir = os.path.join(remote, "exec_outputs", run_id)
+            local = entry.local_mount_point
+            report = (
+                f"Output → {local}/<rank>/exec_outputs/{run_id}/\n"
+                f"  e.g. {local}/hosts_0/exec_outputs/{run_id}/stdout.txt"
             )
-            Path(os.path.join(log_dir, f"rank{i}.stderr.log")).write_text(
-                result.get("stderr", "")
-            )
-        print(f"Logs written to {log_dir}/")
-
-    max_rc = 0
-    for i, (_rank, result) in enumerate(results):
-        rc = result.get("returncode", 1)
-        if rc != 0:
-            print(f"rank {i} exited with code {rc}")
-        max_rc = max(max_rc, rc)
-    return max_rc
-
-
-def _exec_streaming(
-    bash_actors: Any, bash_script: str, ranks: list[int], rm: Any
-) -> int:
-    """Run on targeted ranks with streaming output. Returns max exit code."""
-    from monarch.actor import Channel  # pyre-ignore[21]
-
-    port, recv = Channel[str].open()  # pyre-ignore[16]
-    bash_actors.run_streaming.broadcast(bash_script, port, ranks)
-
-    use_prefix = len(ranks) > 1
-    done_ranks: set[int] = set()
-    target_set = set(ranks)
-    max_rc = 0
-
-    for msg in iter(lambda: recv.recv().get(), None):
-        if msg.startswith("skip:"):
-            done_ranks.add(int(msg[5:]))
-        else:
-            parts = msg.split(":", 2)
-            if len(parts) < 3:
-                print(f"Warning: unexpected message: {msg!r}", file=sys.stderr)
-                continue
-            rank_str, tag, content = parts
-            rank = int(rank_str)
-            prefix = f"[rank {rank}] " if use_prefix else ""
-            if tag == "rc":
-                max_rc = max(max_rc, int(content))
-                done_ranks.add(rank)
-            elif tag == "out":
-                sys.stdout.write(f"{prefix}{content}")
-                sys.stdout.flush()
-            elif tag == "err":
-                sys.stderr.write(f"{prefix}{content}")
-                sys.stderr.flush()
-
-        if target_set.issubset(done_ranks):
-            break
-
-    rm.close()
-    return max_rc
+            return output_dir, report
+    output_dir = f"/tmp/monarch_exec_{run_id}"
+    return output_dir, f"Output → {output_dir}/ on each worker"
 
 
 def exec_on_job(
     cmd: list[str],
     run_all: bool = False,
-    per_host: bool = False,
-    ranks: Optional[list[int]] = None,
-    hosts: Optional[list[int]] = None,
+    mesh_name: Optional[str] = None,
+    point_str: Optional[str] = None,
     env: Optional[list[str]] = None,
-    verbose: bool = False,
-    job_path: Optional[str] = None,
-    source_dir: Optional[str] = None,
-    mount_point: Optional[str] = None,
+    workdir: Optional[str] = None,
     kill: bool = False,
     script: Optional[str] = None,
-    refresh_mount: bool = False,
+    per_host: Optional[dict[str, int]] = None,
 ) -> int:
-    """Load a cached job and execute a command on its workers.
+    """Load the current job and execute a command on its workers.
+
+    Targeting (mutually exclusive; default is ``--one``):
+    - ``run_all``: all meshes, all ranks → output redirected to files
+    - ``mesh_name``: named mesh, all ranks → output redirected to files
+    - ``point_str``: ``"dim=N,dim=N"`` coordinate on first mesh → streamed
+    - none of the above (``--one``): rank 0 of first mesh → streamed
 
     Returns the process exit code (max across targeted ranks).
     """
-    from monarch._src.job.job import BashActor, job_load  # pyre-ignore[21]
-    from monarch.remotemount.remotemount import (  # pyre-ignore[21]
-        remotemount as _remotemount,
-    )
+    from monarch._src.job.job import exec_command, load_job  # pyre-ignore[21]
 
-    job_path = _resolve_job_path(job_path)
-    job = job_load(job_path)  # pyre-ignore[16]
-    state = job.state(cached_path=job_path)
-
-    if not state._hosts:
-        raise RuntimeError("Job has no host meshes")
-    mesh_name = next(iter(state._hosts))
-    host_mesh = state._hosts[mesh_name]
-
-    if verbose:
-        logging.getLogger("monarch.remotemount").setLevel(logging.DEBUG)
-
-    if source_dir is None:
-        source_dir = os.getcwd()
-    source_dir = os.path.abspath(source_dir)
+    job = load_job()  # pyre-ignore[16]
 
     script_text = _read_script(script)
     if script_text is not None:
         cmd = ["bash", "-c", script_text]
 
     env_dict = _parse_env(env)
-    if "PYTHONPATH" not in env_dict:
-        pp = job.python_path(source_dir, mntpoint=mount_point)
-        if pp:
-            env_dict["PYTHONPATH"] = pp
 
-    # One spawn_procs shared between FUSE mount and BashActor.
-    procs = host_mesh.spawn_procs()
-    mntpoint = mount_point or source_dir
-    rm = _remotemount(host_mesh, source_dir, mntpoint=mntpoint)  # pyre-ignore[16]
+    state = job.state()
+    if not state._hosts:
+        raise RuntimeError("Job has no host meshes")
 
-    if refresh_mount:
-        _force_unmount(procs, mntpoint)
+    # ── Targeting ──────────────────────────────────────────────────────────
+    is_streaming = not run_all and mesh_name is None
+    # (--point and --one are always single-rank → stream)
 
-    _t0 = time.time()
-    rm.open()
-    _mount_secs = time.time() - _t0
-    if _mount_secs > 0.1:
-        print(f"Remote mount: {_mount_secs:.1f}s")
+    if run_all:
+        target_meshes = list(state._hosts.items())
+        rank = None
+        point = None
+    elif mesh_name is not None:
+        if mesh_name not in state._hosts:
+            raise ValueError(
+                f"Mesh {mesh_name!r} not found. Available: {list(state._hosts)}"
+            )
+        target_meshes = [(mesh_name, state._hosts[mesh_name])]
+        rank = None
+        point = None
+    elif point_str is not None:
+        point = _parse_point(point_str)
+        first = next(iter(state._hosts))
+        target_meshes = [(first, state._hosts[first])]
+        rank = None
+    else:  # --one (default)
+        first = next(iter(state._hosts))
+        target_meshes = [(first, state._hosts[first])]
+        rank = 0
+        point = None
 
-    resolved_ranks = _resolve_ranks(procs, run_all, per_host, ranks, hosts)
-    bash_script = _build_bash_script(cmd, env_dict, mount_point or source_dir)
-    bash_actors = procs.spawn("BashActor", BashActor)  # pyre-ignore[16]
-
-    if resolved_ranks is None:
-        max_rc = _exec_all(bash_actors, bash_script, rm)
+    # ── Output dir (redirect) or stream ────────────────────────────────────
+    output_dir: Optional[str]
+    if is_streaming:
+        output_dir = None
     else:
-        max_rc = _exec_streaming(bash_actors, bash_script, resolved_ranks, rm)
+        output_dir, report = _output_dir_for_job(job)
+        print(report)
 
-    if kill:
+    # ── Execute ────────────────────────────────────────────────────────────
+    max_rc = 0
+    last_mesh = None
+    for name, host_mesh in target_meshes:
+        last_mesh = host_mesh
+        # If a python_exe was set for this mesh's remote mount, prepend its
+        # directory to PATH so commands like "python" resolve to the right one.
+        mesh_env = dict(env_dict)
+        exe = job._python_executables.get(name, job._default_python_exe)
+        if exe is not None:
+            bin_dir = os.path.dirname(exe)
+            existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
+            mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
+        rc = exec_command(  # pyre-ignore[16]
+            host_mesh,
+            cmd,
+            env=mesh_env,
+            workdir=workdir,
+            output_dir=output_dir,
+            rank=rank,
+            point=point,
+            per_host=per_host,
+        )
+        max_rc = max(max_rc, rc)
+
+    if kill and last_mesh is not None:
         from monarch.actor import shutdown_context  # pyre-ignore[21]
 
-        host_mesh.shutdown().get()
+        last_mesh.shutdown().get()
         job.kill()
         shutdown_context().get()  # pyre-ignore[16]
 

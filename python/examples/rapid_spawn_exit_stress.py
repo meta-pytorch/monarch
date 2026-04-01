@@ -21,10 +21,10 @@ import time
 
 import monarch.actor
 from monarch.actor import Actor, endpoint
-from monarch.job import MeshAdminConfig, ProcessJob
+from monarch.job import ProcessJob
 from monarch.mesh_controller import spawn_tensor_engine
 
-job = ProcessJob({"hosts": 1}, mesh_admin=MeshAdminConfig())
+job = ProcessJob({"hosts": 1}).enable_admin()
 job_state = job.state(cached_path=None)
 proc_mesh = job_state.hosts.spawn_procs(per_host={"gpus": 1})
 

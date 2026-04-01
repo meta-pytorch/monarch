@@ -6,27 +6,31 @@
 
 # Re-export the job module directly
 from monarch._src.job.job import (
+    DEFAULT_JOB_PATH,
+    exec_command,
     job_load,
     job_loads,
-    JobState,
     JobTrait,
+    load_job,
     LocalJob,
     MeshAdminConfig,
-    open_cached,
     TelemetryConfig,
 )
+from monarch._src.job.job_state import JobState
 from monarch._src.job.process import ProcessJob
 from monarch._src.job.slurm import SlurmJob
 
 # Define exports
 __all__ = [
+    "DEFAULT_JOB_PATH",
+    "exec_command",
     "JobTrait",
     "job_load",
     "job_loads",
     "JobState",
+    "load_job",
     "LocalJob",
     "MeshAdminConfig",
-    "open_cached",
     "ProcessJob",
     "SlurmJob",
     "TelemetryConfig",

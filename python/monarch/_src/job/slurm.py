@@ -16,7 +16,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Sequence
 from monarch._rust_bindings.monarch_hyperactor.channel import ChannelTransport
 from monarch._rust_bindings.monarch_hyperactor.config import configure
 from monarch._src.actor.bootstrap import attach_to_workers
-from monarch._src.job.job import JobState, JobTrait, MeshAdminConfig, TelemetryConfig
+from monarch._src.job.job import JobState, JobTrait
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -56,8 +56,6 @@ class SlurmJob(JobTrait):
         cpus_per_task: Optional[int] = None,
         mem: Optional[str] = None,
         job_start_timeout: Optional[int] = None,
-        telemetry: Optional[TelemetryConfig] = None,
-        mesh_admin: Optional[MeshAdminConfig] = None,
     ) -> None:
         """
         Args:
@@ -95,7 +93,7 @@ class SlurmJob(JobTrait):
         # Track the single SLURM job ID and all allocated hostnames
         self._slurm_job_id: Optional[str] = None
         self._all_hostnames: List[str] = []
-        super().__init__(telemetry=telemetry, mesh_admin=mesh_admin)
+        super().__init__()
 
     def add_mesh(self, name: str, num_nodes: int) -> None:
         self._meshes[name] = num_nodes

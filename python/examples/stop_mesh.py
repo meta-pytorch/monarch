@@ -31,7 +31,7 @@ import argparse
 import asyncio
 
 from monarch.actor import Actor, current_rank, endpoint
-from monarch.job import MeshAdminConfig, ProcessJob
+from monarch.job import ProcessJob
 
 
 class Worker(Actor):
@@ -44,7 +44,7 @@ class Worker(Actor):
 
 
 async def async_main(num_procs: int) -> None:
-    job = ProcessJob({"hosts": 1}, mesh_admin=MeshAdminConfig())
+    job = ProcessJob({"hosts": 1}).enable_admin()
     state = job.state(cached_path=None)
     host = state.hosts
 

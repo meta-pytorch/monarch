@@ -45,7 +45,7 @@ from typing import Any, cast
 
 from monarch._src.actor.actor_mesh import ActorMesh
 from monarch.actor import Actor, current_rank, endpoint
-from monarch.job import MeshAdminConfig, ProcessJob, TelemetryConfig
+from monarch.job import ProcessJob, TelemetryConfig
 
 
 class ChopstickStatus(Enum):
@@ -157,13 +157,12 @@ async def async_main(
     dashboard_port: int = 8265,
     kill_waiter_after: float | None = None,
 ) -> None:
-    telemetry = None
+    job = ProcessJob({"hosts": 1})
+    job.enable_admin()
     if dashboard:
-        telemetry = TelemetryConfig(
-            include_dashboard=True, dashboard_port=dashboard_port
+        job.enable_telemetry(
+            TelemetryConfig(include_dashboard=True, dashboard_port=dashboard_port)
         )
-
-    job = ProcessJob({"hosts": 1}, telemetry=telemetry, mesh_admin=MeshAdminConfig())
     state = job.state(cached_path=None)
     host = state.hosts
 

@@ -37,8 +37,6 @@ class MockJobTrait(JobTrait):
         self,
         host_names: Sequence[str] = ("default",),
         compatible_specs=None,
-        telemetry: Optional[TelemetryConfig] = None,
-        mesh_admin: Optional[MeshAdminConfig] = None,
     ):
         """
         Initialize a mock job trait.
@@ -46,10 +44,8 @@ class MockJobTrait(JobTrait):
         Args:
             host_names: Names of host meshes to create in the state
             compatible_specs: List of specs this job is compatible with, or None if compatible with all
-            telemetry: Optional telemetry configuration.
-            mesh_admin: Optional mesh admin configuration.
         """
-        super().__init__(telemetry=telemetry, mesh_admin=mesh_admin)
+        super().__init__()
         self._host_names = host_names
         self._compatible_specs = compatible_specs
         # Track mock state for testing
@@ -331,7 +327,7 @@ def test_state_query_engine_set_with_telemetry(mock_start):
     mock_url = "http://localhost:8265"
     mock_start.return_value = (mock_engine, mock_url)
 
-    job = MockJobTrait(telemetry=TelemetryConfig())
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
     state = job.state(cached_path=None)
 
     assert state.query_engine is not None
@@ -344,7 +340,7 @@ def test_telemetry_started_only_once(mock_start):
     """Test that telemetry is not restarted on subsequent state() calls."""
     mock_start.return_value = (MagicMock(), "http://localhost:8265")
 
-    job = MockJobTrait(telemetry=TelemetryConfig())
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
     job.state(cached_path=None)
     job.state(cached_path=None)
 
@@ -356,7 +352,7 @@ def test_telemetry_dropped_on_pickle(mock_start):
     """Test that query_engine is dropped during pickling and restored after."""
     mock_start.return_value = (MagicMock(), "http://localhost:8265")
 
-    job = MockJobTrait(telemetry=TelemetryConfig())
+    job = MockJobTrait().enable_telemetry(TelemetryConfig())
     job.state(cached_path=None)
     assert mock_start.call_count == 1
 
@@ -385,7 +381,7 @@ def test_state_admin_url_set_with_mesh_admin(mock_spawn):
     mock_future.get.return_value = "http://localhost:1729"
     mock_spawn.return_value = mock_future
 
-    job = MockJobTrait(mesh_admin=MeshAdminConfig())
+    job = MockJobTrait().enable_admin(MeshAdminConfig())
     state = job.state(cached_path=None)
 
     mock_spawn.assert_called_once()
@@ -399,7 +395,7 @@ def test_mesh_admin_started_only_once(mock_spawn):
     mock_future.get.return_value = "http://localhost:1729"
     mock_spawn.return_value = mock_future
 
-    job = MockJobTrait(mesh_admin=MeshAdminConfig())
+    job = MockJobTrait().enable_admin(MeshAdminConfig())
     job.state(cached_path=None)
     job.state(cached_path=None)
 
@@ -413,7 +409,7 @@ def test_mesh_admin_dropped_on_pickle(mock_spawn):
     mock_future.get.return_value = "http://localhost:1729"
     mock_spawn.return_value = mock_future
 
-    job = MockJobTrait(mesh_admin=MeshAdminConfig())
+    job = MockJobTrait().enable_admin(MeshAdminConfig())
     job.state(cached_path=None)
     assert mock_spawn.call_count == 1
 
@@ -434,7 +430,7 @@ def test_mesh_admin_receives_custom_addr(mock_spawn):
     mock_future.get.return_value = "http://myhost:9999"
     mock_spawn.return_value = mock_future
 
-    job = MockJobTrait(mesh_admin=MeshAdminConfig(admin_addr="myhost:9999"))
+    job = MockJobTrait().enable_admin(MeshAdminConfig(admin_addr="myhost:9999"))
     job.state(cached_path=None)
 
     _, kwargs = mock_spawn.call_args

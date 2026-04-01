@@ -31,7 +31,7 @@ import asyncio
 import random
 
 from monarch.actor import Actor, context, current_rank, endpoint
-from monarch.job import MeshAdminConfig, ProcessJob
+from monarch.job import ProcessJob
 
 
 class Sleeper(Actor):
@@ -57,7 +57,7 @@ MAX_SLEEP = 5.0
 
 
 async def async_main(num_procs: int) -> None:
-    job = ProcessJob({"hosts": 1}, mesh_admin=MeshAdminConfig())
+    job = ProcessJob({"hosts": 1}).enable_admin()
     state = job.state(cached_path=None)
     host = state.hosts
 
