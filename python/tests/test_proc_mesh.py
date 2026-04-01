@@ -12,16 +12,15 @@ import os
 import threading
 import time
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import cloudpickle
 import monarch.actor
 import pytest
 from isolate_in_subprocess import isolate_in_subprocess
-from monarch._rust_bindings.monarch_hyperactor.alloc import AllocConstraints, AllocSpec
 from monarch._rust_bindings.monarch_hyperactor.proc_mesh import ProcMesh as HyProcMesh
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.shape import Extent, Shape, Slice
+from monarch._rust_bindings.monarch_hyperactor.shape import Shape, Slice
 from monarch._src.actor.actor_mesh import (
     _client_context,
     Actor,
@@ -29,11 +28,9 @@ from monarch._src.actor.actor_mesh import (
     context,
     ValueMesh,
 )
-from monarch._src.actor.allocator import LocalAllocator, ProcessAllocator
 from monarch._src.actor.endpoint import endpoint
-from monarch._src.actor.host_mesh import HostMesh, this_host, this_proc
+from monarch._src.actor.host_mesh import this_host, this_proc
 from monarch._src.actor.proc_mesh import (
-    _get_bootstrap_args,
     get_or_spawn_controller,
     ProcMesh,
     register_proc_mesh_spawn_callback,
@@ -195,61 +192,6 @@ async def test_pickle_initialized_proc_mesh_in_tokio_thread() -> None:
             cloudpickle.dumps(proc.slice(gpus=0, hosts=0))
 
         PythonTask.from_coroutine(task()).block_on()
-
-
-@pytest.mark.timeout(60)
-async def test_deprecated_proc_mesh_from_alloc_mock() -> None:
-    num_hosts = 2
-    num_gpus = 8
-
-    def test_setup() -> None:
-        import os
-
-        os.environ["TEST_VAR"] = "test_value"
-
-    constraints = AllocConstraints(match_labels={"test_label": "test_value"})
-    allocator = LocalAllocator()
-    spec = AllocSpec(
-        constraints,
-        hosts=num_hosts,
-        gpus=num_gpus,
-    )
-
-    with patch.object(HostMesh, "_allocate_nonblocking") as mock_host_alloc:
-        mock_host_mesh = MagicMock()
-        mock_host_mesh.spawn_procs = MagicMock()
-        mock_host_alloc.return_value = mock_host_mesh
-
-        alloc_handle = allocator.allocate(spec)
-        ProcMesh._from_alloc(alloc_handle, test_setup)
-
-        mock_host_alloc.assert_called_once()
-        (name, extent, allocator, constraints) = mock_host_alloc.call_args.args
-
-        assert name == "host_mesh_from_alloc"
-        assert extent == Extent(["hosts", "gpus"], [num_hosts, num_gpus])
-        assert isinstance(allocator, LocalAllocator)
-        assert constraints.match_labels == {"test_label": "test_value"}
-
-        mock_host_mesh.spawn_procs.assert_called_once_with(bootstrap=test_setup)
-
-
-@pytest.mark.timeout(60)
-@isolate_in_subprocess
-def test_deprecated_proc_mesh_from_alloc_multi_actor() -> None:
-    allocator = ProcessAllocator(*_get_bootstrap_args())
-    spec = AllocSpec(AllocConstraints(), replicas=2, hosts=2, gpus=3)
-    alloc_handle = allocator.allocate(spec)
-    proc_mesh = ProcMesh._from_alloc(alloc_handle)
-
-    actor = proc_mesh.spawn("test_actor", TestActor, 42)
-
-    proc_ranks = actor.get_proc_rank.call().get()
-    assert proc_ranks.extent.labels == ["replicas", "hosts", "gpus"]
-    assert proc_ranks.extent.sizes == [2, 2, 3]
-    for i, (point, rank) in enumerate(proc_ranks.items()):
-        assert rank == i
-        assert point.rank == i
 
 
 class PidActor(Actor):
