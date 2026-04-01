@@ -59,6 +59,12 @@
 #define SYM_DEVICE_GET cuDeviceGet
 #define SYM_DEVICE_GET_COUNT cuDeviceGetCount
 #define SYM_DEVICE_GET_ATTRIBUTE cuDeviceGetAttribute
+// CUDA 13.x removed cuCtxCreate_v2 from headers, but libcuda.so still
+// exports it for backward compatibility. Provide our own declaration so
+// decltype and STRINGIFY resolve correctly.
+#if CUDA_VERSION >= 13000
+CUresult CUDAAPI cuCtxCreate_v2(CUcontext *pctx, unsigned int flags, CUdevice dev);
+#endif
 #define SYM_CTX_CREATE cuCtxCreate_v2
 #define SYM_DEVICE_PRIMARY_CTX_RETAIN cuDevicePrimaryCtxRetain
 #define SYM_CTX_SET_CURRENT cuCtxSetCurrent

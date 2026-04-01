@@ -15,9 +15,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-cuda:
-    name: Build CUDA
+  build-cuda-12-8-py3-10:
+    name: Build CUDA 12.8 / py3.10
     uses: ./.github/workflows/build-cuda.yml
+    with:
+      cuda-version: '12.8'
+      python-version: '3.10'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      artifact-name: monarch-cuda12.8-${{ github.sha }}-py3.10
+      docker-image: 'pytorch/almalinux-builder:cuda12.8'
+
+  build-cuda-12-8-py3-12:
+    name: Build CUDA 12.8 / py3.12
+    uses: ./.github/workflows/build-cuda.yml
+    with:
+      cuda-version: '12.8'
+      python-version: '3.12'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+      artifact-name: monarch-cuda12.8-${{ github.sha }}-py3.12
+      docker-image: 'pytorch/almalinux-builder:cuda12.8'
+
+  build-cuda-13-0-py3-10:
+    name: Build CUDA 13.0 / py3.10
+    uses: ./.github/workflows/build-cuda.yml
+    with:
+      cuda-version: '13.0'
+      python-version: '3.10'
+      torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130'
+      artifact-name: monarch-cuda13.0-${{ github.sha }}-py3.10
+      docker-image: 'pytorch/almalinux-builder:cuda13.0'
 
   build-rocm:
     name: Build ROCm
@@ -35,11 +61,28 @@ jobs:
       artifact-name: monarch-cpu-${{ github.sha }}-py3.10
 
   test-gpu-python:
-    name: Test GPU Python
-    needs: build-cuda
+    name: Test GPU Python (cuda${{ matrix.cuda-version }}-py${{ matrix.python-version }})
+    needs: [build-cuda-12-8-py3-10, build-cuda-13-0-py3-10]
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ['3.10']
+        cuda-version: ['12.8', '13.0']
+        include:
+          - cuda-version: '12.8'
+            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+            docker-image: 'pytorch/almalinux-builder:cuda12.8'
+          - cuda-version: '13.0'
+            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130'
+            docker-image: 'pytorch/almalinux-builder:cuda13.0'
     uses: ./.github/workflows/test-gpu-python.yml
     with:
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
+      artifact-name: monarch-cuda${{ matrix.cuda-version }}-${{ github.sha }}-py${{ matrix.python-version }}
+      torch-spec: ${{ matrix.torch-spec }}
+      gpu-arch-type: cuda
+      gpu-arch-version: ${{ matrix.cuda-version }}
+      python-version: ${{ matrix.python-version }}
+      docker-image: ${{ matrix.docker-image }}
 
   test-cpu-rust:
     name: Test CPU Rust
@@ -53,19 +96,33 @@ jobs:
       docker-image: 'pytorch/manylinuxaarch64-builder:cuda12.8'
 
   test-gpu-rust:
-    name: Test GPU Rust
-    needs: build-cuda
+    name: Test GPU Rust (cuda${{ matrix.cuda-version }}-py${{ matrix.python-version }})
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ['3.10']
+        cuda-version: ['12.8', '13.0']
+        include:
+          - cuda-version: '12.8'
+            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128'
+            docker-image: 'pytorch/almalinux-builder:cuda12.8'
+          - cuda-version: '13.0'
+            torch-spec: '--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu130'
+            docker-image: 'pytorch/almalinux-builder:cuda13.0'
     uses: ./.github/workflows/test-gpu-rust.yml
     with:
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.10
+      torch-spec: ${{ matrix.torch-spec }}
+      gpu-arch-type: cuda
+      gpu-arch-version: ${{ matrix.cuda-version }}
+      python-version: ${{ matrix.python-version }}
+      docker-image: ${{ matrix.docker-image }}
 
   build-docker:
     name: Build Docker image
-    needs: build-cuda
+    needs: build-cuda-12-8-py3-12
     uses: ./.github/workflows/build-docker.yml
     with:
-      # Docker image requires python 3.12
-      artifact-name: monarch-cuda-${{ github.sha }}-py3.12
+      artifact-name: monarch-cuda12.8-${{ github.sha }}-py3.12
 
   status-check:
     name: Status Check
