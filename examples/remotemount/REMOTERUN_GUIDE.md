@@ -150,10 +150,10 @@ Unchanged workers skip transfer entirely (metadata + remount only).
 
 | Payload | Cold start | No change | Rewrite data.bin | Rewrite .py | Delete file |
 |---------|-----------|-----------|-----------------|-------------|-------------|
-| 1 GB    | 9.9s      | 5.9s      | 9.2s            | 7.9s        | 6.9s        |
-| 2 GB    | 11.7s     | 6.9s      | 11.7s           | 8.0s        | 6.6s        |
-| 4 GB    | 15.9s     | 7.4s      | 16.2s           | 8.7s        | 8.1s        |
-| 8 GB    | 22.5s     | 7.4s      | 22.6s           | 9.6s        | 7.7s        |
+| 1 GB    | 9.6s      | 7.7s      | 10.6s           | 8.4s        | 8.1s        |
+| 2 GB    | 12.4s     | 8.3s      | 19.6s           | 9.9s        | 8.1s        |
+| 4 GB    | 13.7s     | 8.9s      | 13.7s           | 9.5s        | 8.6s        |
+| 8 GB    | 20.1s     | 9.3s      | 20.3s           | 10.9s       | 11.2s       |
 
 ### Results — 64 hosts (8 streams, chunked tree fan-out, 4 leaders)
 

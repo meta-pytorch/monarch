@@ -11,11 +11,19 @@
 //! Replaces the Python fusepy-based ChunkedFS with a Rust implementation
 //! using the `fuse3` crate (libfuse3, async/tokio). Exposed to Python
 //! via PyO3.
+//!
+//! Supports live refresh: `PyMountHandle::refresh` atomically swaps
+//! the filesystem data (metadata + chunks) behind a `RwLock` without
+//! unmounting. All FUSE methods acquire a read lock, so reads are
+//! lock-free relative to each other and only briefly blocked during
+//! the write-lock swap.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -33,7 +41,7 @@ use pyo3::types::PyDict;
 use tokio::sync::oneshot;
 use tracing::warn;
 
-const TTL: Duration = Duration::from_secs(3600);
+const DEFAULT_TTL_MS: u64 = 200;
 
 enum FsEntry {
     Dir {
@@ -58,6 +66,88 @@ impl FsEntry {
             FsEntry::File { attr, .. } => attr,
             FsEntry::Symlink { attr, .. } => attr,
         }
+    }
+}
+
+/// Snapshot of filesystem data that can be atomically swapped.
+struct FsData {
+    metadata: HashMap<OsString, FsEntry>,
+    chunks: Vec<Bytes>,
+    chunk_size: usize,
+}
+
+impl FsData {
+    fn lookup_entry(&self, path: &OsStr) -> Option<&FsEntry> {
+        self.metadata.get(path)
+    }
+
+    fn read_data(
+        &self,
+        global_offset: usize,
+        file_len: usize,
+        offset: u64,
+        size: u32,
+    ) -> Result<Bytes, libc::c_int> {
+        let offset = offset as usize;
+        if offset >= file_len {
+            return Ok(Bytes::new());
+        }
+        let len = std::cmp::min(size as usize, file_len - offset);
+        let start = global_offset + offset;
+        let end = start + len;
+
+        let chunk_size = self.chunk_size;
+        let start_chunk = start / chunk_size;
+        let end_chunk = (end.saturating_sub(1)) / chunk_size;
+
+        if start_chunk == end_chunk && start_chunk < self.chunks.len() {
+            let chunk_offset = start % chunk_size;
+            Ok(self.chunks[start_chunk].slice(chunk_offset..chunk_offset + len))
+        } else {
+            let mut buf = Vec::with_capacity(len);
+            let mut pos = start;
+            while pos < end {
+                let ci = pos / chunk_size;
+                if ci >= self.chunks.len() {
+                    break;
+                }
+                let off_in_chunk = pos % chunk_size;
+                if off_in_chunk >= self.chunks[ci].len() {
+                    break;
+                }
+                let avail = self.chunks[ci].len() - off_in_chunk;
+                let take = std::cmp::min(avail, end - pos);
+                buf.extend_from_slice(&self.chunks[ci][off_in_chunk..off_in_chunk + take]);
+                pos += take;
+            }
+            if buf.len() != len {
+                warn!(
+                    "multi-chunk read: expected {len} bytes but assembled {}, \
+                     chunks may be truncated or corrupted",
+                    buf.len()
+                );
+                return Err(libc::EIO);
+            }
+            Ok(Bytes::from(buf))
+        }
+    }
+}
+
+fn join_path(parent: &OsStr, name: &OsStr) -> OsString {
+    let parent_s = parent.to_string_lossy();
+    let name_s = name.to_string_lossy();
+    if parent_s == "/" {
+        OsString::from(format!("/{name_s}"))
+    } else {
+        OsString::from(format!("{parent_s}/{name_s}"))
+    }
+}
+
+fn parent_path(path: &OsStr) -> OsString {
+    let s = path.to_string_lossy();
+    match s.rfind('/') {
+        Some(0) | None => OsString::from("/"),
+        Some(i) => OsString::from(&s[..i]),
     }
 }
 
@@ -140,89 +230,34 @@ fn extract_metadata(dict: &Bound<'_, PyDict>) -> PyResult<HashMap<OsString, FsEn
     Ok(entries)
 }
 
+/// Copy Python buffers into owned `Bytes` objects.
+///
+/// We intentionally avoid zero-copy (`Bytes::from_owner` wrapping
+/// `PyBuffer`) because `PyBuffer::drop` calls `PyBuffer_Release` which
+/// requires the GIL. If a FUSE task is still alive when the tokio
+/// runtime shuts down via atexit, the `PyBuffer` would be dropped on a
+/// tokio worker thread during interpreter finalization, causing a
+/// segfault.
+fn copy_py_buffers(chunks: Vec<pyo3::buffer::PyBuffer<u8>>) -> Vec<Bytes> {
+    chunks
+        .into_iter()
+        .map(|buf| {
+            // SAFETY: buf is a live PyBuffer and we hold the GIL.
+            // buf_ptr() is valid for len_bytes() bytes for the lifetime
+            // of `buf`. Bytes::copy_from_slice performs a full memcpy
+            // before this closure ends and `buf` is dropped.
+            let slice =
+                unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes()) };
+            Bytes::copy_from_slice(slice)
+        })
+        .collect()
+}
+
 // --- FUSE filesystem ---
 
 struct ChunkedFuseFs {
-    metadata: HashMap<OsString, FsEntry>,
-    chunks: Vec<Bytes>,
-    chunk_size: usize,
-}
-
-impl ChunkedFuseFs {
-    fn lookup_entry(&self, path: &OsStr) -> Option<&FsEntry> {
-        self.metadata.get(path)
-    }
-
-    fn read_data(
-        &self,
-        global_offset: usize,
-        file_len: usize,
-        offset: u64,
-        size: u32,
-    ) -> Result<Bytes, libc::c_int> {
-        let offset = offset as usize;
-        if offset >= file_len {
-            return Ok(Bytes::new());
-        }
-        let len = std::cmp::min(size as usize, file_len - offset);
-        let start = global_offset + offset;
-        let end = start + len;
-
-        let chunk_size = self.chunk_size;
-        let start_chunk = start / chunk_size;
-        let end_chunk = (end.saturating_sub(1)) / chunk_size;
-
-        if start_chunk == end_chunk && start_chunk < self.chunks.len() {
-            // Fast path: single chunk
-            let chunk_offset = start % chunk_size;
-            Ok(self.chunks[start_chunk].slice(chunk_offset..chunk_offset + len))
-        } else {
-            // Multi-chunk: assemble
-            let mut buf = Vec::with_capacity(len);
-            let mut pos = start;
-            while pos < end {
-                let ci = pos / chunk_size;
-                if ci >= self.chunks.len() {
-                    break;
-                }
-                let off_in_chunk = pos % chunk_size;
-                if off_in_chunk >= self.chunks[ci].len() {
-                    break;
-                }
-                let avail = self.chunks[ci].len() - off_in_chunk;
-                let take = std::cmp::min(avail, end - pos);
-                buf.extend_from_slice(&self.chunks[ci][off_in_chunk..off_in_chunk + take]);
-                pos += take;
-            }
-            if buf.len() != len {
-                warn!(
-                    "multi-chunk read: expected {len} bytes but assembled {}, \
-                     chunks may be truncated or corrupted",
-                    buf.len()
-                );
-                return Err(libc::EIO);
-            }
-            Ok(Bytes::from(buf))
-        }
-    }
-
-    fn join_path(parent: &OsStr, name: &OsStr) -> OsString {
-        let parent_s = parent.to_string_lossy();
-        let name_s = name.to_string_lossy();
-        if parent_s == "/" {
-            OsString::from(format!("/{name_s}"))
-        } else {
-            OsString::from(format!("{parent_s}/{name_s}"))
-        }
-    }
-
-    fn parent_path(path: &OsStr) -> OsString {
-        let s = path.to_string_lossy();
-        match s.rfind('/') {
-            Some(0) | None => OsString::from("/"),
-            Some(i) => OsString::from(&s[..i]),
-        }
-    }
+    data: Arc<RwLock<FsData>>,
+    ttl: Duration,
 }
 
 impl PathFilesystem for ChunkedFuseFs {
@@ -238,10 +273,11 @@ impl PathFilesystem for ChunkedFuseFs {
     async fn destroy(&self, _req: Request) {}
 
     async fn lookup(&self, _req: Request, parent: &OsStr, name: &OsStr) -> FuseResult<ReplyEntry> {
-        let path = Self::join_path(parent, name);
-        let entry = self.lookup_entry(&path).ok_or_else(Errno::new_not_exist)?;
+        let path = join_path(parent, name);
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(&path).ok_or_else(Errno::new_not_exist)?;
         Ok(ReplyEntry {
-            ttl: TTL,
+            ttl: self.ttl,
             attr: *entry.attr(),
         })
     }
@@ -254,15 +290,17 @@ impl PathFilesystem for ChunkedFuseFs {
         _flags: u32,
     ) -> FuseResult<ReplyAttr> {
         let path = path.ok_or_else(Errno::new_not_exist)?;
-        let entry = self.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
         Ok(ReplyAttr {
-            ttl: TTL,
+            ttl: self.ttl,
             attr: *entry.attr(),
         })
     }
 
     async fn readlink(&self, _req: Request, path: &OsStr) -> FuseResult<ReplyData> {
-        let entry = self.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
         match entry {
             FsEntry::Symlink { link_target, .. } => Ok(ReplyData {
                 data: Bytes::copy_from_slice(link_target.as_encoded_bytes()),
@@ -272,7 +310,8 @@ impl PathFilesystem for ChunkedFuseFs {
     }
 
     async fn open(&self, _req: Request, path: &OsStr, flags: u32) -> FuseResult<ReplyOpen> {
-        let entry = self.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
         if matches!(entry, FsEntry::Dir { .. }) {
             return Err(Errno::new_is_dir());
         }
@@ -288,24 +327,26 @@ impl PathFilesystem for ChunkedFuseFs {
         size: u32,
     ) -> FuseResult<ReplyData> {
         let path = path.ok_or_else(Errno::new_not_exist)?;
-        let entry = self.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
         match entry {
             FsEntry::File {
                 global_offset,
                 file_len,
                 ..
             } => {
-                let data = self
+                let result = data
                     .read_data(*global_offset, *file_len, offset, size)
                     .map_err(Errno::from)?;
-                Ok(ReplyData { data })
+                Ok(ReplyData { data: result })
             }
             _ => Err(libc::EINVAL.into()),
         }
     }
 
     async fn opendir(&self, _req: Request, path: &OsStr, flags: u32) -> FuseResult<ReplyOpen> {
-        let entry = self.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(path).ok_or_else(Errno::new_not_exist)?;
         if !matches!(entry, FsEntry::Dir { .. }) {
             return Err(Errno::new_is_not_dir());
         }
@@ -319,7 +360,8 @@ impl PathFilesystem for ChunkedFuseFs {
         _fh: u64,
         offset: i64,
     ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
-        let entry = self.lookup_entry(parent).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(parent).ok_or_else(Errno::new_not_exist)?;
         let children = match entry {
             FsEntry::Dir { children, .. } => children,
             _ => return Err(Errno::new_is_not_dir()),
@@ -349,8 +391,8 @@ impl PathFilesystem for ChunkedFuseFs {
 
         for child_name in children {
             if offset < idx {
-                let child_path = Self::join_path(parent, OsStr::new(child_name));
-                if let Some(child_entry) = self.lookup_entry(&child_path) {
+                let child_path = join_path(parent, OsStr::new(child_name));
+                if let Some(child_entry) = data.lookup_entry(&child_path) {
                     entries.push(Ok(DirectoryEntry {
                         kind: child_entry.attr().kind,
                         name: OsString::from(child_name),
@@ -374,32 +416,32 @@ impl PathFilesystem for ChunkedFuseFs {
         offset: u64,
         _lock_owner: u64,
     ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
-        let entry = self.lookup_entry(parent).ok_or_else(Errno::new_not_exist)?;
+        let data = self.data.read().unwrap();
+        let entry = data.lookup_entry(parent).ok_or_else(Errno::new_not_exist)?;
         let children = match entry {
             FsEntry::Dir { children, .. } => children,
             _ => return Err(Errno::new_is_not_dir()),
         };
 
+        let ttl = self.ttl;
         let mut entries: Vec<FuseResult<DirectoryEntryPlus>> = Vec::new();
         let mut idx: u64 = 1;
 
-        // "." entry
         if offset < idx {
             entries.push(Ok(DirectoryEntryPlus {
                 kind: FileType::Directory,
                 name: OsString::from("."),
                 offset: idx as i64,
                 attr: *entry.attr(),
-                entry_ttl: TTL,
-                attr_ttl: TTL,
+                entry_ttl: ttl,
+                attr_ttl: ttl,
             }));
         }
         idx += 1;
 
-        // ".." entry
         if offset < idx {
-            let parent_key = Self::parent_path(parent);
-            let dotdot_attr = match self.lookup_entry(&parent_key) {
+            let parent_key = parent_path(parent);
+            let dotdot_attr = match data.lookup_entry(&parent_key) {
                 Some(e) => *e.attr(),
                 None => {
                     warn!(
@@ -415,23 +457,23 @@ impl PathFilesystem for ChunkedFuseFs {
                 name: OsString::from(".."),
                 offset: idx as i64,
                 attr: dotdot_attr,
-                entry_ttl: TTL,
-                attr_ttl: TTL,
+                entry_ttl: ttl,
+                attr_ttl: ttl,
             }));
         }
         idx += 1;
 
         for child_name in children {
             if offset < idx {
-                let child_path = Self::join_path(parent, OsStr::new(child_name));
-                if let Some(child_entry) = self.lookup_entry(&child_path) {
+                let child_path = join_path(parent, OsStr::new(child_name));
+                if let Some(child_entry) = data.lookup_entry(&child_path) {
                     entries.push(Ok(DirectoryEntryPlus {
                         kind: child_entry.attr().kind,
                         name: OsString::from(child_name),
                         offset: idx as i64,
                         attr: *child_entry.attr(),
-                        entry_ttl: TTL,
-                        attr_ttl: TTL,
+                        entry_ttl: ttl,
+                        attr_ttl: ttl,
                     }));
                 }
             }
@@ -444,7 +486,8 @@ impl PathFilesystem for ChunkedFuseFs {
     }
 
     async fn access(&self, _req: Request, path: &OsStr, _mask: u32) -> FuseResult<()> {
-        if self.lookup_entry(path).is_some() {
+        let data = self.data.read().unwrap();
+        if data.lookup_entry(path).is_some() {
             Ok(())
         } else {
             Err(Errno::new_not_exist())
@@ -494,6 +537,7 @@ impl PathFilesystem for ChunkedFuseFs {
 struct PyMountHandle {
     unmount_tx: Option<oneshot::Sender<()>>,
     mount_point: String,
+    data: Arc<RwLock<FsData>>,
 }
 
 #[pymethods]
@@ -527,6 +571,36 @@ impl PyMountHandle {
             }
         })
     }
+
+    /// Atomically replace filesystem data (metadata + chunks) without
+    /// unmounting. Ongoing reads see either the old or new data, never
+    /// a partial mix. Sleeps 3x the FUSE TTL after swapping to ensure
+    /// kernel caches have expired before returning.
+    fn refresh(
+        &self,
+        py: Python<'_>,
+        metadata: &Bound<'_, PyDict>,
+        chunks: Vec<pyo3::buffer::PyBuffer<u8>>,
+        chunk_size: usize,
+    ) -> PyResult<()> {
+        let metadata = extract_metadata(metadata)?;
+        let chunks = copy_py_buffers(chunks);
+        let new_data = FsData {
+            metadata,
+            chunks,
+            chunk_size,
+        };
+        let mut guard = self.data.write().unwrap();
+        *guard = new_data;
+        drop(guard);
+        // Wait for kernel FUSE attr/page caches (TTL=200ms) to expire.
+        let settle = Duration::from_millis(DEFAULT_TTL_MS * 3);
+        py.detach(|| {
+            #[allow(clippy::disallowed_methods)]
+            std::thread::sleep(settle);
+            Ok(())
+        })
+    }
 }
 
 /// Mount a read-only FUSE filesystem from packed metadata and chunks.
@@ -537,8 +611,8 @@ impl PyMountHandle {
 ///     chunks: list of memoryview/bytes chunks.
 ///     chunk_size: size of each chunk in bytes.
 ///     mount_point: path to mount the filesystem.
-///
-/// Returns a FuseMountHandle. Call handle.unmount() to unmount.
+/// Returns a FuseMountHandle. Call handle.unmount() to unmount, or
+/// handle.refresh() to atomically swap the data.
 #[pyfunction]
 fn mount_chunked_fuse(
     py: Python<'_>,
@@ -547,6 +621,7 @@ fn mount_chunked_fuse(
     chunk_size: usize,
     mount_point: String,
 ) -> PyResult<PyMountHandle> {
+    let ttl_ms = DEFAULT_TTL_MS;
     if chunk_size == 0 {
         return Err(PyRuntimeError::new_err("chunk_size must be > 0"));
     }
@@ -557,31 +632,17 @@ fn mount_chunked_fuse(
     }
 
     let metadata = extract_metadata(metadata)?;
-    // Copy each Python buffer into owned Bytes. We intentionally avoid
-    // zero-copy (Bytes::from_owner wrapping PyBuffer) because PyBuffer::drop
-    // calls PyBuffer_Release which requires the GIL. If a FUSE task is still
-    // alive when the tokio runtime shuts down via atexit, the PyBuffer would
-    // be dropped on a tokio worker thread during interpreter finalization,
-    // causing a segfault in module_from_spec/Python::attach.
-    let chunks: Vec<Bytes> = chunks
-        .into_iter()
-        .map(|buf| {
-            // SAFETY: buf is a live PyBuffer and we hold the GIL (py:
-            // Python<'_> is in scope). buf_ptr() is valid for len_bytes()
-            // bytes for the lifetime of `buf`. Bytes::copy_from_slice on
-            // the next line performs a full memcpy before this closure
-            // iteration ends and `buf` is dropped, so the slice does not
-            // outlive the source buffer.
-            let slice =
-                unsafe { std::slice::from_raw_parts(buf.buf_ptr() as *const u8, buf.len_bytes()) };
-            Bytes::copy_from_slice(slice)
-        })
-        .collect();
+    let chunks = copy_py_buffers(chunks);
 
-    let fs = ChunkedFuseFs {
+    let data = Arc::new(RwLock::new(FsData {
         metadata,
         chunks,
         chunk_size,
+    }));
+
+    let fs = ChunkedFuseFs {
+        data: data.clone(),
+        ttl: Duration::from_millis(ttl_ms),
     };
 
     let mount_path = mount_point.clone();
@@ -675,6 +736,7 @@ fn mount_chunked_fuse(
     Ok(PyMountHandle {
         unmount_tx: Some(unmount_tx),
         mount_point,
+        data,
     })
 }
 

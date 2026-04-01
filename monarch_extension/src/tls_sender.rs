@@ -293,9 +293,12 @@ fn send_blocks_impl(
                         .map_err(|e| format!("close_notify: {e}"))?;
                 }
                 // Shut down the write half of TCP to send FIN cleanly.
-                tls.sock
-                    .shutdown(std::net::Shutdown::Write)
-                    .map_err(|e| format!("tcp shutdown: {e}"))?;
+                // ENOTCONN means the peer already closed — not an error.
+                match tls.sock.shutdown(std::net::Shutdown::Write) {
+                    Ok(()) => {}
+                    Err(e) if e.raw_os_error() == Some(libc::ENOTCONN) => {}
+                    Err(e) => return Err(format!("tcp shutdown: {e}")),
+                }
 
                 // Drain the receive buffer (e.g. TLS 1.3 NewSessionTicket
                 // messages the server sent after the handshake). If unread
