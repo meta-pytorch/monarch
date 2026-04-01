@@ -126,96 +126,42 @@ class TestCli(unittest.TestCase):
 
     # ── New CLI tests (serve, exec, use, rank targeting) ──────────────
 
-    def test_exec_refresh_mount_flag(self) -> None:
+    def test_apply_module_path(self) -> None:
         parser = get_parser()
-        args = parser.parse_args(
-            ["exec", "--refresh-mount", "--mount-point", "/tmp/m", "echo", "hi"]
-        )
-        self.assertTrue(args.refresh_mount)
-
-    def test_exec_refresh_mount_default(self) -> None:
-        parser = get_parser()
-        args = parser.parse_args(["exec", "echo", "hi"])
-        self.assertFalse(args.refresh_mount)
-
-    def test_serve_name_flag(self) -> None:
-        parser = get_parser()
-        args = parser.parse_args(["serve", "--name", "mytest", "jobs.mast"])
-        self.assertEqual(args.name, "mytest")
+        args = parser.parse_args(["apply", "jobs.mast"])
         self.assertEqual(args.module_path, "jobs.mast")
 
-    def test_serve_name_default(self) -> None:
+    def test_context_use_command(self) -> None:
         parser = get_parser()
-        args = parser.parse_args(["serve", "jobs.mast"])
-        self.assertIsNone(args.name)
-
-    def test_use_command(self) -> None:
-        parser = get_parser()
-        args = parser.parse_args(["use", "myjob"])
+        args = parser.parse_args(["context", "use", "myjob"])
         self.assertEqual(args.name, "myjob")
 
-    def test_exec_ranks_flag(self) -> None:
-        parser = get_parser()
-        args = parser.parse_args(["exec", "--ranks", "0,3,5", "echo", "hi"])
-        self.assertEqual(args.ranks, "0,3,5")
-        self.assertFalse(args.run_all)
-        self.assertFalse(args.per_host)
-        self.assertIsNone(args.hosts)
-
-    def test_exec_ranks_default(self) -> None:
+    def test_exec_run_all_default(self) -> None:
         parser = get_parser()
         args = parser.parse_args(["exec", "echo", "hi"])
-        self.assertIsNone(args.ranks)
         self.assertFalse(args.run_all)
 
     def test_exec_per_host_flag(self) -> None:
         parser = get_parser()
-        args = parser.parse_args(["exec", "--per-host", "nvidia-smi"])
-        self.assertTrue(args.per_host)
+        args = parser.parse_args(["exec", "--per-host", "gpu=4", "nvidia-smi"])
+        self.assertEqual(args.per_host, "gpu=4")
         self.assertFalse(args.run_all)
-        self.assertIsNone(args.ranks)
 
-    def test_exec_hosts_flag(self) -> None:
-        parser = get_parser()
-        args = parser.parse_args(["exec", "--hosts", "0,2", "hostname"])
-        self.assertEqual(args.hosts, "0,2")
-        self.assertFalse(args.run_all)
-        self.assertIsNone(args.ranks)
-
-    def test_exec_all_and_ranks_mutually_exclusive(self) -> None:
+    def test_exec_all_and_mesh_mutually_exclusive(self) -> None:
         parser = get_parser()
         with self.assertRaises(SystemExit):
-            parser.parse_args(["exec", "--all", "--ranks", "0", "echo"])
-
-    def test_exec_all_and_per_host_mutually_exclusive(self) -> None:
-        parser = get_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["exec", "--all", "--per-host", "echo"])
-
-    def test_exec_all_and_hosts_mutually_exclusive(self) -> None:
-        parser = get_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["exec", "--all", "--hosts", "0", "echo"])
-
-    def test_exec_ranks_and_per_host_mutually_exclusive(self) -> None:
-        parser = get_parser()
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["exec", "--ranks", "0", "--per-host", "echo"])
+            parser.parse_args(["exec", "--all", "--mesh", "workers", "echo"])
 
     def test_help_has_job_reuse(self) -> None:
         import importlib.resources
 
         skill = importlib.resources.files("monarch.tools").joinpath("SKILL.md")
         content = skill.read_text(encoding="utf-8")
-        self.assertIn("Job Reuse", content)
-        self.assertIn("--refresh-mount", content)
+        self.assertIn("Job reuse:", content)
 
-    def test_help_has_rank_targeting(self) -> None:
+    def test_help_has_per_host(self) -> None:
         import importlib.resources
 
         skill = importlib.resources.files("monarch.tools").joinpath("SKILL.md")
         content = skill.read_text(encoding="utf-8")
-        self.assertIn("--ranks", content)
         self.assertIn("--per-host", content)
-        self.assertIn("--hosts", content)
-        self.assertIn("Non-targeted ranks do NOT execute", content)

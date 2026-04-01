@@ -493,7 +493,7 @@ def context_rm(name: str) -> None:
         try:
             from monarch._src.job.job import job_load  # pyre-ignore[21]
 
-            job_load(str(state_file)).kill()
+            job_load(str(state_file)).kill()  # pyre-ignore[16]
         except Exception:
             pass
     shutil.rmtree(str(_context_dir(name)), ignore_errors=True)
@@ -555,7 +555,7 @@ def apply_job(module_path: str) -> None:
     job = getattr(mod, attr_name, None)
     if job is None:
         raise AttributeError(f"Module '{mod_name}' has no '{attr_name}' attribute")
-    if not isinstance(job, JobTrait):
+    if not isinstance(job, JobTrait):  # pyre-ignore[16]
         raise TypeError(
             f"'{mod_name}.{attr_name}' must be a JobTrait, got {type(job).__name__}"
         )
@@ -575,7 +575,7 @@ def apply_job(module_path: str) -> None:
         running.dump(".monarch/job_state.pkl")
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()
-    procs.spawn("_ready_check", BashActor).run.call("true").get()
+    procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
     print(f"Job is ready ({time.time() - t0:.0f}s)")
 
 
@@ -660,7 +660,7 @@ def exec_on_job(
     """
     from monarch._src.job.job import exec_command, load_job  # pyre-ignore[21]
 
-    job = load_job()
+    job = load_job()  # pyre-ignore[16]
 
     script_text = _read_script(script)
     if script_text is not None:
@@ -720,7 +720,7 @@ def exec_on_job(
             bin_dir = os.path.dirname(exe)
             existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
             mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
-        rc = exec_command(
+        rc = exec_command(  # pyre-ignore[16]
             host_mesh,
             cmd,
             env=mesh_env,
