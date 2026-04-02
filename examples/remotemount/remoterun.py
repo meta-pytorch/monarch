@@ -67,9 +67,10 @@ def _get_mast_host_mesh(
         localityConstraints=locality_constraints,
         env={
             "PYTHONDONTWRITEBYTECODE": "1",
-            # Skip preamble health checks on GB300 — toy_ddp TCP store
-            # connections time out between hosts on ephemeral ports.
-            "MAST_PRECHECK_SKIP_TIME_CONSUMING_CHECKS": "1",
+            # Skip preamble health checks entirely — removes the
+            # precheck pre-run step from the TW job spec so workers
+            # go straight to running the payload.
+            "MAST_PRECHECK_PRERUN_STEP_KILLSWITCH": "1",
             # Disable conda activate hooks — run_activate_hooks.sh
             # crashes bash with "pop_var_context" on some host images.
             "HOOKS_DISABLED": "1",
