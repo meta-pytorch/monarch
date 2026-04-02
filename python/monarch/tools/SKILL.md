@@ -30,6 +30,7 @@ Commands:
   exec    Run a command on workers
   kill    Kill the active job
   context Manage named job contexts
+  debug   Connect to the debug server
 
 Job reuse:
   Worker allocation is slow (minutes). Use "monarch exec" to reuse workers

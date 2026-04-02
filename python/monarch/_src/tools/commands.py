@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -423,6 +424,20 @@ def bounce(server_handle: str) -> None:
 def stop(server_handle: str) -> None:
     """Stops the server's unix processes without tearing down the server's job."""
     raise NotImplementedError("`stop` is not yet implemented")
+
+
+def debug(host: str, port: int) -> None:
+    """Connect to the debug server running on the provided host and port."""
+    for cmd in ["ncat", "nc", "netcat"]:
+        try:
+            subprocess.run([cmd, f"{host}", f"{port}"], check=True)
+            return
+        except FileNotFoundError:
+            pass
+
+    logging.error(
+        "Could not find a suitable netcat binary. Please install one and try again."
+    )
 
 
 # ---------------------------------------------------------------------------

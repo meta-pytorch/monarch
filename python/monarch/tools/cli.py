@@ -19,6 +19,7 @@ from monarch.tools.commands import (
     context_rm,
     context_use,
     create,
+    debug,
     exec_on_job,
     info,
     kill,
@@ -29,6 +30,7 @@ from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/con
     Config,
     defaults,
 )
+from monarch.tools.debug_env import _get_debug_server_host, _get_debug_server_port
 from torchx.specs.finder import get_component
 
 
@@ -146,6 +148,25 @@ class StopCmd:
 
     def run(self, args: argparse.Namespace) -> None:
         stop(args.server_handle)
+
+
+class DebugCmd:
+    def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument(
+            "--host",
+            type=str,
+            default=_get_debug_server_host(),
+            help="Hostname where the debug server is running",
+        )
+        subparser.add_argument(
+            "--port",
+            type=int,
+            default=_get_debug_server_port(),
+            help="Port that the debug server is listening on",
+        )
+
+    def run(self, args: argparse.Namespace) -> None:
+        debug(args.host, args.port)
 
 
 # ── New commands ──────────────────────────────────────────────────────────
@@ -350,6 +371,7 @@ def get_parser() -> argparse.ArgumentParser:
             "env vars for each rank dimension.",
         ),
         ("kill", KillCmd(), "Kill the active job"),
+        ("debug", DebugCmd(), "Connect to the debug server"),
     ]:
         cmd_parser = subparser.add_parser(cmd_name, help=cmd_help)
         cmd.add_arguments(cmd_parser)
