@@ -132,11 +132,14 @@ class DistributedTelemetryActor(Actor):
     def _spawn_missing_children(self) -> None:
         """Spawn telemetry actors for any new ProcMeshes we haven't processed yet."""
         for pm in _spawned_procs[self._num_procs_processed :]:
-            actor_mesh = pm.spawn("telemetry", DistributedTelemetryActor)
-            # pyre-ignore[16]: actor_mesh is an ActorMesh with _name
-            mesh_name: str = actor_mesh._name.get()
-            self._children[mesh_name] = actor_mesh
             self._num_procs_processed += 1
+            try:
+                actor_mesh = pm.spawn("telemetry", DistributedTelemetryActor)
+                # pyre-ignore[16]: actor_mesh is an ActorMesh with _name
+                mesh_name: str = actor_mesh._name.get()
+                self._children[mesh_name] = actor_mesh
+            except Exception:
+                logger.warning("failed to spawn telemetry on proc mesh, skipping")
 
     @endpoint
     def ready(self) -> None:
