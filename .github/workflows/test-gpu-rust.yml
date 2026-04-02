@@ -53,7 +53,7 @@ jobs:
         fi
 
         # Setup PyTorch with C++ headers using common-setup utility
-        setup_pytorch_with_headers "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
+        setup_pytorch_with_headers "${{ matrix.gpu-arch-type }}" "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-spec }}"
 
         # Run GPU Rust tests
         echo "Running OSS Rust tests..."

@@ -129,19 +129,31 @@ setup_tensor_engine() {
 }
 
 # Install PyTorch with C++ development headers (libtorch) for Rust compilation
+# Usage: setup_pytorch_with_headers <gpu-arch-type> <gpu-arch-version> <torch-spec>
 setup_pytorch_with_headers() {
-    local gpu_arch_version=${1:-"12.8"}
-    local torch_spec=${2:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
+    local gpu_arch_type=${1:-"cuda"}
+    local gpu_arch_version=${2:-"12.8"}
+    local torch_spec=${3:-"--pre torch --index-url https://download.pytorch.org/whl/nightly/cu128"}
 
-    echo "Setting up PyTorch with C++ headers (GPU arch: ${gpu_arch_version})..."
+    echo "Setting up PyTorch with C++ headers (${gpu_arch_type} ${gpu_arch_version})..."
 
-    # Extract CUDA version for libtorch URL (remove dots: "12.8" -> "128")
-    local cuda_version_short=$(echo "${gpu_arch_version}" | tr -d '.')
-    local libtorch_url="https://download.pytorch.org/libtorch/nightly/cu${cuda_version_short}/libtorch-cxx11-abi-shared-with-deps-latest.zip"
+    # Construct libtorch URL based on GPU type
+    local libtorch_variant
+    local libtorch_filename
+    if [[ "${gpu_arch_type}" == "rocm" ]]; then
+        # ROCm uses version with dots: "7.1" -> "rocm7.1"
+        libtorch_variant="rocm${gpu_arch_version}"
+        libtorch_filename="libtorch-shared-with-deps-latest.zip"
+    else
+        # CUDA uses version without dots: "12.8" -> "cu128"
+        libtorch_variant="cu$(echo "${gpu_arch_version}" | tr -d '.')"
+        libtorch_filename="libtorch-cxx11-abi-shared-with-deps-latest.zip"
+    fi
+    local libtorch_url="https://download.pytorch.org/libtorch/nightly/${libtorch_variant}/${libtorch_filename}"
 
     echo "Downloading libtorch from: ${libtorch_url}"
     wget -q "${libtorch_url}"
-    unzip -q "libtorch-cxx11-abi-shared-with-deps-latest.zip"
+    unzip -q "${libtorch_filename}"
 
     # Set environment variables for libtorch
     export LIBTORCH_ROOT="$PWD/libtorch"
