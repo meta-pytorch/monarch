@@ -332,7 +332,9 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
+    use hyperactor::ActorHandle;
     use hyperactor::Proc;
     use hyperactor::RemoteSpawn;
     use hyperactor::channel::ChannelAddr;
@@ -344,345 +346,406 @@ mod tests {
     use crate::RdmaOp;
     use crate::RdmaOpType;
     use crate::backend::RdmaBackend;
+    use crate::local_memory::Keepalive;
+    use crate::local_memory::KeepaliveLocalMemory;
     use crate::local_memory::RdmaLocalMemory;
-    use crate::local_memory::UnsafeLocalMemory;
     use crate::rdma_manager_actor::GetTcpActorRefClient;
     use crate::rdma_manager_actor::RdmaManagerActor;
 
+    impl Keepalive for Box<[u8]> {}
+
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    struct TcpTestEnv {
-        _proc_1: Proc,
-        _proc_2: Proc,
-        instance_1: hyperactor::Instance<()>,
-        _instance_2: hyperactor::Instance<()>,
-        tcp_handle_1: TcpBackend,
-        tcp_handle_2: TcpBackend,
-        rdma_buf_1: crate::RdmaRemoteBuffer,
-        rdma_buf_2: crate::RdmaRemoteBuffer,
-        local_mem_1: Arc<dyn RdmaLocalMemory>,
-        _local_mem_2: Arc<dyn RdmaLocalMemory>,
-        cpu_buf_1: Box<[u8]>,
-        cpu_buf_2: Box<[u8]>,
+    struct TcpTestProcEnv {
+        proc: Proc,
+        rdma_handle: ActorHandle<RdmaManagerActor>,
+        instance: hyperactor::Instance<()>,
+        tcp_backend: TcpBackend,
+        rdma_remote_buf: crate::RdmaRemoteBuffer,
+        local_memory: Arc<dyn RdmaLocalMemory>,
     }
 
-    /// Set up a test environment with two RdmaManagerActors, CPU buffers,
-    /// and resolved `ActorHandle<TcpManagerActor>` for direct backend testing.
-    ///
-    /// The caller must hold a `ConfigValueGuard` for
-    /// `RDMA_ALLOW_TCP_FALLBACK = true` for the duration of the test.
-    async fn setup_tcp_env(buffer_size: usize) -> anyhow::Result<TcpTestEnv> {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    impl TcpTestProcEnv {
+        /// Create a standalone test environment with its own proc and rdma manager.
+        async fn new(buffer_size: usize) -> anyhow::Result<Self> {
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let proc = Proc::direct(
+                ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
+                format!("tcp_test_{id}"),
+            )?;
+            let (instance, _) = proc.instance("client")?;
 
-        let proc_1 = Proc::direct(
-            ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
-            format!("tcp_test_{id}_a"),
-        )?;
-        let proc_2 = Proc::direct(
-            ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
-            format!("tcp_test_{id}_b"),
-        )?;
+            let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
+            let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
 
-        let (instance_1, _ch1) = proc_1.instance("client")?;
-        let (instance_2, _ch2) = proc_2.instance("client")?;
+            let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
+            let tcp_backend = TcpBackend(
+                tcp_ref
+                    .downcast_handle(&instance)
+                    .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
+            );
 
-        let rdma_actor_1 = RdmaManagerActor::new(None, Flattrs::default()).await?;
-        let rdma_handle_1 = proc_1.spawn("rdma_manager", rdma_actor_1)?;
+            let (local_memory, rdma_remote_buf) =
+                Self::alloc_cpu_buffer(&instance, &rdma_handle, buffer_size).await?;
 
-        let rdma_actor_2 = RdmaManagerActor::new(None, Flattrs::default()).await?;
-        let rdma_handle_2 = proc_2.spawn("rdma_manager", rdma_actor_2)?;
-
-        // Resolve local TcpManagerActor handles for direct backend access.
-        let tcp_ref_1 = rdma_handle_1.get_tcp_actor_ref(&instance_1).await?;
-        let tcp_handle_1 = TcpBackend(
-            tcp_ref_1
-                .downcast_handle(&instance_1)
-                .ok_or_else(|| anyhow::anyhow!("tcp actor 1 not local"))?,
-        );
-
-        let tcp_ref_2 = rdma_handle_2.get_tcp_actor_ref(&instance_2).await?;
-        let tcp_handle_2 = TcpBackend(
-            tcp_ref_2
-                .downcast_handle(&instance_2)
-                .ok_or_else(|| anyhow::anyhow!("tcp actor 2 not local"))?,
-        );
-
-        // Allocate CPU buffers.
-        let mut cpu_buf_1 = vec![0u8; buffer_size].into_boxed_slice();
-        let ptr_1 = cpu_buf_1.as_mut_ptr() as usize;
-        let local_mem_1: Arc<dyn RdmaLocalMemory> =
-            Arc::new(UnsafeLocalMemory::new(ptr_1, buffer_size));
-
-        let mut cpu_buf_2 = vec![0u8; buffer_size].into_boxed_slice();
-        let ptr_2 = cpu_buf_2.as_mut_ptr() as usize;
-        let local_mem_2: Arc<dyn RdmaLocalMemory> =
-            Arc::new(UnsafeLocalMemory::new(ptr_2, buffer_size));
-
-        // Register buffers.
-        let rdma_buf_1 = rdma_handle_1
-            .request_buffer(&instance_1, local_mem_1.clone())
-            .await?;
-
-        let rdma_buf_2 = rdma_handle_2
-            .request_buffer(&instance_2, local_mem_2.clone())
-            .await?;
-
-        Ok(TcpTestEnv {
-            _proc_1: proc_1,
-            _proc_2: proc_2,
-            instance_1,
-            _instance_2: instance_2,
-            tcp_handle_1,
-            tcp_handle_2,
-            rdma_buf_1,
-            rdma_buf_2,
-            local_mem_1,
-            _local_mem_2: local_mem_2,
-            cpu_buf_1,
-            cpu_buf_2,
-        })
-    }
-
-    /// Write from local buffer 1 into remote buffer 2 using the TCP backend directly.
-    #[timed_test::async_timed_test(timeout_secs = 30)]
-    async fn test_tcp_write_from_local() -> anyhow::Result<()> {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
-
-        let buf_size = 4096;
-        let mut env = setup_tcp_env(buf_size).await?;
-
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
-            *byte = (i % 256) as u8;
+            Ok(Self {
+                proc,
+                rdma_handle,
+                instance,
+                tcp_backend,
+                rdma_remote_buf,
+                local_memory,
+            })
         }
 
-        env.tcp_handle_1
+        /// Create a buffer on an existing proc's rdma manager.
+        async fn on_proc(
+            proc: &Proc,
+            rdma_handle: &ActorHandle<RdmaManagerActor>,
+            tcp_backend: TcpBackend,
+            buffer_size: usize,
+        ) -> anyhow::Result<Self> {
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let (instance, _) = proc.instance(&format!("client_{id}"))?;
+
+            let (local_memory, rdma_remote_buf) =
+                Self::alloc_cpu_buffer(&instance, rdma_handle, buffer_size).await?;
+
+            Ok(Self {
+                proc: proc.clone(),
+                rdma_handle: rdma_handle.clone(),
+                instance,
+                tcp_backend,
+                rdma_remote_buf,
+                local_memory,
+            })
+        }
+
+        async fn alloc_cpu_buffer(
+            instance: &hyperactor::Instance<()>,
+            rdma_handle: &ActorHandle<RdmaManagerActor>,
+            buffer_size: usize,
+        ) -> anyhow::Result<(Arc<dyn RdmaLocalMemory>, crate::RdmaRemoteBuffer)> {
+            let cpu_buf = vec![0u8; buffer_size].into_boxed_slice();
+            let ptr = cpu_buf.as_ptr() as usize;
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
+                ptr,
+                buffer_size,
+                Arc::new(cpu_buf),
+            ));
+            let rdma_remote_buf = rdma_handle
+                .request_buffer(instance, local_memory.clone())
+                .await?;
+            Ok((local_memory, rdma_remote_buf))
+        }
+    }
+
+    /// Two separate procs, one buffer each.
+    async fn setup_tcp_env(buf_size: usize) -> anyhow::Result<Vec<TcpTestProcEnv>> {
+        Ok(vec![
+            TcpTestProcEnv::new(buf_size).await?,
+            TcpTestProcEnv::new(buf_size).await?,
+        ])
+    }
+
+    /// Single proc, two buffers.
+    async fn setup_same_proc_tcp_env(buf_size: usize) -> anyhow::Result<Vec<TcpTestProcEnv>> {
+        let first = TcpTestProcEnv::new(buf_size).await?;
+        let second = TcpTestProcEnv::on_proc(
+            &first.proc,
+            &first.rdma_handle,
+            first.tcp_backend.clone(),
+            buf_size,
+        )
+        .await?;
+        Ok(vec![first, second])
+    }
+
+    // --- Shared test helpers ---
+
+    /// Fill envs[0], write to envs[1], verify.
+    async fn do_write_test(
+        envs: &mut [TcpTestProcEnv],
+        buf_size: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
+            *byte = (i % 256) as u8;
+        }
+        envs[0].local_memory.write_at(0, &src)?;
+
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote,
                 }],
-                Duration::from_secs(30),
+                timeout,
             )
             .await?;
 
-        for (i, byte) in env.cpu_buf_2.iter().enumerate() {
+        let mut dst = vec![0u8; buf_size];
+        envs[1].local_memory.read_at(0, &mut dst)?;
+        for (i, byte) in dst.iter().enumerate() {
             assert_eq!(*byte, (i % 256) as u8, "mismatch at offset {i} after write");
         }
-
         Ok(())
     }
 
-    /// Read from remote buffer 2 into local buffer 1 using the TCP backend directly.
-    #[timed_test::async_timed_test(timeout_secs = 30)]
-    async fn test_tcp_read_into_local() -> anyhow::Result<()> {
-        let config = hyperactor_config::global::lock();
-        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
-
-        let buf_size = 2048;
-        let mut env = setup_tcp_env(buf_size).await?;
-
-        for (i, byte) in env.cpu_buf_2.iter_mut().enumerate() {
+    /// Fill envs[1], read into envs[0], verify.
+    async fn do_read_test(
+        envs: &mut [TcpTestProcEnv],
+        buf_size: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 7 + 3) % 256) as u8;
         }
+        envs[1].local_memory.write_at(0, &src)?;
 
-        env.tcp_handle_1
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote,
                 }],
-                Duration::from_secs(30),
+                timeout,
             )
             .await?;
 
-        for (i, byte) in env.cpu_buf_1.iter().enumerate() {
+        let mut dst = vec![0u8; buf_size];
+        envs[0].local_memory.read_at(0, &mut dst)?;
+        for (i, byte) in dst.iter().enumerate() {
             assert_eq!(
                 *byte,
                 ((i * 7 + 3) % 256) as u8,
                 "mismatch at offset {i} after read"
             );
         }
-
         Ok(())
     }
 
-    /// Write, clear, read-back, verify round-trip via TCP backend directly.
+    /// Write, clear, read-back, verify round-trip.
+    async fn do_round_trip_test(
+        envs: &mut [TcpTestProcEnv],
+        buf_size: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
+            *byte = ((i * 13 + 5) % 256) as u8;
+        }
+        envs[0].local_memory.write_at(0, &src)?;
+
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
+            .submit(
+                &env.instance,
+                vec![RdmaOp {
+                    op_type: RdmaOpType::WriteFromLocal,
+                    local: env.local_memory.clone(),
+                    remote: remote.clone(),
+                }],
+                timeout,
+            )
+            .await?;
+
+        envs[0].local_memory.write_at(0, &vec![0u8; buf_size])?;
+
+        let env = &mut envs[0];
+        env.tcp_backend
+            .submit(
+                &env.instance,
+                vec![RdmaOp {
+                    op_type: RdmaOpType::ReadIntoLocal,
+                    local: env.local_memory.clone(),
+                    remote,
+                }],
+                timeout,
+            )
+            .await?;
+
+        let mut dst = vec![0u8; buf_size];
+        envs[0].local_memory.read_at(0, &mut dst)?;
+        for (i, byte) in dst.iter().enumerate() {
+            assert_eq!(
+                *byte,
+                ((i * 13 + 5) % 256) as u8,
+                "mismatch at offset {i} after round-trip"
+            );
+        }
+        Ok(())
+    }
+
+    // --- Non-parallel two-proc tests ---
+
+    /// Write from local buffer 0 into remote buffer 1.
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_tcp_write_from_local() -> anyhow::Result<()> {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
+
+        let mut envs = setup_tcp_env(4096).await?;
+        do_write_test(&mut envs, 4096, Duration::from_secs(30)).await
+    }
+
+    /// Read from remote buffer 1 into local buffer 0.
+    #[timed_test::async_timed_test(timeout_secs = 30)]
+    async fn test_tcp_read_into_local() -> anyhow::Result<()> {
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
+
+        let mut envs = setup_tcp_env(2048).await?;
+        do_read_test(&mut envs, 2048, Duration::from_secs(30)).await
+    }
+
+    /// Write, clear, read-back, verify round-trip.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_write_then_read_back() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
-        let buf_size = 4096;
-        let mut env = setup_tcp_env(buf_size).await?;
-
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
-            *byte = ((i * 13 + 5) % 256) as u8;
-        }
-
-        // Write local_mem_1 -> rdma_buf_2.
-        env.tcp_handle_1
-            .submit(
-                &env.instance_1,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
-                }],
-                Duration::from_secs(30),
-            )
-            .await?;
-
-        // Clear buffer 1.
-        for byte in env.cpu_buf_1.iter_mut() {
-            *byte = 0;
-        }
-
-        // Read rdma_buf_2 -> local_mem_1.
-        env.tcp_handle_1
-            .submit(
-                &env.instance_1,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
-                }],
-                Duration::from_secs(30),
-            )
-            .await?;
-
-        for (i, byte) in env.cpu_buf_1.iter().enumerate() {
-            assert_eq!(
-                *byte,
-                ((i * 13 + 5) % 256) as u8,
-                "mismatch at offset {i} after read-back"
-            );
-        }
-
-        Ok(())
+        let mut envs = setup_tcp_env(4096).await?;
+        do_round_trip_test(&mut envs, 4096, Duration::from_secs(30)).await
     }
 
-    /// Test with a buffer larger than the chunk size to exercise multi-chunk
-    /// write and read paths. Sets chunk size to 1 MiB and uses a ~1.5 MiB
-    /// buffer so the transfer requires 2 chunks.
+    /// Multi-chunk write (1 MiB chunks, 1.5 MiB buffer).
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_multi_chunk_write() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
         let _chunk_guard = config.override_key(crate::config::RDMA_MAX_CHUNK_SIZE_MB, 1);
 
-        // 1.5 MiB = 1572864 bytes > 1 MiB chunk -> 2 chunks.
         let buf_size = 3 * 1024 * 512;
-        let mut env = setup_tcp_env(buf_size).await?;
+        let mut envs = setup_tcp_env(buf_size).await?;
 
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
             *byte = (i % 251) as u8;
         }
+        envs[0].local_memory.write_at(0, &src)?;
 
-        env.tcp_handle_1
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote,
                 }],
                 Duration::from_secs(30),
             )
             .await?;
 
-        for (i, byte) in env.cpu_buf_2.iter().enumerate() {
+        let mut dst = vec![0u8; buf_size];
+        envs[1].local_memory.read_at(0, &mut dst)?;
+        for (i, byte) in dst.iter().enumerate() {
             assert_eq!(*byte, (i % 251) as u8, "mismatch at offset {i}");
         }
 
         Ok(())
     }
 
-    /// Same as above but for multi-chunk reads.
+    /// Multi-chunk read.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_multi_chunk_read() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
         let _chunk_guard = config.override_key(crate::config::RDMA_MAX_CHUNK_SIZE_MB, 1);
 
-        let buf_size = 3 * 1024 * 512; // 1.5 MiB
-        let mut env = setup_tcp_env(buf_size).await?;
+        let buf_size = 3 * 1024 * 512;
+        let mut envs = setup_tcp_env(buf_size).await?;
 
-        for (i, byte) in env.cpu_buf_2.iter_mut().enumerate() {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 3 + 17) % 256) as u8;
         }
+        envs[1].local_memory.write_at(0, &src)?;
 
-        env.tcp_handle_1
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote,
                 }],
                 Duration::from_secs(30),
             )
             .await?;
 
-        for (i, byte) in env.cpu_buf_1.iter().enumerate() {
+        let mut dst = vec![0u8; buf_size];
+        envs[0].local_memory.read_at(0, &mut dst)?;
+        for (i, byte) in dst.iter().enumerate() {
             assert_eq!(*byte, ((i * 3 + 17) % 256) as u8, "mismatch at offset {i}");
         }
 
         Ok(())
     }
 
-    /// Multi-chunk write-then-read round-trip with chunk size smaller than
-    /// the buffer. Uses 1 MiB chunks and a ~2.5 MiB buffer (3 chunks).
+    /// Multi-chunk write-then-read round-trip.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_multi_chunk_round_trip() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
         let _chunk_guard = config.override_key(crate::config::RDMA_MAX_CHUNK_SIZE_MB, 1);
 
-        // 2.5 MiB -> 3 chunks.
         let buf_size = 5 * 1024 * 512;
-        let mut env = setup_tcp_env(buf_size).await?;
+        let mut envs = setup_tcp_env(buf_size).await?;
 
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
             *byte = ((i * 41 + 7) % 256) as u8;
         }
+        envs[0].local_memory.write_at(0, &src)?;
 
-        // Write.
-        env.tcp_handle_1
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote: remote.clone(),
                 }],
                 Duration::from_secs(30),
             )
             .await?;
 
-        // Clear local.
-        for byte in env.cpu_buf_1.iter_mut() {
-            *byte = 0;
-        }
+        envs[0].local_memory.write_at(0, &vec![0u8; buf_size])?;
 
-        // Read back.
-        env.tcp_handle_1
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote,
                 }],
                 Duration::from_secs(30),
             )
             .await?;
 
-        for (i, byte) in env.cpu_buf_1.iter().enumerate() {
+        let mut dst = vec![0u8; buf_size];
+        envs[0].local_memory.read_at(0, &mut dst)?;
+        for (i, byte) in dst.iter().enumerate() {
             assert_eq!(
                 *byte,
                 ((i * 41 + 7) % 256) as u8,
@@ -693,50 +756,49 @@ mod tests {
         Ok(())
     }
 
-    /// Test that resolve_tcp finds the Tcp backend context in a buffer
-    /// and that the resolved actor ref matches the actual TcpManagerActor.
+    /// resolve_tcp finds the Tcp backend context in a buffer.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_resolve_tcp() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
-        let env = setup_tcp_env(64).await?;
+        let envs = setup_tcp_env(64).await?;
 
-        let (tcp_ref_1, id_1) = env.rdma_buf_1.resolve_tcp()?;
-        assert_eq!(id_1, env.rdma_buf_1.id);
-        let expected_1: hyperactor::ActorRef<TcpManagerActor> = env.tcp_handle_1.bind();
-        assert_eq!(tcp_ref_1.actor_id(), expected_1.actor_id());
-
-        let (tcp_ref_2, id_2) = env.rdma_buf_2.resolve_tcp()?;
-        assert_eq!(id_2, env.rdma_buf_2.id);
-        let expected_2: hyperactor::ActorRef<TcpManagerActor> = env.tcp_handle_2.bind();
-        assert_eq!(tcp_ref_2.actor_id(), expected_2.actor_id());
+        for (i, env) in envs.iter().enumerate() {
+            let (tcp_ref, id) = env.rdma_remote_buf.resolve_tcp()?;
+            assert_eq!(id, env.rdma_remote_buf.id, "buf id mismatch for env {i}");
+            let expected: hyperactor::ActorRef<TcpManagerActor> = env.tcp_backend.bind();
+            assert_eq!(tcp_ref.actor_id(), expected.actor_id());
+        }
 
         Ok(())
     }
 
-    /// Write to a released buffer returns an error without crashing the actor.
+    /// Write to a released buffer returns an error without crashing.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_write_to_released_buffer() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
         let buf_size = 64;
-        let mut env = setup_tcp_env(buf_size).await?;
+        let mut envs = setup_tcp_env(buf_size).await?;
 
-        // Fill source buffer.
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
+        let mut src = vec![0u8; buf_size];
+        for (i, byte) in src.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
+        envs[0].local_memory.write_at(0, &src)?;
 
-        // Verify normal write works.
-        env.tcp_handle_1
+        // Normal write should succeed.
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
+        env.tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote: remote.clone(),
                 }],
                 Duration::from_secs(10),
             )
@@ -744,73 +806,57 @@ mod tests {
 
         // Release the remote buffer.
         use crate::rdma_manager_actor::ReleaseBufferClient;
-        let owner_ref = env.rdma_buf_2.owner.clone();
+        let owner_ref = envs[1].rdma_remote_buf.owner.clone();
         owner_ref
-            .release_buffer(&env.instance_1, env.rdma_buf_2.id)
+            .release_buffer(&envs[0].instance, envs[1].rdma_remote_buf.id)
             .await?;
 
-        // Writing to the released buffer should return an error, not crash.
+        // Writing to the released buffer should fail.
+        let env = &mut envs[0];
         let result = env
-            .tcp_handle_1
+            .tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote: remote.clone(),
                 }],
                 Duration::from_secs(10),
             )
             .await;
         assert!(result.is_err(), "expected error writing to released buffer");
 
-        // Verify the TCP actor is still alive by doing a normal operation
-        // with buffer 1 (which was not released).
-        let result = env
-            .tcp_handle_2
-            .submit(
-                &env.instance_1,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_1.clone(),
-                }],
-                Duration::from_secs(10),
-            )
-            .await;
-        assert!(
-            result.is_ok(),
-            "TCP actor should still be alive after error"
-        );
-
         Ok(())
     }
 
-    /// Read from a released buffer returns an error without crashing the actor.
+    /// Read from a released buffer returns an error without crashing.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_read_from_released_buffer() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
         let buf_size = 64;
-        let mut env = setup_tcp_env(buf_size).await?;
+        let mut envs = setup_tcp_env(buf_size).await?;
 
         // Release the remote buffer.
         use crate::rdma_manager_actor::ReleaseBufferClient;
-        let owner_ref = env.rdma_buf_2.owner.clone();
+        let owner_ref = envs[1].rdma_remote_buf.owner.clone();
         owner_ref
-            .release_buffer(&env.instance_1, env.rdma_buf_2.id)
+            .release_buffer(&envs[0].instance, envs[1].rdma_remote_buf.id)
             .await?;
 
-        // Reading from the released buffer should return an error, not crash.
+        // Reading from the released buffer should fail.
+        let remote = envs[1].rdma_remote_buf.clone();
+        let env = &mut envs[0];
         let result = env
-            .tcp_handle_1
+            .tcp_backend
             .submit(
-                &env.instance_1,
+                &env.instance,
                 vec![RdmaOp {
                     op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
+                    local: env.local_memory.clone(),
+                    remote,
                 }],
                 Duration::from_secs(10),
             )
@@ -820,152 +866,29 @@ mod tests {
             "expected error reading from released buffer"
         );
 
-        // Verify the TCP actor is still alive.
-        let result = env
-            .tcp_handle_2
-            .submit(
-                &env.instance_1,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_1.clone(),
-                }],
-                Duration::from_secs(10),
-            )
-            .await;
-        assert!(
-            result.is_ok(),
-            "TCP actor should still be alive after error"
-        );
-
         Ok(())
     }
 
-    /// Single-process test environment: both buffers registered on the
-    /// same `RdmaManagerActor`, exercising the same-process fast path.
-    struct SameProcTcpTestEnv {
-        _proc: Proc,
-        instance: hyperactor::Instance<()>,
-        tcp_handle: TcpBackend,
-        _rdma_buf_1: crate::RdmaRemoteBuffer,
-        rdma_buf_2: crate::RdmaRemoteBuffer,
-        local_mem_1: Arc<dyn RdmaLocalMemory>,
-        _local_mem_2: Arc<dyn RdmaLocalMemory>,
-        cpu_buf_1: Box<[u8]>,
-        cpu_buf_2: Box<[u8]>,
-    }
+    // --- Non-parallel same-proc tests ---
 
-    async fn setup_same_proc_tcp_env(buffer_size: usize) -> anyhow::Result<SameProcTcpTestEnv> {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let proc = Proc::direct(
-            ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
-            format!("tcp_same_proc_test_{id}"),
-        )?;
-        let (instance, _ch) = proc.instance("client")?;
-
-        let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
-        let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
-
-        let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
-        let tcp_handle = TcpBackend(
-            tcp_ref
-                .downcast_handle(&instance)
-                .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
-        );
-
-        let mut cpu_buf_1 = vec![0u8; buffer_size].into_boxed_slice();
-        let ptr_1 = cpu_buf_1.as_mut_ptr() as usize;
-        let local_mem_1: Arc<dyn RdmaLocalMemory> =
-            Arc::new(UnsafeLocalMemory::new(ptr_1, buffer_size));
-
-        let mut cpu_buf_2 = vec![0u8; buffer_size].into_boxed_slice();
-        let ptr_2 = cpu_buf_2.as_mut_ptr() as usize;
-        let local_mem_2: Arc<dyn RdmaLocalMemory> =
-            Arc::new(UnsafeLocalMemory::new(ptr_2, buffer_size));
-
-        let rdma_buf_1 = rdma_handle
-            .request_buffer(&instance, local_mem_1.clone())
-            .await?;
-        let rdma_buf_2 = rdma_handle
-            .request_buffer(&instance, local_mem_2.clone())
-            .await?;
-
-        Ok(SameProcTcpTestEnv {
-            _proc: proc,
-            instance,
-            tcp_handle,
-            _rdma_buf_1: rdma_buf_1,
-            rdma_buf_2,
-            local_mem_1,
-            _local_mem_2: local_mem_2,
-            cpu_buf_1,
-            cpu_buf_2,
-        })
-    }
-
-    /// Same-process write: local_mem_1 → rdma_buf_2.
+    /// Same-process write.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_same_process_write() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
-        let buf_size = 4096;
-        let mut env = setup_same_proc_tcp_env(buf_size).await?;
-
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
-            *byte = (i % 256) as u8;
-        }
-
-        env.tcp_handle
-            .submit(
-                &env.instance,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
-                }],
-                Duration::from_secs(10),
-            )
-            .await?;
-
-        for (i, byte) in env.cpu_buf_2.iter().enumerate() {
-            assert_eq!(*byte, (i % 256) as u8, "mismatch at offset {i}");
-        }
-
-        Ok(())
+        let mut envs = setup_same_proc_tcp_env(4096).await?;
+        do_write_test(&mut envs, 4096, Duration::from_secs(10)).await
     }
 
-    /// Same-process read: rdma_buf_2 → local_mem_1.
+    /// Same-process read.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_same_process_read() -> anyhow::Result<()> {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
-        let buf_size = 2048;
-        let mut env = setup_same_proc_tcp_env(buf_size).await?;
-
-        for (i, byte) in env.cpu_buf_2.iter_mut().enumerate() {
-            *byte = ((i * 7 + 3) % 256) as u8;
-        }
-
-        env.tcp_handle
-            .submit(
-                &env.instance,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
-                }],
-                Duration::from_secs(10),
-            )
-            .await?;
-
-        for (i, byte) in env.cpu_buf_1.iter().enumerate() {
-            assert_eq!(*byte, ((i * 7 + 3) % 256) as u8, "mismatch at offset {i}");
-        }
-
-        Ok(())
+        let mut envs = setup_same_proc_tcp_env(2048).await?;
+        do_read_test(&mut envs, 2048, Duration::from_secs(10)).await
     }
 
     /// Same-process write-then-read round-trip.
@@ -974,56 +897,11 @@ mod tests {
         let config = hyperactor_config::global::lock();
         let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
 
-        let buf_size = 4096;
-        let mut env = setup_same_proc_tcp_env(buf_size).await?;
-
-        for (i, byte) in env.cpu_buf_1.iter_mut().enumerate() {
-            *byte = ((i * 13 + 5) % 256) as u8;
-        }
-
-        // Write local_mem_1 → rdma_buf_2.
-        env.tcp_handle
-            .submit(
-                &env.instance,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::WriteFromLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
-                }],
-                Duration::from_secs(10),
-            )
-            .await?;
-
-        // Clear buffer 1.
-        for byte in env.cpu_buf_1.iter_mut() {
-            *byte = 0;
-        }
-
-        // Read rdma_buf_2 → local_mem_1.
-        env.tcp_handle
-            .submit(
-                &env.instance,
-                vec![RdmaOp {
-                    op_type: RdmaOpType::ReadIntoLocal,
-                    local: env.local_mem_1.clone(),
-                    remote: env.rdma_buf_2.clone(),
-                }],
-                Duration::from_secs(10),
-            )
-            .await?;
-
-        for (i, byte) in env.cpu_buf_1.iter().enumerate() {
-            assert_eq!(
-                *byte,
-                ((i * 13 + 5) % 256) as u8,
-                "mismatch at offset {i} after round-trip"
-            );
-        }
-
-        Ok(())
+        let mut envs = setup_same_proc_tcp_env(4096).await?;
+        do_round_trip_test(&mut envs, 4096, Duration::from_secs(10)).await
     }
 
-    /// Test that when TCP fallback is disabled and ibverbs is unavailable,
+    /// When TCP fallback is disabled and ibverbs is unavailable,
     /// RdmaManagerActor::new returns an error.
     #[timed_test::async_timed_test(timeout_secs = 30)]
     async fn test_tcp_fallback_disabled_fails() -> anyhow::Result<()> {
