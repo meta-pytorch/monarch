@@ -11,9 +11,10 @@ from monarch._src.job.job import (
     job_load,
     job_loads,
     JobTrait,
-    load_job,
+    load_current_job,
     LocalJob,
     MeshAdminConfig,
+    set_current_job,
     TelemetryConfig,
 )
 from monarch._src.job.job_state import JobState
@@ -28,10 +29,11 @@ __all__ = [
     "job_load",
     "job_loads",
     "JobState",
-    "load_job",
+    "load_current_job",
     "LocalJob",
     "MeshAdminConfig",
     "ProcessJob",
+    "set_current_job",
     "SlurmJob",
     "TelemetryConfig",
 ]
