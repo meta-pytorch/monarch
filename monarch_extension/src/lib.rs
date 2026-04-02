@@ -26,7 +26,7 @@ mod fast_pack;
 mod panic;
 mod readonly_fuse;
 mod tls_receiver;
-mod tls_sender;
+pub(crate) mod tls_sender;
 mod trace;
 
 use pyo3::prelude::*;

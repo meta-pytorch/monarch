@@ -91,12 +91,34 @@ def _create_test_dir(base_dir, total_gb):
     print(f"  Created {total_mb}MB test directory ({NUM_PY} .py files)")
 
 
+_PROGRESS_KEYWORDS = [
+    "timings:",
+    "fresh",
+    "partial",
+    "stale",
+    "up-to-date",
+    "skipping transfer",
+    "block transfer",
+    "fan-out",
+    "open() timings",
+    "pack_directory",
+    "channel",
+    "error",
+    "fail",
+    "exception",
+    "traceback",
+    "valueerror",
+    "job failed",
+    "mast_reconnect",
+    "job.state()",
+]
+
+
 def _run(
     label, num_hosts, source_dir, script="#!/bin/bash\necho done\n", extra_args=None
 ):
     """Run remoterun via run.sh and return elapsed time."""
-    sys.stdout.write(f"  {label:.<40s}")
-    sys.stdout.flush()
+    print(f"  {label}")
 
     cmd = [
         "bash",
@@ -112,13 +134,61 @@ def _run(
         cmd.extend(extra_args)
 
     t0 = time.time()
-    result = subprocess.run(cmd, input=script, capture_output=True, text=True)
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    proc.stdin.write(script.encode())
+    proc.stdin.close()
+
+    # Read raw bytes to catch \r progress bars (not just \n lines).
+    buf = b""
+    output_bytes = b""
+    while True:
+        chunk = os.read(proc.stdout.fileno(), 4096)
+        if not chunk:
+            break
+        output_bytes += chunk
+        buf += chunk
+        # Split on both \n and \r to catch progress bars.
+        while b"\n" in buf or b"\r" in buf:
+            idx_n = buf.find(b"\n")
+            idx_r = buf.find(b"\r")
+            if idx_n == -1:
+                idx = idx_r
+            elif idx_r == -1:
+                idx = idx_n
+            else:
+                idx = min(idx_n, idx_r)
+            line = buf[:idx].decode(errors="replace").strip()
+            buf = buf[idx + 1 :]
+            if not line:
+                continue
+            elapsed_so_far = time.time() - t0
+            lower = line.lower()
+            if any(k in lower for k in _PROGRESS_KEYWORDS):
+                print(f"    [{elapsed_so_far:6.1f}s] {line}")
+                sys.stdout.flush()
+            elif "completed" in lower or "%" in line:
+                # conda_pack progress bars — throttle to % changes only.
+                pct = re.search(r"(\d+)%", line)
+                pct_val = pct.group(1) if pct else ""
+                if not hasattr(_run, "_last_pct") or _run._last_pct != pct_val:
+                    _run._last_pct = pct_val
+                    print(f"    [{elapsed_so_far:6.1f}s] {line}")
+                    sys.stdout.flush()
+
+    proc.wait()
     elapsed = time.time() - t0
 
+    output = output_bytes.decode(errors="replace")
+    lines = output.splitlines()
+
     # Extract classification from logs.
-    output = result.stdout + result.stderr
     classification = ""
-    for line in output.splitlines():
+    for line in lines:
         m = re.search(
             r"(\d+)\s+fresh.*?(\d+)\s+partial.*?(\d+)\s+stale",
             line,
@@ -131,47 +201,11 @@ def _run(
             classification = "(all fresh)"
             break
 
-    status = "OK" if result.returncode == 0 else f"FAIL({result.returncode})"
-    print(f" {elapsed:7.1f}s  {classification}  {status}")
+    status = "OK" if proc.returncode == 0 else f"FAIL({proc.returncode})"
+    print(f"  {label:.<40s} {elapsed:7.1f}s  {classification}  {status}")
 
-    # Print timing breakdown lines from logs.
-    for line in output.splitlines():
-        if any(
-            k in line.lower()
-            for k in (
-                "timings:",
-                "pack_directory_chunked:",
-                "persistent block transfer",
-                "fan-out:",
-                "_transfer_group",
-                "open() timings:",
-                "cache_write",
-                "write_cache",
-            )
-        ):
-            # Strip log prefix to show just the timing info.
-            idx = -1
-            for marker in (
-                "pack_directory_chunked:",
-                "Persistent block transfer",
-                "Fan-out:",
-                "Timings:",
-                "timings:",
-                "_transfer_group_direct_tls:",
-                "_transfer_group:",
-                "open() timings:",
-                "open(): cache_write",
-                "[WORKER] write_cache",
-            ):
-                idx = line.find(marker)
-                if idx >= 0:
-                    break
-            if idx >= 0:
-                print(f"    {line[idx:]}")
-
-    if result.returncode != 0:
-        stderr_lines = result.stderr.strip().splitlines()
-        for line in stderr_lines[-5:]:
+    if proc.returncode != 0:
+        for line in lines[-5:]:
             print(f"    {line}")
 
     return elapsed

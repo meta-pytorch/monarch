@@ -449,19 +449,15 @@ class FUSEActor(Actor):
         return self._pack_index
 
     @endpoint
-    def prepare_receiver(self, num_streams, total_size, cert_path=None, port=0):
-        """Create a Rust TLS receiver and return its address."""
+    def prepare_receiver(self, num_streams, total_size):
+        """Create a channel-based receiver and return its addresses."""
         from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
 
         if self._chunk_storage is None or self._total_size != total_size:
             self._alloc_storage(total_size)
 
-        self._tls_receiver = TlsReceiver(num_streams, cert_path=cert_path, port=port)
-        return (
-            self._tls_receiver.addr,
-            self._tls_receiver.tls_hostname,
-            self._cache_path or "",
-        )
+        self._tls_receiver = TlsReceiver(num_streams)
+        return self._tls_receiver.data_addrs
 
     @endpoint
     def receive_blocks(self):
@@ -528,8 +524,6 @@ class MountHandler:
         backend: str = "slurm",
         num_parallel_streams: int = 8,
         transfer_mode: str = "rust_tls",
-        cert_path: Optional[str] = None,
-        tls_port: int = 0,
     ):
         self.sourcepath = os.path.abspath(sourcepath)
         if mntpoint is None:
@@ -550,8 +544,6 @@ class MountHandler:
                 f"transfer_mode must be 'rust_tls' or 'actor', got {transfer_mode!r}"
             )
         self.transfer_mode = transfer_mode
-        self.cert_path = cert_path
-        self.tls_port = tls_port
         self._staging_mv = None
         self._pack_shm_path = None
         self._mounted = False
@@ -694,14 +686,14 @@ class MountHandler:
         )
 
     def _transfer_blocks_rust_tls(self, fuse_actor, dirty_blocks, total_size):
-        """Transfer dirty blocks to a single worker using Rust TLS.
+        """Transfer dirty blocks to a single worker using hyperactor channels.
 
         Sends blocks directly from ``self._staging_mv`` (the buffer produced
         by ``pack_directory_chunked``) so no second pack step is needed.
 
         Flow:
-          1. Worker: prepare_receiver() → creates TlsReceiver, returns address
-          2. Client: send_blocks_from_buffer() → parallel TLS connections
+          1. Worker: prepare_receiver() → creates channel receivers, returns addresses
+          2. Client: send_blocks_from_buffer() → parallel channel sends
           3. Worker: receive_blocks() → waits for all data
         """
         if not dirty_blocks:
@@ -718,38 +710,24 @@ class MountHandler:
             for bi in dirty_blocks
         )
 
-        # 1. Start receiver on worker (returns address, tls_hostname, cache path).
+        # 1. Start receiver on worker (returns data channel addresses).
         t_start = time.time()
         result = fuse_actor.prepare_receiver.call(
             num_streams,
             total_size,
-            cert_path=self.cert_path,
-            port=self.tls_port,
         ).get()
-        addr, tls_hostname, cache_path = [v for _, v in result][0]
-        addresses = [addr] * num_streams
-
-        # Hook: let callers rewrite addresses (e.g. for port-forwarding).
-        if hasattr(self, "_address_rewriter") and self._address_rewriter is not None:
-            addresses, tls_hostname = self._address_rewriter(
-                addr, num_streams, tls_hostname
-            )
+        data_addrs = [v for _, v in result][0]
 
         # 2. Fire receive_blocks (non-blocking) so worker starts waiting.
         recv_future = fuse_actor.receive_blocks.call()
 
         # 3. Send blocks directly from the staging buffer.
-        #    Receiver uses a self-signed cert (or custom cert_path), so
-        #    skip CA verification on the sender side.
         t_setup = time.time()
         send_blocks_from_buffer(
             self._staging_mv,
             total_size,
             dirty_blocks,
-            addresses,
-            cache_path,
-            tls_hostname=tls_hostname,
-            ca_path=None,
+            data_addrs,
         )
         t_send = time.time()
 
@@ -759,7 +737,7 @@ class MountHandler:
 
         gbs = (total_bytes / 1e9) / max(t_send - t_setup, 1e-9)
         logger.info(
-            f"Rust TLS block transfer ({len(dirty_blocks)} blocks, "
+            f"Channel block transfer ({len(dirty_blocks)} blocks, "
             f"{num_streams} streams): {total_bytes // (1024**2)}MiB "
             f"in {t_send - t_setup:.1f}s ({gbs:.1f} GB/s), "
             f"setup={t_setup - t_start:.2f}s, "
@@ -1010,22 +988,13 @@ def remotemount(
     backend: str = "slurm",
     num_parallel_streams: int = 8,
     transfer_mode: str = "rust_tls",
-    cert_path: Optional[str] = None,
-    tls_port: int = 0,
 ) -> MountHandler:
     """Mount a local directory on remote hosts via RDMA transfer and FUSE.
 
     Args:
-        transfer_mode: "rust_tls" (default) uses custom Rust TLS sender/receiver
-            for maximum throughput. "actor" uses monarch's built-in actor message
-            passing — slower but works without Meta TLS certs (e.g. CI, local testing).
-        cert_path: Path to a PEM file containing cert + private key for TLS.
-            Used by the receiver (server identity). If None, falls back to
-            Meta's default cert paths. When set, the sender skips server
-            verification (for self-signed certs).
-        tls_port: Port for the TLS receiver to bind to. Default 0 picks a
-            random port. Set to a known port when using pre-established
-            port-forward tunnels.
+        transfer_mode: "rust_tls" (default) uses hyperactor channels for
+            maximum throughput. "actor" uses monarch's built-in actor message
+            passing — slower but useful for testing.
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -1037,6 +1006,4 @@ def remotemount(
         backend,
         num_parallel_streams,
         transfer_mode,
-        cert_path,
-        tls_port,
     )
