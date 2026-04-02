@@ -25,7 +25,7 @@ jobs:
   set:
     runs-on: ubuntu-latest
     outputs:
-      test-matrix: ${{ steps.set.outputs.matrix }}
+      test-matrix: ${{ steps.set.outputs.test-matrix }}
       build-matrix: ${{ steps.set.outputs.build-matrix }}
     env:
       IS_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads') }}
