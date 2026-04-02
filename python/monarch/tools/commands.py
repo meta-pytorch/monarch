@@ -4,7 +4,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from monarch._src.job.job import load_current_job, set_current_job
 from monarch._src.tools.commands import (
     apply_job,
     bounce,
@@ -20,6 +19,7 @@ from monarch._src.tools.commands import (
     info,
     kill,
     kill_and_confirm,
+    load_current_job,
     MONARCH_DIR,
     server_ready,
     stop,
@@ -44,7 +44,6 @@ __all__ = [
     "load_current_job",
     "MONARCH_DIR",
     "server_ready",
-    "set_current_job",
     "stop",
     "torchx_runner",
 ]
