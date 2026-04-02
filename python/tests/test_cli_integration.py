@@ -312,10 +312,12 @@ def test_kill_via_cli_stops_workers(env):
             os.kill(pid, 0)
 
 
-def test_exec_fails_after_kill(env):
+def test_exec_recreates_job_after_kill(env):
+    """After kill, exec auto-applies (recreates workers) and succeeds."""
     _apply(env, "a")
     _cli(env, "kill")
     time.sleep(0.5)
 
-    result = _cli(env, "exec", "echo", "nope", check=False)
-    assert result.returncode != 0
+    result = _cli(env, "exec", "echo", "nope")
+    assert result.returncode == 0
+    assert "nope" in result.stdout

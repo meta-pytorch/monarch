@@ -155,8 +155,11 @@ class ApplyCmd:
     def add_arguments(self, subparser: argparse.ArgumentParser) -> None:
         subparser.add_argument(
             "module_path",
+            nargs="?",
+            default=None,
             type=str,
-            help="Dotted import path to a job object (e.g. myjob.job).",
+            help="Dotted import path to a job object (e.g. myjob.job). "
+            "If omitted, uses the current context's saved spec.",
         )
 
     def run(self, args: argparse.Namespace) -> None:
@@ -308,8 +311,12 @@ class KillCmd:
         )
 
     def run(self, args: argparse.Namespace) -> None:
-        from monarch._src.job.job import job_load, load_job
-        from monarch._src.tools.commands import _context_state, _current_context
+        from monarch._src.job.job import job_load
+        from monarch._src.tools.commands import (
+            _context_state,
+            _current_context,
+            DEFAULT_JOB_PATH,
+        )
 
         name = args.name or _current_context()
         if name is not None:
@@ -318,7 +325,7 @@ class KillCmd:
                 job_load(str(state_file)).kill()
                 print(f"Killed context '{name}'")
                 return
-        load_job().kill()
+        job_load(DEFAULT_JOB_PATH).kill()
         print("Killed job")
 
 

@@ -17,6 +17,7 @@ import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Literal, NamedTuple, Optional, Sequence
 
 from monarch._src.actor.bootstrap import attach_to_workers
@@ -67,7 +68,10 @@ class BashActor(Actor):
 
         rank = context().actor_instance.rank
         rank_env = {f"MONARCH_RANK_{k}": str(v) for k, v in dict(rank).items()}
-        size_env = {f"MONARCH_SIZE_{k}": str(v) for k, v in rank.extent.items()}
+        size_env = {
+            f"MONARCH_SIZE_{k}": str(v)
+            for k, v in zip(rank.extent.keys(), rank.extent.sizes)
+        }
         env = {**os.environ, **rank_env, **size_env}
         if output_dir is not None and "$SUBDIR" in output_dir:
             subdir = "_".join(f"{k}_{v}" for k, v in dict(rank).items())
@@ -130,7 +134,10 @@ class BashActor(Actor):
 
         rank = context().actor_instance.rank
         rank_env = {f"MONARCH_RANK_{k}": str(v) for k, v in dict(rank).items()}
-        size_env = {f"MONARCH_SIZE_{k}": str(v) for k, v in rank.extent.items()}
+        size_env = {
+            f"MONARCH_SIZE_{k}": str(v)
+            for k, v in zip(rank.extent.keys(), rank.extent.sizes)
+        }
         env = {**os.environ, **rank_env, **size_env}
 
         import selectors
@@ -508,7 +515,17 @@ class JobTrait(ABC):
                 running._kill()
             except NotImplementedError as e:
                 logger.info("Failed to kill cached job: %s", e)
-            os.remove(cached_path)
+            # Remove the actual state file, not the symlink, so the context
+            # (symlink) remains intact for future applies.
+            state_file = (
+                os.path.realpath(cached_path)
+                if os.path.islink(cached_path)
+                else cached_path
+            )
+            try:
+                os.remove(state_file)
+            except FileNotFoundError:
+                pass
             return None
         return job
 
@@ -682,12 +699,97 @@ def job_load(filename: str = DEFAULT_JOB_PATH) -> JobTrait:
         return job
 
 
-def load_job() -> JobTrait:
-    """Load the current job from ``.monarch/job_state.pkl``.
+_MONARCH_DIR: str = ".monarch"
+_CONTEXT_STATE_FILE: str = "state.pkl"
+_CONTEXT_SPEC_FILE: str = "spec"
 
-    Follows any symlink at that path (set up by ``monarch context use``).
+
+def _current_spec_file() -> Path:
+    """Return the spec file path for the current context.
+
+    Reads the symlink at ``.monarch/job_state.pkl`` to determine which context
+    is active.  Falls back to ``default/spec`` when the symlink does not exist.
     """
-    return job_load(DEFAULT_JOB_PATH)
+    link = Path(DEFAULT_JOB_PATH)
+    if link.is_symlink():
+        target = Path(os.readlink(str(link)))
+        return Path(_MONARCH_DIR) / target.parent / _CONTEXT_SPEC_FILE
+    return Path(_MONARCH_DIR) / "default" / _CONTEXT_SPEC_FILE
+
+
+def _import_job_from_spec(module_path: str) -> JobTrait:
+    """Import and return the ``JobTrait`` at the dotted *module_path*.
+
+    Args:
+        module_path: Dotted import path of the form ``module.attr``
+            (e.g. ``myjob.job``).
+
+    Raises:
+        ValueError: if *module_path* does not contain a ``'.'``.
+        AttributeError: if the named attribute does not exist in the module.
+        TypeError: if the attribute is not a :class:`JobTrait`.
+    """
+    import importlib
+
+    if "." not in module_path:
+        raise ValueError(f"module_path must be 'module.attr', got {module_path!r}")
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
+    mod_name, attr_name = module_path.rsplit(".", 1)
+    mod = importlib.import_module(mod_name)
+    job = getattr(mod, attr_name, None)
+    if job is None:
+        raise AttributeError(f"Module '{mod_name}' has no '{attr_name}' attribute")
+    if not isinstance(job, JobTrait):
+        raise TypeError(
+            f"'{mod_name}.{attr_name}' must be a JobTrait, got {type(job).__name__}"
+        )
+    return job
+
+
+def set_current_job(module_path: str) -> None:
+    """Save *module_path* as the spec for the current context.
+
+    Ensures ``.monarch/`` exists and that ``job_state.pkl`` is a symlink
+    pointing to the active context's ``state.pkl`` (sets up the ``default``
+    context and symlink on first run; migrates a legacy plain-file
+    ``job_state.pkl`` to ``default/state.pkl`` for backward compatibility).
+    """
+    link = Path(DEFAULT_JOB_PATH)
+    Path(_MONARCH_DIR).mkdir(parents=True, exist_ok=True)
+    if not link.is_symlink():
+        default_dir = Path(_MONARCH_DIR) / "default"
+        default_dir.mkdir(parents=True, exist_ok=True)
+        if link.exists():
+            # Migrate legacy plain file into the default context.
+            link.rename(default_dir / _CONTEXT_STATE_FILE)
+        link.symlink_to(Path("default") / _CONTEXT_STATE_FILE)
+    spec_file = _current_spec_file()
+    spec_file.parent.mkdir(parents=True, exist_ok=True)
+    spec_file.write_text(module_path)
+
+
+def load_current_job() -> JobTrait:
+    """Return a fresh job object for the current context's spec.
+
+    Reads the dotted module path from the current context's ``spec`` file and
+    imports it via :func:`_import_job_from_spec`.  The returned object is a
+    plain spec — not yet connected to any workers.  Call ``.state()`` on it
+    to connect (or apply) the job; that call may load the cached
+    ``state.pkl`` if it is still valid.
+
+    Raises:
+        FileNotFoundError: if no spec file exists in the current context.
+    """
+    spec_file = _current_spec_file()
+    try:
+        module_path = spec_file.read_text().strip()
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"No spec found at {spec_file}. Run 'monarch apply <module.path>' first."
+        ) from None
+    return _import_job_from_spec(module_path)
 
 
 def exec_command(

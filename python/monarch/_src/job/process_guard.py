@@ -79,6 +79,7 @@ class ProcessGuard:
                     pass_fds=(fd,),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
                 _write_record(fd, _LockRecord(new_key_bytes, proc.pid, socket_path))
 
@@ -134,12 +135,24 @@ class ProcessGuard:
 def find_process(lock_path: str) -> "ProcessGuard | None":
     """Return a handle to the process guarded by *lock_path*, or None.
 
-    Does not launch a new process.
+    Returns None if no lock record exists or if the lock is no longer held
+    (i.e. the guarded process has died).  Does not launch a new process.
     """
     rec = _read_record(lock_path)
     if rec is None:
         return None
-    return ProcessGuard(rec.socket_path, rec.pid)
+    # The guarded process holds the lock for its lifetime.  If we can
+    # acquire it the process is dead → treat as not found.
+    try:
+        fd = os.open(lock_path, os.O_RDWR, 0o600)
+    except FileNotFoundError:
+        return None
+    try:
+        if _try_acquire_lock(fd):
+            return None
+        return ProcessGuard(rec.socket_path, rec.pid)
+    finally:
+        os.close(fd)
 
 
 def _wait_for_socket(socket_path: str, pid: int = 0, timeout: float = 60.0) -> None:

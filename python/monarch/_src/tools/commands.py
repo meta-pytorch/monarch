@@ -442,6 +442,12 @@ def _context_state(name: str) -> Path:
     return _context_dir(name) / _CONTEXT_STATE_FILE
 
 
+def load_current_job() -> Any:
+    from monarch._src.job.job import load_current_job as _load  # pyre-ignore[21]
+
+    return _load()  # pyre-ignore[16]
+
+
 def _current_context() -> Optional[str]:
     """Return the name of the currently active context, or None."""
     link = Path(DEFAULT_JOB_PATH)
@@ -528,51 +534,24 @@ def context_ls() -> None:
 # ---------------------------------------------------------------------------
 
 
-def apply_job(module_path: str) -> None:
+def apply_job(module_path: Optional[str] = None) -> None:
     """Apply a job and wait for workers to be ready.
 
-    Imports *module_path* as a dotted Python module path (e.g. ``myjob.job``),
-    reads its named attribute (a :class:`~monarch.job.JobTrait`), then calls
-    ``job.apply()``.
+    If *module_path* is given (dotted Python path, e.g. ``myjob.job``), it is
+    saved as the current context's spec and that job is applied.  If omitted,
+    the spec is read from the current context's spec file.
 
     Readiness is confirmed by spawning BashActors on all ranks and waiting
     for them to return.
     """
-    import importlib
+    from monarch._src.job.job import BashActor, set_current_job  # pyre-ignore[21]
 
-    from monarch._src.job.job import BashActor, JobTrait  # pyre-ignore[21]
+    if module_path is not None:
+        set_current_job(module_path)  # pyre-ignore[16]
 
-    cwd = os.getcwd()
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
-    # Split on the last '.' to get (module, attr).
-    # "job_a.job"           → module="job_a",       attr="job"
-    # "path.to.module.cfg"  → module="path.to.module", attr="cfg"
-    if "." not in module_path:
-        raise ValueError(f"module_path must be 'module.attr', got {module_path!r}")
-    mod_name, attr_name = module_path.rsplit(".", 1)
-    mod = importlib.import_module(mod_name)
-    job = getattr(mod, attr_name, None)
-    if job is None:
-        raise AttributeError(f"Module '{mod_name}' has no '{attr_name}' attribute")
-    if not isinstance(job, JobTrait):  # pyre-ignore[16]
-        raise TypeError(
-            f"'{mod_name}.{attr_name}' must be a JobTrait, got {type(job).__name__}"
-        )
-
+    job = load_current_job()
     t0 = time.time()
     state = job.state()
-    # When reusing existing workers with a different spec (e.g. different
-    # mounts), update the cached running job's config and dump it so future
-    # exec calls use the current spec.  We dump the *running* job (which has
-    # live worker PIDs), not the fresh module-loaded job (empty _host_to_pid),
-    # to avoid creating broken CachedRunning nesting.
-    running = job._running
-    if running is not None and running is not job:
-        running._mounts = job._mounts
-        running._default_python_exe = job._default_python_exe
-        running._python_executables = dict(job._python_executables)
-        running.dump(".monarch/job_state.pkl")
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()
     procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
@@ -658,9 +637,9 @@ def exec_on_job(
 
     Returns the process exit code (max across targeted ranks).
     """
-    from monarch._src.job.job import exec_command, load_job  # pyre-ignore[21]
+    from monarch._src.job.job import exec_command  # pyre-ignore[21]
 
-    job = load_job()  # pyre-ignore[16]
+    job = load_current_job()
 
     script_text = _read_script(script)
     if script_text is not None:
