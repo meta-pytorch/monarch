@@ -89,12 +89,23 @@ def env(tmp_path, monkeypatch):
 
 
 def _cli(workdir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        [sys.executable, "-m", "monarch.tools.cli", *args],
-        cwd=workdir,
-        capture_output=True,
-        text=True,
-    )
+    # Use a real file for stderr rather than a pipe.  The mount-worker daemon
+    # inherits the apply subprocess's stderr fd and keeps it open after apply
+    # exits; with a PIPE that would block communicate() waiting for EOF, but
+    # with a regular file we just seek-and-read after the child exits.
+    import tempfile
+
+    with tempfile.TemporaryFile() as stderr_f:
+        proc = subprocess.run(
+            [sys.executable, "-m", "monarch.tools.cli", *args],
+            cwd=workdir,
+            stdout=subprocess.PIPE,
+            stderr=stderr_f,
+        )
+        stderr_f.seek(0)
+        stderr = stderr_f.read().decode(errors="replace")
+    stdout = (proc.stdout or b"").decode(errors="replace")
+    result = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     if check and result.returncode != 0:
         pytest.fail(
             f"CLI {args!r} exited {result.returncode}\n"
@@ -312,10 +323,12 @@ def test_kill_via_cli_stops_workers(env):
             os.kill(pid, 0)
 
 
-def test_exec_fails_after_kill(env):
+def test_exec_recreates_job_after_kill(env):
+    """After kill, exec auto-applies (recreates workers) and succeeds."""
     _apply(env, "a")
     _cli(env, "kill")
     time.sleep(0.5)
 
-    result = _cli(env, "exec", "echo", "nope", check=False)
-    assert result.returncode != 0
+    result = _cli(env, "exec", "echo", "nope")
+    assert result.returncode == 0
+    assert "nope" in result.stdout
