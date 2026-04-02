@@ -183,6 +183,10 @@ fn extract_attr(dict: &Bound<'_, PyDict>, kind: FileType) -> PyResult<FileAttr> 
         gid: required_key(dict, "st_gid")?,
         rdev: 0,
         blksize: 4096,
+        #[cfg(target_os = "macos")]
+        crtime: std::time::SystemTime::UNIX_EPOCH,
+        #[cfg(target_os = "macos")]
+        flags: 0,
     })
 }
 
