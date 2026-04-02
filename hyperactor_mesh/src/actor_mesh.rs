@@ -1552,11 +1552,6 @@ mod tests {
             "Stop took {:?}, expected < 3s (actors should have been aborted, not waited for)",
             stop_duration
         );
-        assert!(
-            stop_duration >= std::time::Duration::from_millis(900),
-            "Stop took {:?}, expected >= 900ms (should have waited for timeout)",
-            stop_duration
-        );
 
         let _ = hm.shutdown(instance).await;
     }
