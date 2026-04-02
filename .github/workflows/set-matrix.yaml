@@ -16,7 +16,7 @@ on:
     outputs:
       test-matrix:
         description: Test matrix (py3.10 only)
-        value: ${{ jobs.set.outputs.matrix }}
+        value: ${{ jobs.set.outputs.test-matrix }}
       build-matrix:
         description: Build matrix (includes all python versions)
         value: ${{ jobs.set.outputs.build-matrix }}
@@ -36,7 +36,7 @@ jobs:
     steps:
       - id: set
         run: |
-          set -euo pipefail
+          set -euox pipefail
 
           # Define test matrices (py3.10 only)
           CUDA='{"name": "cuda", "runner": "${{ inputs.runner-cuda }}", "gpu-arch-type": "cuda", "gpu-arch-version": "12.8", "docker-image": "pytorch/manylinux2_28-builder:cuda12.8", "torch-spec": "--pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cu128"}'
