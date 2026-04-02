@@ -21,7 +21,7 @@ variable and used by the DistributedTelemetryActor when it initializes.
 
 import functools
 import logging
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from monarch._rust_bindings.monarch_distributed_telemetry.database_scanner import (
     DatabaseScanner,
@@ -42,13 +42,6 @@ from monarch.monarch_dashboard.server.app import start_dashboard
 from monarch.monarch_dashboard.server.query_engine_adapter import QueryEngineAdapter
 
 logger: logging.Logger = logging.getLogger(__name__)
-
-
-class _ChildEntry(NamedTuple):
-    """Index entry mapping a proc_id to the child mesh and its rank kwargs."""
-
-    mesh: Any  # ActorMesh
-    rank_kwargs: Dict[str, int]
 
 
 # Module-level scanner created at process startup to avoid race conditions.
@@ -112,9 +105,6 @@ class DistributedTelemetryActor(Actor):
         self._children: Dict[str, Any] = {}
         self._num_procs_processed: int = 0
         self._proc_id: str = context().actor_instance.proc_id
-        # Lazily built index: proc_id → _ChildEntry for targeted routing
-        # in store_pyspy_dump.
-        self._proc_id_index: Dict[str, _ChildEntry] = {}
 
     def __supervise__(self, failure: MeshFailure) -> bool:
         """Handle child mesh failures gracefully.
@@ -126,16 +116,7 @@ class DistributedTelemetryActor(Actor):
         Note: stopping a ProcMesh loses process-local telemetry data from
         those children.
         """
-        removed = self._children.pop(failure.mesh_name, None)
-        if removed is not None:
-            # Purge stale proc_id_index entries for the dead child.
-            stale = [
-                pid
-                for pid, entry in self._proc_id_index.items()
-                if entry.mesh is removed
-            ]
-            for pid in stale:
-                del self._proc_id_index[pid]
+        self._children.pop(failure.mesh_name, None)
         logger.info("child mesh failed: %s", failure.mesh_name)
         return True
 
@@ -156,17 +137,6 @@ class DistributedTelemetryActor(Actor):
             mesh_name: str = actor_mesh._name.get()
             self._children[mesh_name] = actor_mesh
             self._num_procs_processed += 1
-            self._index_child(actor_mesh)
-
-    def _index_child(self, child_mesh: Any) -> None:
-        """Query child mesh proc_ids and populate ``_proc_id_index``."""
-        try:
-            # pyre-ignore[29]: child_mesh is an ActorMesh
-            proc_ids = child_mesh.get_proc_id.call().get()
-            for point, pid in proc_ids.items():
-                self._proc_id_index[pid] = _ChildEntry(child_mesh, dict(point))
-        except Exception:
-            logger.warning("failed to index child proc_ids, skipping")
 
     @endpoint
     def ready(self) -> None:
@@ -189,14 +159,6 @@ class DistributedTelemetryActor(Actor):
         return bytes(self._scanner.schema_for(table))
 
     @endpoint
-    def add_children(self, children: "DistributedTelemetryActor") -> None:
-        """Add a child actor mesh to scan when queries are executed."""
-        # pyre-ignore[16]: children is an ActorMesh with _name
-        mesh_name: str = children._name.get()
-        self._children[mesh_name] = children
-        self._index_child(children)
-
-    @endpoint
     def apply_retention(self, table_name: str, where_clause: str) -> None:
         """Apply a retention filter to a table, then fan out to children."""
         self._scanner.apply_retention(table_name, where_clause)
@@ -207,88 +169,13 @@ class DistributedTelemetryActor(Actor):
             except Exception:
                 logger.info("child apply_retention failed, skipping")
 
-    def _route_to_children(
-        self, dump_id: str, proc_ref: str, pyspy_result_json: str
-    ) -> bool:
-        """Route pyspy dump to the matching child. Returns True if a child stored it."""
-        self._spawn_missing_children()
-
-        entry = self._proc_id_index.get(proc_ref)
-        if entry is not None:
-            try:
-                # pyre-ignore[29]: entry.mesh is an ActorMesh
-                result = (
-                    entry.mesh.slice(**entry.rank_kwargs)
-                    .try_store_pyspy_dump.call_one(dump_id, proc_ref, pyspy_result_json)
-                    .get()
-                )
-                if result:
-                    return True
-            except Exception:
-                logger.info("targeted store_pyspy_dump failed for %s", proc_ref)
-
-        # Fallback: fan out to all children concurrently (e.g. index stale
-        # after mesh topology change).
-        futures = []
-        for child_mesh in self._children.values():
-            try:
-                # pyre-ignore[29]: child_mesh is an ActorMesh
-                futures.append(
-                    child_mesh.try_store_pyspy_dump.call(
-                        dump_id, proc_ref, pyspy_result_json
-                    )
-                )
-            except Exception:
-                logger.info("child store_pyspy_dump call failed, skipping")
-
-        for fut in futures:
-            try:
-                if any(fut.get().values()):
-                    return True
-            except Exception:
-                logger.info("child store_pyspy_dump failed, skipping")
-
-        return False
-
     @endpoint
     def store_pyspy_dump(
         self, dump_id: str, proc_ref: str, pyspy_result_json: str
     ) -> bool:
-        """Store py-spy dump data in the pyspy DataFusion tables on the target proc.
-
-        If ``proc_ref`` matches this actor's proc, stores locally.
-        Otherwise routes to the matching child. If no child in the
-        tree matches, the root coordinator stores it so data is not lost.
-
-        Returns True if this actor or a descendant stored the dump.
-        """
-        if proc_ref == self._proc_id:
-            self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
-            return True
-
-        if self._route_to_children(dump_id, proc_ref, pyspy_result_json):
-            return True
-
-        # No proc in the tree matched; store on this (root) coordinator
-        # so the data is not lost.
-        logger.info("no child matched proc_ref %s, storing on root", proc_ref)
+        """Store py-spy dump data in this actor's local tables."""
         self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
         return True
-
-    @endpoint
-    def try_store_pyspy_dump(
-        self, dump_id: str, proc_ref: str, pyspy_result_json: str
-    ) -> bool:
-        """Try to store the dump on the matching proc. Returns True if stored.
-
-        Unlike ``store_pyspy_dump``, this does not fall back to root storage.
-        Used for recursive child routing.
-        """
-        if proc_ref == self._proc_id:
-            self._scanner.store_pyspy_dump_py(dump_id, proc_ref, pyspy_result_json)
-            return True
-
-        return self._route_to_children(dump_id, proc_ref, pyspy_result_json)
 
     @endpoint
     def scan(

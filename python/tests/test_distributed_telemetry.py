@@ -1311,8 +1311,8 @@ def test_pyspy_tables_in_information_schema(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
-    """try_store_pyspy_dump routes to the correct child proc via _proc_id_index."""
+def test_store_pyspy_dump_with_child_proc_ref(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores data with a child proc_ref."""
     job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
     state = job.state(cached_path=None)
     engine = state.query_engine
@@ -1368,9 +1368,8 @@ def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
         }
     )
 
-    # Store a pyspy dump targeting the child proc_ref.
-    # Use 'try_store_pyspy_dump' to avoid fallback to root coordinator.
-    result = engine._actor.try_store_pyspy_dump.call_one(
+    # Store a pyspy dump targeting the child proc_ref on the root actor.
+    result = engine._actor.store_pyspy_dump.call_one(
         "child-dump-1", child_proc_ref, pyspy_json
     ).get()
     assert result
@@ -1392,8 +1391,8 @@ def test_try_store_pyspy_dump_routes_to_child(cleanup_callbacks) -> None:
 
 @pytest.mark.timeout(120)
 @isolate_in_subprocess
-def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> None:
-    """store_pyspy_dump stores on root coordinator when proc_ref matches no child."""
+def test_store_pyspy_dump_with_unknown_proc_ref(cleanup_callbacks) -> None:
+    """store_pyspy_dump stores data even for unknown proc_ref values."""
     job = ProcessJob({"hosts": 1}).enable_telemetry(TelemetryConfig(batch_size=10))
     state = job.state(cached_path=None)
     engine = state.query_engine
@@ -1458,40 +1457,6 @@ def test_store_pyspy_dump_unknown_proc_falls_back_to_root(cleanup_callbacks) -> 
         "SELECT proc_ref FROM pyspy_dumps WHERE dump_id = 'orphan-dump-1'"
     )
     assert dumps.to_pydict()["proc_ref"] == ["nonexistent.proc[999]"]
-
-
-@pytest.mark.timeout(60)
-@isolate_in_subprocess
-def test_store_pyspy_dump_returns_true(cleanup_callbacks) -> None:
-    """try_store_pyspy_dump returns True for match and False for unknown proc."""
-    engine, _ = start_telemetry(include_dashboard=False)
-
-    pyspy_json = json.dumps(
-        {
-            "Ok": {
-                "pid": 1,
-                "binary": "python3",
-                "stack_traces": [],
-                "warnings": [],
-            }
-        }
-    )
-
-    coordinator_proc_id = engine._actor.get_proc_id.call_one().get()
-    result = engine._actor.try_store_pyspy_dump.call_one(
-        "ret-local", coordinator_proc_id, pyspy_json
-    ).get()
-    assert result
-
-    result = engine._actor.try_store_pyspy_dump.call_one(
-        "ret-unknown", "does.not.exist[0]", pyspy_json
-    ).get()
-    assert not result
-
-    result = engine._actor.store_pyspy_dump.call_one(
-        "ret-unknown", "does.not.exist[0]", pyspy_json
-    ).get()
-    assert result
 
 
 @pytest.mark.timeout(120)
