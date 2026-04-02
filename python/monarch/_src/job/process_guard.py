@@ -79,7 +79,6 @@ class ProcessGuard:
                     pass_fds=(fd,),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
                 )
                 _write_record(fd, _LockRecord(new_key_bytes, proc.pid, socket_path))
 
