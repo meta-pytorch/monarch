@@ -51,6 +51,7 @@ Here are some suggested steps to get started with Monarch:
     - [Python API](api/index)
     - [Rust API](rust-api)
 5. **Deep Understanding of Actors**: Gain comprehensive knowledge of [Actors](actors), the foundational building blocks of Monarch.
+6. **Monitoring Tools**: Inspect running meshes with the [Admin TUI](admin-tui) (terminal) or the [Monarch Dashboard](monarch-dashboard) (web GUI).
 
 ```{toctree}
 :maxdepth: 2
@@ -63,6 +64,7 @@ api/index
 rust-api
 actors
 admin-tui
+monarch-dashboard
 ```
 
 ## License
