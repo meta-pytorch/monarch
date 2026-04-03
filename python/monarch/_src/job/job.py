@@ -592,13 +592,17 @@ class JobTrait(ABC):
             source=source, mntpoint=mntpoint, meshes=meshes, **kwargs
         )
         if python_exe is not None:
-            local_exe = os.path.join(source, python_exe)
+            abs_source = os.path.abspath(source)
+            local_exe = os.path.join(abs_source, python_exe)
             if not os.path.isfile(local_exe):
                 raise ValueError(
                     f"python_exe '{python_exe}' not found locally at '{local_exe}'. "
                     f"Ensure the virtual environment exists in '{source}' before calling remote_mount."
                 )
-            exe_path = os.path.join(mntpoint or source, python_exe)
+            abs_mntpoint = (
+                os.path.abspath(mntpoint) if mntpoint is not None else abs_source
+            )
+            exe_path = os.path.join(abs_mntpoint, python_exe)
             if meshes is None:
                 self._default_python_exe = exe_path
             else:
