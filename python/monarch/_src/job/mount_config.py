@@ -129,8 +129,6 @@ class Mounts:
 
         Does nothing if no mounts are configured or no process is found.
         """
-        if not self._remote_entries and not self._gather_entries:
-            return
         from monarch._src.job.process_guard import find_process
 
         lock_path = f"/tmp/monarch_mounts_{apply_id}.lock"
@@ -150,11 +148,13 @@ class Mounts:
         Always sends a refresh so the mount process picks up any changes.
         Does nothing if no mounts are configured.
         """
+        apply_id = job.apply_id
         if not self._remote_entries and not self._gather_entries:
+            self.ensure_stopped(apply_id)
             return
+
         from monarch._src.job.process_guard import ProcessGuard
 
-        apply_id = job.apply_id
         lock_path = f"/tmp/monarch_mounts_{apply_id}.lock"
         guard = ProcessGuard.create(
             lock_path,
