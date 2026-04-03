@@ -737,9 +737,6 @@ def _import_job_from_spec(module_path: str) -> JobTrait:
 
     if "." not in module_path:
         raise ValueError(f"module_path must be 'module.attr', got {module_path!r}")
-    cwd = os.getcwd()
-    if cwd not in sys.path:
-        sys.path.insert(0, cwd)
     mod_name, attr_name = module_path.rsplit(".", 1)
     mod = importlib.import_module(mod_name)
     job = getattr(mod, attr_name, None)
