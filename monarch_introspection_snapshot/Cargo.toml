@@ -8,5 +8,11 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
+anyhow = "1.0.102"
 datafusion = "52.1"
+hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 monarch_record_batch = { version = "0.0.0", path = "../monarch_record_batch" }
+
+[dev-dependencies]
+hyperactor = { version = "0.0.0", path = "../hyperactor" }
+tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }

@@ -313,10 +313,9 @@ impl DatabaseScanner {
 }
 
 impl DatabaseScanner {
-    /// Static method to push a batch to the table_data map.
-    /// This can be used from closures that capture the Arc.
-    ///
-    /// If the batch is empty, creates the table with the schema but doesn't append data.
+    /// Push a batch into the named table in `table_data`.
+    /// See [`ingest_batch`](Self::ingest_batch) for the public API
+    /// and ingestion invariant registry (ID-*).
     fn push_batch_to_tables(
         table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
         table_name: &str,
@@ -342,6 +341,40 @@ impl DatabaseScanner {
             get_tokio_runtime().block_on(table.push(batch));
         }
         Ok(())
+    }
+
+    /// Ingest a `RecordBatch` into a named table.
+    ///
+    /// Public ingestion surface for external callers (e.g.,
+    /// `monarch_introspection_snapshot`). Delegates to the internal
+    /// `push_batch_to_tables`.
+    ///
+    /// # Ingestion invariants (ID-*)
+    ///
+    /// - **ID-1 (wrapper parity):** `ingest_batch` is semantically
+    ///   identical to `push_batch_to_tables`.
+    /// - **ID-2 (create on first batch):** If `table_name` is absent,
+    ///   a new `LiveTableData` is created from `batch.schema()`.
+    /// - **ID-3 (empty batch registers schema):** An empty batch
+    ///   creates the table entry and preserves the schema —
+    ///   `LiveTableData::push` is a no-op for zero rows, but the
+    ///   `entry().or_insert_with()` in `push_batch_to_tables` runs
+    ///   unconditionally.
+    /// - **ID-4 (append on existing table):** A non-empty batch for
+    ///   an existing table appends rows.
+    /// - **ID-5 (ownership boundary):** Callers provide only
+    ///   `(table_data, table_name, batch)`; they do not interact with
+    ///   `LiveTableData` construction logic directly.
+    /// - **ID-6 (error surface preserved):** `ingest_batch` preserves
+    ///   the existing error behavior of `push_batch_to_tables`,
+    ///   including lock-poisoning failures. It introduces no new
+    ///   ingestion semantics.
+    pub fn ingest_batch(
+        table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        table_name: &str,
+        batch: RecordBatch,
+    ) -> anyhow::Result<()> {
+        Self::push_batch_to_tables(table_data, table_name, batch)
     }
 
     /// Create a RecordBatchSink that pushes batches to this scanner's tables.
@@ -1162,5 +1195,88 @@ mod tests {
         assert_eq!(names.value(1), "f2");
         assert_eq!(frame_thread_ids.value(1), 2);
         assert_eq!(filenames.value(1), "b.py");
+    }
+
+    // --- ingest_batch tests ---
+    // These reference the ID-* invariants defined on ingest_batch.
+
+    /// Helper: count rows in a table_data map entry.
+    fn ingest_row_count(
+        table_data: &Arc<StdMutex<HashMap<String, Arc<LiveTableData>>>>,
+        table_name: &str,
+    ) -> usize {
+        let guard = table_data.lock().unwrap();
+        match guard.get(table_name) {
+            Some(table) => get_tokio_runtime().block_on(async {
+                table.mem_table().batches[0]
+                    .read()
+                    .await
+                    .iter()
+                    .map(|b| b.num_rows())
+                    .sum::<usize>()
+            }),
+            None => 0,
+        }
+    }
+
+    // ID-2, ID-3: empty batch creates the table with schema but 0
+    // rows.
+    #[test]
+    fn test_ingest_batch_creates_table_for_empty_batch() {
+        let table_data = Arc::new(StdMutex::new(HashMap::new()));
+        let empty = make_batch(&[]);
+
+        DatabaseScanner::ingest_batch(&table_data, "t", empty.clone()).unwrap();
+
+        let guard = table_data.lock().unwrap();
+        assert!(guard.contains_key("t"), "ID-2: table should exist");
+        let table = guard.get("t").unwrap();
+        assert_eq!(table.schema(), empty.schema(), "ID-3: schema should match");
+        drop(guard);
+        assert_eq!(ingest_row_count(&table_data, "t"), 0, "ID-3: 0 rows");
+    }
+
+    // ID-2, ID-4: non-empty batch creates table and appends rows.
+    #[test]
+    fn test_ingest_batch_appends_non_empty_batch() {
+        let table_data = Arc::new(StdMutex::new(HashMap::new()));
+
+        DatabaseScanner::ingest_batch(&table_data, "t", make_batch(&[1, 2, 3])).unwrap();
+
+        assert_eq!(ingest_row_count(&table_data, "t"), 3);
+    }
+
+    // ID-4: two batches to the same table accumulate rows.
+    #[test]
+    fn test_ingest_batch_reuses_existing_table() {
+        let table_data = Arc::new(StdMutex::new(HashMap::new()));
+
+        DatabaseScanner::ingest_batch(&table_data, "t", make_batch(&[1, 2])).unwrap();
+        DatabaseScanner::ingest_batch(&table_data, "t", make_batch(&[3, 4, 5])).unwrap();
+
+        let guard = table_data.lock().unwrap();
+        assert_eq!(guard.len(), 1, "ID-4: still one table entry");
+        drop(guard);
+        assert_eq!(ingest_row_count(&table_data, "t"), 5);
+    }
+
+    // ID-3, ID-4: empty batch registers schema, then non-empty batch
+    // appends rows using the same schema.
+    #[test]
+    fn test_ingest_batch_empty_then_non_empty() {
+        let table_data = Arc::new(StdMutex::new(HashMap::new()));
+        let empty = make_batch(&[]);
+
+        // Register schema with empty batch.
+        DatabaseScanner::ingest_batch(&table_data, "t", empty.clone()).unwrap();
+        assert_eq!(ingest_row_count(&table_data, "t"), 0);
+
+        // Append rows.
+        DatabaseScanner::ingest_batch(&table_data, "t", make_batch(&[10, 20])).unwrap();
+        assert_eq!(ingest_row_count(&table_data, "t"), 2);
+
+        // Schema unchanged.
+        let guard = table_data.lock().unwrap();
+        assert_eq!(guard.get("t").unwrap().schema(), empty.schema());
     }
 }

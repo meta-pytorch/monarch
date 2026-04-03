@@ -159,6 +159,12 @@
 //! buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX
 //! ```
 
+// tokio is used extensively (tokio::spawn, tokio::time, tokio::sync)
+// but the unused-deps linter does not see through fbinit's runtime
+// provider. This suppresses the false positive while keeping tokio
+// in BUCK deps for autocargo.
+use tokio as _;
+
 mod actions;
 mod app;
 pub(crate) mod client;
