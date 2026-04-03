@@ -1092,9 +1092,9 @@ impl<T: Message> Buffer<T> {
     fn send(
         &self,
         item: (T, PortHandle<Undeliverable<T>>),
-    ) -> Result<(), mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>> {
+    ) -> Result<(), Box<mpsc::error::SendError<(T, PortHandle<Undeliverable<T>>)>>> {
         self.seq.fetch_add(1, Ordering::SeqCst);
-        self.queue.send(item)?;
+        self.queue.send(item).map_err(Box::new)?;
         Ok(())
     }
 }
@@ -1224,9 +1224,8 @@ impl MailboxSender for MailboxClient {
         return_handle: PortHandle<Undeliverable<MessageEnvelope>>,
     ) {
         tracing::event!(target:"messages", tracing::Level::TRACE,  "size"=envelope.data.len(), "sender"= %envelope.sender, "dest" = %envelope.dest.actor_id(), "port"= envelope.dest.index(), "message_type" = envelope.data.typename().unwrap_or("unknown"), "send_message");
-        if let Err(mpsc::error::SendError((envelope, return_handle))) =
-            self.buffer.send((envelope, return_handle))
-        {
+        if let Err(err) = self.buffer.send((envelope, return_handle)) {
+            let mpsc::error::SendError((envelope, return_handle)) = *err;
             let err = DeliveryError::BrokenLink(
                 "failed to enqueue in MailboxClient; buffer's queue is closed".to_string(),
             );
