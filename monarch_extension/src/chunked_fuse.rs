@@ -658,7 +658,7 @@ fn mount_chunked_fuse(
     let runtime = monarch_hyperactor::runtime::get_tokio_runtime();
     runtime.spawn(async move {
         let mut opts = MountOptions::default();
-        opts.read_only(true).force_readdir_plus(true);
+        opts.read_only(true).force_readdir_plus(true).nonempty(true);
 
         let mount_result = fuse3::path::Session::new(opts)
             .mount_with_unprivileged(fs, &mount_path)
