@@ -8,6 +8,7 @@
 import argparse
 import importlib.resources
 import json
+import os
 import sys
 
 from monarch.tools.commands import (
@@ -387,6 +388,9 @@ def get_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] = sys.argv[1:]) -> None:
+    cwd = os.getcwd()
+    if cwd not in sys.path:
+        sys.path.insert(0, cwd)
     parser = get_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "func"):
