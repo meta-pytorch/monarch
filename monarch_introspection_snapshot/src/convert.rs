@@ -111,7 +111,7 @@ impl NodeKindRow {
 ///
 /// Fallible: pre-epoch times and post-2554 overflow produce errors
 /// rather than silent truncation.
-fn to_micros(t: SystemTime) -> anyhow::Result<i64> {
+pub(crate) fn to_micros(t: SystemTime) -> anyhow::Result<i64> {
     let micros = t
         .duration_since(UNIX_EPOCH)
         .context("SystemTime before UNIX epoch")?

@@ -14,9 +14,10 @@
 //! Currently provides:
 //! - [`schema`] — relational row definitions (Arrow table shapes)
 //! - [`convert`] — `NodePayload` → row projection (`ConvertedNode`)
+//! - [`capture`] — BFS capture of a mesh topology into `SnapshotData`
 //!
-//! BFS capture and ingestion orchestration are planned but not yet
-//! implemented.
+//! Ingestion orchestration is planned but not yet implemented.
 
+pub mod capture;
 pub mod convert;
 pub mod schema;
