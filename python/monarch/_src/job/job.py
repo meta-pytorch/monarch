@@ -116,8 +116,7 @@ class BashActor(Actor):
     @endpoint
     def run_python(
         self,
-        py_file: Optional[str] = None,
-        module: Optional[str] = None,
+        cmd: List[str],
         env: Optional[Dict[str, str]] = None,
         workdir: Optional[str] = None,
         client_cwd: Optional[str] = None,
@@ -138,14 +137,17 @@ class BashActor(Actor):
             if effective_workdir
             else contextlib.nullcontext()
         ):
-            if module is not None:
+            if cmd[0] == "-m":
                 import importlib.util
 
-                spec = importlib.util.find_spec(module)
+                spec = importlib.util.find_spec(cmd[1])
                 assert spec is not None and spec.origin is not None
                 py_file = spec.origin
+                argv = cmd[1:]
+            else:
+                py_file = cmd[0]
+                argv = cmd
 
-            assert py_file is not None
             with open(py_file) as f:
                 source = f.read()
             code = compile(source, py_file, "exec")
@@ -161,7 +163,7 @@ class BashActor(Actor):
             with (
                 out_f,
                 err_f,
-                patch.object(sys, "argv", [py_file]),
+                patch.object(sys, "argv", argv),
                 contextlib.redirect_stdout(out_f),
                 contextlib.redirect_stderr(err_f),
             ):
@@ -909,8 +911,7 @@ def exec_command(
 
     if cmd[0].endswith(".py") or cmd[0] == "-m":
         results = bash_actors.run_python.call(
-            py_file=cmd[0] if cmd[0].endswith(".py") else None,
-            module=cmd[1] if cmd[0] == "-m" else None,
+            cmd,
             env=env,
             workdir=workdir,
             client_cwd=client_cwd,

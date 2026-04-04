@@ -202,16 +202,18 @@ def test_exec_all_ranks(env):
 
 def test_exec_python_script(env):
     script = env / "greet.py"
-    script.write_text('print("hello_from_script")\n')
+    script.write_text("import sys; print(sys.argv[1])\n")
     _apply(env, "a")
-    result = _cli(env, "exec", str(script))
+    result = _cli(env, "exec", str(script), "hello_from_script")
     assert "hello_from_script" in result.stdout
 
 
 def test_exec_python_module(env, tmp_path):
-    (tmp_path / "mymod.py").write_text('print("hello_from_module")\n')
+    (tmp_path / "mymod.py").write_text("import sys; print(sys.argv[1])\n")
     _apply(env, "a")
-    result = _cli(env, "exec", "--workdir", str(tmp_path), "-m", "mymod")
+    result = _cli(
+        env, "exec", "--workdir", str(tmp_path), "-m", "mymod", "hello_from_module"
+    )
     assert "hello_from_module" in result.stdout
 
 
