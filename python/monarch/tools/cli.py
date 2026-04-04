@@ -256,6 +256,13 @@ class ExecCmd:
             help="Read a bash script from FILE (use '-' for stdin)",
         )
         subparser.add_argument(
+            "-m",
+            dest="module",
+            default=None,
+            metavar="MODULE",
+            help="Run a Python module as a script (like python -m)",
+        )
+        subparser.add_argument(
             "cmd",
             nargs=argparse.REMAINDER,
             help="Command to run on workers",
@@ -265,6 +272,8 @@ class ExecCmd:
         cmd = args.cmd
         if cmd and cmd[0] == "--":
             cmd = cmd[1:]
+        if args.module:
+            cmd = ["-m", args.module] + cmd
         if not cmd and args.script is None:
             print(
                 "Error: no command specified (use cmd args or --script)",

@@ -6,6 +6,8 @@
 
 # pyre-unsafe
 
+import contextlib
+import io
 import logging
 import os
 import pickle
@@ -54,6 +56,27 @@ class BashActor(Actor):
        until the process exits.
     """
 
+    def _rank_env(self) -> Dict[str, str]:
+        from monarch.actor import context
+
+        rank = context().actor_instance.rank
+        return {
+            **{f"MONARCH_RANK_{k}": str(v) for k, v in dict(rank).items()},
+            **{
+                f"MONARCH_SIZE_{k}": str(v)
+                for k, v in zip(rank.extent.keys(), rank.extent.sizes)
+            },
+        }
+
+    def _expand_subdir(self, output_dir: str) -> str:
+        if "$SUBDIR" not in output_dir:
+            return output_dir
+        from monarch.actor import context
+
+        rank = context().actor_instance.rank
+        subdir = "_".join(f"{k}_{v}" for k, v in dict(rank).items())
+        return output_dir.replace("$SUBDIR", subdir)
+
     @endpoint
     def run(
         self,
@@ -64,18 +87,9 @@ class BashActor(Actor):
         my_rank = current_rank().rank
         if target_ranks is not None and my_rank not in target_ranks:
             return {"returncode": 0, "stdout": "", "stderr": "", "skipped": True}
-        from monarch.actor import context
-
-        rank = context().actor_instance.rank
-        rank_env = {f"MONARCH_RANK_{k}": str(v) for k, v in dict(rank).items()}
-        size_env = {
-            f"MONARCH_SIZE_{k}": str(v)
-            for k, v in zip(rank.extent.keys(), rank.extent.sizes)
-        }
-        env = {**os.environ, **rank_env, **size_env}
-        if output_dir is not None and "$SUBDIR" in output_dir:
-            subdir = "_".join(f"{k}_{v}" for k, v in dict(rank).items())
-            output_dir = output_dir.replace("$SUBDIR", subdir)
+        env = {**os.environ, **self._rank_env()}
+        if output_dir is not None:
+            output_dir = self._expand_subdir(output_dir)
         with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=True) as f:
             f.write(script)
             f.flush()
@@ -97,6 +111,67 @@ class BashActor(Actor):
                     "returncode": result.returncode,
                     "stdout": result.stdout,
                     "stderr": result.stderr,
+                }
+
+    @endpoint
+    def run_python(
+        self,
+        cmd: List[str],
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+        client_cwd: Optional[str] = None,
+        output_dir: Optional[str] = None,
+    ):
+        from unittest.mock import patch
+
+        os.environ.update({**self._rank_env(), **(env or {})})
+
+        if output_dir is not None:
+            output_dir = self._expand_subdir(output_dir)
+
+        effective_workdir = workdir or (
+            client_cwd if client_cwd and os.path.isdir(client_cwd) else None
+        )
+        with (
+            contextlib.chdir(effective_workdir)
+            if effective_workdir
+            else contextlib.nullcontext()
+        ):
+            if cmd[0] == "-m":
+                import importlib.util
+
+                spec = importlib.util.find_spec(cmd[1])
+                assert spec is not None and spec.origin is not None
+                py_file = spec.origin
+                argv = cmd[1:]
+            else:
+                py_file = cmd[0]
+                argv = cmd
+
+            with open(py_file) as f:
+                source = f.read()
+            code = compile(source, py_file, "exec")
+
+            if output_dir is not None:
+                os.makedirs(output_dir, exist_ok=True)
+                out_f: Any = open(os.path.join(output_dir, "stdout.txt"), "w")
+                err_f: Any = open(os.path.join(output_dir, "stderr.txt"), "w")
+            else:
+                out_f = io.StringIO()
+                err_f = io.StringIO()
+
+            with (
+                out_f,
+                err_f,
+                patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(out_f),
+                contextlib.redirect_stderr(err_f),
+            ):
+                exec(code, {"__name__": "__main__", "__file__": py_file})
+                return {
+                    "returncode": 0,
+                    "stdout": out_f.getvalue() if output_dir is None else "",
+                    "stderr": err_f.getvalue() if output_dir is None else "",
                 }
 
     @endpoint
@@ -130,15 +205,7 @@ class BashActor(Actor):
             output_port.send(f"skip:{my_rank}")
             return
 
-        from monarch.actor import context
-
-        rank = context().actor_instance.rank
-        rank_env = {f"MONARCH_RANK_{k}": str(v) for k, v in dict(rank).items()}
-        size_env = {
-            f"MONARCH_SIZE_{k}": str(v)
-            for k, v in zip(rank.extent.keys(), rank.extent.sizes)
-        }
-        env = {**os.environ, **rank_env, **size_env}
+        env = {**os.environ, **self._rank_env()}
 
         import selectors
 
@@ -828,15 +895,6 @@ def exec_command(
     Returns:
         Maximum return code across all ranks (0 = success).
     """
-    lines: List[str] = ["#!/bin/bash"]
-    if env:
-        for k, v in env.items():
-            lines.append(f"export {k}={shlex.quote(v)}")
-    if workdir:
-        lines.append(f"cd {shlex.quote(workdir)}")
-    lines.append(shlex.join(cmd))
-    script = "\n".join(lines) + "\n"
-
     procs = (
         host_mesh.spawn_procs(per_host=per_host)
         if per_host
@@ -848,7 +906,31 @@ def exec_command(
         procs = procs.flatten("rank").slice(rank=rank)
 
     bash_actors = procs.spawn("BashActor", BashActor)
-    results = bash_actors.run.call(script, output_dir=output_dir).get()
+
+    client_cwd = os.getcwd()
+
+    if cmd[0].endswith(".py") or cmd[0] == "-m":
+        results = bash_actors.run_python.call(
+            cmd,
+            env=env,
+            workdir=workdir,
+            client_cwd=client_cwd,
+            output_dir=output_dir,
+        ).get()
+    else:
+        lines: List[str] = ["#!/bin/bash"]
+        if env:
+            for k, v in env.items():
+                lines.append(f"export {k}={shlex.quote(v)}")
+        if workdir:
+            lines.append(f"cd {shlex.quote(workdir)}")
+        elif client_cwd:
+            lines.append(
+                f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
+            )
+        lines.append(shlex.join(cmd))
+        script = "\n".join(lines) + "\n"
+        results = bash_actors.run.call(script, output_dir=output_dir).get()
     max_rc = 0
     for _rank_key, result in results:
         rc = result.get("returncode", 1)
