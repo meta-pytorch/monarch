@@ -208,11 +208,11 @@ def test_exec_python_script(env):
     assert "hello_from_script" in result.stdout
 
 
-def test_exec_python_module(env):
+def test_exec_python_module(env, tmp_path):
+    (tmp_path / "mymod.py").write_text('print("hello_from_module")\n')
     _apply(env, "a")
-    result = _cli(env, "exec", "-m", "platform")
-    assert result.returncode == 0
-    assert result.stdout.strip() != ""
+    result = _cli(env, "exec", "--workdir", str(tmp_path), "-m", "mymod")
+    assert "hello_from_module" in result.stdout
 
 
 # ── Remote mount ───────────────────────────────────────────────────────────

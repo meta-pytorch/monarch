@@ -122,47 +122,47 @@ class BashActor(Actor):
         workdir: Optional[str] = None,
         output_dir: Optional[str] = None,
     ):
+        from unittest.mock import patch
+
         os.environ.update({**self._rank_env(), **(env or {})})
 
         if output_dir is not None:
             output_dir = self._expand_subdir(output_dir)
 
-        if module is not None:
-            import importlib.util
+        with contextlib.chdir(workdir) if workdir else contextlib.nullcontext():
+            if module is not None:
+                import importlib.util
 
-            spec = importlib.util.find_spec(module)
-            assert spec is not None and spec.origin is not None
-            py_file = spec.origin
+                spec = importlib.util.find_spec(module)
+                assert spec is not None and spec.origin is not None
+                py_file = spec.origin
 
-        assert py_file is not None
-        with open(py_file) as f:
-            source = f.read()
-        code = compile(source, py_file, "exec")
+            assert py_file is not None
+            with open(py_file) as f:
+                source = f.read()
+            code = compile(source, py_file, "exec")
 
-        if output_dir is not None:
-            os.makedirs(output_dir, exist_ok=True)
-            out_f: Any = open(os.path.join(output_dir, "stdout.txt"), "w")
-            err_f: Any = open(os.path.join(output_dir, "stderr.txt"), "w")
-        else:
-            out_f = io.StringIO()
-            err_f = io.StringIO()
+            if output_dir is not None:
+                os.makedirs(output_dir, exist_ok=True)
+                out_f: Any = open(os.path.join(output_dir, "stdout.txt"), "w")
+                err_f: Any = open(os.path.join(output_dir, "stderr.txt"), "w")
+            else:
+                out_f = io.StringIO()
+                err_f = io.StringIO()
 
-        from unittest.mock import patch
-
-        with (
-            out_f,
-            err_f,
-            patch.object(sys, "argv", [py_file]),
-            contextlib.chdir(workdir) if workdir else contextlib.nullcontext(),
-            contextlib.redirect_stdout(out_f),
-            contextlib.redirect_stderr(err_f),
-        ):
-            exec(code, {"__name__": "__main__", "__file__": py_file})
-            return {
-                "returncode": 0,
-                "stdout": out_f.getvalue() if output_dir is None else "",
-                "stderr": err_f.getvalue() if output_dir is None else "",
-            }
+            with (
+                out_f,
+                err_f,
+                patch.object(sys, "argv", [py_file]),
+                contextlib.redirect_stdout(out_f),
+                contextlib.redirect_stderr(err_f),
+            ):
+                exec(code, {"__name__": "__main__", "__file__": py_file})
+                return {
+                    "returncode": 0,
+                    "stdout": out_f.getvalue() if output_dir is None else "",
+                    "stderr": err_f.getvalue() if output_dir is None else "",
+                }
 
     @endpoint
     def run_streaming(
