@@ -120,6 +120,7 @@ class BashActor(Actor):
         module: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         workdir: Optional[str] = None,
+        client_cwd: Optional[str] = None,
         output_dir: Optional[str] = None,
     ):
         from unittest.mock import patch
@@ -129,7 +130,14 @@ class BashActor(Actor):
         if output_dir is not None:
             output_dir = self._expand_subdir(output_dir)
 
-        with contextlib.chdir(workdir) if workdir else contextlib.nullcontext():
+        effective_workdir = workdir or (
+            client_cwd if client_cwd and os.path.isdir(client_cwd) else None
+        )
+        with (
+            contextlib.chdir(effective_workdir)
+            if effective_workdir
+            else contextlib.nullcontext()
+        ):
             if module is not None:
                 import importlib.util
 
@@ -897,12 +905,15 @@ def exec_command(
 
     bash_actors = procs.spawn("BashActor", BashActor)
 
+    client_cwd = os.getcwd()
+
     if cmd[0].endswith(".py") or cmd[0] == "-m":
         results = bash_actors.run_python.call(
             py_file=cmd[0] if cmd[0].endswith(".py") else None,
             module=cmd[1] if cmd[0] == "-m" else None,
             env=env,
             workdir=workdir,
+            client_cwd=client_cwd,
             output_dir=output_dir,
         ).get()
     else:
@@ -912,6 +923,10 @@ def exec_command(
                 lines.append(f"export {k}={shlex.quote(v)}")
         if workdir:
             lines.append(f"cd {shlex.quote(workdir)}")
+        elif client_cwd:
+            lines.append(
+                f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
+            )
         lines.append(shlex.join(cmd))
         script = "\n".join(lines) + "\n"
         results = bash_actors.run.call(script, output_dir=output_dir).get()
