@@ -200,6 +200,21 @@ def test_exec_all_ranks(env):
     assert "Output" in result.stdout
 
 
+def test_exec_python_script(env):
+    script = env / "greet.py"
+    script.write_text('print("hello_from_script")\n')
+    _apply(env, "a")
+    result = _cli(env, "exec", str(script))
+    assert "hello_from_script" in result.stdout
+
+
+def test_exec_python_module(env):
+    _apply(env, "a")
+    result = _cli(env, "exec", "-m", "platform")
+    assert result.returncode == 0
+    assert result.stdout.strip() != ""
+
+
 # ── Remote mount ───────────────────────────────────────────────────────────
 
 
