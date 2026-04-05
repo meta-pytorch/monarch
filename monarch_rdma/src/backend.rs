@@ -8,6 +8,8 @@
 
 //! RDMA backend implementations.
 
+#[cfg(test)]
+pub(crate) mod cuda_test_utils;
 pub mod ibverbs;
 pub mod tcp;
 
