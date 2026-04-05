@@ -9,9 +9,9 @@
 from __future__ import annotations
 
 import logging
-import sys
 import os
 import subprocess
+import sys
 import time
 from typing import Optional
 
@@ -208,8 +208,10 @@ class FUSEActor(Actor):
         print(
             f"[CACHE] Loaded {self._cache_path}: "
             f"{size // (1024**2)}MiB, "
-            f"{len(self._block_hashes)} block hashes"
-        , file=sys.stderr, flush=True)
+            f"{len(self._block_hashes)} block hashes",
+            file=sys.stderr,
+            flush=True,
+        )
 
     @endpoint
     def set_meta(self, meta):
@@ -269,8 +271,10 @@ class FUSEActor(Actor):
         gbs = (chunk_size / 1e9) / max(t2 - t1, 1e-9)
         print(
             f"[WORKER] fetch_chunk {idx}: {chunk_size / (1024**2):.0f}MiB "
-            f"in {t2 - t1:.3f}s ({gbs:.1f} GB/s)"
-        , file=sys.stderr, flush=True)
+            f"in {t2 - t1:.3f}s ({gbs:.1f} GB/s)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     @endpoint
     def fanout_chunk_rdma(
@@ -323,8 +327,10 @@ class FUSEActor(Actor):
         print(
             f"[WORKER] fanout_chunk {idx}: setup={t1 - t0:.3f}s, "
             f"dispatch={t2 - t1:.3f}s, wait={t3 - t2:.3f}s, "
-            f"total={t3 - t0:.3f}s ({gbs:.1f} GB/s aggregate, {n} peers)"
-        , file=sys.stderr, flush=True)
+            f"total={t3 - t0:.3f}s ({gbs:.1f} GB/s aggregate, {n} peers)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     @endpoint
     def get_blocks_rdma_buffer(self, block_indices, total_size):
@@ -436,7 +442,11 @@ class FUSEActor(Actor):
             ]
         self._pending_dirty_blocks = []
 
-        chunk_buf = self._chunk_storage_mv if self._chunk_storage_mv is not None else memoryview(b"")
+        chunk_buf = (
+            self._chunk_storage_mv
+            if self._chunk_storage_mv is not None
+            else memoryview(b"")
+        )
         # Atomically apply chunk patches and swap metadata under one write lock.
         self._fuse_handle.refresh(
             self.meta, chunk_buf, dirty_ranges, self._total_size, self.chunk_size
@@ -649,7 +659,11 @@ class MountHandler:
 
         index_result = index_future.get()
         t_index_done = time.time()
-        print(f"_sync(): get_pack_index RPC took {t_index_done - t_start:.2f}s", file=sys.stderr, flush=True)
+        print(
+            f"_sync(): get_pack_index RPC took {t_index_done - t_start:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
         previous_index = next(
             (idx for _, idx in index_result if idx and idx.get("files")),
             None,
@@ -669,8 +683,10 @@ class MountHandler:
         t_hashes_done = time.time()
         print(
             f"_sync(): get_block_hashes RPC wait {t_hashes_done - t_pack_done:.2f}s "
-            f"(overlapped with pack)"
-        , file=sys.stderr, flush=True)
+            f"(overlapped with pack)",
+            file=sys.stderr,
+            flush=True,
+        )
         worker_states = [
             (remote_hashes, remote_size)
             for _point, (remote_hashes, remote_size) in result
@@ -680,12 +696,20 @@ class MountHandler:
         )
 
         t_classify_done = time.time()
-        print(f"_sync(): classify_workers {t_classify_done - t_hashes_done:.2f}s", file=sys.stderr, flush=True)
+        print(
+            f"_sync(): classify_workers {t_classify_done - t_hashes_done:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
 
         self.fuse_actors.set_meta.call(meta).get()
 
         t_meta_done = time.time()
-        print(f"_sync(): set_meta RPC {t_meta_done - t_classify_done:.2f}s", file=sys.stderr, flush=True)
+        print(
+            f"_sync(): set_meta RPC {t_meta_done - t_classify_done:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
 
         all_blocks = list(range(len(client_hashes)))
         dirty_blocks: set[int] = set()
@@ -701,21 +725,31 @@ class MountHandler:
         if sorted_dirty and target_ranks:
             print(
                 f"_sync(): {len(sorted_dirty)}/{len(client_hashes)} blocks dirty "
-                f"across {len(target_ranks)} workers"
-            , file=sys.stderr, flush=True)
+                f"across {len(target_ranks)} workers",
+                file=sys.stderr,
+                flush=True,
+            )
             self._transfer_fanout(
                 flat_actors, target_ranks, sorted_dirty, client_total_size
             )
 
         t_transfer_done = time.time()
-        print(f"_sync(): transfer {t_transfer_done - t_meta_done:.2f}s", file=sys.stderr, flush=True)
+        print(
+            f"_sync(): transfer {t_transfer_done - t_meta_done:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
 
         # Mount or refresh after transfer succeeds — mounting before
         # transfer would leak a FUSE mount if the transfer fails
         # (open() raises before __enter__ completes, so close() never runs).
         if self._mounted:
             if os.environ.get("MONARCH_SKIP_REFRESH_MOUNT"):
-                print("_sync(): skipping refresh_mount (MONARCH_SKIP_REFRESH_MOUNT set)", file=sys.stderr, flush=True)
+                print(
+                    "_sync(): skipping refresh_mount (MONARCH_SKIP_REFRESH_MOUNT set)",
+                    file=sys.stderr,
+                    flush=True,
+                )
             else:
                 refresh_results = self.fuse_actors.refresh_mount.call(
                     client_hashes, client_total_size, new_pack_index
@@ -723,15 +757,29 @@ class MountHandler:
                 t_refresh_done = time.time()
                 for _point, timings in refresh_results:
                     if timings:
-                        timings_str = ", ".join(f"{k}={v:.2f}s" for k, v in timings.items())
-                        print(f"_sync(): refresh_mount remote breakdown: {timings_str}", file=sys.stderr, flush=True)
-                print(f"_sync(): refresh_mount RPC {t_refresh_done - t_transfer_done:.2f}s", file=sys.stderr, flush=True)
+                        timings_str = ", ".join(
+                            f"{k}={v:.2f}s" for k, v in timings.items()
+                        )
+                        print(
+                            f"_sync(): refresh_mount remote breakdown: {timings_str}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                print(
+                    f"_sync(): refresh_mount RPC {t_refresh_done - t_transfer_done:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
         else:
             self.fuse_actors.mount.call(
                 self.mntpoint, client_hashes, client_total_size, new_pack_index
             ).get()
             t_refresh_done = time.time()
-            print(f"_sync(): mount RPC {t_refresh_done - t_transfer_done:.2f}s", file=sys.stderr, flush=True)
+            print(
+                f"_sync(): mount RPC {t_refresh_done - t_transfer_done:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
             self._mounted = True
 
         t_done = time.time()
@@ -1064,8 +1112,10 @@ class MountHandler:
             f"TLS→{num_leaders} leaders: {total_bytes // (1024**2)}MiB in {t_tls - t0:.1f}s "
             f"({tls_gbs:.1f} GB/s), "
             f"RDMA fan-out: {len(dirty_blocks)} blocks to {len(peer_ranks)} "
-            f"peers in {t_rdma - t_tls:.1f}s ({rdma_gbs:.1f} GB/s)"
-        , file=sys.stderr, flush=True)
+            f"peers in {t_rdma - t_tls:.1f}s ({rdma_gbs:.1f} GB/s)",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def close(self) -> None:
         """Unmount FUSE but keep actors alive for incremental updates."""
