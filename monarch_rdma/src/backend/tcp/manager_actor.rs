@@ -365,6 +365,21 @@ mod tests {
         local_memory: Arc<dyn RdmaLocalMemory>,
     }
 
+    impl Drop for TcpTestProcEnv {
+        fn drop(&mut self) {
+            use crate::rdma_manager_actor::ReleaseBufferClient;
+            // Release the buffer so the actor drops its local_memory
+            // clone while the CUDA runtime is still alive.
+            let _ = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(
+                    self.rdma_remote_buf
+                        .owner
+                        .release_buffer(&self.instance, self.rdma_remote_buf.id),
+                )
+            });
+        }
+    }
+
     impl TcpTestProcEnv {
         /// Create a standalone test environment with its own proc and rdma manager.
         async fn new(buffer_size: usize) -> anyhow::Result<Self> {
@@ -916,5 +931,108 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    // --- Multi-GPU TCP fallback tests ---
+
+    use crate::backend::cuda_test_utils::CudaAllocator;
+    use crate::backend::cuda_test_utils::cuda_device_count;
+
+    impl TcpTestProcEnv {
+        /// Create a test environment backed by CUDA device memory.
+        async fn new_gpu(device: i32, buffer_size: usize) -> anyhow::Result<Self> {
+            let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let proc = Proc::direct(
+                ChannelAddr::any(hyperactor::channel::ChannelTransport::Unix),
+                format!("tcp_gpu_test_{id}"),
+            )?;
+            let (instance, _) = proc.instance("client")?;
+
+            let rdma_actor = RdmaManagerActor::new(None, Flattrs::default()).await?;
+            let rdma_handle = proc.spawn("rdma_manager", rdma_actor)?;
+
+            let tcp_ref = rdma_handle.get_tcp_actor_ref(&instance).await?;
+            let tcp_backend = TcpBackend(
+                tcp_ref
+                    .downcast_handle(&instance)
+                    .ok_or_else(|| anyhow::anyhow!("tcp actor not local"))?,
+            );
+
+            let alloc = CudaAllocator::get().allocate(device, buffer_size);
+            let local_memory: Arc<dyn RdmaLocalMemory> = Arc::new(KeepaliveLocalMemory::new(
+                alloc.ptr(),
+                buffer_size,
+                Arc::new(alloc),
+            ));
+            let rdma_remote_buf = rdma_handle
+                .request_buffer(&instance, local_memory.clone())
+                .await?;
+
+            Ok(Self {
+                proc,
+                rdma_handle,
+                instance,
+                tcp_backend,
+                rdma_remote_buf,
+                local_memory,
+            })
+        }
+    }
+
+    /// TCP write from GPU on cuda:0 to GPU on cuda:1.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_tcp_write_multi_gpu() -> anyhow::Result<()> {
+        if cuda_device_count() < 2 {
+            println!("Skipping: need at least 2 CUDA devices");
+            return Ok(());
+        }
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
+
+        let buf_size = 2 * 1024 * 1024;
+        let mut envs = vec![
+            TcpTestProcEnv::new_gpu(0, buf_size).await?,
+            TcpTestProcEnv::new_gpu(1, buf_size).await?,
+        ];
+        do_write_test(&mut envs, buf_size, Duration::from_secs(30)).await
+    }
+
+    /// TCP read from GPU on cuda:1 into GPU on cuda:0.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_tcp_read_multi_gpu() -> anyhow::Result<()> {
+        if cuda_device_count() < 2 {
+            println!("Skipping: need at least 2 CUDA devices");
+            return Ok(());
+        }
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
+
+        let buf_size = 2 * 1024 * 1024;
+        let mut envs = vec![
+            TcpTestProcEnv::new_gpu(0, buf_size).await?,
+            TcpTestProcEnv::new_gpu(1, buf_size).await?,
+        ];
+        do_read_test(&mut envs, buf_size, Duration::from_secs(30)).await
+    }
+
+    /// TCP write-then-read round-trip between cuda:0 and cuda:1.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_tcp_round_trip_multi_gpu() -> anyhow::Result<()> {
+        if cuda_device_count() < 2 {
+            println!("Skipping: need at least 2 CUDA devices");
+            return Ok(());
+        }
+
+        let config = hyperactor_config::global::lock();
+        let _guard = config.override_key(crate::config::RDMA_ALLOW_TCP_FALLBACK, true);
+
+        let buf_size = 2 * 1024 * 1024;
+        let mut envs = vec![
+            TcpTestProcEnv::new_gpu(0, buf_size).await?,
+            TcpTestProcEnv::new_gpu(1, buf_size).await?,
+        ];
+        do_round_trip_test(&mut envs, buf_size, Duration::from_secs(30)).await
     }
 }
