@@ -77,14 +77,11 @@ jobs:
 
       - name: Install macOS test dependencies
         shell: bash
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
           set -eux
-          brew install protobuf
-          python -m pip install --upgrade pip
-          python -m pip install -r python/tests/requirements.txt
-          python -m pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+          source scripts/common-setup-macos.sh
+          install_macos_base_dependencies
+          install_macos_python_test_dependencies
 
       - name: Fetch disabled tests
         shell: bash
