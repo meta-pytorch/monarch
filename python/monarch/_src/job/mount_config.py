@@ -11,7 +11,6 @@ import os
 import pickle
 import socket
 import sys
-import time
 import traceback
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
@@ -254,15 +253,14 @@ def _run_mount_process(socket_path: str) -> None:
                     return
                 mounts, job = msg
                 try:
-                    t0 = time.time()
                     if handle is None:
                         _dbg("initialising mounts")
                         handle = mounts.open(job)
-                        _dbg(f"mounts opened in {time.time() - t0:.2f}s")
+                        _dbg("mounts opened")
                     else:
                         _dbg("refreshing mounts")
                         handle.refresh()
-                        _dbg(f"refresh complete in {time.time() - t0:.2f}s")
+                        _dbg("refresh complete")
                 except Exception:
                     _dbg("ERROR during mount operation:\n" + traceback.format_exc())
                 # @lint-ignore PYTHONPICKLEISBAD
