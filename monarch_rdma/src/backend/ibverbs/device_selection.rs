@@ -99,6 +99,26 @@ pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
     })
 }
 
+/// Known RDMA device name prefixes used by various NIC vendors.
+const KNOWN_RDMA_PREFIXES: &[&str] = &[
+    "mlx",      // Mellanox / NVIDIA ConnectX
+    "efa",      // AWS Elastic Fabric Adapter
+    "rxe",      // Soft-RoCE (software emulation)
+    "siw",      // Soft-iWARP (software emulation)
+    "bnxt_re",  // Broadcom NetXtreme
+    "hfi1",     // Intel Omni-Path
+    "qedr",     // Marvell/QLogic FastLinQ
+    "erdma",    // Alibaba Cloud RDMA
+    "hns",      // HiSilicon (Huawei) RoCE
+    "vmw_pvrdma", // VMware Paravirtual RDMA
+];
+
+fn is_known_rdma_device(name: &str) -> bool {
+    KNOWN_RDMA_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
 /// Resolves RDMA device using auto-detection logic when needed.
 ///
 /// Applies auto-detection for default devices, but otherwise
@@ -106,7 +126,7 @@ pub fn get_cuda_device_to_ibv_device() -> &'static Vec<Option<IbvDevice>> {
 pub fn resolve_ibv_device(device: &IbvDevice) -> Option<IbvDevice> {
     let device_name = device.name();
 
-    if device_name.starts_with("mlx") {
+    if is_known_rdma_device(device_name) {
         return Some(device.clone());
     }
 

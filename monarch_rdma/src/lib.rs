@@ -22,6 +22,7 @@ pub mod backend;
 pub mod config;
 pub mod device_selection;
 pub mod efa;
+pub mod broadcom;
 pub mod local_memory;
 mod rdma_components;
 mod rdma_manager_actor;

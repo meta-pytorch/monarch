@@ -47,7 +47,6 @@ use super::primitives::IbvDevice;
 use super::primitives::IbvMemoryRegionView;
 use super::primitives::IbvQpInfo;
 use super::primitives::ibverbs_supported;
-use super::primitives::mlx5dv_supported;
 use super::primitives::resolve_qp_type;
 use super::queue_pair::IbvQueuePair;
 use super::queue_pair::PollCompletionError;
@@ -343,9 +342,10 @@ impl IbvManagerActor {
         // Print device info if MONARCH_DEBUG_RDMA=1 is set (before initial QP creation)
         crate::print_device_info_if_debug_enabled(domain.context);
 
-        // Create loopback QP for this domain if mlx5dv is supported (needed for segment registration)
-        // For EFA, we don't need a loopback QP for segment scanning
-        let qp = if mlx5dv_supported() && !crate::efa::is_efa_device() {
+        // Create loopback QP for this domain if mlx5dv is enabled (needed for segment registration).
+        // Respects RDMA_DISABLE_MLX5DV via self.mlx5dv_enabled (derived from resolve_qp_type).
+        // For EFA, we don't need a loopback QP for segment scanning.
+        let qp = if self.mlx5dv_enabled && !crate::efa::is_efa_device() {
             let mut qp = IbvQueuePair::new(domain.context, domain.pd, self.config.clone())
                 .map_err(|e| {
                     anyhow::anyhow!(
@@ -491,6 +491,8 @@ impl IbvManagerActor {
 
             let access = if crate::efa::is_efa_device() {
                 crate::efa::mr_access_flags()
+            } else if crate::broadcom::is_broadcom_device() {
+                crate::broadcom::mr_access_flags()
             } else {
                 rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_LOCAL_WRITE
                     | rdmaxcel_sys::ibv_access_flags::IBV_ACCESS_REMOTE_WRITE

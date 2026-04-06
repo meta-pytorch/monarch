@@ -104,14 +104,21 @@ pub enum IbvQpType {
 }
 
 /// Converts `IbvQpType` to the corresponding integer enum value in rdmaxcel_sys.
+///
+/// In `Auto` mode the function respects
+/// [`RDMA_DISABLE_MLX5DV`](crate::config::RDMA_DISABLE_MLX5DV): when
+/// that flag is set, MLX5 Direct Verbs are skipped even if the hardware
+/// supports them, and `RDMA_QP_TYPE_STANDARD` is used instead.
 pub fn resolve_qp_type(qp_type: IbvQpType) -> u32 {
     match qp_type {
         IbvQpType::Auto => {
             if crate::efa::is_efa_device() {
                 rdmaxcel_sys::RDMA_QP_TYPE_EFA
-            } else if mlx5dv_supported() {
+            } else if !hyperactor_config::global::get(crate::config::RDMA_DISABLE_MLX5DV)
+                && mlx5dv_supported()
+            {
                 rdmaxcel_sys::RDMA_QP_TYPE_MLX5DV
-            } else {
+            } else { /// broadcom falls into here as it uses standard ibverbs
                 rdmaxcel_sys::RDMA_QP_TYPE_STANDARD
             }
         }
@@ -201,6 +208,8 @@ impl Default for IbvConfig {
         };
         if crate::efa::is_efa_device() {
             crate::efa::apply_efa_defaults(&mut config);
+        } else if crate::broadcom::is_broadcom_device() {
+            crate::broadcom::apply_broadcom_defaults(&mut config);
         }
         config
     }
