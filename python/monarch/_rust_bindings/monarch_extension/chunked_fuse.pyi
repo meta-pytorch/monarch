@@ -14,9 +14,7 @@ class FuseMountHandle:
     def refresh(
         self,
         metadata: dict[str, Any],
-        chunk_buf: Any,
-        dirty_ranges: list[tuple[int, int]],
-        new_total_size: int,
+        chunks: Sequence[Any],
         chunk_size: int,
     ) -> None: ...
 
