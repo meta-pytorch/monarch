@@ -15,12 +15,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Generator, Mapping, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Union
 
-from monarch.job import JobState, JobTrait
 from monarch.tools.colors import CYAN, ENDC
 from monarch.tools.components.hyperactor import DEFAULT_NAME
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
@@ -335,9 +333,9 @@ async def get_or_create(
         created server.
 
     """
-    assert (
-        not config.dryrun
-    ), "dryrun is not supported for get_or_create(), for dryrun use the create() API instead"
+    assert not config.dryrun, (
+        "dryrun is not supported for get_or_create(), for dryrun use the create() API instead"
+    )
 
     server_handle = f"{config.scheduler}:///{name}"
     server_info = await server_ready(server_handle, check_interval)
@@ -568,11 +566,11 @@ def apply_job(module_path: Optional[str] = None) -> None:
 
     job = load_current_job()
     t0 = time.time()
-    with scoped_state(job) as state:
-        mesh = next(iter(state._hosts.values()))
-        procs = mesh.spawn_procs()
-        procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
-        print(f"Job is ready ({time.time() - t0:.0f}s)")
+    state = job.state()
+    mesh = next(iter(state._hosts.values()))
+    procs = mesh.spawn_procs()
+    procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
+    print(f"Job is ready ({time.time() - t0:.0f}s)")
 
 
 def _parse_env(env: Optional[list[str]]) -> dict[str, str]:
@@ -633,36 +631,6 @@ def _output_dir_for_job(job: "Any") -> tuple[str, str]:
     return output_dir, f"Output → {output_dir}/ on each worker"
 
 
-@contextmanager
-def scoped_state(
-    job: JobTrait, cached_path: Optional[str] = ".monarch/job_state.pkl"
-) -> Generator[JobState, None, None]:
-    """Context manager that yields the job state and kills the job on exit.
-
-    On a clean exit, gracefully shuts down all host meshes. If shutdown
-    fails or an exception occurred, kills the job. Failures to kill are
-    silently ignored, as the job may already be in a broken state.
-
-    Calling job.kill() after a successful shutdown causes the global monarch
-    error handler to fire (due to pending message acks), so we only kill on
-    failure paths.
-
-    Example::
-
-        with scoped_state(ProcessJob({"hosts": 1}), cached_path=None) as state:
-            host = state.hosts
-            proc = host.spawn_procs(...)
-    """
-    state = job.state(cached_path=cached_path)
-    success = False
-    try:
-        yield state
-        success = True
-    finally:
-        for host_mesh in state._hosts.values():
-            host_mesh.stop().get(timeout=30.0)
-
-
 def exec_on_job(
     cmd: list[str],
     run_all: bool = False,
@@ -694,75 +662,75 @@ def exec_on_job(
 
     env_dict = _parse_env(env)
 
-    with scoped_state(job) as state:
-        if not state._hosts:
-            raise RuntimeError("Job has no host meshes")
+    state = job.state()
+    if not state._hosts:
+        raise RuntimeError("Job has no host meshes")
 
-        # ── Targeting ──────────────────────────────────────────────────────────
-        is_streaming = not run_all and mesh_name is None
-        # (--point and --one are always single-rank → stream)
+    # ── Targeting ──────────────────────────────────────────────────────────
+    is_streaming = not run_all and mesh_name is None
+    # (--point and --one are always single-rank → stream)
 
-        if run_all:
-            target_meshes = list(state._hosts.items())
-            rank = None
-            point = None
-        elif mesh_name is not None:
-            if mesh_name not in state._hosts:
-                raise ValueError(
-                    f"Mesh {mesh_name!r} not found. Available: {list(state._hosts)}"
-                )
-            target_meshes = [(mesh_name, state._hosts[mesh_name])]
-            rank = None
-            point = None
-        elif point_str is not None:
-            point = _parse_point(point_str)
-            first = next(iter(state._hosts))
-            target_meshes = [(first, state._hosts[first])]
-            rank = None
-        else:  # --one (default)
-            first = next(iter(state._hosts))
-            target_meshes = [(first, state._hosts[first])]
-            rank = 0
-            point = None
-
-        # ── Output dir (redirect) or stream ────────────────────────────────────
-        output_dir: Optional[str]
-        if is_streaming:
-            output_dir = None
-        else:
-            output_dir, report = _output_dir_for_job(job)
-            print(report)
-
-        # ── Execute ────────────────────────────────────────────────────────────
-        max_rc = 0
-        last_mesh = None
-        for name, host_mesh in target_meshes:
-            last_mesh = host_mesh
-            # If a python_exe was set for this mesh's remote mount, prepend its
-            # directory to PATH so commands like "python" resolve to the right one.
-            mesh_env = dict(env_dict)
-            exe = job._python_executables.get(name, job._default_python_exe)
-            if exe is not None:
-                bin_dir = os.path.dirname(exe)
-                existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
-                mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
-            rc = exec_command(  # pyre-ignore[16]
-                host_mesh,
-                cmd,
-                env=mesh_env,
-                workdir=workdir,
-                output_dir=output_dir,
-                rank=rank,
-                point=point,
-                per_host=per_host,
+    if run_all:
+        target_meshes = list(state._hosts.items())
+        rank = None
+        point = None
+    elif mesh_name is not None:
+        if mesh_name not in state._hosts:
+            raise ValueError(
+                f"Mesh {mesh_name!r} not found. Available: {list(state._hosts)}"
             )
-            max_rc = max(max_rc, rc)
+        target_meshes = [(mesh_name, state._hosts[mesh_name])]
+        rank = None
+        point = None
+    elif point_str is not None:
+        point = _parse_point(point_str)
+        first = next(iter(state._hosts))
+        target_meshes = [(first, state._hosts[first])]
+        rank = None
+    else:  # --one (default)
+        first = next(iter(state._hosts))
+        target_meshes = [(first, state._hosts[first])]
+        rank = 0
+        point = None
 
-        if kill and last_mesh is not None:
-            from monarch.actor import shutdown_context  # pyre-ignore[21]
+    # ── Output dir (redirect) or stream ────────────────────────────────────
+    output_dir: Optional[str]
+    if is_streaming:
+        output_dir = None
+    else:
+        output_dir, report = _output_dir_for_job(job)
+        print(report)
 
-            last_mesh.shutdown().get()
-            job.kill()
-            shutdown_context().get()  # pyre-ignore[16]
+    # ── Execute ────────────────────────────────────────────────────────────
+    max_rc = 0
+    last_mesh = None
+    for name, host_mesh in target_meshes:
+        last_mesh = host_mesh
+        # If a python_exe was set for this mesh's remote mount, prepend its
+        # directory to PATH so commands like "python" resolve to the right one.
+        mesh_env = dict(env_dict)
+        exe = job._python_executables.get(name, job._default_python_exe)
+        if exe is not None:
+            bin_dir = os.path.dirname(exe)
+            existing_path = mesh_env.get("PATH", os.environ.get("PATH", ""))
+            mesh_env["PATH"] = f"{bin_dir}:{existing_path}"
+        rc = exec_command(  # pyre-ignore[16]
+            host_mesh,
+            cmd,
+            env=mesh_env,
+            workdir=workdir,
+            output_dir=output_dir,
+            rank=rank,
+            point=point,
+            per_host=per_host,
+        )
+        max_rc = max(max_rc, rc)
 
-        return max_rc
+    if kill and last_mesh is not None:
+        from monarch.actor import shutdown_context  # pyre-ignore[21]
+
+        last_mesh.shutdown().get()
+        job.kill()
+        shutdown_context().get()  # pyre-ignore[16]
+
+    return max_rc
