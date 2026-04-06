@@ -893,14 +893,13 @@ def exec_command(
     Returns:
         A Future resolving to the maximum return code across all ranks (0 = success).
     """
-    if rank is not None:
-        host_mesh = host_mesh.flatten("hosts")
-        point = {"hosts": 0}
-    elif point is None:
-        point = {}
-    procs = host_mesh.slice(**point).spawn_procs(per_host=per_host)
 
     async def _impl() -> int:
+        procs = host_mesh.spawn_procs(per_host=per_host)
+        if point is not None:
+            procs = procs.slice(**point)
+        elif rank is not None:
+            procs = procs.flatten("rank").slice(rank=rank)
         try:
             bash_actors = procs.spawn("BashActor", BashActor)
 

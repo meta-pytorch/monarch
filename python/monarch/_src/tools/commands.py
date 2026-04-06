@@ -15,13 +15,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Generator, Mapping, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Union
 
-from monarch.actor import shutdown_context  # pyre-ignore[21]
-from monarch.job import JobState, JobTrait
 from monarch.tools.colors import CYAN, ENDC
 from monarch.tools.components.hyperactor import DEFAULT_NAME
 from monarch.tools.config import (  # @manual=//monarch/python/monarch/tools/config/meta:defaults
