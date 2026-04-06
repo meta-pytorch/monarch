@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
-import time
 from typing import Any
 
 from monarch._rust_bindings.monarch_extension.fast_pack import (
@@ -140,7 +138,6 @@ def pack_directory_chunked(
 
     source_path = os.path.abspath(source_path)
 
-    t_walk_start = time.time()
     for root, dirs, files in os.walk(source_path):
         rel_path = root[len(source_path) :]
         if rel_path == "":
@@ -215,13 +212,6 @@ def pack_directory_chunked(
 
                 file_entries.append((virtual_path, full_path, file_len, mtime_ns))
 
-    t_walk_done = time.time()
-    print(
-        f"Directory walk: {len(file_entries)} files in {t_walk_done - t_walk_start:.2f}s",
-        file=sys.stderr,
-        flush=True,
-    )
-
     # --- Offset assignment phase ---
     offset_map: dict[str, int] = {}
     total_size: int = 0
@@ -233,11 +223,9 @@ def pack_directory_chunked(
         if total_size == 0:
             pass  # No files to pack.
         elif dead_space / total_size > FRAG_THRESHOLD:
-            print(
+            logger.info(
                 f"Fragmentation {dead_space / total_size:.1%} exceeds threshold "
-                f"{FRAG_THRESHOLD:.0%}, repacking sequentially",
-                file=sys.stderr,
-                flush=True,
+                f"{FRAG_THRESHOLD:.0%}, repacking sequentially"
             )
         else:
             n_reused = sum(
@@ -246,7 +234,7 @@ def pack_directory_chunked(
                 if previous_index["files"].get(vpath, {}).get("size") == flen
                 and previous_index["files"].get(vpath, {}).get("mtime_ns") == mns
             )
-            print(
+            logger.info(
                 f"Append-only layout: {n_reused}/{len(file_entries)} files reused, "
                 f"dead_space={dead_space // 1024}KiB "
                 f"({dead_space / total_size:.1%} of {total_size // (1024**2)}MiB)"
@@ -268,25 +256,12 @@ def pack_directory_chunked(
         fs_metadata[vpath]["global_offset"] = offset_map[vpath]
         file_list.append((full_path, offset_map[vpath], file_len))
 
-    print(
-        f"Packing {total_size // (1024**2)}MiB, {len(file_list)} files",
-        file=sys.stderr,
-        flush=True,
-    )
+    logger.info(f"Packing {total_size // (1024**2)}MiB, {len(file_list)} files")
 
     if total_size == 0:
         return fs_metadata, None, [], [], None
 
-    t_pack_start = time.time()
     buf, hashes = pack_files_with_offsets(file_list, total_size)
-    t_pack_done = time.time()
-    pack_gbs = (total_size / 1e9) / max(t_pack_done - t_pack_start, 1e-9)
-    print(
-        f"pack_files_with_offsets: {total_size // (1024**2)}MiB in "
-        f"{t_pack_done - t_pack_start:.2f}s ({pack_gbs:.1f} GB/s)",
-        file=sys.stderr,
-        flush=True,
-    )
     staging_mv = memoryview(buf)
     chunks = [
         staging_mv[i : i + chunk_size] for i in range(0, len(staging_mv), chunk_size)

@@ -104,10 +104,6 @@ rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
 
 CUresult rdmaxcel_cuDevicePrimaryCtxRetain(CUcontext* pctx, CUdevice dev);
 
-CUresult rdmaxcel_cuDevicePrimaryCtxRelease(CUdevice dev);
-
-CUresult rdmaxcel_cuCtxGetCurrent(CUcontext* pctx);
-
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx);
 
 CUresult rdmaxcel_cuCtxSynchronize(void);

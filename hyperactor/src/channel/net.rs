@@ -782,7 +782,7 @@ pub(crate) mod unix {
     use std::os::unix::net::UnixStream as StdUnixStream;
 
     use rand::Rng;
-    use rand::distr::Alphanumeric;
+    use rand::distributions::Alphanumeric;
     use tokio::net::UnixListener;
     use tokio::net::UnixStream;
 
@@ -941,7 +941,7 @@ pub(crate) mod unix {
                 "" => {
                     // TODO: ensure this socket doesn't already exist. 24 bytes of randomness should be good for now but is not perfect.
                     // We can't use annon sockets because those are not valid across processes that aren't in the same process hierarchy aka forked.
-                    let random_string = rand::rng()
+                    let random_string = rand::thread_rng()
                         .sample_iter(&Alphanumeric)
                         .take(24)
                         .map(char::from)
@@ -1908,7 +1908,7 @@ mod tests {
     use bytes::Bytes;
     use rand::Rng;
     use rand::SeedableRng;
-    use rand::distr::Alphanumeric;
+    use rand::distributions::Alphanumeric;
     use timed_test::async_timed_test;
     use tokio::io::AsyncWrite;
     use tokio::io::DuplexStream;
@@ -2200,7 +2200,7 @@ mod tests {
 
             let disconnected_at = prev_disconnected_at.read().unwrap();
             if disconnected_at.elapsed() > *duration && disconnected_count < *max_disconnects {
-                rng.random_bool(*prob)
+                rng.gen_bool(*prob)
             } else {
                 false
             }
@@ -2355,13 +2355,13 @@ mod tests {
                 ) {
                     if let Some((min, max)) = network_flakiness.latency_range {
                         let diff = max.abs_diff(min);
-                        let factor = rng.random_range(0.0..=1.0);
+                        let factor = rng.gen_range(0.0..=1.0);
                         let latency = min + diff.mul_f64(factor);
                         tokio::time::sleep_until(queue.front().unwrap().1 + latency).await;
                     }
                 }
 
-                let mut rng = rand::rngs::SmallRng::from_os_rng();
+                let mut rng = rand::rngs::SmallRng::from_entropy();
                 let mut queue: VecDeque<(Bytes, Instant)> = VecDeque::new();
                 let mut send_count = 0u64;
 
@@ -3381,7 +3381,7 @@ mod tests {
             let tx2 = Arc::clone(&tx);
             txs.push(tx);
             tx_handles.push(tokio::spawn(async move {
-                let random_string = rand::rng()
+                let random_string = rand::thread_rng()
                     .sample_iter(&Alphanumeric)
                     .take(2048)
                     .map(char::from)

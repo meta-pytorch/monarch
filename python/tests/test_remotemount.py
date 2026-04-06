@@ -1033,13 +1033,7 @@ class TestFuseRefresh:
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == content
             # Refresh with identical data.
-            handle.refresh(
-                metadata,
-                memoryview(content),
-                [(0, len(content))],
-                len(content),
-                len(content),
-            )
+            handle.refresh(metadata, [memoryview(content)], len(content))
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == content
 
@@ -1069,7 +1063,7 @@ class TestFuseRefresh:
                     "file_len": len(v2),
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
             with open(os.path.join(mnt, "f.txt"), "rb") as f:
                 assert f.read() == v2
 
@@ -1103,7 +1097,7 @@ class TestFuseRefresh:
                     "file_len": 3,
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
             assert sorted(os.listdir(mnt)) == ["a.txt", "b.txt"]
             with open(os.path.join(mnt, "b.txt"), "rb") as f:
                 assert f.read() == b"bbb"
@@ -1138,7 +1132,7 @@ class TestFuseRefresh:
                     "file_len": 3,
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, 3)], 3, 3)
+            handle.refresh(meta2, [memoryview(v2)], 3)
             assert os.listdir(mnt) == ["a.txt"]
             with pytest.raises(FileNotFoundError):
                 open(os.path.join(mnt, "b.txt"), "rb")
@@ -1168,7 +1162,7 @@ class TestFuseRefresh:
                     "file_len": len(v2),
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == v2
             assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v2)
@@ -1198,7 +1192,7 @@ class TestFuseRefresh:
                     "file_len": len(v2),
                 },
             }
-            handle.refresh(meta2, memoryview(v2), [(0, len(v2))], len(v2), len(v2))
+            handle.refresh(meta2, [memoryview(v2)], len(v2))
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == v2
             assert os.stat(os.path.join(mnt, "f.bin")).st_size == len(v2)
@@ -1222,13 +1216,7 @@ class TestFuseRefresh:
             first_half = fh.read(4096)
             assert first_half == b"A" * 4096
             # Refresh with same content.
-            handle.refresh(
-                metadata,
-                memoryview(content),
-                [(0, len(content))],
-                len(content),
-                len(content),
-            )
+            handle.refresh(metadata, [memoryview(content)], len(content))
             second_half = fh.read(4096)
             assert second_half == b"B" * 4096
             fh.close()
@@ -1267,9 +1255,7 @@ class TestFuseRefresh:
                     "file_len": len(file_data),
                 },
             }
-            handle.refresh(
-                meta2, memoryview(buf2), [(0, len(buf2))], len(buf2), len(buf2)
-            )
+            handle.refresh(meta2, [memoryview(buf2)], len(buf2))
             with open(os.path.join(mnt, "f.bin"), "rb") as f:
                 assert f.read() == file_data
 
@@ -1295,9 +1281,7 @@ class TestFuseRefresh:
                 new_content = f"v{i:02d}".encode()
                 handle.refresh(
                     meta_fn("f.txt", len(new_content)),
-                    memoryview(new_content),
-                    [(0, len(new_content))],
-                    len(new_content),
+                    [memoryview(new_content)],
                     len(new_content),
                 )
                 with open(os.path.join(mnt, "f.txt"), "rb") as f:
@@ -1335,13 +1319,7 @@ class TestFuseRefresh:
             new_data[25 * file_size : 26 * file_size] = new_content
             new_data = bytes(new_data)
 
-            handle.refresh(
-                metadata,
-                memoryview(new_data),
-                [(0, len(new_data))],
-                len(new_data),
-                len(new_data),
-            )
+            handle.refresh(metadata, [memoryview(new_data)], len(new_data))
 
             # All files should read correctly.
             for i in range(num_files):
@@ -1373,14 +1351,7 @@ class TestFuseRefresh:
                     f.write(b"updated content!")
                 meta2, staging_mv2, chunks2, _h2, _pi2 = pack_directory_chunked(src)
                 chunk_size2 = len(bytes(chunks2[0])) if chunks2 else 1
-                buf2 = staging_mv2 if staging_mv2 is not None else memoryview(b"")
-                handle.refresh(
-                    meta2,
-                    buf2,
-                    [(0, len(buf2))],
-                    len(buf2),
-                    chunk_size2,
-                )
+                handle.refresh(meta2, chunks2, chunk_size2)
 
                 with open(os.path.join(mnt, "data.txt"), "rb") as f:
                     assert f.read() == b"updated content!"

@@ -302,13 +302,6 @@ pub(crate) fn pyspy_workload_binary() -> PathBuf {
         .to_path_buf()
 }
 
-/// Resolve the Rust sieve binary via Buck resources.
-pub(crate) fn sieve_rust_binary() -> PathBuf {
-    buck_resources::get("monarch/hyperactor_mesh/sieve_rs")
-        .expect("sieve_rust resource not found")
-        .to_path_buf()
-}
-
 // Workload launch
 
 /// Start a workload binary and wait for the mesh admin server to

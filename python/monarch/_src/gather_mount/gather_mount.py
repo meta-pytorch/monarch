@@ -58,7 +58,6 @@ from monarch._rust_bindings.monarch_extension.readonly_fuse import (  # pyre-ign
     mount_read_only_filesystem,
 )
 from monarch.actor import Actor, context, endpoint, HostMesh, this_proc
-from monarch.remotemount.remotemount import prepare_mount_point
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -557,7 +556,7 @@ class GatherMount:
         )
         client_actor = this_proc().spawn("GatherClientActor", GatherClientActor, actors)
 
-        prepare_mount_point(local_mount_point)
+        os.makedirs(local_mount_point, exist_ok=True)
 
         # Call init_watch on all source actors and wait for completion before
         # mounting — ensures inotify is ready before the first FUSE operation.
