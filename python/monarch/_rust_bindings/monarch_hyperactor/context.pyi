@@ -6,7 +6,14 @@
 
 # pyre-strict
 
+from typing import Optional
+
+from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
+
 # This class is stubbed out in monarch._src.actor.actor_mesh, but
 # it's useful to have this here for type-checking in other rust
 # bindings.
-class Instance: ...
+class Instance:
+    def stop_and_wait(
+        self, reason: Optional[str] = None
+    ) -> PythonTask[None]: ...
