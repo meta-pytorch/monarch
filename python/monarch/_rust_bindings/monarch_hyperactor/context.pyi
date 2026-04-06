@@ -14,6 +14,4 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask
 # it's useful to have this here for type-checking in other rust
 # bindings.
 class Instance:
-    def stop_and_wait(
-        self, reason: Optional[str] = None
-    ) -> PythonTask[None]: ...
+    def stop_and_wait(self, reason: Optional[str] = None) -> PythonTask[None]: ...
