@@ -51,7 +51,7 @@ pub const skip_record: bool = true;
 
 mod config;
 pub mod in_memory_reader;
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 mod meta;
 mod otel;
 pub(crate) mod otlp;
@@ -139,7 +139,7 @@ impl TelemetrySample {
     }
 }
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
     fn from(sample: crate::meta::sample_buffer::Sample) -> Self {
         let mut fields = Vec::new();
@@ -152,7 +152,7 @@ impl From<crate::meta::sample_buffer::Sample> for TelemetrySample {
     }
 }
 
-#[cfg(not(fbcode_build))]
+#[cfg(not(all(fbcode_build, target_os = "linux")))]
 impl TelemetrySample {
     pub fn new() -> Self {
         Self { fields: Vec::new() }
@@ -163,12 +163,12 @@ pub trait TelemetryTestHandle {
     fn get_tracing_samples(&self) -> Vec<TelemetrySample>;
 }
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 struct MockScubaHandle {
     tracing_client: crate::meta::scuba_utils::MockScubaClient,
 }
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 impl TelemetryTestHandle for MockScubaHandle {
     fn get_tracing_samples(&self) -> Vec<TelemetrySample> {
         self.tracing_client
@@ -1045,7 +1045,7 @@ fn initialize_logging_with_log_prefix_impl(
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     {
         let mut mock_scuba_client: Option<crate::meta::scuba_utils::MockScubaClient> = None;
 
@@ -1243,7 +1243,7 @@ fn initialize_logging_with_log_prefix_impl(
             Box::new(EmptyTestHandle)
         }
     }
-    #[cfg(not(fbcode_build))]
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     {
         let registry =
             Registry::default().with(if hyperactor_config::global::get(ENABLE_RECORDER_TRACING) {
@@ -1443,13 +1443,13 @@ pub mod env {
     }
 
     /// Returns a URL for the execution trace, if available.
-    #[cfg(fbcode_build)]
+    #[cfg(all(fbcode_build, target_os = "linux"))]
     pub async fn execution_url() -> anyhow::Result<Option<String>> {
         Ok(Some(
             crate::meta::scuba_tracing::url::get_samples_shorturl(&execution_id()).await?,
         ))
     }
-    #[cfg(not(fbcode_build))]
+    #[cfg(not(all(fbcode_build, target_os = "linux")))]
     pub async fn execution_url() -> anyhow::Result<Option<String>> {
         Ok(None)
     }

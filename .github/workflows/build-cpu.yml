@@ -2,33 +2,40 @@ name: Build CPU
 
 on:
   workflow_call:
+    inputs:
+      artifact-name:
+        description: 'Wheel artifact name to upload'
+        type: string
+        default: 'monarch-cpu-py3.10'
+      python-version:
+        description: 'Python version to build with'
+        type: string
+        default: '3.10'
+      runner:
+        description: 'Runner to use for the build'
+        type: string
+        default: 'linux.4xlarge'
 
 concurrency:
   group: build-cpu-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-cpu:
+  build-cpu-linux:
+    if: ${{ startsWith(inputs.runner, 'linux') }}
     name: Build CPU - No Tensor Engine
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ['3.10']
-        include:
-          - name: 4xlarge
-            runs-on: linux.4xlarge
     with:
       timeout: 60
-      runner: ${{ matrix.runs-on }}
+      runner: ${{ inputs.runner }}
       submodules: recursive
-      upload-artifact: monarch-cpu-${{ github.sha }}-py${{ matrix.python-version }}
+      upload-artifact: ${{ inputs.artifact-name }}
       script: |
         # Source common setup functions
         source scripts/common-setup.sh
 
         # Setup build environment (conda + system deps + rust + build deps)
-        setup_build_environment ${{ matrix.python-version }}
+        setup_build_environment ${{ inputs.python-version }}
 
         # Install torch nightly (CPU version)
         pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
@@ -40,3 +47,48 @@ jobs:
         echo "=== sccache stats ==="
         sccache --show-stats
         echo "=== end sccache stats ==="
+
+  build-cpu-macos:
+    if: ${{ startsWith(inputs.runner, 'macos') }}
+    name: Build CPU - No Tensor Engine (macOS)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install macOS build dependencies
+        shell: bash
+        run: |
+          set -eux
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install protobuf
+
+      - name: Build CPU wheel
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+          USE_TENSOR_ENGINE: "0"
+        run: |
+          set -eux
+          python -m pip install --upgrade pip
+          python -m pip install -r build-requirements.txt
+          python -m pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+          python setup.py bdist_wheel
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/*.whl
+          if-no-files-found: error

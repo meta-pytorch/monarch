@@ -678,7 +678,7 @@ impl ChannelAddr {
                                         .and_then(|addresses| find_routable_address(&addresses))
                                 })
                             })
-                            .expect("failed to resolve hostname to ip address")
+                            .unwrap_or(IpAddr::V6(Ipv6Addr::LOCALHOST))
                     }
                 };
                 Self::Tcp(SocketAddr::new(ip, 0))
