@@ -8,7 +8,7 @@ on:
         type: string
         default: '3.10'
       runner:
-        description: 'Runner to use for the test'
+        description: 'Linux runner to use for the test'
         type: string
         default: 'linux.4xlarge'
       docker-image:
@@ -21,8 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-cpu-rust-linux:
-    if: ${{ startsWith(inputs.runner, 'linux') }}
+  test-cpu-rust:
     name: Test CPU Rust
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
@@ -71,58 +70,3 @@ jobs:
         echo "=== sccache stats ==="
         sccache --show-stats
         echo "=== end sccache stats ==="
-
-  test-cpu-rust-macos:
-    if: ${{ startsWith(inputs.runner, 'macos') }}
-    name: Test CPU Rust (macOS)
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 120
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ inputs.python-version }}
-
-      - name: Set up Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-
-      - name: Install macOS test dependencies
-        shell: bash
-        run: |
-          set -eux
-          source scripts/common-setup-macos.sh
-          install_macos_base_dependencies
-          install_macos_rust_test_dependencies
-
-      - name: Fetch disabled tests
-        shell: bash
-        run: |
-          set -eux
-          python3 scripts/fetch_disabled_tests.py
-
-      - name: Run macOS CPU Rust tests
-        shell: bash
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-          RUSTFLAGS: --cfg tracing_unstable
-          USE_TENSOR_ENGINE: "0"
-        run: |
-          set -eux
-          cargo nextest run --workspace --profile ci \
-            -E "$(cat .config/nextest-filter.txt)" \
-            --exclude monarch_messages \
-            --exclude monarch_tensor_worker \
-            --exclude torch-sys-cuda \
-            --exclude monarch_rdma \
-            --exclude torch-sys \
-            --exclude nccl-sys \
-            --exclude rdmaxcel-sys \
-            --exclude monarch_cpp_static_libs \
-            --exclude monarch_extension \
-            --exclude monarch_bench \
-            --exclude monarch_conda

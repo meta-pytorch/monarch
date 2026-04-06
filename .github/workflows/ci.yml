@@ -38,7 +38,7 @@ jobs:
 
   build-cpu-macos:
     name: Build CPU (macOS)
-    uses: ./.github/workflows/build-cpu.yml
+    uses: ./.github/workflows/build-cpu-macos.yml
     with:
       artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
       runner: macos-latest
@@ -46,7 +46,7 @@ jobs:
   test-cpu-python-macos:
     name: Test CPU Python (macOS)
     needs: build-cpu-macos
-    uses: ./.github/workflows/test-cpu-python.yml
+    uses: ./.github/workflows/test-cpu-python-macos.yml
     with:
       artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
       runner: macos-latest
@@ -64,7 +64,7 @@ jobs:
 
   test-cpu-rust-macos:
     name: Test CPU Rust (macOS)
-    uses: ./.github/workflows/test-cpu-rust.yml
+    uses: ./.github/workflows/test-cpu-rust-macos.yml
     with:
       runner: macos-latest
 
