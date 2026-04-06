@@ -1,0 +1,49 @@
+name: CI (macOS)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual triggering
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-cpu-macos:
+    name: Build CPU (macOS)
+    uses: ./.github/workflows/build-cpu-macos.yml
+    with:
+      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
+      runner: macos-latest
+
+  test-cpu-python-macos:
+    name: Test CPU Python (macOS)
+    needs: build-cpu-macos
+    uses: ./.github/workflows/test-cpu-python-macos.yml
+    with:
+      artifact-name: monarch-cpu-macos-${{ github.sha }}-py3.10
+      runner: macos-latest
+
+  test-cpu-rust-macos:
+    name: Test CPU Rust (macOS)
+    uses: ./.github/workflows/test-cpu-rust-macos.yml
+    with:
+      runner: macos-latest
+
+  status-check:
+    name: Status Check
+    runs-on: ubuntu-latest
+    needs: [test-cpu-python-macos, test-cpu-rust-macos]
+    if: always()
+    steps:
+      - name: Check all jobs status
+        run: |
+          if [[ "${{ needs.test-cpu-python-macos.result }}" != "success" ]] ||
+             [[ "${{ needs.test-cpu-rust-macos.result }}" != "success" ]]; then
+            echo "One or more jobs failed"
+            exit 1
+          else
+            echo "All jobs passed"
+          fi
