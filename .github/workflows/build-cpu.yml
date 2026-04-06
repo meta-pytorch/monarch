@@ -82,6 +82,7 @@ jobs:
         run: |
           set -eux
           python -m pip install --upgrade pip
+          python -m pip install --upgrade "setuptools>=77" wheel
           python -m pip install -r build-requirements.txt
           python -m pip install --pre torch --extra-index-url https://download.pytorch.org/whl/nightly/cpu
           python setup.py bdist_wheel

@@ -71,7 +71,6 @@ def _has_tensor_engine() -> bool:
     try:
         # Torch is needed for tensor engine
         import torch  # @manual  # noqa: F401
-
         from monarch import _rust_bindings
 
         return _rust_bindings.has_tensor_engine()

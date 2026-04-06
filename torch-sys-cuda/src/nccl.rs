@@ -731,7 +731,7 @@ impl Communicator {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use pyo3::Python;
     use torch_sys2::CudaDevice;

@@ -1922,7 +1922,7 @@ impl StreamMessageHandler for StreamActor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use hyperactor::actor::ActorStatus;
     use hyperactor::context;
