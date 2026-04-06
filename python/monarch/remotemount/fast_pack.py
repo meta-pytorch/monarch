@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
+import os
 import time
 from typing import Any
 
@@ -217,10 +217,8 @@ def pack_directory_chunked(
 
     t_walk_done = time.time()
     print(
-        f"Directory walk: {len(file_entries)} files in {t_walk_done - t_walk_start:.2f}s",
-        file=sys.stderr,
-        flush=True,
-    )
+        f"Directory walk: {len(file_entries)} files in {t_walk_done - t_walk_start:.2f}s"
+    , file=sys.stderr, flush=True)
 
     # --- Offset assignment phase ---
     offset_map: dict[str, int] = {}
@@ -235,10 +233,8 @@ def pack_directory_chunked(
         elif dead_space / total_size > FRAG_THRESHOLD:
             print(
                 f"Fragmentation {dead_space / total_size:.1%} exceeds threshold "
-                f"{FRAG_THRESHOLD:.0%}, repacking sequentially",
-                file=sys.stderr,
-                flush=True,
-            )
+                f"{FRAG_THRESHOLD:.0%}, repacking sequentially"
+            , file=sys.stderr, flush=True)
         else:
             n_reused = sum(
                 1
@@ -268,11 +264,7 @@ def pack_directory_chunked(
         fs_metadata[vpath]["global_offset"] = offset_map[vpath]
         file_list.append((full_path, offset_map[vpath], file_len))
 
-    print(
-        f"Packing {total_size // (1024**2)}MiB, {len(file_list)} files",
-        file=sys.stderr,
-        flush=True,
-    )
+    print(f"Packing {total_size // (1024**2)}MiB, {len(file_list)} files", file=sys.stderr, flush=True)
 
     if total_size == 0:
         return fs_metadata, None, [], [], None
@@ -283,10 +275,8 @@ def pack_directory_chunked(
     pack_gbs = (total_size / 1e9) / max(t_pack_done - t_pack_start, 1e-9)
     print(
         f"pack_files_with_offsets: {total_size // (1024**2)}MiB in "
-        f"{t_pack_done - t_pack_start:.2f}s ({pack_gbs:.1f} GB/s)",
-        file=sys.stderr,
-        flush=True,
-    )
+        f"{t_pack_done - t_pack_start:.2f}s ({pack_gbs:.1f} GB/s)"
+    , file=sys.stderr, flush=True)
     staging_mv = memoryview(buf)
     chunks = [
         staging_mv[i : i + chunk_size] for i in range(0, len(staging_mv), chunk_size)

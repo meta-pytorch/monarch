@@ -327,15 +327,9 @@ impl PathFilesystem for ChunkedFuseFs {
                 file_len,
                 ..
             } => {
-                let result = read_chunk_data(
-                    &state.chunks,
-                    state.chunk_size,
-                    *global_offset,
-                    *file_len,
-                    offset,
-                    size,
-                )
-                .map_err(Errno::from)?;
+                let result =
+                    read_chunk_data(&state.chunks, state.chunk_size, *global_offset, *file_len, offset, size)
+                        .map_err(Errno::from)?;
                 Ok(ReplyData { data: result })
             }
             _ => Err(libc::EINVAL.into()),
@@ -359,9 +353,7 @@ impl PathFilesystem for ChunkedFuseFs {
         offset: i64,
     ) -> FuseResult<ReplyDirectory<Self::DirEntryStream<'a>>> {
         let state = self.state.read().unwrap();
-        let entry = state
-            .lookup_entry(parent)
-            .ok_or_else(Errno::new_not_exist)?;
+        let entry = state.lookup_entry(parent).ok_or_else(Errno::new_not_exist)?;
         let children = match entry {
             FsEntry::Dir { children, .. } => children,
             _ => return Err(Errno::new_is_not_dir()),
@@ -417,9 +409,7 @@ impl PathFilesystem for ChunkedFuseFs {
         _lock_owner: u64,
     ) -> FuseResult<ReplyDirectoryPlus<Self::DirEntryPlusStream<'a>>> {
         let state = self.state.read().unwrap();
-        let entry = state
-            .lookup_entry(parent)
-            .ok_or_else(Errno::new_not_exist)?;
+        let entry = state.lookup_entry(parent).ok_or_else(Errno::new_not_exist)?;
         let children = match entry {
             FsEntry::Dir { children, .. } => children,
             _ => return Err(Errno::new_is_not_dir()),
