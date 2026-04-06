@@ -569,7 +569,7 @@ class FUSEActor(Actor):
             self._alloc_storage(total_size)
 
         offset = block_idx * HASH_BLOCK_SIZE
-        self._chunk_storage_mv[offset : offset + len(data)] = data
+        self._chunk_storage_mv[offset : offset + len(data)] = data  # noqa: E203
         # Accumulate for atomic application during refresh_mount.
         if self._pending_dirty_blocks is not None:
             self._pending_dirty_blocks.append(block_idx)

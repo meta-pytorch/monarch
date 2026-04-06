@@ -1426,9 +1426,10 @@ mod tests {
 
     fn addrs() -> Vec<ChannelAddr> {
         use rand::Rng;
-        use rand::distributions::Uniform;
+        use rand::distr::Uniform;
 
-        let rng = rand::thread_rng();
+        let rng = rand::rng();
+        let uniform = Uniform::new_inclusive('a', 'z').unwrap();
         vec![
             "tcp:[::1]:0".parse().unwrap(),
             "local:0".parse().unwrap(),
@@ -1437,9 +1438,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             format!(
                 "unix:@{}",
-                rng.sample_iter(Uniform::new_inclusive('a', 'z'))
-                    .take(10)
-                    .collect::<String>()
+                rng.sample_iter(uniform).take(10).collect::<String>()
             )
             .parse()
             .unwrap(),
