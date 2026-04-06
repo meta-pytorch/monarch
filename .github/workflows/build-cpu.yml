@@ -17,7 +17,7 @@ on:
         default: 'linux.4xlarge'
 
 concurrency:
-  group: build-cpu-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
+  group: build-cpu-${{ inputs.runner }}-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
