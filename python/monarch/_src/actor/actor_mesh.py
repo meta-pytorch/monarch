@@ -67,9 +67,6 @@ from monarch._rust_bindings.monarch_hyperactor.pickle import (
 )
 from monarch._rust_bindings.monarch_hyperactor.proc import ActorId
 from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
-from monarch._rust_bindings.monarch_hyperactor.selection import (
-    Selection as HySelection,  # noqa: F401
-)
 from monarch._rust_bindings.monarch_hyperactor.shape import Point as HyPoint, Shape
 from monarch._rust_bindings.monarch_hyperactor.supervision import (
     MeshFailure,
@@ -466,7 +463,6 @@ def shutdown_context() -> "Future[None]":
                       finished. Call with .get() to wait for
                       completion.
     """
-    global _shutdown_done
     from monarch._src.actor.future import Future
 
     if _shutdown_done:
