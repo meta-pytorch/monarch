@@ -1373,11 +1373,12 @@ class TestFuseRefresh:
                     f.write(b"updated content!")
                 meta2, staging_mv2, chunks2, _h2, _pi2 = pack_directory_chunked(src)
                 chunk_size2 = len(bytes(chunks2[0])) if chunks2 else 1
+                buf2 = staging_mv2 if staging_mv2 is not None else memoryview(b"")
                 handle.refresh(
                     meta2,
-                    staging_mv2,
-                    [(0, len(staging_mv2))],
-                    len(staging_mv2),
+                    buf2,
+                    [(0, len(buf2))],
+                    len(buf2),
                     chunk_size2,
                 )
 
