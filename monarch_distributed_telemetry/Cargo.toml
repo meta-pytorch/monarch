@@ -10,7 +10,7 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.102"
 async-trait = "0.1.86"
-datafusion = "52.1"
+datafusion = "52.4.0"
 futures = { version = "0.3.31", features = ["async-await", "compat"] }
 hyperactor = { version = "0.0.0", path = "../hyperactor" }
 hyperactor_telemetry = { version = "0.0.0", path = "../hyperactor_telemetry" }
