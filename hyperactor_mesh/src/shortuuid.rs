@@ -12,6 +12,7 @@
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use rand::RngCore;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -59,7 +60,7 @@ pub struct ShortUuid(u64);
 impl ShortUuid {
     /// Generate a new UUID.
     pub fn generate() -> ShortUuid {
-        ShortUuid(rand::random())
+        ShortUuid(rand::rng().next_u64())
     }
 
     pub(crate) fn format(&self, f: &mut std::fmt::Formatter<'_>, raw: bool) -> std::fmt::Result {

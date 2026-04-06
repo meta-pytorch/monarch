@@ -41,16 +41,4 @@ declare_attrs! {
         Some("rdma_disable_ibverbs".to_string()),
     ))
     pub attr RDMA_DISABLE_IBVERBS: bool = false;
-
-    /// Number of parallel channels for TCP fallback transfers.
-    ///
-    /// When greater than 1, each [`TcpManagerActor`] serves this many
-    /// direct `hyperactor::channel` connections for bulk data transfer,
-    /// bypassing the single-socket actor mailbox. Default is 1
-    /// (sequential, existing behavior).
-    @meta(CONFIG = ConfigAttr::new(
-        Some("MONARCH_RDMA_TCP_FALLBACK_PARALLELISM".to_string()),
-        Some("rdma_tcp_fallback_parallelism".to_string()),
-    ))
-    pub attr RDMA_TCP_FALLBACK_PARALLELISM: usize = 1;
 }

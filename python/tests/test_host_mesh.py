@@ -219,6 +219,48 @@ def test_stop_and_reconnect() -> None:
     hm2.shutdown().get()
 
 
+@pytest.mark.timeout(120)
+@isolate_in_subprocess
+def test_stop_only_drains_own_mesh_procs() -> None:
+    """Stopping one mesh should not kill procs belonging to another mesh
+    on the same workers.
+
+    Simulates the real scenario where the main process and the mount
+    process each have their own HostMesh (with different names) connected
+    to the same remote workers.
+    """
+    job = ProcessJob({"hosts": 2})
+
+    # First mesh: simulate the main process.
+    state1 = job.state(cached_path=None)
+    hm1 = state1.hosts
+    pm1 = hm1.spawn_procs(per_host={"gpus": 1}, name="proc1")
+    am1 = pm1.spawn("actor", RankActor)
+    pids1 = list(am1.get_pid.call().get().values())
+    assert len(pids1) == 2
+
+    # Second mesh: simulate the mount process reconnecting. This creates
+    # a new HostMesh with a different name via a second state() call.
+    state2 = job.state(cached_path=None)
+    hm2 = state2.hosts
+    pm2 = hm2.spawn_procs(per_host={"gpus": 1}, name="proc2")
+    am2 = pm2.spawn("actor", RankActor)
+    pids2 = list(am2.get_pid.call().get().values())
+    assert len(pids2) == 2
+
+    # Stop the first mesh — should only drain its own procs.
+    hm1.stop().get()
+
+    # Procs from mesh1 should be stopped.
+    assert all(not is_process_running(pid) for pid in pids1)
+
+    # Procs from mesh2 should still be alive.
+    assert all(is_process_running(pid) for pid in pids2)
+
+    # Clean up mesh2.
+    hm2.shutdown().get()
+
+
 class PidActor(Actor):
     @endpoint
     def get_pid(self) -> int:

@@ -23,15 +23,15 @@ use hyperactor_mesh::context;
 use hyperactor_mesh::host_mesh::HostMesh;
 use ndslice::ViewExt;
 
+use super::test_utils::CudaAllocation;
+use super::test_utils::CudaAllocator;
+use super::test_utils::cuda_allocator_scanner;
 #[cfg(test_8_gpus)]
 use super::test_utils::find_devices_on_different_nics;
 use crate::IbvConfig;
 use crate::RdmaManagerActor;
 use crate::RdmaManagerMessageClient;
 use crate::RdmaRemoteBuffer;
-use crate::backend::cuda_test_utils::CudaAllocation;
-use crate::backend::cuda_test_utils::CudaAllocator;
-use crate::backend::cuda_test_utils::cuda_allocator_scanner;
 use crate::local_memory::RdmaLocalMemory;
 use crate::local_memory::UnsafeLocalMemory;
 use crate::register_segment_scanner;
@@ -115,14 +115,13 @@ impl SenderMessageHandler for SenderActor {
     ) -> Result<Vec<RdmaRemoteBuffer>, anyhow::Error> {
         let alloc = self
             .allocation
-            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("register called before allocate"))?;
 
         for (i, &(offset, size)) in buffers.iter().enumerate() {
             anyhow::ensure!(
-                offset + size <= alloc.size(),
+                offset + size <= alloc.size,
                 "buffer {i} exceeds allocation: offset=0x{offset:x} size={size} padded={}",
-                alloc.size()
+                alloc.size
             );
         }
 
@@ -145,7 +144,7 @@ impl SenderMessageHandler for SenderActor {
         let mut remotes = Vec::with_capacity(buffers.len());
         for &(offset, size) in &buffers {
             let local: Arc<dyn RdmaLocalMemory> =
-                Arc::new(UnsafeLocalMemory::new(alloc.ptr() + offset, size));
+                Arc::new(UnsafeLocalMemory::new(alloc.ptr + offset, size));
             remotes.push(handle.request_buffer(cx, local).await?);
         }
 
@@ -154,7 +153,7 @@ impl SenderMessageHandler for SenderActor {
 
     async fn free_allocation(&mut self, _cx: &Context<Self>) -> Result<(), anyhow::Error> {
         if let Some(alloc) = self.allocation.take() {
-            alloc.try_free();
+            alloc.free();
         }
         Ok(())
     }

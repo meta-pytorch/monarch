@@ -153,49 +153,12 @@
 //!   must correspond to the reference used to resolve it. The
 //!   display form of `identity` round-trips through `NodeRef::from_str`.
 //!
-//! - **NI-2 (parent = containment parent):** A node's
-//!   `parent: Option<NodeRef>` records its canonical containment
-//!   parent, not the inverse of every navigation edge. Specifically:
-//!   root → `None`, host → `Root`, proc → `Host(…)`,
-//!   actor → `Proc(…)`. An actor's parent is always its owning proc,
-//!   even when the actor also appears as a child of another actor via
-//!   supervision.
-//!
-//! - **NI-3 (children = navigation graph):** A node's `children`
-//!   is the admin navigation graph. Actor-to-actor supervision links
-//!   coexist with proc→actor membership links without changing
-//!   `parent`. The same actor may therefore appear in `children` of
-//!   both its proc and its supervising actor.
+//! - **NI-2 (parent coherence):** A node's `parent: Option<NodeRef>`
+//!   must equal the `identity` of the node it appears under. If node
+//!   `P` lists `R` in its `children`, then `R.parent == Some(P.identity)`.
 //!
 //! Together these ensure that the TUI can correlate responses to tree
 //! nodes, and that upward/downward navigation is consistent.
-//!
-//! ## Link-classification invariants (LC-*)
-//!
-//! These describe which nodes emit `system_children` and
-//! `stopped_children` classification sets, and what those sets
-//! contain.
-//!
-//! - **LC-1 (root system_children empty):** Root payloads always
-//!   emit `system_children: vec![]`. Root children are host nodes,
-//!   which are not classified as system.
-//!
-//! - **LC-2 (host system_children empty):** Host payloads always
-//!   emit `system_children: vec![]`. Host children are procs, which
-//!   are not classified as system — only actors carry the system
-//!   classification.
-//!
-//! - **LC-3 (proc system_children subset):** Proc payloads emit
-//!   `system_children ⊆ children`, containing only `NodeRef::Actor`
-//!   refs where `cell.is_system()` is true.
-//!
-//! - **LC-4 (proc stopped_children subset):** Proc payloads emit
-//!   `stopped_children ⊆ children`, containing only
-//!   `NodeRef::Actor` refs for terminated actors retained for
-//!   post-mortem inspection.
-//!
-//! - **LC-5 (actor/error no classification sets):** Actor and Error
-//!   payloads do not carry `system_children` or `stopped_children`.
 //!
 //! ## Proc-resolution invariants (SP-*)
 //!
@@ -1154,7 +1117,8 @@ impl MeshAdminAgent {
     ///
     /// The root is not a real actor/proc; it's a convenience node
     /// that anchors navigation. Its children are `NodeRef::Host`
-    /// entries for each configured `HostAgent`.
+    /// entries for each configured `HostAgent` plus any standalone
+    /// procs (root client proc, admin proc).
     fn build_root_payload(&self) -> NodePayload {
         use crate::introspect::NodeRef;
 
@@ -1163,7 +1127,7 @@ impl MeshAdminAgent {
             .values()
             .map(|agent| NodeRef::Host(agent.actor_id().clone()))
             .collect();
-        let system_children: Vec<NodeRef> = Vec::new(); // LC-1
+        let system_children: Vec<NodeRef> = Vec::new();
         let mut attrs = hyperactor_config::Attrs::new();
         attrs.set(crate::introspect::NODE_TYPE, "root".to_string());
         attrs.set(crate::introspect::NUM_HOSTS, self.hosts.len());
@@ -2828,16 +2792,10 @@ mod tests {
             NodeProperties::Root {
                 num_hosts,
                 started_by,
-                system_children,
                 ..
             } => {
                 assert_eq!(*num_hosts, 2);
                 assert!(!started_by.is_empty());
-                // LC-1: root system_children is always empty.
-                assert!(
-                    system_children.is_empty(),
-                    "LC-1: root system_children must be empty"
-                );
             }
             other => panic!("expected Root, got {:?}", other),
         }
@@ -2943,18 +2901,6 @@ mod tests {
             !host_node.children.is_empty(),
             "host should have at least one proc child"
         );
-        // LC-2: host system_children is always empty.
-        match &host_node.properties {
-            NodeProperties::Host {
-                system_children, ..
-            } => {
-                assert!(
-                    system_children.is_empty(),
-                    "LC-2: host system_children must be empty"
-                );
-            }
-            other => panic!("expected Host, got {:?}", other),
-        }
 
         // -- 6. Resolve a system proc child --
         let proc_ref = &host_node.children[0];

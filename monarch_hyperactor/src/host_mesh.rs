@@ -188,9 +188,19 @@ impl PyHostMesh {
     }
 
     fn with_bootstrap(&self, bootstrap_command: &PyBootstrapCommand) -> PyResult<Self> {
-        Ok(Self::new_ref(
-            self.mesh_ref()?.with_bootstrap(bootstrap_command.to_rust()),
-        ))
+        match self {
+            PyHostMesh::Owned(inner) => {
+                let cmd = bootstrap_command.to_rust();
+                inner
+                    .0
+                    .try_with_mut(|mesh| mesh.set_bootstrap(cmd))
+                    .map_err(|e| PyException::new_err(e.to_string()))?;
+                Ok(Self::Owned(inner.clone()))
+            }
+            PyHostMesh::Ref(_) => Ok(Self::new_ref(
+                self.mesh_ref()?.with_bootstrap(bootstrap_command.to_rust()),
+            )),
+        }
     }
 
     fn sliced(&self, region: &PyRegion) -> PyResult<Self> {
@@ -297,6 +307,11 @@ static ROOT_CLIENT_INSTANCE_FOR_HOST: OnceLock<Instance<PythonActor>> = OnceLock
 /// Static storage for the host mesh agent created by bootstrap_host().
 static HOST_MESH_AGENT_FOR_HOST: OnceLock<ActorHandle<HostAgent>> = OnceLock::new();
 
+/// Static storage for the host shutdown handle created by bootstrap_host().
+/// Used during shutdown_context to join the mailbox server and flush
+/// receive-side acks.
+static HOST_SHUTDOWN_HANDLE: OnceLock<tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>> = OnceLock::new();
+
 /// Bootstrap the client host and root client actor.
 ///
 /// This creates a proper Host with BootstrapProcManager, spawns the root client
@@ -318,7 +333,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
     };
 
     PyPythonTask::new(async move {
-        let (host_mesh_agent, _shutdown) = host(
+        let (host_mesh_agent, shutdown_handle) = host(
             default_bind_spec().binding_addr(),
             Some(bootstrap_cmd),
             None,
@@ -327,8 +342,10 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
         .await
         .map_err(|e| PyException::new_err(e.to_string()))?;
 
-        // Store the agent for later shutdown
-        HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok(); // Ignore error if already set
+        // Store the agent and shutdown handle for later shutdown
+        HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok();
+        HOST_SHUTDOWN_HANDLE
+            .get_or_init(|| tokio::sync::Mutex::new(Some(shutdown_handle)));
 
         let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
@@ -495,6 +512,14 @@ fn shutdown_local_host_mesh() -> PyResult<PyPythonTask> {
                 },
             )
             .map_err(|e| PyException::new_err(e.to_string()))?;
+
+        // Join the host's mailbox server to flush receive-side acks
+        // before the process exits.
+        if let Some(lock) = HOST_SHUTDOWN_HANDLE.get() {
+            if let Some(handle) = lock.lock().await.take() {
+                handle.join().await;
+            }
+        }
 
         Ok(())
     })

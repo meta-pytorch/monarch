@@ -38,8 +38,6 @@
 #define SYM_DEVICE_GET_ATTRIBUTE hipDeviceGetAttribute
 #define SYM_CTX_CREATE hipCtxCreate
 #define SYM_DEVICE_PRIMARY_CTX_RETAIN hipDevicePrimaryCtxRetain
-#define SYM_DEVICE_PRIMARY_CTX_RELEASE hipDevicePrimaryCtxRelease
-#define SYM_CTX_GET_CURRENT hipCtxGetCurrent
 #define SYM_CTX_SET_CURRENT hipCtxSetCurrent
 #define SYM_CTX_SYNCHRONIZE hipCtxSynchronize
 #define SYM_GET_ERROR_STRING hipDrvGetErrorString
@@ -70,8 +68,6 @@ cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
 #endif
 #define SYM_CTX_CREATE cuCtxCreate_v2
 #define SYM_DEVICE_PRIMARY_CTX_RETAIN cuDevicePrimaryCtxRetain
-#define SYM_DEVICE_PRIMARY_CTX_RELEASE cuDevicePrimaryCtxRelease
-#define SYM_CTX_GET_CURRENT cuCtxGetCurrent
 #define SYM_CTX_SET_CURRENT cuCtxSetCurrent
 #define SYM_CTX_SYNCHRONIZE cuCtxSynchronize
 #define SYM_GET_ERROR_STRING cuGetErrorString
@@ -101,8 +97,6 @@ cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev);
   _(deviceGetAttribute, SYM_DEVICE_GET_ATTRIBUTE)                      \
   _(ctxCreate, SYM_CTX_CREATE)                                         \
   _(devicePrimaryCtxRetain, SYM_DEVICE_PRIMARY_CTX_RETAIN)             \
-  _(devicePrimaryCtxRelease, SYM_DEVICE_PRIMARY_CTX_RELEASE)           \
-  _(ctxGetCurrent, SYM_CTX_GET_CURRENT)                                \
   _(ctxSetCurrent, SYM_CTX_SET_CURRENT)                                \
   _(ctxSynchronize, SYM_CTX_SYNCHRONIZE)                               \
   _(getErrorString, SYM_GET_ERROR_STRING)
@@ -301,14 +295,6 @@ rdmaxcel_cuCtxCreate_v2(CUcontext* pctx, unsigned int flags, CUdevice dev) {
 
 CUresult rdmaxcel_cuDevicePrimaryCtxRetain(CUcontext* pctx, CUdevice dev) {
   return rdmaxcel::DriverAPI::get()->devicePrimaryCtxRetain_(pctx, dev);
-}
-
-CUresult rdmaxcel_cuDevicePrimaryCtxRelease(CUdevice dev) {
-  return rdmaxcel::DriverAPI::get()->devicePrimaryCtxRelease_(dev);
-}
-
-CUresult rdmaxcel_cuCtxGetCurrent(CUcontext* pctx) {
-  return rdmaxcel::DriverAPI::get()->ctxGetCurrent_(pctx);
 }
 
 CUresult rdmaxcel_cuCtxSetCurrent(CUcontext ctx) {

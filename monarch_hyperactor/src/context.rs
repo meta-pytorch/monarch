@@ -97,6 +97,26 @@ impl PyInstance {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
+    /// Stop the actor and return a future that resolves when it reaches
+    /// a terminal status (stopped or failed). This ensures all pending
+    /// messages are drained and connections are flushed before returning.
+    #[pyo3(signature = (reason = None))]
+    fn stop_and_wait(&self, reason: Option<&str>) -> PyResult<crate::pytokio::PyPythonTask> {
+        let reason = reason.unwrap_or("shutdown").to_string();
+        let actor_id = self.inner.self_id().clone();
+        let proc = self.inner.proc().clone();
+        crate::pytokio::PyPythonTask::new(async move {
+            let status_rx = proc.stop_actor(&actor_id, reason);
+            if let Some(mut rx) = status_rx {
+                let _ = rx.wait_for(|s| s.is_terminal()).await;
+            }
+            if let Err(e) = proc.flush().await {
+                tracing::warn!(%actor_id, "stop_and_wait: flush failed: {}", e);
+            }
+            Ok(())
+        })
+    }
+
     /// Mark this actor as system/infrastructure.
     ///
     /// **PY-SYS-2:** Python actors use the `_is_system_actor = True`
