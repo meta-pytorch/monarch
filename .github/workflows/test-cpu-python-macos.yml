@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   test-cpu-python-macos:
-    name: Test CPU Python - No Tensor Engine (macOS)
+    name: Test CPU Python - Tensor Engine (macOS)
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     steps:
@@ -60,7 +60,6 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-          USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
           python -m pip install "${{ runner.temp }}/wheel-artifact"/*.whl
@@ -73,8 +72,6 @@ jobs:
 
       - name: Run macOS CPU Python tests
         shell: bash
-        env:
-          USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
           pytest -v -m "not oss_skip" --ignore-glob="**/meta/**" \
