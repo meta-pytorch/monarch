@@ -6,179 +6,67 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Rust-native TLS receiver for remotemount.
+//! Rust-native receiver for remotemount block transfers.
 //!
-//! Accepts parallel TLS connections and writes received blocks directly
-//! into a caller-provided anonymous mmap buffer — no intermediate file,
-//! no Python SSL overhead.
+//! Serves parallel hyperactor channels and writes received blocks directly
+//! into a caller-provided buffer.
 
-use std::io::BufReader;
-use std::io::Read;
-use std::net::TcpListener;
-use std::sync::Arc;
-use std::thread;
+use std::sync::Mutex;
 
+use hyperactor::channel;
+use hyperactor::channel::ChannelAddr;
+use hyperactor::channel::ChannelRx;
+use hyperactor::channel::Rx;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 
-const DEFAULT_CERT_PATH: &str = "/var/facebook/x509_identities/server.pem";
+use crate::tls_sender::BatchTransfer;
 
-/// Build a `rustls::ServerConfig` matching the Python `_make_server_ssl_context`.
-fn make_server_tls_config(cert_path: &str) -> Result<Arc<rustls::ServerConfig>, String> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let cert_pem = std::fs::read(cert_path).map_err(|e| format!("read {cert_path} failed: {e}"))?;
-
-    let certs = rustls_pemfile::certs(&mut BufReader::new(&cert_pem[..]))
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-
-    let key = {
-        let mut reader = BufReader::new(&cert_pem[..]);
-        loop {
-            match rustls_pemfile::read_one(&mut reader) {
-                Ok(Some(rustls_pemfile::Item::Pkcs1Key(k))) => {
-                    break rustls::pki_types::PrivateKeyDer::Pkcs1(k);
-                }
-                Ok(Some(rustls_pemfile::Item::Pkcs8Key(k))) => {
-                    break rustls::pki_types::PrivateKeyDer::Pkcs8(k);
-                }
-                Ok(Some(rustls_pemfile::Item::Sec1Key(k))) => {
-                    break rustls::pki_types::PrivateKeyDer::Sec1(k);
-                }
-                Ok(Some(_)) => continue,
-                Ok(None) => return Err(format!("no private key found in {cert_path}")),
-                Err(e) => return Err(format!("parse {cert_path} failed: {e}")),
-            }
-        }
-    };
-
-    let config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("server cert failed: {e}"))?;
-
-    Ok(Arc::new(config))
-}
-
-/// Return a hostname that the TLS certificate is valid for.
-///
-/// `hostname -f` can return a name that doesn't match the cert's SAN
-/// (e.g. `.fbinfra.net` vs `.facebook.com` on Sandcastle).  We use
-/// `openssl x509 -text` to dump the cert and extract the first DNS
-/// SAN entry.  Falls back to `hostname -f` if extraction fails.
-fn get_tls_hostname(cert_path: &str) -> Result<String, String> {
-    // `openssl x509 -text` is supported since OpenSSL 0.9.x (unlike
-    // `-ext subjectAltName` which requires 1.1.1+).  The SAN section
-    // looks like:
-    //     X509v3 Subject Alternative Name:
-    //         DNS:host.facebook.com, IP Address:..., ...
-    if let Ok(output) = std::process::Command::new("openssl")
-        .args(["x509", "-in", cert_path, "-noout", "-text"])
-        .output()
-    {
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let mut in_san = false;
-            for line in text.lines() {
-                let trimmed = line.trim();
-                if trimmed.contains("Subject Alternative Name") {
-                    in_san = true;
-                    continue;
-                }
-                if in_san {
-                    // This line has the SAN values, comma-separated.
-                    for part in trimmed.split(',') {
-                        let part = part.trim();
-                        if let Some(dns) = part.strip_prefix("DNS:") {
-                            return Ok(dns.trim().to_string());
-                        }
-                    }
-                    break; // Only check the line immediately after the header.
-                }
-            }
-        }
-    }
-
-    // Fallback: hostname -f.
-    let output = std::process::Command::new("hostname")
-        .arg("-f")
-        .output()
-        .map_err(|e| format!("hostname -f failed: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "hostname -f returned {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Return the FQDN of this host (for TCP connect address).
-fn get_fqdn() -> Result<String, String> {
-    let output = std::process::Command::new("hostname")
-        .arg("-f")
-        .output()
-        .map_err(|e| format!("hostname -f failed: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "hostname -f returned {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Rust TLS receiver that writes directly into a caller-provided buffer.
+/// Rust receiver that writes incoming blocks directly into a caller-provided buffer.
 #[pyclass(module = "monarch._rust_bindings.monarch_extension.tls_receiver")]
 struct TlsReceiver {
-    /// "host:port" for the Rust sender to connect to.
-    #[pyo3(get)]
-    addr: String,
-    /// Hostname from the cert's SAN for TLS verification (may differ
-    /// from the connect hostname when DNS names diverge, e.g.
-    /// `.fbinfra.net` vs `.facebook.com`).
-    #[pyo3(get)]
-    tls_hostname: String,
-    listener: Option<TcpListener>,
-    tls_config: Arc<rustls::ServerConfig>,
-    num_streams: usize,
+    /// Channel addresses for senders to dial (one per stream).
+    data_addrs: Vec<ChannelAddr>,
+    /// Receivers consumed by wait(). Mutex<Option<...>> for one-shot semantics.
+    receivers: Mutex<Option<Vec<ChannelRx<BatchTransfer>>>>,
 }
 
 #[pymethods]
 impl TlsReceiver {
     #[new]
-    #[pyo3(signature = (num_streams=1, cert_path=None, port=0))]
-    fn new(num_streams: usize, cert_path: Option<&str>, port: u16) -> PyResult<Self> {
-        let cert = cert_path.unwrap_or(DEFAULT_CERT_PATH);
-        let tls_config = make_server_tls_config(cert).map_err(PyRuntimeError::new_err)?;
+    #[pyo3(signature = (num_streams=1))]
+    fn new(py: Python<'_>, num_streams: usize) -> PyResult<Self> {
+        let transport = hyperactor_mesh::transport::default_transport();
 
-        let listener = TcpListener::bind(format!("[::]:{port}"))
-            .map_err(|e| PyRuntimeError::new_err(format!("bind: {e}")))?;
-        let port = listener
-            .local_addr()
-            .map_err(|e| PyRuntimeError::new_err(format!("addr: {e}")))?
-            .port();
+        // channel::serve needs a Tokio runtime context for spawning server tasks.
+        monarch_hyperactor::runtime::signal_safe_block_on(py, async move {
+            let mut data_addrs = Vec::with_capacity(num_streams);
+            let mut receivers = Vec::with_capacity(num_streams);
 
-        let tls_hostname = get_tls_hostname(cert).map_err(PyRuntimeError::new_err)?;
-        let connect_hostname = get_fqdn().map_err(PyRuntimeError::new_err)?;
+            for _ in 0..num_streams {
+                let (bound_addr, rx) =
+                    channel::serve::<BatchTransfer>(ChannelAddr::any(transport.clone()))
+                        .map_err(|e| PyRuntimeError::new_err(format!("serve data channel: {e}")))?;
+                data_addrs.push(bound_addr);
+                receivers.push(rx);
+            }
 
-        Ok(TlsReceiver {
-            addr: format!("{connect_hostname}:{port}"),
-            tls_hostname,
-            listener: Some(listener),
-            tls_config,
-            num_streams,
-        })
+            Ok(TlsReceiver {
+                data_addrs,
+                receivers: Mutex::new(Some(receivers)),
+            })
+        })?
     }
 
-    /// Accept connections and receive blocks into `buffer`.
-    ///
-    /// Blocks until all `num_streams` connections have completed.
-    /// The buffer must be a writable object supporting the buffer protocol
-    /// (e.g. a memoryview over an anonymous mmap).
-    fn wait(&mut self, py: Python<'_>, buffer: &Bound<'_, PyAny>) -> PyResult<()> {
+    /// Return the data channel addresses as strings for senders to dial.
+    #[getter]
+    fn data_addrs(&self) -> Vec<String> {
+        self.data_addrs.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// Receive blocks into `buffer`, blocking until all streams finish.
+    fn wait(&self, py: Python<'_>, buffer: &Bound<'_, PyAny>) -> PyResult<()> {
         // Extract raw pointer and length from the Python buffer protocol.
         // SAFETY: Py_buffer is a POD struct; zeroing is valid initialization.
         let mut buf_view: ffi::Py_buffer = unsafe { std::mem::zeroed() };
@@ -200,125 +88,71 @@ impl TlsReceiver {
         // SAFETY: buf_view was successfully initialized by PyObject_GetBuffer.
         unsafe { ffi::PyBuffer_Release(&mut buf_view) };
 
-        let listener = self
-            .listener
+        let receivers = self
+            .receivers
+            .lock()
+            .unwrap()
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("wait() already called"))?;
-        let config = Arc::clone(&self.tls_config);
-        let num_streams = self.num_streams;
 
-        py.detach(move || {
-            thread::scope(|s| {
-                let mut handles = Vec::with_capacity(num_streams);
-                let listener_ref = &listener;
+        monarch_hyperactor::runtime::signal_safe_block_on(py, async move {
+            let mut handles = Vec::with_capacity(receivers.len());
 
-                for _ in 0..num_streams {
-                    let cfg = Arc::clone(&config);
-
-                    handles.push(s.spawn(move || -> Result<usize, String> {
-                        let (tcp, _) = listener_ref.accept().map_err(|e| format!("accept: {e}"))?;
-                        tcp.set_nodelay(true).ok();
-
-                        // 4 MB receive buffer for high-bandwidth transfers.
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::io::AsRawFd;
-                            let bufsize: libc::c_int = 4 * 1024 * 1024;
-                            // SAFETY: setsockopt with SOL_SOCKET/SO_RCVBUF is safe;
-                            // bufsize is a valid c_int on the stack.
-                            unsafe {
-                                libc::setsockopt(
-                                    tcp.as_raw_fd(),
-                                    libc::SOL_SOCKET,
-                                    libc::SO_RCVBUF,
-                                    &bufsize as *const _ as *const libc::c_void,
-                                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                                );
-                            }
+            for mut rx in receivers {
+                handles.push(tokio::spawn(async move {
+                    // Receive batches until empty sentinel or channel close.
+                    while let Ok(batch) = rx.recv().await {
+                        if batch.blocks.is_empty() {
+                            break;
                         }
-
-                        let conn = rustls::ServerConnection::new(cfg)
-                            .map_err(|e| format!("TLS accept: {e}"))?;
-                        let mut tls = rustls::StreamOwned::new(conn, tcp);
-
-                        // Read header: cache_path_len(u32) + cache_path + total_size(u64).
-                        // We read and discard cache_path (not needed for anonymous mmap).
-                        let mut hdr = [0u8; 4];
-                        tls.read_exact(&mut hdr)
-                            .map_err(|e| format!("read path_len: {e}"))?;
-                        let path_len = u32::from_be_bytes(hdr) as usize;
-                        let mut path_buf = vec![0u8; path_len];
-                        tls.read_exact(&mut path_buf)
-                            .map_err(|e| format!("read path: {e}"))?;
-                        let mut size_buf = [0u8; 8];
-                        tls.read_exact(&mut size_buf)
-                            .map_err(|e| format!("read size: {e}"))?;
-                        let total_size = u64::from_be_bytes(size_buf) as usize;
-                        if total_size != buf_len {
-                            return Err(format!(
-                                "protocol error: sender total_size={total_size} != \
-                                 receiver buf_len={buf_len}"
-                            ));
-                        }
-
-                        // Read blocks: offset(u64) + size(u64) + data.
-                        let mut blocks = 0usize;
-                        loop {
-                            let mut block_hdr = [0u8; 16];
-                            match tls.read_exact(&mut block_hdr) {
-                                Ok(()) => {}
-                                // EOF before any header byte means the sender is done
-                                // (can happen if sender closes after sentinel).
-                                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                                    break;
-                                }
-                                Err(e) => {
-                                    return Err(format!("read block header: {e}"));
-                                }
+                        let data = batch.data.to_bytes();
+                        let mut pos = 0usize;
+                        for &(offset, size) in &batch.blocks {
+                            let offset = offset as usize;
+                            let size = size as usize;
+                            if pos + size > data.len() {
+                                return Err(anyhow::anyhow!(
+                                    "batch data too short: need {pos}+{size} but \
+                                     have {} bytes",
+                                    data.len()
+                                ));
                             }
-                            let offset =
-                                u64::from_be_bytes(block_hdr[..8].try_into().unwrap()) as usize;
-                            let size =
-                                u64::from_be_bytes(block_hdr[8..].try_into().unwrap()) as usize;
-                            if size == 0 {
-                                break; // sentinel
-                            }
-
                             let end = offset.checked_add(size).ok_or_else(|| {
-                                format!("block offset {offset} + size {size} overflows usize")
+                                anyhow::anyhow!(
+                                    "block offset {offset} + size {size} overflows usize"
+                                )
                             })?;
                             if end > buf_len {
-                                return Err(format!(
+                                return Err(anyhow::anyhow!(
                                     "block at offset {offset} size {size} \
                                      exceeds buffer length {buf_len}"
                                 ));
                             }
-
-                            // SAFETY: offset + size <= buf_len, buffer is valid.
-                            let dst = unsafe {
-                                std::slice::from_raw_parts_mut((buf_ptr + offset) as *mut u8, size)
-                            };
-                            tls.read_exact(dst)
-                                .map_err(|e| format!("read block data: {e}"))?;
-                            blocks += 1;
+                            // SAFETY: pos + size <= data.len() and
+                            // offset + size <= buf_len, both checked above.
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    data.as_ptr().add(pos),
+                                    (buf_ptr + offset) as *mut u8,
+                                    size,
+                                );
+                            }
+                            pos += size;
                         }
-                        Ok(blocks)
-                    }));
-                }
-
-                let mut errors = Vec::new();
-                for h in handles {
-                    if let Err(e) = h.join().expect("receiver thread panicked") {
-                        errors.push(e);
                     }
-                }
-                if errors.is_empty() {
                     Ok(())
-                } else {
-                    Err(PyRuntimeError::new_err(errors.join("; ")))
-                }
-            })
-        })
+                }));
+            }
+
+            for handle in handles {
+                handle
+                    .await
+                    .map_err(|e| anyhow::anyhow!("recv task panicked: {e}"))??;
+            }
+
+            Ok::<(), anyhow::Error>(())
+        })?
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 

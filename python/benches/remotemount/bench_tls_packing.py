@@ -49,13 +49,6 @@ class TestActor(Actor):
             return f"ERROR: {e}"
 
 
-CERT_PATH = "/var/facebook/x509_identities/server.pem"
-
-
-def _has_tls_certs():
-    return os.path.exists(CERT_PATH)
-
-
 def _format_throughput(nbytes, seconds):
     if seconds <= 0:
         return "inf"
@@ -222,7 +215,7 @@ def main(
     print("=" * 78)
     print(f"Remotemount benchmark — {total / (1024 * 1024):.0f} MB payload")
     print("=" * 78)
-    print(f"Backend: {backend}, TLS certs: {_has_tls_certs()}\n")
+    print(f"Backend: {backend}\n")
 
     # Set up host mesh.
     job = None
@@ -260,39 +253,34 @@ def main(
     procs = host_mesh.spawn_procs(per_host={"gpus": gpus_per_host})
     test_actors = procs.spawn("TestActor", TestActor)
 
-    # ---- Section 1: actor vs rust_tls comparison ----
-    modes = ["actor"]
-    if _has_tls_certs() or backend == "mast":
-        modes.append("rust_tls")
+    # ---- Section 1: rust_tls stream count sweep (cold each time) ----
+    print("--- rust_tls stream count sweep (cold transfer) ---")
+    print(f"{'Streams':>8}  {'Cold':>8}  {'Throughput':>12}")
+    print("-" * 34)
 
-    print("--- Transfer mode comparison (cold transfer) ---")
-    print(f"{'Mode':>12}  {'Streams':>8}  {'Cold':>8}  {'Throughput':>12}")
-    print("-" * 48)
-
-    for mode in modes:
-        streams = 8 if mode == "rust_tls" else 1
+    data_bin = os.path.join(test_dir, "data.bin")
+    data_size = os.path.getsize(data_bin)
+    for streams in [1, 4, 8, 16, 32, 64]:
+        # Fully rewrite data.bin so all blocks are dirty on workers.
+        with open(data_bin, "wb") as f:
+            remaining = data_size
+            while remaining > 0:
+                chunk = min(remaining, 64 * 1024 * 1024)
+                f.write(os.urandom(chunk))
+                remaining -= chunk
         t = bench_cold_transfer(
-            host_mesh, test_dir, backend, mode, num_parallel_streams=streams
+            host_mesh,
+            test_dir,
+            backend,
+            "rust_tls",
+            num_parallel_streams=streams,
         )
-        print(
-            f"{mode:>12}  {streams:>8}  {t:>7.2f}s  {_format_throughput(total, t):>12}"
-        )
+        print(f"{streams:>8}  {t:>7.2f}s  {_format_throughput(total, t):>12}")
 
-    # ---- Section 2: rust_tls stream count sweep ----
-    if "rust_tls" in modes:
-        print("\n--- rust_tls stream count sweep (cold transfer) ---")
-        print(f"{'Streams':>8}  {'Cold':>8}  {'Throughput':>12}")
-        print("-" * 34)
-
-        for streams in [1, 2, 4, 8, 16]:
-            t = bench_cold_transfer(
-                host_mesh,
-                test_dir,
-                backend,
-                "rust_tls",
-                num_parallel_streams=streams,
-            )
-            print(f"{streams:>8}  {t:>7.2f}s  {_format_throughput(total, t):>12}")
+    # ---- Section 2: actor baseline ----
+    print("\n--- Actor baseline (cold transfer) ---")
+    t = bench_cold_transfer(host_mesh, test_dir, backend, "actor")
+    print(f"{'actor':>12}  {'1':>8}  {t:>7.2f}s  {_format_throughput(total, t):>12}")
 
     # ---- Section 3: full incremental cycle for each mode ----
     print("\n--- Incremental cycle (cold / skip / re-transfer) ---")
@@ -301,7 +289,7 @@ def main(
     )
     print("-" * 60)
 
-    for mode in modes:
+    for mode in ["rust_tls", "actor"]:
         streams = 8 if mode == "rust_tls" else 1
         timings = bench_incremental_cycle(
             host_mesh,

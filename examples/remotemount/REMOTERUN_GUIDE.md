@@ -131,7 +131,7 @@ Unchanged workers skip transfer entirely (metadata + remount only).
 
 ### Benchmark setup
 
-- 2 GB200 hosts, 8 parallel TLS streams, TCP fallback (no ibverbs from client)
+- 2 GB200 hosts, 8 parallel hyperactor channels (MetaTLS transport)
 - Each payload contains 1000 small `.py` files (~330 KB total) plus a
   `data.bin` file sized to reach the target payload
 - Warm-up step pre-spawns actors so cold start measures transfer time only
