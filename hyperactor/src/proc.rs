@@ -3410,6 +3410,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[async_timed_test(timeout_secs = 30)]
     async fn test_local_supervision_propagation() {
         hyperactor_telemetry::initialize_logging_for_test();
