@@ -8,5 +8,5 @@ edition = "2024"
 license = "BSD-3-Clause"
 
 [dependencies]
-datafusion = "52.4.0"
+datafusion = "52.1"
 monarch_record_batch_macros = { version = "0.0.0", path = "../monarch_record_batch_macros" }

@@ -892,10 +892,14 @@ def exec_command(
     Returns:
         Maximum return code across all ranks (0 = success).
     """
+    if rank is not None:
+        host_mesh = host_mesh.flatten("hosts")
+        point = {"hosts": 0}
+    elif point is None:
+        point = {}
+    procs = host_mesh.slice(**point).spawn_procs(per_host=per_host)
+
     try:
-        if point is None:
-            point = {}
-        procs = host_mesh.slice(**point).spawn_procs(per_host=per_host)
         bash_actors = procs.spawn("BashActor", BashActor)
 
         client_cwd = os.getcwd()
@@ -935,7 +939,7 @@ def exec_command(
                     print(stderr, end="", file=sys.stderr)
         return max_rc
     finally:
-        procs.stop().get()
+        procs.stop().get(timeout=30.0)
 
 
 class LocalJob(JobTrait):
