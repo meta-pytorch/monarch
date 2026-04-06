@@ -378,7 +378,7 @@ fn render_actor_detail(
 
     let created_str = created_at
         .as_ref()
-        .map(|t| format_system_time_iso(t))
+        .map(format_system_time_iso)
         .unwrap_or_else(|| "-".to_string());
 
     let mut lines = vec![
