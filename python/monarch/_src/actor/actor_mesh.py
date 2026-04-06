@@ -470,6 +470,7 @@ def shutdown_context() -> "Future[None]":
     from monarch._src.actor.future import Future
 
     if _shutdown_done:
+
         async def _noop() -> None:
             pass
 

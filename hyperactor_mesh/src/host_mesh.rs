@@ -756,14 +756,10 @@ impl HostMesh {
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
 
         let mesh_name = self.name.clone();
-        let results = futures::future::join_all(
-            self.current_ref
-                .values()
-                .map(|host| {
-                    let mesh_name = Some(mesh_name.clone());
-                    async move { host.drain(cx, mesh_name).await }
-                }),
-        )
+        let results = futures::future::join_all(self.current_ref.values().map(|host| {
+            let mesh_name = Some(mesh_name.clone());
+            async move { host.drain(cx, mesh_name).await }
+        }))
         .await;
         let total_ms = t0.elapsed().as_millis();
         let mut failed_hosts = vec![];

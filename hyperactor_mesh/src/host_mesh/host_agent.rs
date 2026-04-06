@@ -625,9 +625,16 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
             return Ok(());
         }
 
-        let host = self
-            .host_mut()
-            .ok_or_else(|| anyhow::anyhow!("HostAgent has already shut down"))?;
+        let host = match self.host_mut() {
+            Some(h) => h,
+            None => {
+                tracing::warn!(
+                    name = %create_or_update.name,
+                    "ignoring CreateOrUpdate: HostAgent has already shut down"
+                );
+                return Ok(());
+            }
+        };
         let created = match host {
             HostAgentMode::Process { host, .. } => {
                 host.spawn(
@@ -721,9 +728,17 @@ impl Handler<resource::Stop> for HostAgent {
             reason = %message.reason,
             "stopping proc"
         );
-        let host = self
-            .host()
-            .ok_or(anyhow::anyhow!("HostAgent has already shut down"))?;
+        let host = match self.host() {
+            Some(h) => h,
+            None => {
+                // Host already shut down; all procs are terminated.
+                tracing::debug!(
+                    proc_name = %message.name,
+                    "ignoring Stop: HostAgent has already shut down"
+                );
+                return Ok(());
+            }
+        };
         let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
 
         if let Some(ProcCreationState {
@@ -1685,34 +1700,41 @@ mod tests {
         // Both should be Running.
         assert_matches!(
             host_agent.get_state(&client, proc_a.clone()).await.unwrap(),
-            resource::State { status: resource::Status::Running, .. }
+            resource::State {
+                status: resource::Status::Running,
+                ..
+            }
         );
         assert_matches!(
             host_agent.get_state(&client, proc_b.clone()).await.unwrap(),
-            resource::State { status: resource::Status::Running, .. }
+            resource::State {
+                status: resource::Status::Running,
+                ..
+            }
         );
 
         // Drain only mesh_a.
         host_agent
-            .drain_host(
-                &client,
-                Duration::from_secs(5),
-                16,
-                Some(mesh_a.clone()),
-            )
+            .drain_host(&client, Duration::from_secs(5), 16, Some(mesh_a.clone()))
             .await
             .unwrap();
 
         // proc_a should be gone (removed from created).
         assert_matches!(
             host_agent.get_state(&client, proc_a.clone()).await.unwrap(),
-            resource::State { status: resource::Status::NotExist, .. }
+            resource::State {
+                status: resource::Status::NotExist,
+                ..
+            }
         );
 
         // proc_b should still be Running.
         assert_matches!(
             host_agent.get_state(&client, proc_b.clone()).await.unwrap(),
-            resource::State { status: resource::Status::Running, .. }
+            resource::State {
+                status: resource::Status::Running,
+                ..
+            }
         );
     }
 
@@ -1770,11 +1792,17 @@ mod tests {
         // Both should be gone.
         assert_matches!(
             host_agent.get_state(&client, proc_a).await.unwrap(),
-            resource::State { status: resource::Status::NotExist, .. }
+            resource::State {
+                status: resource::Status::NotExist,
+                ..
+            }
         );
         assert_matches!(
             host_agent.get_state(&client, proc_b).await.unwrap(),
-            resource::State { status: resource::Status::NotExist, .. }
+            resource::State {
+                status: resource::Status::NotExist,
+                ..
+            }
         );
     }
 }
