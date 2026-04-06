@@ -45,7 +45,7 @@ pub mod testing;
 mod testresource;
 pub mod value_mesh;
 
-#[cfg(fbcode_build)]
+#[cfg(all(fbcode_build, target_os = "linux"))]
 pub mod meta;
 
 // Register types from dependent crates that don't have wirevalue as a dependency
