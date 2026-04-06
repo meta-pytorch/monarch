@@ -1,6 +1,10 @@
 name: CI (macOS)
 
 on:
+  pull_request:
+    branches:
+      - main
+      - gh/**
   push:
     branches:
       - main
