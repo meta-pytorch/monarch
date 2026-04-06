@@ -418,6 +418,8 @@ def _init_client_context() -> Context:
     Create a client context that bootstraps an actor instance running on a real
     local proc mesh on a real local host mesh.
     """
+    import atexit
+
     from monarch._rust_bindings.monarch_hyperactor.host_mesh import bootstrap_host
     from monarch._src.actor.host_mesh import _bootstrap_cmd, HostMesh
     from monarch._src.actor.proc_mesh import ProcMesh
@@ -436,42 +438,69 @@ def _init_client_context() -> Context:
         _reset_context(token)
 
     ctx.actor_instance.proc_mesh = py_proc_mesh
+
+    # Register shutdown_context as an atexit handler. Python atexit handlers
+    # run in LIFO order. shutdown_tokio_runtime was registered earlier (during
+    # module init), so this handler runs first — ensuring the actor system is
+    # cleanly shut down (connections flushed, acks delivered) before the tokio
+    # runtime is torn down.
+    atexit.register(lambda: shutdown_context().get(timeout=5.0))
+
     return ctx
 
 
 _client_context: _Lazy[Context] = _Lazy(_init_client_context)
 
 
+_shutdown_done = False
+
+
 def shutdown_context() -> "Future[None]":
     """Shutdown global actor context resources.
 
-    This should be called at the end of scripts that use the actor
-    system to ensure clean shutdown of background processes.
+    Idempotent: subsequent calls return an immediately-resolved future.
+    This is safe to call both explicitly and from atexit.
 
     Returns:
         Future[None]: A future that completes when shutdown is
                       finished. Call with .get() to wait for
                       completion.
     """
+    global _shutdown_done
     from monarch._src.actor.future import Future
+
+    if _shutdown_done:
+        async def _noop() -> None:
+            pass
+
+        return Future(coro=_noop())
 
     c: Context | None = _context.get()
 
     async def _shutdown_sequence() -> None:
+        global _shutdown_done
+        if _shutdown_done:
+            return
+        _shutdown_done = True
+
         try:
             from monarch._rust_bindings.monarch_hyperactor.host_mesh import (
                 shutdown_local_host_mesh,
             )
 
-            # Shutdown the host mesh first, while the client actor is still alive
-            # to route messages.
+            # Shutdown the host mesh first, while the client actor is still
+            # alive to route messages. This drains children and joins the
+            # mailbox server, flushing receive-side acks.
             await shutdown_local_host_mesh()
         except RuntimeError:
             # No local host mesh to shutdown
             pass
-        # Stop the client actor after the host mesh shutdown completes.
+        # Stop the client actor and wait for it to reach terminal status.
+        # This ensures pending messages are drained and send-side acks
+        # are flushed before the tokio runtime is torn down.
         if c is not None:
-            c.actor_instance.stop()
+            instance = c.actor_instance._as_rust()
+            await instance.stop_and_wait("shutdown")
             _context.set(None)
 
     return Future(coro=_shutdown_sequence())
