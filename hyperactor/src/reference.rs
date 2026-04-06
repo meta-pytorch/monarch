@@ -1166,7 +1166,6 @@ impl<M: RemoteMessage> Bind for OncePortRef<M> {
 #[cfg(test)]
 mod tests {
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
@@ -1236,7 +1235,7 @@ mod tests {
         .collect();
 
         let mut sorted = expected.to_vec();
-        sorted.shuffle(&mut thread_rng());
+        sorted.shuffle(&mut rand::rng());
         sorted.sort();
 
         assert_eq!(sorted, expected);
