@@ -6,16 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::fmt;
-use std::fmt::Write;
 use std::hash::Hasher;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
 use fxhash::FxHasher32;
+pub use monarch_types::ReduceOp;
+pub use monarch_types::UniqueId;
 use nccl_sys::*;
-use serde::Deserialize;
-use serde::Serialize;
 use thiserror::Error;
 use torch_sys2::CudaDevice;
 use torch_sys2::DeviceType;
@@ -141,42 +139,30 @@ pub fn group_end(_ticket: NcclGroupTicket) -> Result<(), NcclError> {
     Ok(())
 }
 
-/// Binding for `ncclUniqueId`.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct UniqueId {
-    inner: ncclUniqueId,
+/// Extension trait providing NCCL-specific operations on `UniqueId`.
+pub trait UniqueIdExt {
+    /// Create a new `UniqueId` using the NCCL runtime.
+    fn new_nccl() -> Result<UniqueId, RawNcclError>;
+
+    /// Convert to the raw `ncclUniqueId` for FFI calls.
+    fn to_nccl(&self) -> ncclUniqueId;
 }
 
-impl fmt::Debug for UniqueId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UniqueId")
-            .field(
-                "inner",
-                &format_args!(
-                    "{}",
-                    self.inner
-                        .internal
-                        .iter()
-                        .fold(String::new(), |mut output, b| {
-                            let _ = write!(output, "{:02x}", b);
-                            output
-                        })
-                ),
-            )
-            .finish()
-    }
-}
-
-impl UniqueId {
-    /// Create a new `UniqueId`.
-    pub fn new() -> Result<Self, RawNcclError> {
+impl UniqueIdExt for UniqueId {
+    fn new_nccl() -> Result<UniqueId, RawNcclError> {
         let mut inner = MaybeUninit::uninit();
         // Safety: intended usage of this function
         let inner = unsafe {
             nccl_check(ncclGetUniqueId(inner.as_mut_ptr()))?;
             inner.assume_init()
         };
-        Ok(Self { inner })
+        Ok(UniqueId::from_internal(inner.internal))
+    }
+
+    fn to_nccl(&self) -> ncclUniqueId {
+        ncclUniqueId {
+            internal: *self.internal(),
+        }
     }
 }
 
@@ -224,20 +210,8 @@ impl TryFrom<ScalarType> for DataType {
     }
 }
 
-/// Rust version of `ncclRedOp_t`.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum ReduceOp {
-    Sum = 0,
-    Prod = 1,
-    Max = 2,
-    Min = 3,
-    Avg = 4,
-}
-
-impl From<ReduceOp> for ncclRedOp_t {
-    fn from(reduce_op: ReduceOp) -> Self {
-        Self(reduce_op as std::os::raw::c_uint)
-    }
+fn reduce_op_to_nccl(reduce_op: ReduceOp) -> ncclRedOp_t {
+    ncclRedOp_t(reduce_op as std::os::raw::c_uint)
 }
 
 fn check_tensor(tensor: &Tensor, is_p2p: bool) -> Result<(), NcclError> {
@@ -310,7 +284,7 @@ impl Communicator {
             nccl_check(ncclCommInitRank(
                 inner.as_mut_ptr(),
                 world_size,
-                unique_id.inner,
+                unique_id.to_nccl(),
                 rank,
             ))?;
             inner.assume_init()
@@ -403,7 +377,7 @@ impl Communicator {
                 tensor.mut_data_ptr(),
                 tensor.numel() as usize,
                 data_type.into(),
-                reduce_op.into(),
+                reduce_op_to_nccl(reduce_op),
                 self.inner,
                 stream.stream(),
             ))?)
@@ -460,7 +434,7 @@ impl Communicator {
                 tensor.mut_data_ptr(),
                 tensor.numel() as usize,
                 data_type.into(),
-                reduce_op.into(),
+                reduce_op_to_nccl(reduce_op),
                 root,
                 self.inner,
                 stream.stream(),
@@ -617,7 +591,7 @@ impl Communicator {
                 output.mut_data_ptr(),
                 output.numel() as usize,
                 data_type.into(),
-                reduce_op.into(),
+                reduce_op_to_nccl(reduce_op),
                 self.inner,
                 stream.stream(),
             ))?)
@@ -749,7 +723,7 @@ impl Communicator {
                 tensor.mut_data_ptr(),
                 tensor.numel() as usize,
                 data_type.into(),
-                ReduceOp::Sum.into(),
+                reduce_op_to_nccl(ReduceOp::Sum),
                 self.inner,
                 stream.stream(),
             ))?)
@@ -769,6 +743,7 @@ mod tests {
 
     use super::*;
     use crate::cuda::set_device;
+    use crate::nccl::UniqueIdExt;
 
     /// Initialize Python and import torch in a separate thread.
     /// This is a workaround for a pybind11 bug in PyTorch.
@@ -785,7 +760,7 @@ mod tests {
     #[test]
     fn all_reduce() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -811,7 +786,7 @@ mod tests {
     #[test]
     fn broadcast() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -836,7 +811,7 @@ mod tests {
     #[test]
     fn reduce() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -865,7 +840,7 @@ mod tests {
     #[test]
     fn all_gather_into_tensor() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -900,7 +875,7 @@ mod tests {
     #[test]
     fn send_recv() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         let unique_id_ = unique_id.clone();
         handles.push(std::thread::spawn(move || {
@@ -936,7 +911,7 @@ mod tests {
     #[test]
     fn all_to_all_single() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -974,7 +949,7 @@ mod tests {
     #[test]
     fn reduce_scatter_tensor() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();
@@ -1009,7 +984,7 @@ mod tests {
     #[test]
     fn split_from() {
         test_setup();
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let mut handles = Vec::new();
         for i in 0..2 {
             let unique_id = unique_id.clone();

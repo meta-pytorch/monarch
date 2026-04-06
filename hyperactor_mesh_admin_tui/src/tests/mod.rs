@@ -389,7 +389,7 @@ fn high_fanout_proc_placeholder_performance() {
     assert_eq!(rows.len(), 1001);
     let actor_count = rows
         .iter()
-        .filter(|r| r.node.reference.to_string().contains("actor_"))
+        .filter(|r| matches!(r.node.reference, NodeRef::Actor(_)))
         .count();
     assert_eq!(actor_count, 1000);
     let count = fold_tree(&tree, &|_n, child_counts: Vec<usize>| {

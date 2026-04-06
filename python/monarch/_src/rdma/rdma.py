@@ -20,6 +20,8 @@ from monarch._rust_bindings.monarch_hyperactor.pytokio import PythonTask, Shared
 from monarch._src.actor.proc_mesh import ProcMesh
 from typing_extensions import Self
 
+_NATIVE_RDMA_IMPORT_ERROR: Optional[ImportError] = None
+
 try:
     from monarch._rust_bindings.rdma import (
         _LocalMemoryHandle,
@@ -29,8 +31,24 @@ try:
         rdma_supported as _rdma_supported,
     )
 except ImportError as e:
-    logging.error("RDMA is not available: {}".format(e))
-    raise e
+    _NATIVE_RDMA_IMPORT_ERROR = e
+    logging.warning("RDMA native bindings are not available: %s", e)
+
+    class _UnavailableNativeBinding:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise ImportError(
+                "RDMA native bindings are not available on this platform"
+            ) from _NATIVE_RDMA_IMPORT_ERROR
+
+    _LocalMemoryHandle = _UnavailableNativeBinding
+    _RdmaBuffer = _UnavailableNativeBinding
+    _RdmaManager = _UnavailableNativeBinding
+
+    def _is_ibverbs_available() -> bool:
+        return False
+
+    def _rdma_supported() -> bool:
+        return False
 from enum import Enum
 from typing import Dict
 

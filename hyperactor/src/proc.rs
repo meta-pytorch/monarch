@@ -2946,8 +2946,8 @@ mod tests {
     use crate as hyperactor;
     use crate::HandleClient;
     use crate::Handler;
-    use crate::testing::proc_supervison::ProcSupervisionCoordinator;
     use crate::testing::process_assertion::assert_termination;
+    use crate::testing::proc_supervison::ProcSupervisionCoordinator;
 
     #[derive(Debug, Default)]
     #[export]
@@ -3452,7 +3452,8 @@ mod tests {
 
         let proc = Proc::local();
         let (client, _) = proc.instance("client").unwrap();
-        let (reported_event, _coordinator) = ProcSupervisionCoordinator::set(&proc).await.unwrap();
+        let (reported_event, _coordinator) =
+            ProcSupervisionCoordinator::set(&proc).await.unwrap();
 
         let root_state = Arc::new(AtomicBool::new(false));
         let root_1_state = Arc::new(AtomicBool::new(false));
@@ -3507,7 +3508,19 @@ mod tests {
             .send::<String>(&client, "some random failure".into())
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if root_1_state.load(Ordering::SeqCst)
+                    && reported_event.event().map(|e| e.actor_id.clone())
+                        == Some(root_2_1.actor_id().clone())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
 
         assert!(!root_state.load(Ordering::SeqCst));
         assert!(root_1_state.load(Ordering::SeqCst));
@@ -3563,8 +3576,8 @@ mod tests {
         handle.await;
     }
 
-    // Tokio's I/O driver is not fork-safe on macOS, and this test validates
-    // termination by forking without a coordinator.
+    // Tokio's I/O driver is not fork-safe on macOS, and this test intentionally
+    // validates process termination by forking without a coordinator.
     #[cfg_attr(target_os = "macos", ignore = "tokio runtime fork assertion on macOS")]
     #[tokio::test]
     async fn test_proc_terminate_without_coordinator() {

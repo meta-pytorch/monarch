@@ -830,7 +830,10 @@ class ValueMesh(MeshTrait, Generic[R]):
             # Shouldn't happen if Shape is consistent, but keep a clear
             # error.
             raise IndexError(f"rank {global_rank} not in current shape")
-        return self.get(local_idx)
+        from monarch.common.device_mesh import no_mesh
+
+        with no_mesh.activate():
+            return self.get(local_idx)
 
     def items(self) -> Iterable[Tuple[Point, R]]:
         """

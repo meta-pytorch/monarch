@@ -17,7 +17,7 @@ hyperactor_config = { version = "0.0.0", path = "../hyperactor_config" }
 hyperactor_mesh = { version = "0.0.0", path = "../hyperactor_mesh" }
 itertools = "0.14.0"
 monarch_hyperactor = { version = "0.0.0", path = "../monarch_hyperactor" }
-monarch_messages = { version = "0.0.0", path = "../monarch_messages" }
+monarch_messages = { version = "0.0.0", path = "../monarch_messages", default-features = false }
 monarch_types = { version = "0.0.0", path = "../monarch_types" }
 ndslice = { version = "0.0.0", path = "../ndslice" }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
@@ -25,7 +25,7 @@ pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 sorted-vec = "0.8.10"
 tokio = { version = "1.50.0", features = ["full", "test-util", "tracing"] }
-torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
+torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", default-features = false }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
@@ -38,3 +38,7 @@ timed_test = { version = "0.0.0", path = "../timed_test" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
+
+[features]
+cuda = ["monarch_messages/cuda", "torch-sys-cuda/cuda"]
+default = []
