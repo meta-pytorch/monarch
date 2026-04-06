@@ -1565,7 +1565,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let mut relay_orders: Vec<usize> = (0..10000).collect();
-        relay_orders.shuffle(&mut rand::thread_rng());
+        relay_orders.shuffle(&mut rand::rng());
         assert_out_of_order_delivery(expected, relay_orders).await;
     }
 
