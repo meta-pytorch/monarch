@@ -388,7 +388,7 @@ impl HostAgent {
 
         let addr = host.addr().to_string();
         let mut children: Vec<hyperactor::introspect::IntrospectRef> = Vec::new();
-        let system_children: Vec<crate::introspect::NodeRef> = Vec::new();
+        let system_children: Vec<crate::introspect::NodeRef> = Vec::new(); // LC-2
 
         // Procs are not system — only actors are. Both service and
         // local appear as regular children; 's' in the TUI toggles

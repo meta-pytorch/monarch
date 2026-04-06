@@ -43,10 +43,29 @@
 //! though the in-memory model is typed. Conversion into these string IDs
 //! happens at the boundary when rows are produced.
 //!
-//! Another important choice is that [`ChildRow`] models a rooted DAG, not
-//! a strict tree: a node may legitimately appear under more than one
-//! parent. Queries should therefore treat `children` as an edge table,
-//! not assume a unique parent pointer for every non-root node.
+//! Another important choice is that [`ChildRow`] models the admin
+//! navigation graph, not a single ownership relation. The same node
+//! may legitimately appear under more than one parent when different
+//! navigation relations are projected into the same edge table.
+//!
+//! Example from the TUI:
+//!
+//! ```text
+//! │  ▼ unix:@EEgtjsbaWCOCPl3zsDeX4KNH  (2 procs)
+//! │    ├─ ▼ local  (447 actors: 5 system, 442 user)
+//! │      ├─ ▼ sieve-13dKVEf934hK[0]
+//! │        └─ ▼ sieve-13dKVEf934hK[1]
+//! │▸         └─ ▶ sieve-13dKVEf934hK[2]
+//! │      ├─ ▶ sieve-13dKVEf934hK[1]
+//! │      ├─ ▶ sieve-13dKVEf934hK[2]
+//! ```
+//!
+//! Here `sieve-...[2]` appears both as a direct child of proc `local`
+//! and as a child of actor `sieve-...[1]`. Within each relation the
+//! parent is unique, but the snapshot schema currently stores both
+//! relations in the same [`ChildRow`] table. Queries should therefore
+//! treat [`ChildRow`] as an edge table of parent→child links, not
+//! assume one globally unique parent for every non-root node.
 //!
 //! # Cardinality invariants
 //!
@@ -86,7 +105,7 @@ use monarch_record_batch::RecordBatchRow;
 //       buffer (zero rows remain after drain).
 
 /// One row per snapshot capture.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct SnapshotRow {
     /// PK. Opaque UUID generated at capture time.
     pub snapshot_id: String,
@@ -98,7 +117,7 @@ pub struct SnapshotRow {
 ///
 /// Tree structure is expressed solely through [`ChildRow`] — there
 /// is no parent column here.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct NodeRow {
     /// PK component. FK → [`SnapshotRow::snapshot_id`].
     pub snapshot_id: String,
@@ -121,7 +140,7 @@ pub struct NodeRow {
 /// than because of a cycle. The TUI already accounts for this by
 /// disambiguating appearances by `(reference, depth)` and rejecting
 /// only true ancestor cycles.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct ChildRow {
     /// PK component. FK → [`SnapshotRow::snapshot_id`].
     pub snapshot_id: String,
@@ -140,7 +159,7 @@ pub struct ChildRow {
 }
 
 /// Subtype table for root nodes. PK: `(snapshot_id, node_id)`.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct RootNodeRow {
     /// PK component. FK → `Node(snapshot_id, node_id)`.
     pub snapshot_id: String,
@@ -155,7 +174,7 @@ pub struct RootNodeRow {
 }
 
 /// Subtype table for host nodes. PK: `(snapshot_id, node_id)`.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct HostNodeRow {
     /// PK component. FK → `Node(snapshot_id, node_id)`.
     pub snapshot_id: String,
@@ -168,7 +187,7 @@ pub struct HostNodeRow {
 }
 
 /// Subtype table for proc nodes. PK: `(snapshot_id, node_id)`.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct ProcNodeRow {
     /// PK component. FK → `Node(snapshot_id, node_id)`.
     pub snapshot_id: String,
@@ -192,7 +211,7 @@ pub struct ProcNodeRow {
 /// `NodeProperties::Actor::is_system` — whether the actor was spawned
 /// as a system actor. Distinct from [`ChildRow::is_system`], which
 /// records whether the parent classifies the child link as system.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct ActorNodeRow {
     /// PK component. FK → `Node(snapshot_id, node_id)`.
     pub snapshot_id: String,
@@ -222,7 +241,7 @@ pub struct ActorNodeRow {
 ///
 /// Captures the failure state as observed at snapshot time only — not
 /// intended to model failure history.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct ActorFailureRow {
     /// PK component. FK → `ActorNode(snapshot_id, node_id)`.
     pub snapshot_id: String,
@@ -244,7 +263,7 @@ pub struct ActorFailureRow {
 
 /// Subtype table for resolution error nodes. PK: `(snapshot_id,
 /// node_id)`.
-#[derive(RecordBatchRow)]
+#[derive(Debug, Clone, PartialEq, RecordBatchRow)]
 pub struct ResolutionErrorRow {
     /// PK component. FK → `Node(snapshot_id, node_id)`.
     pub snapshot_id: String,

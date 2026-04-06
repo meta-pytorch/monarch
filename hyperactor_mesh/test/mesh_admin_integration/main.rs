@@ -280,6 +280,16 @@
 //! - **MIT-70 (query-malformed-body):** `POST /v1/query` with a
 //!   malformed JSON body (missing required `sql` field) returns a
 //!   non-success status.
+//!
+//! ### Supervision topology (sieve)
+//!
+//! - **MIT-71 (actor-child-parent-is-proc):** When actor A exposes
+//!   actor B in `children` (supervision child), resolving B yields
+//!   `parent = Some(NodeRef::Proc(…))` — the containment proc, not
+//!   the supervising actor (NI-2).
+//! - **MIT-72 (proc-and-actor-children-coexist):** Actor B appears
+//!   in both the proc's `children` (membership edge) and actor A's
+//!   `children` (supervision edge) simultaneously (NI-3).
 
 mod admin;
 mod auth;
@@ -290,6 +300,7 @@ mod openapi;
 mod pyspy;
 mod ref_check;
 mod ref_edge;
+mod supervision;
 mod telemetry;
 mod tree;
 
@@ -424,4 +435,12 @@ async fn test_no_dashboard_returns_404() {
 #[tokio::test]
 async fn test_query_malformed_body() {
     telemetry::run_query_malformed_body().await;
+}
+
+// --- supervision family ---
+
+/// MIT-71, MIT-72: NI-2/NI-3 supervision proof — Rust sieve binary.
+#[tokio::test]
+async fn test_supervision_proof_rust() {
+    supervision::run_supervision_proof_rust().await;
 }

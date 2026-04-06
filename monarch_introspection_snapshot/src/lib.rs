@@ -8,11 +8,16 @@
 
 //! Bridge crate for snapshot-based mesh introspection.
 //!
-//! Will sit above `hyperactor_mesh` (which owns live mesh topology)
+//! Sits above `hyperactor_mesh` (which owns live mesh topology)
 //! and `monarch_distributed_telemetry` (which owns table storage).
 //!
-//! Currently provides the relational row schema ([`schema`] module)
-//! that defines the Arrow table shapes for mesh snapshots. Capture
-//! and ingestion are planned but not yet implemented.
+//! Currently provides:
+//! - [`schema`] — relational row definitions (Arrow table shapes)
+//! - [`convert`] — `NodePayload` → row projection (`ConvertedNode`)
+//! - [`capture`] — BFS capture of a mesh topology into `SnapshotData`
+//!
+//! Ingestion orchestration is planned but not yet implemented.
 
+pub mod capture;
+pub mod convert;
 pub mod schema;
