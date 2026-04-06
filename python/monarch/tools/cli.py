@@ -10,6 +10,7 @@ import importlib.resources
 import json
 import os
 import sys
+from pathlib import Path
 
 from monarch.actor import shutdown_context
 from monarch.tools.commands import (
@@ -355,9 +356,12 @@ class KillCmd:
             state_file = _context_state(name)
             if state_file.exists():
                 job_load(str(state_file)).kill()
+                state_file.unlink(missing_ok=True)
                 print(f"Killed context '{name}'")
                 return
-        job_load(DEFAULT_JOB_PATH).kill()
+        job_path = Path(DEFAULT_JOB_PATH)
+        job_load(str(job_path)).kill()
+        job_path.unlink(missing_ok=True)
         print("Killed job")
 
 

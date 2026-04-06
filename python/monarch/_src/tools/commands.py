@@ -336,9 +336,9 @@ async def get_or_create(
         created server.
 
     """
-    assert (
-        not config.dryrun
-    ), "dryrun is not supported for get_or_create(), for dryrun use the create() API instead"
+    assert not config.dryrun, (
+        "dryrun is not supported for get_or_create(), for dryrun use the create() API instead"
+    )
 
     server_handle = f"{config.scheduler}:///{name}"
     server_info = await server_ready(server_handle, check_interval)
@@ -729,7 +729,7 @@ def exec_on_job(
             rank=rank,
             point=point,
             per_host=per_host,
-        )
+        ).get()
         max_rc = max(max_rc, rc)
 
     if kill and last_mesh is not None:

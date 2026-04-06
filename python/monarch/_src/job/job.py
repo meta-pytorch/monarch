@@ -33,6 +33,7 @@ from monarch.actor import (
     current_rank,
     enable_transport,
     endpoint,
+    Future,
     HostMesh,
     Port,
     this_host,
@@ -869,7 +870,7 @@ def exec_command(
     rank: Optional[int] = None,
     point: Optional[Dict[str, int]] = None,
     per_host: Optional[Dict[str, int]] = None,
-) -> int:
+) -> "Future[int]":
     """Run a command on *host_mesh* via BashActor.
 
     Args:
@@ -890,7 +891,7 @@ def exec_command(
             to :meth:`~monarch.actor.HostMesh.spawn_procs`.
 
     Returns:
-        Maximum return code across all ranks (0 = success).
+        A Future resolving to the maximum return code across all ranks (0 = success).
     """
     if rank is not None:
         host_mesh = host_mesh.flatten("hosts")
@@ -899,47 +900,50 @@ def exec_command(
         point = {}
     procs = host_mesh.slice(**point).spawn_procs(per_host=per_host)
 
-    try:
-        bash_actors = procs.spawn("BashActor", BashActor)
+    async def _impl() -> int:
+        try:
+            bash_actors = procs.spawn("BashActor", BashActor)
 
-        client_cwd = os.getcwd()
+            client_cwd = os.getcwd()
 
-        if cmd[0].endswith(".py") or cmd[0] == "-m":
-            results = bash_actors.run_python.call(
-                cmd,
-                env=env,
-                workdir=workdir,
-                client_cwd=client_cwd,
-                output_dir=output_dir,
-            ).get()
-        else:
-            lines: List[str] = ["#!/bin/bash"]
-            if env:
-                for k, v in env.items():
-                    lines.append(f"export {k}={shlex.quote(v)}")
-            if workdir:
-                lines.append(f"cd {shlex.quote(workdir)}")
-            elif client_cwd:
-                lines.append(
-                    f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
+            if cmd[0].endswith(".py") or cmd[0] == "-m":
+                results = await bash_actors.run_python.call(
+                    cmd,
+                    env=env,
+                    workdir=workdir,
+                    client_cwd=client_cwd,
+                    output_dir=output_dir,
                 )
-            lines.append(shlex.join(cmd))
-            script = "\n".join(lines) + "\n"
-            results = bash_actors.run.call(script, output_dir=output_dir).get()
-        max_rc = 0
-        for _rank_key, result in results:
-            rc = result.get("returncode", 1)
-            max_rc = max(max_rc, rc)
-            if output_dir is None:
-                stdout = result.get("stdout", "")
-                stderr = result.get("stderr", "")
-                if stdout:
-                    print(stdout, end="")
-                if stderr:
-                    print(stderr, end="", file=sys.stderr)
-        return max_rc
-    finally:
-        procs.stop().get(timeout=30.0)
+            else:
+                lines: List[str] = ["#!/bin/bash"]
+                if env:
+                    for k, v in env.items():
+                        lines.append(f"export {k}={shlex.quote(v)}")
+                if workdir:
+                    lines.append(f"cd {shlex.quote(workdir)}")
+                elif client_cwd:
+                    lines.append(
+                        f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
+                    )
+                lines.append(shlex.join(cmd))
+                script = "\n".join(lines) + "\n"
+                results = await bash_actors.run.call(script, output_dir=output_dir)
+            max_rc = 0
+            for _rank_key, result in results:
+                rc = result.get("returncode", 1)
+                max_rc = max(max_rc, rc)
+                if output_dir is None:
+                    stdout = result.get("stdout", "")
+                    stderr = result.get("stderr", "")
+                    if stdout:
+                        print(stdout, end="")
+                    if stderr:
+                        print(stderr, end="", file=sys.stderr)
+            return max_rc
+        finally:
+            await procs.stop()
+
+    return Future(coro=_impl())
 
 
 class LocalJob(JobTrait):
