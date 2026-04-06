@@ -786,6 +786,16 @@ impl HostMesh {
     }
 }
 
+impl HostMesh {
+    /// Set the bootstrap command on the underlying `HostMeshRef`,
+    /// so that future `spawn` calls use it. Unlike
+    /// `HostMeshRef::with_bootstrap` this mutates in place,
+    /// preserving ownership.
+    pub fn set_bootstrap(&mut self, cmd: BootstrapCommand) {
+        self.current_ref = self.current_ref.clone().with_bootstrap(cmd);
+    }
+}
+
 impl Deref for HostMesh {
     type Target = HostMeshRef;
 
