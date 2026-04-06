@@ -22,9 +22,9 @@ concurrency:
 
 jobs:
   test-cpu-python-macos:
-    name: Test CPU Python - No Tensor Engine (macOS)
+    name: Test CPU Python - Tensor Engine (macOS)
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,6 +43,7 @@ jobs:
           source scripts/common-setup-macos.sh
           install_macos_base_dependencies
           install_macos_python_test_dependencies
+          python -m pip install pytest-split
 
       - name: Fetch disabled tests
         shell: bash
@@ -77,8 +78,5 @@ jobs:
           USE_TENSOR_ENGINE: "0"
         run: |
           set -eux
-          pytest -v -m "not oss_skip" --ignore-glob="**/meta/**" \
-            python/tests/test_python_actors.py \
-            python/tests/test_actor_error.py \
-            python/tests/test_client_shutdown.py \
-            python/tests/test_rdma_unsupported.py
+          source scripts/common-setup-macos.sh
+          run_test_groups
