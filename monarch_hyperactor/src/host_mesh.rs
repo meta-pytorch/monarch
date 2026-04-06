@@ -310,7 +310,9 @@ static HOST_MESH_AGENT_FOR_HOST: OnceLock<ActorHandle<HostAgent>> = OnceLock::ne
 /// Static storage for the host shutdown handle created by bootstrap_host().
 /// Used during shutdown_context to join the mailbox server and flush
 /// receive-side acks.
-static HOST_SHUTDOWN_HANDLE: OnceLock<tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>> = OnceLock::new();
+static HOST_SHUTDOWN_HANDLE: OnceLock<
+    tokio::sync::Mutex<Option<hyperactor_mesh::bootstrap::HostShutdownHandle>>,
+> = OnceLock::new();
 
 /// Bootstrap the client host and root client actor.
 ///
@@ -344,8 +346,7 @@ fn bootstrap_host(bootstrap_cmd: Option<PyBootstrapCommand>) -> PyResult<PyPytho
 
         // Store the agent and shutdown handle for later shutdown
         HOST_MESH_AGENT_FOR_HOST.set(host_mesh_agent.clone()).ok();
-        HOST_SHUTDOWN_HANDLE
-            .get_or_init(|| tokio::sync::Mutex::new(Some(shutdown_handle)));
+        HOST_SHUTDOWN_HANDLE.get_or_init(|| tokio::sync::Mutex::new(Some(shutdown_handle)));
 
         let host_mesh_name = hyperactor_mesh::Name::new_reserved("local").unwrap();
         let host_mesh = HostMeshRef::from_host_agent(host_mesh_name, host_mesh_agent.bind())
