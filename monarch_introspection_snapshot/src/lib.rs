@@ -21,3 +21,4 @@ pub mod capture;
 pub mod convert;
 pub mod push;
 pub mod schema;
+pub mod service;
