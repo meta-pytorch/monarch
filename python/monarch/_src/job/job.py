@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -40,6 +41,44 @@ from monarch.actor import (
 )
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
+
+
+@contextlib.contextmanager
+def _redirect_stdio(stdout=None, stderr=None):
+    """Redirect stdout/stderr at the OS fd level.
+
+    Unlike contextlib.redirect_stdout/stderr, subprocesses also inherit the
+    redirect because file descriptors 1 and 2 are replaced via os.dup2.
+
+    *stdout* and *stderr* must be file objects backed by a real OS file
+    descriptor (e.g. from open() or tempfile.TemporaryFile). StringIO is not
+    supported.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    redirects = []
+    if stdout is not None:
+        redirects.append((1, stdout, "stdout"))
+    if stderr is not None:
+        redirects.append((2, stderr, "stderr"))
+
+    saved_fds = {}
+    saved_py = {}
+    for fd, new_file, attr in redirects:
+        saved_fds[fd] = os.dup(fd)
+        os.dup2(new_file.fileno(), fd)
+        saved_py[attr] = getattr(sys, attr)
+        setattr(sys, attr, new_file)
+    try:
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        for fd, _, attr in redirects:
+            setattr(sys, attr, saved_py[attr])
+            os.dup2(saved_fds[fd], fd)
+            os.close(saved_fds[fd])
 
 
 class BashActor(Actor):
@@ -153,27 +192,41 @@ class BashActor(Actor):
                 source = f.read()
             code = compile(source, py_file, "exec")
 
+            capture = output_dir is None
             if output_dir is not None:
                 os.makedirs(output_dir, exist_ok=True)
-                out_f: Any = open(os.path.join(output_dir, "stdout.txt"), "w")
-                err_f: Any = open(os.path.join(output_dir, "stderr.txt"), "w")
+                out_ctx = open(os.path.join(output_dir, "stdout.txt"), "w")
+                err_ctx = open(os.path.join(output_dir, "stderr.txt"), "w")
             else:
-                out_f = io.StringIO()
-                err_f = io.StringIO()
+                out_ctx = tempfile.TemporaryFile(mode="w+")
+                err_ctx = tempfile.TemporaryFile(mode="w+")
 
-            with (
-                out_f,
-                err_f,
-                patch.object(sys, "argv", argv),
-                contextlib.redirect_stdout(out_f),
-                contextlib.redirect_stderr(err_f),
-            ):
-                exec(code, {"__name__": "__main__", "__file__": py_file})
-                return {
-                    "returncode": 0,
-                    "stdout": out_f.getvalue() if output_dir is None else "",
-                    "stderr": err_f.getvalue() if output_dir is None else "",
-                }
+            returncode = 1
+            stdout_val = ""
+            stderr_val = ""
+            with out_ctx as out_f, err_ctx as err_f:
+                with (
+                    patch.object(sys, "argv", argv),
+                    _redirect_stdio(stdout=out_f, stderr=err_f),
+                ):
+                    try:
+                        returncode = 0
+                        exec(code, {"__name__": "__main__", "__file__": py_file})
+                    except Exception:
+                        returncode = 1
+                        traceback.print_exc()
+
+                if capture:
+                    out_f.seek(0)
+                    err_f.seek(0)
+                    stdout_val = out_f.read()
+                    stderr_val = err_f.read()
+
+            return {
+                "returncode": returncode,
+                "stdout": stdout_val,
+                "stderr": stderr_val,
+            }
 
     @endpoint
     def run_streaming(
@@ -895,11 +948,12 @@ def exec_command(
     """
 
     async def _impl() -> int:
-        procs = host_mesh.spawn_procs(per_host=per_host)
         if point is not None:
-            procs = procs.slice(**point)
+            host_mesh_s = host_mesh.slice(**point)
         elif rank is not None:
-            procs = procs.flatten("rank").slice(rank=rank)
+            host_mesh_s = host_mesh.flatten("rank").slice(rank=rank)
+
+        procs = host_mesh_s.spawn_procs(per_host=per_host)
         try:
             bash_actors = procs.spawn("BashActor", BashActor)
 
