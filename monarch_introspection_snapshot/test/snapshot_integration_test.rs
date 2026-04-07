@@ -183,7 +183,10 @@ async fn test_snapshot_sql_queries() -> Result<()> {
     let snap = query_batch(&ctx, "SELECT 1 FROM snapshots").await?;
     assert_eq!(snap.num_rows(), 1, "PS-5: exactly one snapshot row");
 
-    // Query A: actor detail with LEFT JOIN failures.
+    // Query A: actor detail view for one actor in one snapshot.
+    // Joins the base node row to actor-specific columns, and LEFT
+    // JOINs failure state so healthy actors yield NULL failure
+    // fields.
     let a = query_batch(
         &ctx,
         &format!(
@@ -216,7 +219,9 @@ async fn test_snapshot_sql_queries() -> Result<()> {
         "Query A: healthy actor, failure null"
     );
 
-    // Query B: ordered children of the chosen proc.
+    // Query B: fetch the proc's direct children in stored order.
+    // Reads edge metadata from `children` and joins to `nodes` to learn
+    // what kind of node each child is.
     let b = query_batch(
         &ctx,
         &format!(
@@ -263,7 +268,9 @@ async fn test_snapshot_sql_queries() -> Result<()> {
         "Query B: proc should have at least one system child"
     );
 
-    // Query C: proc summary with actor children.
+    // Query C: proc page view.
+    // Returns one row per direct child, repeating the proc summary
+    // fields and joining actor-specific columns for each child actor.
     let c = query_batch(
         &ctx,
         &format!(
@@ -306,7 +313,10 @@ async fn test_snapshot_sql_queries() -> Result<()> {
         "Query C: user actor should appear in proc child rows"
     );
 
-    // Query D: ancestry breadcrumb (recursive CTE).
+    // Query D: ancestry breadcrumb for one actor.
+    // Seeds the CTE with the actor itself, then recursively walks
+    // upward through `children` from child -> parent and returns the
+    // path ordered by depth.
     let d = query_batch(
         &ctx,
         &format!(
