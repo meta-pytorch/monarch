@@ -7,7 +7,7 @@
 # pyre-unsafe
 
 import contextlib
-import io
+
 import logging
 import os
 import pickle
@@ -952,6 +952,8 @@ def exec_command(
             host_mesh_s = host_mesh.slice(**point)
         elif rank is not None:
             host_mesh_s = host_mesh.flatten("rank").slice(rank=rank)
+        else:
+            host_mesh_s = host_mesh
 
         procs = host_mesh_s.spawn_procs(per_host=per_host)
         try:
