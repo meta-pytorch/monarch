@@ -16,8 +16,12 @@
 //! - [`convert`] — `NodePayload` → row projection (`ConvertedNode`)
 //! - [`capture`] — BFS capture of a mesh topology into `SnapshotData`
 //! - [`push`] — drain `SnapshotData` into `TableStore` tables
+//! - [`service`] — `SnapshotService` capture pipeline
+//! - [`bundle`] — durable snapshot bundle export/import
 
+pub mod bundle;
 pub mod capture;
 pub mod convert;
 pub mod push;
 pub mod schema;
+pub mod service;

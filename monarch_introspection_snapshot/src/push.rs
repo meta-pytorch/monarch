@@ -8,10 +8,10 @@
 
 //! Drain [`SnapshotData`] into [`TableStore`] tables.
 //!
-//! The entry point is [`push_snapshot`], which populates generated
-//! `RecordBatchRow` buffers from each row family in the snapshot,
-//! drains them to `RecordBatch`, and ingests each batch through
-//! [`TableStore::ingest_batch`].
+//! The shared infrastructure is [`drain_to_batches`], which converts
+//! a [`SnapshotData`] into 9 named `RecordBatch` pairs. The public
+//! entry point [`push_snapshot`] uses this to ingest all tables into
+//! a [`TableStore`].
 //!
 //! # Push-snapshot invariants (PS-*)
 //!
@@ -33,6 +33,7 @@
 //! - **PS-7 (error propagation):** Drain/ingest failure returns `Err`
 //!   and does not silently skip tables.
 
+use datafusion::arrow::record_batch::RecordBatch;
 use monarch_distributed_telemetry::database_scanner::TableStore;
 use monarch_record_batch::RecordBatchBuffer;
 
@@ -47,35 +48,68 @@ use crate::schema::ResolutionErrorRowBuffer;
 use crate::schema::RootNodeRowBuffer;
 use crate::schema::SnapshotRowBuffer;
 
-/// Drain a captured snapshot into table storage.
+/// Canonical table names in sorted order.
 ///
-/// Each of the nine row families in `data` is buffered, drained to a
-/// `RecordBatch`, and ingested into its canonical table via
-/// [`TableStore::ingest_batch`]. Empty families produce zero-row
-/// batches that still register the table schema (PS-4).
-pub async fn push_snapshot(table_store: &TableStore, data: SnapshotData) -> anyhow::Result<()> {
-    // PS-5: snapshot anchor is always persisted.
-    let mut snapshot_buf = SnapshotRowBuffer::default();
-    snapshot_buf.insert(data.snapshot);
-    table_store
-        .ingest_batch("snapshots", snapshot_buf.drain_to_record_batch()?)
-        .await?;
+/// Every snapshot contains exactly these 9 tables. Both
+/// [`drain_to_batches`] and [`push_snapshot`] use this ordering.
+pub const SNAPSHOT_TABLE_NAMES: &[&str] = &[
+    "actor_failures",
+    "actor_nodes",
+    "children",
+    "host_nodes",
+    "nodes",
+    "proc_nodes",
+    "resolution_errors",
+    "root_nodes",
+    "snapshots",
+];
 
-    let mut node_buf = NodeRowBuffer::default();
-    for row in data.nodes {
-        node_buf.insert(row);
+/// A table name paired with its drained `RecordBatch`.
+pub type NamedBatch = (&'static str, RecordBatch);
+
+/// Drain all row families in `data` to named `RecordBatch` pairs.
+///
+/// Returns exactly 9 pairs, one per table, in
+/// [`SNAPSHOT_TABLE_NAMES`] order. Empty families produce zero-row
+/// batches with correct schemas (PS-4).
+pub fn drain_to_batches(data: SnapshotData) -> anyhow::Result<Vec<NamedBatch>> {
+    // Each block: create buffer, insert rows, drain to RecordBatch.
+    // Order matches SNAPSHOT_TABLE_NAMES (sorted).
+
+    let mut failure_buf = ActorFailureRowBuffer::default();
+    for row in data.actor_failures {
+        failure_buf.insert(row);
     }
-    table_store
-        .ingest_batch("nodes", node_buf.drain_to_record_batch()?)
-        .await?;
+
+    let mut actor_buf = ActorNodeRowBuffer::default();
+    for row in data.actor_nodes {
+        actor_buf.insert(row);
+    }
 
     let mut child_buf = ChildRowBuffer::default();
     for row in data.children {
         child_buf.insert(row);
     }
-    table_store
-        .ingest_batch("children", child_buf.drain_to_record_batch()?)
-        .await?;
+
+    let mut host_buf = HostNodeRowBuffer::default();
+    for row in data.host_nodes {
+        host_buf.insert(row);
+    }
+
+    let mut node_buf = NodeRowBuffer::default();
+    for row in data.nodes {
+        node_buf.insert(row);
+    }
+
+    let mut proc_buf = ProcNodeRowBuffer::default();
+    for row in data.proc_nodes {
+        proc_buf.insert(row);
+    }
+
+    let mut error_buf = ResolutionErrorRowBuffer::default();
+    for row in data.resolution_errors {
+        error_buf.insert(row);
+    }
 
     // Logically singleton per snapshot (CS-2: root resolved exactly
     // once), but modeled as a row family like the other subtype
@@ -84,50 +118,35 @@ pub async fn push_snapshot(table_store: &TableStore, data: SnapshotData) -> anyh
     for row in data.root_nodes {
         root_buf.insert(row);
     }
-    table_store
-        .ingest_batch("root_nodes", root_buf.drain_to_record_batch()?)
-        .await?;
 
-    let mut host_buf = HostNodeRowBuffer::default();
-    for row in data.host_nodes {
-        host_buf.insert(row);
+    // PS-5: snapshot anchor is always persisted.
+    let mut snapshot_buf = SnapshotRowBuffer::default();
+    snapshot_buf.insert(data.snapshot);
+
+    Ok(vec![
+        ("actor_failures", failure_buf.drain_to_record_batch()?),
+        ("actor_nodes", actor_buf.drain_to_record_batch()?),
+        ("children", child_buf.drain_to_record_batch()?),
+        ("host_nodes", host_buf.drain_to_record_batch()?),
+        ("nodes", node_buf.drain_to_record_batch()?),
+        ("proc_nodes", proc_buf.drain_to_record_batch()?),
+        ("resolution_errors", error_buf.drain_to_record_batch()?),
+        ("root_nodes", root_buf.drain_to_record_batch()?),
+        ("snapshots", snapshot_buf.drain_to_record_batch()?),
+    ])
+}
+
+/// Drain a captured snapshot into table storage.
+///
+/// Calls [`drain_to_batches`] and ingests each batch into its
+/// canonical table via [`TableStore::ingest_batch`]. Empty families
+/// produce zero-row batches that still register the table schema
+/// (PS-4).
+pub async fn push_snapshot(table_store: &TableStore, data: SnapshotData) -> anyhow::Result<()> {
+    let batches = drain_to_batches(data)?;
+    for (name, batch) in batches {
+        table_store.ingest_batch(name, batch).await?;
     }
-    table_store
-        .ingest_batch("host_nodes", host_buf.drain_to_record_batch()?)
-        .await?;
-
-    let mut proc_buf = ProcNodeRowBuffer::default();
-    for row in data.proc_nodes {
-        proc_buf.insert(row);
-    }
-    table_store
-        .ingest_batch("proc_nodes", proc_buf.drain_to_record_batch()?)
-        .await?;
-
-    let mut actor_buf = ActorNodeRowBuffer::default();
-    for row in data.actor_nodes {
-        actor_buf.insert(row);
-    }
-    table_store
-        .ingest_batch("actor_nodes", actor_buf.drain_to_record_batch()?)
-        .await?;
-
-    let mut failure_buf = ActorFailureRowBuffer::default();
-    for row in data.actor_failures {
-        failure_buf.insert(row);
-    }
-    table_store
-        .ingest_batch("actor_failures", failure_buf.drain_to_record_batch()?)
-        .await?;
-
-    let mut error_buf = ResolutionErrorRowBuffer::default();
-    for row in data.resolution_errors {
-        error_buf.insert(row);
-    }
-    table_store
-        .ingest_batch("resolution_errors", error_buf.drain_to_record_batch()?)
-        .await?;
-
     Ok(())
 }
 
@@ -164,18 +183,9 @@ mod tests {
         NodeRef::Actor(test_proc_id().actor_id(ACTOR_NAME, 0))
     }
 
-    /// Expected table names in sorted order (PS-1).
-    const ALL_TABLE_NAMES: &[&str] = &[
-        "actor_failures",
-        "actor_nodes",
-        "children",
-        "host_nodes",
-        "nodes",
-        "proc_nodes",
-        "resolution_errors",
-        "root_nodes",
-        "snapshots",
-    ];
+    /// Expected table names in sorted order (PS-1). Alias for the
+    /// public constant — existing tests reference this name.
+    const ALL_TABLE_NAMES: &[&str] = SNAPSHOT_TABLE_NAMES;
 
     /// Register all tables from a `TableStore` into a
     /// `SessionContext`.
@@ -591,5 +601,56 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(error_code, "not_found", "PS-2: resolution_errors table");
+    }
+
+    // --- drain_to_batches tests ---
+
+    // PS-1, PS-2: exactly 9 pairs in canonical order.
+    #[test]
+    fn test_drain_to_batches_produces_nine_pairs() {
+        let batches = drain_to_batches(populated_snapshot("d1")).unwrap();
+        let names: Vec<&str> = batches.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names.len(), 9);
+        assert_eq!(names, SNAPSHOT_TABLE_NAMES.to_vec(),);
+    }
+
+    // PS-4, PS-5: empty families produce valid batches; snapshot
+    // anchor is always present.
+    #[test]
+    fn test_drain_to_batches_empty_families() {
+        let batches = drain_to_batches(minimal_snapshot("d2")).unwrap();
+        assert_eq!(batches.len(), 9);
+        // All tables except "snapshots" should have 0 rows.
+        for (name, batch) in &batches {
+            if *name == "snapshots" {
+                assert_eq!(batch.num_rows(), 1, "snapshots should have 1 row");
+            } else {
+                assert_eq!(batch.num_rows(), 0, "{} should have 0 rows", name);
+            }
+            // Schema should always be present (non-zero column count).
+            assert!(
+                batch.num_columns() > 0,
+                "{} should have a valid schema",
+                name,
+            );
+        }
+    }
+
+    // PS-3: row counts in drained batches match source vector
+    // lengths.
+    #[test]
+    fn test_drain_to_batches_row_counts() {
+        let batches = drain_to_batches(populated_snapshot("d3")).unwrap();
+        let counts: std::collections::HashMap<&str, usize> =
+            batches.iter().map(|(n, b)| (*n, b.num_rows())).collect();
+        assert_eq!(counts["snapshots"], 1);
+        assert_eq!(counts["nodes"], 6);
+        assert_eq!(counts["children"], 5);
+        assert_eq!(counts["root_nodes"], 1);
+        assert_eq!(counts["host_nodes"], 1);
+        assert_eq!(counts["proc_nodes"], 1);
+        assert_eq!(counts["actor_nodes"], 2);
+        assert_eq!(counts["actor_failures"], 1);
+        assert_eq!(counts["resolution_errors"], 1);
     }
 }
