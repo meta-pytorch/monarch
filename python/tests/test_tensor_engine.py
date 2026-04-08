@@ -16,18 +16,27 @@ if sys.platform != "linux":
     pytest.skip("linux-only", allow_module_level=True)
 
 from monarch import remote
+from monarch._rust_bindings import has_tensor_engine
 from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, as_endpoint, endpoint
 from monarch.mesh_controller import spawn_tensor_engine
 
 
-two_gpu = pytest.mark.skipif(
-    torch.cuda.device_count() < 2,
-    reason="Not enough GPUs, this test requires at least 2 GPUs",
+needs_tensor_engine = pytest.mark.skipif(
+    not has_tensor_engine(),
+    reason="tensor_engine was not built",
+)
+needs_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="cross-rank tensor transport currently requires CUDA",
 )
 
 
-@two_gpu
+def _tensor_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+@needs_tensor_engine
 def test_tensor_engine() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
 
@@ -53,11 +62,16 @@ def test_tensor_engine() -> None:
     dm.exit()
 
 
-@two_gpu
+@needs_tensor_engine
+# CPU-only tensor-engine builds can run local execution paths, but this test
+# exercises cross-rank `to_mesh()` transport, which still uses the CUDA/NCCL
+# communication path today.
+@needs_cuda
 def test_proc_mesh_tensor_engine() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 2})
+    device = _tensor_device()
     with pm.activate():
-        f = 10 * pm.rank_tensor("gpus").cuda()
+        f = 10 * pm.rank_tensor("gpus").to(device)
         a = monarch.inspect(f, gpus=0)
         b = monarch.inspect(f, gpus=1)
 
@@ -80,12 +94,12 @@ class AddWithState(Actor):
         return x + self.state
 
 
-@two_gpu
+@needs_tensor_engine
 def test_actor_with_tensors() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     with pm.activate():
-        x = pm.spawn("adder", AddWithState, torch.ones(()))
-        y = torch.ones(())
+        x = pm.spawn("adder", AddWithState, torch.ones((), device=_tensor_device()))
+        y = torch.ones((), device=_tensor_device())
         assert x.forward.call(y).get(timeout=5).item(gpus=0).item() == 2
 
 
@@ -100,7 +114,7 @@ class Counter(Actor):
         return self.c - 1
 
 
-@two_gpu
+@needs_tensor_engine
 def test_actor_tensor_ordering() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     with pm.activate():
@@ -108,7 +122,7 @@ def test_actor_tensor_ordering() -> None:
         results = []
         for _ in range(0, 10, 2):
             # tensor engine call
-            results.append(counter.incr.call(torch.ones(())))
+            results.append(counter.incr.call(torch.ones((), device=_tensor_device())))
             # non-tensor engine call
             results.append(counter.incr.call(1))
 
@@ -117,7 +131,7 @@ def test_actor_tensor_ordering() -> None:
 
 class Linear(Actor):
     def __init__(self, N: int, M: int):
-        self.weight = torch.zeros((N, M))
+        self.weight = torch.zeros((N, M), device=_tensor_device())
 
     def forward(self, x) -> torch.Tensor:
         return x @ self.weight
@@ -127,15 +141,21 @@ class Linear(Actor):
         self.weight += w
 
 
-@two_gpu
+@needs_tensor_engine
 def test_rref_actor() -> None:
     pm = this_host().spawn_procs(per_host={"gpus": 1})
     with pm.activate():
         x = pm.spawn("linear", Linear, 3, 4)
 
-        y = torch.ones((4, 3))
-        t = as_endpoint(x.forward, propagate=lambda x: torch.rand(3, 4)).rref(y)
+        y = torch.ones((4, 3), device=_tensor_device())
+        t = as_endpoint(
+            x.forward,
+            propagate=lambda x: torch.rand(3, 4, device=_tensor_device()),
+        ).rref(y)
         assert monarch.inspect(t.sum()).item() == 0
-        x.update.rref(torch.ones((3, 4)))
-        t = as_endpoint(x.forward, propagate=lambda x: torch.rand(3, 4)).rref(y)
+        x.update.rref(torch.ones((3, 4), device=_tensor_device()))
+        t = as_endpoint(
+            x.forward,
+            propagate=lambda x: torch.rand(3, 4, device=_tensor_device()),
+        ).rref(y)
         assert monarch.inspect(t.sum()).item() == 3 * 4 * 4

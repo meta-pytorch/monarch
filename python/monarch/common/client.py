@@ -353,6 +353,8 @@ class Client:
         """Create a split communicator group with the specified ranks, and
         associate it with a specific device mesh and stream.
         """
+        if not torch.cuda.is_available():
+            return
         # For simplicity, just send this message to all ranks and split from the
         # global communicator. As an optimization, the client could remember
         # which comms have already been created and issue a message to a smaller
@@ -370,6 +372,9 @@ class Client:
         self.created_communicators.add(msg)
 
     def backend_network_init(self) -> None:
+        if not torch.cuda.is_available():
+            self._backend_network_init = True
+            return
         if self._backend_network_init:
             return
         self._backend_network_init = True
@@ -379,6 +384,8 @@ class Client:
     def backend_network_point_to_point_init(
         self, from_stream_ref: "StreamRef", to_stream_ref: "StreamRef"
     ) -> None:
+        if not torch.cuda.is_available():
+            return
         key = (from_stream_ref, to_stream_ref)
 
         if key in self._backend_network_init_point_to_point:

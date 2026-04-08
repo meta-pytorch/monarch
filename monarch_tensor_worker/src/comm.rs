@@ -19,6 +19,8 @@ use hyperactor::Handler;
 use hyperactor::actor::ActorHandle;
 use hyperactor::handle;
 use hyperactor::mailbox::OncePortHandle;
+use monarch_types::ReduceOp;
+use monarch_types::UniqueId;
 use parking_lot::Mutex;
 use tokio::task::spawn_blocking;
 use torch_sys_cuda::cuda::Event;
@@ -26,8 +28,6 @@ use torch_sys_cuda::cuda::Stream;
 use torch_sys_cuda::nccl::Communicator;
 use torch_sys_cuda::nccl::NcclError;
 use torch_sys_cuda::nccl::NcclStatus;
-use torch_sys_cuda::nccl::ReduceOp;
-use torch_sys_cuda::nccl::UniqueId;
 use torch_sys_cuda::nccl::group_end;
 use torch_sys_cuda::nccl::group_start;
 use torch_sys2::CudaDevice;
@@ -400,7 +400,7 @@ impl CommMessageHandler for NcclCommActor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use std::assert_matches::assert_matches;
     use std::collections::HashMap;
@@ -416,6 +416,7 @@ mod tests {
     use monarch_messages::worker::WorkerParams;
     use ndslice::Slice;
     use timed_test::async_timed_test;
+    use torch_sys_cuda::nccl::UniqueIdExt;
     use torch_sys2::DeviceIndex;
     use torch_sys2::Layout;
     use torch_sys2::ScalarType;
@@ -438,7 +439,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _handle) = proc.instance("client").unwrap();
 
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
         let actor0 = NcclCommActor::new(CommParams::New {
             device: device0,
@@ -505,7 +506,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _handle) = proc.instance("client").unwrap();
 
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let device0 = CudaDevice::new(DeviceIndex(0));
         let actor0 = NcclCommActor::new(CommParams::New {
             device: device0,
@@ -580,7 +581,7 @@ mod tests {
         let proc = Proc::local();
         let (client, _handle) = proc.instance("client")?;
 
-        let unique_id = UniqueId::new()?;
+        let unique_id = UniqueId::new_nccl()?;
         let device0 = CudaDevice::new(DeviceIndex(0));
         let actor0 = NcclCommActor::new(CommParams::New {
             device: device0,
@@ -671,7 +672,7 @@ mod tests {
         }))
         .await?;
 
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         let messages = vec![
             WorkerMessage::BackendNetworkInit(unique_id.clone()),
             WorkerMessage::CreateStream {
@@ -873,7 +874,7 @@ mod tests {
             )
             .unwrap();
 
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
 
         handle1
             .command_group(
@@ -1042,7 +1043,7 @@ mod tests {
             )
             .unwrap();
 
-        let unique_id = UniqueId::new().unwrap();
+        let unique_id = UniqueId::new_nccl().unwrap();
         handle
             .command_group(
                 &client,

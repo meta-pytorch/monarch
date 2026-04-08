@@ -11,5 +11,15 @@
 /// make it easier for clients who want to avoid compiling CUDA code.
 ///
 /// The same safety logic described in the `torch-sys` crate applies here.
+///
+/// When the `cuda` feature is enabled, the `cuda` and `nccl` modules provide
+/// full CUDA/NCCL bindings. When disabled, `cuda` provides Python-based CUDA
+/// stream/event wrappers (which panic if no GPU is available at runtime), and
+/// `nccl` provides stub types for compilation without NCCL headers.
 pub mod cuda;
+#[cfg(feature = "cuda")]
 pub mod nccl;
+#[cfg(not(feature = "cuda"))]
+pub mod nccl_stubs;
+#[cfg(not(feature = "cuda"))]
+pub use nccl_stubs as nccl;
