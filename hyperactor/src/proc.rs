@@ -187,6 +187,12 @@ struct ProcState {
     /// The actor ID of the supervision coordinator, if it lives on this proc.
     /// Used to ensure the coordinator is shut down last during proc teardown.
     supervision_coordinator_actor_id: OnceLock<reference::ActorId>,
+
+    /// Handle to the mailbox server task, if this proc was created with
+    /// `Proc::direct()` or had `serve()` called on it. Used to
+    /// gracefully stop the server and join it (flushing receive-side
+    /// acks) during shutdown.
+    mailbox_server_handle: std::sync::Mutex<Option<crate::mailbox::MailboxServerHandle>>,
 }
 
 impl Drop for ProcState {
@@ -238,6 +244,7 @@ impl Proc {
                 terminated_snapshots: DashMap::new(),
                 supervision_coordinator_port: OnceLock::new(),
                 supervision_coordinator_actor_id: OnceLock::new(),
+                mailbox_server_handle: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -247,7 +254,8 @@ impl Proc {
         let (addr, rx) = channel::serve(addr)?;
         let proc_id = reference::ProcId::with_name(addr, name);
         let proc = Self::configured(proc_id, DialMailboxRouter::new().into_boxed());
-        proc.clone().serve(rx);
+        let handle = proc.clone().serve(rx);
+        *proc.inner.mailbox_server_handle.lock().unwrap() = Some(handle);
         Ok(proc)
     }
 
@@ -979,6 +987,22 @@ impl Proc {
     pub async fn flush(&self) -> Result<(), anyhow::Error> {
         self.state().forwarder.flush().await
     }
+
+    /// Stop and join the mailbox server, flushing receive-side acks.
+    ///
+    /// This stops the `MailboxServer::serve` loop and awaits its
+    /// completion, which runs `Rx::join()` to flush any pending
+    /// transport-level acks before the channel is torn down.
+    ///
+    /// No-op if no mailbox server handle is stored (e.g. for
+    /// `Proc::configured` or `Proc::local` procs that don't serve).
+    pub async fn join_mailbox_server(&self) {
+        let handle = self.inner.mailbox_server_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            handle.stop("proc shutting down");
+            let _ = handle.await;
+        }
+    }
 }
 
 #[async_trait]
@@ -1271,7 +1295,7 @@ impl<A: Actor> Instance<A> {
     /// Notify subscribers of a change in the actors status and bump counters with the duration which
     /// the last status was active for.
     #[track_caller]
-    fn change_status(&self, new: ActorStatus) {
+    pub fn change_status(&self, new: ActorStatus) {
         let old = self.inner.status_tx.send_replace(new.clone());
         // 2 cases are allowed:
         // * non-terminal -> non-terminal

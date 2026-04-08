@@ -167,14 +167,23 @@ impl HostRef {
     /// Drain all user procs on this host but keep the host, service
     /// proc, and networking alive. Used during mesh stop/shutdown so
     /// that forwarder flushes can still reach remote hosts.
-    pub(crate) async fn drain(&self, cx: &impl hyperactor::context::Actor) -> anyhow::Result<()> {
+    pub(crate) async fn drain(
+        &self,
+        cx: &impl hyperactor::context::Actor,
+        host_mesh_name: Option<Name>,
+    ) -> anyhow::Result<()> {
         let agent = self.mesh_agent();
         let terminate_timeout =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_TIMEOUT);
         let max_in_flight =
             hyperactor_config::global::get(crate::bootstrap::MESH_TERMINATE_CONCURRENCY);
         agent
-            .drain_host(cx, terminate_timeout, max_in_flight.clamp(1, 256))
+            .drain_host(
+                cx,
+                terminate_timeout,
+                max_in_flight.clamp(1, 256),
+                host_mesh_name,
+            )
             .await?;
         Ok(())
     }
@@ -663,7 +672,7 @@ impl HostMesh {
         let results = futures::future::join_all(
             self.current_ref
                 .values()
-                .map(|host| async move { host.drain(cx).await }),
+                .map(|host| async move { host.drain(cx, None).await }),
         )
         .await;
         let phase1_ms = t0.elapsed().as_millis();
@@ -746,11 +755,11 @@ impl HostMesh {
         let t0 = std::time::Instant::now();
         tracing::info!(name = "HostMeshStatus", status = "Stop::Attempt");
 
-        let results = futures::future::join_all(
-            self.current_ref
-                .values()
-                .map(|host| async move { host.drain(cx).await }),
-        )
+        let mesh_name = self.name.clone();
+        let results = futures::future::join_all(self.current_ref.values().map(|host| {
+            let mesh_name = Some(mesh_name.clone());
+            async move { host.drain(cx, mesh_name).await }
+        }))
         .await;
         let total_ms = t0.elapsed().as_millis();
         let mut failed_hosts = vec![];
@@ -783,6 +792,16 @@ impl HostMesh {
         self.allocation = HostMeshAllocation::Owned { hosts: vec![] };
 
         Ok(())
+    }
+}
+
+impl HostMesh {
+    /// Set the bootstrap command on the underlying `HostMeshRef`,
+    /// so that future `spawn` calls use it. Unlike
+    /// `HostMeshRef::with_bootstrap` this mutates in place,
+    /// preserving ownership.
+    pub fn set_bootstrap(&mut self, cmd: BootstrapCommand) {
+        self.current_ref = self.current_ref.clone().with_bootstrap(cmd);
     }
 }
 
@@ -1274,6 +1293,7 @@ impl HostMeshRef {
                     client_config_override: client_config_override.clone(),
                     bootstrap_command: self.bootstrap_command.clone(),
                     proc_bind: bind,
+                    host_mesh_name: Some(self.name.clone()),
                 };
                 host.mesh_agent()
                     .create_or_update(

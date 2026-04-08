@@ -125,7 +125,7 @@ def test_actor_tensor_ordering() -> None:
 
 class Linear(Actor):
     def __init__(self, N: int, M: int):
-        self.weight = torch.zeros((N, M))
+        self.weight = torch.zeros((N, M), device=_tensor_device())
 
     def forward(self, x) -> torch.Tensor:
         return x @ self.weight
@@ -147,7 +147,7 @@ def test_rref_actor() -> None:
             propagate=lambda x: torch.rand(3, 4, device=_tensor_device()),
         ).rref(y)
         assert monarch.inspect(t.sum()).item() == 0
-        x.update.rref(torch.ones((3, 4)))
+        x.update.rref(torch.ones((3, 4), device=_tensor_device()))
         t = as_endpoint(
             x.forward,
             propagate=lambda x: torch.rand(3, 4, device=_tensor_device()),
