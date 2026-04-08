@@ -1,0 +1,1847 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Stream Forwarders (bootstrap/host side)" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-mesh-book/src/logging/stream-forwarders.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="The bootstrap side is responsible for capturing each child’s stdout/stderr, teeing them locally, and shipping structured log lines to the child’s in-band LogForwardActor over a hyperactor channel. ..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="The bootstrap side is responsible for capturing each child’s stdout/stderr, teeing them locally, and shipping structured log lines to the child’s in-band LogForwardActor over a hyperactor channel. ..." />
+
+    <title>Stream Forwarders (bootstrap/host side) &#8212; Monarch v0.4.1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/logging/stream-forwarders';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/logging/stream-forwarders.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Stream Forwarders (bootstrap/host side) - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.4.1">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.4.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                Monarch Dashboard
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../monarch-dashboard.html">
+            Monarch Dashboard
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Stream...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Stream Forwarders (bootstrap/host side)">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="stream-forwarders-bootstrap-host-side">
+<h1>Stream Forwarders (bootstrap/host side)<a class="headerlink" href="#stream-forwarders-bootstrap-host-side" title="Link to this heading">#</a></h1>
+<p>The bootstrap side is responsible for capturing each child’s stdout/stderr, teeing them locally, and shipping structured log lines to the child’s in-band <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> over a hyperactor channel.</p>
+<section id="what-they-are">
+<h2>What they are<a class="headerlink" href="#what-they-are" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> is a lightweight controller owned by the <code class="docutils literal notranslate"><span class="pre">Host</span></code>’s <code class="docutils literal notranslate"><span class="pre">BootstrapProcManager</span></code>. Each controller spawns a background tee task that does the actual I/O. The struct itself only holds control/diagnostic handles.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">StreamFwder</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="sd">/// Join handle for the spawned tee task (child stdout/stderr reader).</span>
+<span class="w">    </span><span class="n">teer</span><span class="p">:</span><span class="w"> </span><span class="nc">JoinHandle</span><span class="o">&lt;</span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">io</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+
+<span class="w">    </span><span class="sd">/// Circular buffer for recent lines (peek/diagnostics).</span>
+<span class="w">    </span><span class="n">recent_lines_buf</span><span class="p">:</span><span class="w"> </span><span class="nc">RotatingLineBuffer</span><span class="p">,</span>
+
+<span class="w">    </span><span class="sd">/// Shutdown signal observed by the tee task.</span>
+<span class="w">    </span><span class="n">stop</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">Notify</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The background task owns the OS pipe reader and does the heavy lifting:</p>
+<ul class="simple">
+<li><p>reads child stdout/stderr,</p></li>
+<li><p>tees to bootstrap’s own stdout/stderr,</p></li>
+<li><p>optionally appends to per-child files via <code class="docutils literal notranslate"><span class="pre">FileAppender</span></code>,</p></li>
+<li><p>batches lines and uses <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> (wrapping <code class="docutils literal notranslate"><span class="pre">Tx&lt;LogMessage&gt;</span></code>) to send <code class="docutils literal notranslate"><span class="pre">LogMessage::Log</span></code>,</p></li>
+<li><p>on EOF it calls <code class="docutils literal notranslate"><span class="pre">flush()</span></code> once (posts <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code>) as a final nudge (periodic heartbeats are generated by the child’s <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>).</p></li>
+</ul>
+</section>
+<section id="components-wiring-at-a-glance">
+<h2>Components &amp; wiring (at a glance)<a class="headerlink" href="#components-wiring-at-a-glance" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Host&lt;M=BootstrapProcManager&gt;
+  └─ BootstrapProcManager
+     └─ BootstrapProcHandle { proc_id, pipes, ... }
+        ├─ StreamFwder(stdout)  ──(spawned task → tee, FileAppender?, LocalLogSender)
+        └─ StreamFwder(stderr)  ──(spawned task → tee, FileAppender?, LocalLogSender)
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">BootstrapProcHandle</span></code> is the per-child record that owns the two <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> controllers. Each <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> spawns exactly one background “tee” task and keeps its own control/diagnostic handles (e.g., <code class="docutils literal notranslate"><span class="pre">recent_lines_buf</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>).</p>
+</section>
+<section id="wiring-message-flow">
+<h2>Wiring &amp; message flow<a class="headerlink" href="#wiring-message-flow" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>[host / bootstrap proc]                      [child / remote proc]
+StreamFwder ── LocalLogSender ──►  (unix)  ──► LogForwardActor (serve)
+(stdout / stderr)                               ^     ^
+  |                                             |     └─ dials same channel for in-band Flush
+  └─ FileAppender (optional)                    |
+                                        BOOTSTRAP_LOG_CHANNEL (env)
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BootstrapProcManager::spawn</span></code> chooses a <strong>per-child</strong> Unix channel address and exports it to the child via <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code>.</p></li>
+<li><p>The child’s <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> serves that address; the parent’s <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> dials it.</p></li>
+<li><p>The forwarder also self-dials the same address to post <code class="docutils literal notranslate"><span class="pre">Flush</span></code> control markers <strong>in-band</strong>, guaranteeing ordering w.r.t. data.</p></li>
+<li><p>If <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code> is absent (tests/local), the forwarder falls back to <code class="docutils literal notranslate"><span class="pre">ChannelAddr::any(ChannelTransport::Unix)</span></code>; in that mode no parent is connected and streaming is effectively disabled.</p></li>
+</ul>
+<section id="ordering-guarantees">
+<h3>Ordering guarantees<a class="headerlink" href="#ordering-guarantees" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Per stream (stdout or stderr) and per child only.</p></li>
+<li><p>No cross-stream order guarantee (stdout vs stderr may interleave).</p></li>
+</ul>
+</section>
+</section>
+<section id="responsibilities-streamfwder-bootstrap-side">
+<h2>Responsibilities (<code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>, bootstrap side)<a class="headerlink" href="#responsibilities-streamfwder-bootstrap-side" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Read bytes from each child’s stdout/stderr pipes reliably.</p></li>
+<li><p>Split into lines (preserve non-UTF8 as raw bytes; normalize \r\n).</p></li>
+<li><p>Tee:</p>
+<ul>
+<li><p>bootstrap’s own stdout/stderr (for local visibility),</p></li>
+<li><p>optional <code class="docutils literal notranslate"><span class="pre">FileAppender</span></code> (durable local files, rotation),</p></li>
+<li><p>and <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> → <code class="docutils literal notranslate"><span class="pre">LogMessage::Log</span> <span class="pre">{</span> <span class="pre">…</span> <span class="pre">payload:</span> <span class="pre">Vec&lt;Vec&lt;u8&gt;&gt;</span> <span class="pre">}</span></code>.</p></li>
+<li><p>On EOF, call <code class="docutils literal notranslate"><span class="pre">flush()</span></code> (posts <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code>) once (periodic <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code> heartbeats are issued by the child LogForwardActor.).</p></li>
+<li><p>Backpressure: apply bounded batching; never unboundedly buffer.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="read-batch-algorithm-outline">
+<h2>Read &amp; batch algorithm (outline)<a class="headerlink" href="#read-batch-algorithm-outline" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">tokio::io::BufReader</span></code> around each pipe fd.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">read_until(b'\n')</span></code> (or manual chunking) → line frames (strip <code class="docutils literal notranslate"><span class="pre">\n</span></code>, normalize <code class="docutils literal notranslate"><span class="pre">\r\n</span></code>).</p></li>
+<li><p>Batch up to <code class="docutils literal notranslate"><span class="pre">MAX_LINES</span></code> or <code class="docutils literal notranslate"><span class="pre">MAX_BYTES</span></code> or <code class="docutils literal notranslate"><span class="pre">MAX_DEADLINE</span></code> (whichever first).</p>
+<ul>
+<li><p>Emit one <code class="docutils literal notranslate"><span class="pre">LogMessage::Log</span></code> with payload = <code class="docutils literal notranslate"><span class="pre">Vec&lt;Vec&lt;u8&gt;&gt;</span></code> (lines).</p></li>
+<li><p>(Periodic <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code> heartbeats are issued by the child’s <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code>, not here.)</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="where-locallogsender-comes-from-bootstrap-side">
+<h2>Where <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> comes from (bootstrap side)<a class="headerlink" href="#where-locallogsender-comes-from-bootstrap-side" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BootstrapProcManager::spawn</span></code> chooses a per-child Unix channel address and exports it to the child via <code class="docutils literal notranslate"><span class="pre">BOOTSTRAP_LOG_CHANNEL</span></code>.
+The child’s <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> serves that address (see its <code class="docutils literal notranslate"><span class="pre">new()</span></code>), and the bootstrap dials it locally.</p></li>
+<li><p>When wiring a child’s streams, the bootstrap builds a <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> and passes it into the spawned <code class="docutils literal notranslate"><span class="pre">tee</span></code> task from <code class="docutils literal notranslate"><span class="pre">StreamFwder::start_with_writer</span></code>.
+The sender and all I/O live inside the spawned task; the <code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code> controller only keeps control/diagnostic handles (<code class="docutils literal notranslate"><span class="pre">teer</span></code>, <code class="docutils literal notranslate"><span class="pre">recent_lines_buf</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>).</p></li>
+</ul>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs :: StreamFwder::start_with_writer(..) — abridged</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">log_sender</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">LocalLogSender</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">log_channel</span><span class="p">,</span><span class="w"> </span><span class="n">pid</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w">  </span><span class="o">=&gt;</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">LogSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="o">&gt;</span><span class="p">),</span>
+<span class="w">    </span><span class="nb">Err</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">tracing</span><span class="p">::</span><span class="n">error</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;failed to create log sender: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">);</span>
+<span class="w">        </span><span class="nb">None</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">};</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">teer_stop</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stop</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">recent_line_buf_clone</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">recent_lines_buf</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">teer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">tokio</span><span class="p">::</span><span class="n">spawn</span><span class="p">(</span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">tee</span><span class="p">(</span>
+<span class="w">        </span><span class="n">reader</span><span class="p">,</span><span class="w">              </span><span class="c1">// child&#39;s pipe (stdout / stderr)</span>
+<span class="w">        </span><span class="n">std_writer</span><span class="p">,</span><span class="w">          </span><span class="c1">// bootstrap’s own stdout/stderr writer</span>
+<span class="w">        </span><span class="n">log_sender</span><span class="p">,</span><span class="w">          </span><span class="c1">// in-band sender to child LogForwardActor</span>
+<span class="w">        </span><span class="n">file_monitor_addr</span><span class="p">,</span><span class="w">   </span><span class="c1">// optional FileAppender’s channel</span>
+<span class="w">        </span><span class="n">target</span><span class="p">,</span><span class="w">              </span><span class="c1">// OutputTarget::{Stdout, Stderr}</span>
+<span class="w">        </span><span class="n">prefix</span><span class="p">,</span><span class="w">              </span><span class="c1">// optional rank prefix</span>
+<span class="w">        </span><span class="n">teer_stop</span><span class="p">,</span><span class="w">           </span><span class="c1">// shutdown signal</span>
+<span class="w">        </span><span class="n">recent_line_buf_clone</span><span class="p">,</span>
+<span class="w">    </span><span class="p">).</span><span class="k">await</span>
+<span class="p">});</span>
+
+<span class="n">StreamFwder</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">teer</span><span class="p">,</span><span class="w"> </span><span class="n">recent_lines_buf</span><span class="p">,</span><span class="w"> </span><span class="n">stop</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<section id="what-locallogsender-actually-does">
+<h3>What <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> actually does<a class="headerlink" href="#what-locallogsender-actually-does" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">LocalLogSender::new(log_channel,</span> <span class="pre">pid)</span></code> dials the child’s served channel (<code class="docutils literal notranslate"><span class="pre">channel::dial::&lt;LogMessage&gt;</span></code>), holds a <code class="docutils literal notranslate"><span class="pre">ChannelTx&lt;LogMessage&gt;</span></code> and a <code class="docutils literal notranslate"><span class="pre">Receiver&lt;TxStatus&gt;</span></code> for liveness.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">send(..)</span></code> checks <code class="docutils literal notranslate"><span class="pre">TxStatus::Active</span></code> and uses <code class="docutils literal notranslate"><span class="pre">tx.post(..)</span></code> (non-blocking) to emit:</p></li>
+</ul>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">LogMessage</span><span class="p">::</span><span class="n">Log</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">hostname</span><span class="p">,</span><span class="w"> </span><span class="n">pid</span><span class="p">,</span><span class="w"> </span><span class="n">output_target</span><span class="p">,</span><span class="w"> </span><span class="n">payload</span><span class="p">:</span><span class="w"> </span><span class="nc">wirevalue</span><span class="p">::</span><span class="n">Any</span><span class="p">::</span><span class="n">serialize</span><span class="p">(</span><span class="o">&amp;</span><span class="nb">Vec</span><span class="o">&lt;</span><span class="nb">Vec</span><span class="o">&lt;</span><span class="kt">u8</span><span class="o">&gt;&gt;</span><span class="p">)</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">flush()</span></code> also checks status and uses <code class="docutils literal notranslate"><span class="pre">tx.post(..)</span></code> to emit:</p></li>
+</ul>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">LogMessage</span><span class="p">::</span><span class="n">Flush</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">sync_version</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>(non-blocking “liveness” ping; no await).</p>
+</section>
+<section id="what-the-tee-task-forwards-tee">
+<h3>What the <code class="docutils literal notranslate"><span class="pre">tee</span></code> task forwards (<code class="docutils literal notranslate"><span class="pre">tee(..)</span></code>)<a class="headerlink" href="#what-the-tee-task-forwards-tee" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Reads bytes from the child pipe, writes through to the bootstrap’s std writer, frames on <code class="docutils literal notranslate"><span class="pre">\n</span></code>, applies <code class="docutils literal notranslate"><span class="pre">MAX_LINE_SIZE</span></code> truncation and optional rank prefix, then:</p>
+<ul>
+<li><p>sends batched lines to <code class="docutils literal notranslate"><span class="pre">LocalLogSender::send(target,</span> <span class="pre">Vec&lt;Vec&lt;u8&gt;&gt;)</span></code> (if present),</p></li>
+<li><p>posts the same lines to <code class="docutils literal notranslate"><span class="pre">FileAppender</span></code> via its channel (if present),</p></li>
+<li><p>maintains a rotating in-memory window via <code class="docutils literal notranslate"><span class="pre">recent_lines_buf.try_add_data(..)</span></code>.</p></li>
+</ul>
+</li>
+<li><p>On EOF, it flushes the std writer and calls <code class="docutils literal notranslate"><span class="pre">log_sender.flush()</span></code> once to push a <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code>.</p></li>
+</ul>
+<blockquote>
+<div><p>Note on heartbeats &amp; ordering: periodic <code class="docutils literal notranslate"><span class="pre">Flush(None)</span></code> heartbeats are driven by <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> (see its <code class="docutils literal notranslate"><span class="pre">init()</span></code> and the rescheduling in <code class="docutils literal notranslate"><span class="pre">forward()</span></code>), not by the stream forwarder. The stream forwarder only issues a <code class="docutils literal notranslate"><span class="pre">flush()</span></code> at EOF. In-band ordering is preserved because both <code class="docutils literal notranslate"><span class="pre">Log</span></code> and <code class="docutils literal notranslate"><span class="pre">Flush</span></code> travel on the same channel that the child’s <code class="docutils literal notranslate"><span class="pre">LogForwardActor</span></code> serves.</p>
+</div></blockquote>
+</section>
+<section id="source-level-view-tee">
+<h3>Source-level view: <code class="docutils literal notranslate"><span class="pre">tee()</span></code><a class="headerlink" href="#source-level-view-tee" title="Link to this heading">#</a></h3>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// logging.rs — abridged, annotated</span>
+<span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">tee</span><span class="p">(</span>
+<span class="w">    </span><span class="k">mut</span><span class="w"> </span><span class="n">reader</span><span class="p">:</span><span class="w"> </span><span class="nc">impl</span><span class="w"> </span><span class="n">AsyncRead</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Unpin</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="o">&#39;</span><span class="nb">static</span><span class="p">,</span><span class="w">        </span><span class="c1">// child&#39;s pipe (stdout/stderr)</span>
+<span class="w">    </span><span class="k">mut</span><span class="w"> </span><span class="n">std_writer</span><span class="p">:</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">io</span><span class="p">::</span><span class="n">AsyncWrite</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Unpin</span><span class="o">&gt;</span><span class="p">,</span><span class="w">     </span><span class="c1">// bootstrap&#39;s own stdout/stderr</span>
+<span class="w">    </span><span class="k">mut</span><span class="w"> </span><span class="n">log_sender</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">LogSender</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="o">&gt;&gt;</span><span class="p">,</span><span class="w">          </span><span class="c1">// in-band sender to child forwarder</span>
+<span class="w">    </span><span class="n">file_monitor_addr</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">ChannelAddr</span><span class="o">&gt;</span><span class="p">,</span><span class="w">                     </span><span class="c1">// optional FileAppender channel</span>
+<span class="w">    </span><span class="n">target</span><span class="p">:</span><span class="w"> </span><span class="nc">OutputTarget</span><span class="p">,</span><span class="w">                                       </span><span class="c1">// Stdout | Stderr</span>
+<span class="w">    </span><span class="n">prefix</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="nb">String</span><span class="o">&gt;</span><span class="p">,</span><span class="w">                                     </span><span class="c1">// optional rank prefix</span>
+<span class="w">    </span><span class="n">stop</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="n">Notify</span><span class="o">&gt;</span><span class="p">,</span><span class="w">                                          </span><span class="c1">// shutdown signal</span>
+<span class="w">    </span><span class="n">recent_lines_buf</span><span class="p">:</span><span class="w"> </span><span class="nc">RotatingLineBuffer</span><span class="p">,</span><span class="w">                       </span><span class="c1">// rolling diagnostics buffer</span>
+<span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="n">io</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">buf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mi">0</span><span class="k">u8</span><span class="p">;</span><span class="w"> </span><span class="mi">8192</span><span class="p">];</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">line_buffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Vec</span><span class="p">::</span><span class="n">with_capacity</span><span class="p">(</span><span class="n">MAX_LINE_SIZE</span><span class="p">);</span>
+
+<span class="w">    </span><span class="c1">// If a file-aggregator is active, dial its channel once.</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">file_monitor_tx</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">ChannelTx</span><span class="o">&lt;</span><span class="n">FileMonitorMessage</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">=</span>
+<span class="w">        </span><span class="n">file_monitor_addr</span><span class="p">.</span><span class="n">and_then</span><span class="p">(</span><span class="o">|</span><span class="n">addr</span><span class="o">|</span><span class="w"> </span><span class="n">channel</span><span class="p">::</span><span class="n">dial</span><span class="p">(</span><span class="n">addr</span><span class="p">).</span><span class="n">ok</span><span class="p">());</span>
+
+<span class="w">    </span><span class="k">loop</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">tokio</span><span class="p">::</span><span class="n">select</span><span class="o">!</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="c1">// --- main IO path: read child pipe in chunks ---</span>
+<span class="w">            </span><span class="n">read_result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">reader</span><span class="p">.</span><span class="n">read</span><span class="p">(</span><span class="o">&amp;</span><span class="k">mut</span><span class="w"> </span><span class="n">buf</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">read_result</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">n</span><span class="p">,</span>
+<span class="w">                    </span><span class="nb">Err</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">tracing</span><span class="p">::</span><span class="n">debug</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;read error in tee: {e}&quot;</span><span class="p">);</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">e</span><span class="p">);</span><span class="w"> </span><span class="p">}</span>
+<span class="w">                </span><span class="p">};</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="n">tracing</span><span class="p">::</span><span class="n">debug</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;EOF reached in tee&quot;</span><span class="p">);</span>
+<span class="w">                    </span><span class="k">break</span><span class="p">;</span><span class="w"> </span><span class="c1">// -&gt; flush and drain partials below</span>
+<span class="w">                </span><span class="p">}</span>
+
+<span class="w">                </span><span class="c1">// Always tee raw bytes to the bootstrap&#39;s local stdout/stderr for immediacy.</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">std_writer</span><span class="p">.</span><span class="n">write_all</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buf</span><span class="p">[</span><span class="o">..</span><span class="n">n</span><span class="p">]).</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="n">tracing</span><span class="p">::</span><span class="n">warn</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;error writing to std: {e}&quot;</span><span class="p">);</span>
+<span class="w">                </span><span class="p">}</span>
+
+<span class="w">                </span><span class="c1">// Frame by &#39;\n&#39; -&gt; completed UTF-8 lines (lossy), truncate, prefix if configured.</span>
+<span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">completed_lines</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Vec</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="w">                </span><span class="k">for</span><span class="w"> </span><span class="o">&amp;</span><span class="n">byte</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="o">&amp;</span><span class="n">buf</span><span class="p">[</span><span class="o">..</span><span class="n">n</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="n">byte</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="sc">b&#39;\n&#39;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">line</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">String</span><span class="p">::</span><span class="n">from_utf8_lossy</span><span class="p">(</span><span class="o">&amp;</span><span class="n">line_buffer</span><span class="p">).</span><span class="n">to_string</span><span class="p">();</span>
+<span class="w">                        </span><span class="k">if</span><span class="w"> </span><span class="n">line</span><span class="p">.</span><span class="n">len</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">MAX_LINE_SIZE</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                            </span><span class="n">line</span><span class="p">.</span><span class="n">truncate</span><span class="p">(</span><span class="n">MAX_LINE_SIZE</span><span class="p">);</span>
+<span class="w">                            </span><span class="n">line</span><span class="p">.</span><span class="n">push_str</span><span class="p">(</span><span class="s">&quot;... [TRUNCATED]&quot;</span><span class="p">);</span>
+<span class="w">                        </span><span class="p">}</span>
+<span class="w">                        </span><span class="kd">let</span><span class="w"> </span><span class="n">final_line</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="o">&amp;</span><span class="n">prefix</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;[{p}] {line}&quot;</span><span class="p">),</span><span class="w"> </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">line</span><span class="w"> </span><span class="p">};</span>
+<span class="w">                        </span><span class="n">completed_lines</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">final_line</span><span class="p">);</span>
+<span class="w">                        </span><span class="n">line_buffer</span><span class="p">.</span><span class="n">clear</span><span class="p">();</span>
+<span class="w">                    </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="n">line_buffer</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">byte</span><span class="p">);</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                </span><span class="p">}</span>
+
+<span class="w">                </span><span class="c1">// Forward completed lines to the in-band log channel and file aggregator (if any).</span>
+<span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">completed_lines</span><span class="p">.</span><span class="n">is_empty</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">sender</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">log_sender</span><span class="p">.</span><span class="n">as_mut</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="kd">let</span><span class="w"> </span><span class="n">bytes</span><span class="p">:</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;</span><span class="nb">Vec</span><span class="o">&lt;</span><span class="kt">u8</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">completed_lines</span><span class="p">.</span><span class="n">iter</span><span class="p">()</span>
+<span class="w">                            </span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="o">|</span><span class="n">s</span><span class="o">|</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">as_bytes</span><span class="p">().</span><span class="n">to_vec</span><span class="p">())</span>
+<span class="w">                            </span><span class="p">.</span><span class="n">collect</span><span class="p">();</span>
+<span class="w">                        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sender</span><span class="p">.</span><span class="n">send</span><span class="p">(</span><span class="n">target</span><span class="p">,</span><span class="w"> </span><span class="n">bytes</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                            </span><span class="n">tracing</span><span class="p">::</span><span class="n">warn</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;error sending to log_sender: {e}&quot;</span><span class="p">);</span>
+<span class="w">                        </span><span class="p">}</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                    </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">tx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">file_monitor_tx</span><span class="p">.</span><span class="n">as_mut</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                        </span><span class="n">tx</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">FileMonitorMessage</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">lines</span><span class="p">:</span><span class="w"> </span><span class="nc">completed_lines</span><span class="w"> </span><span class="p">});</span>
+<span class="w">                    </span><span class="p">}</span>
+<span class="w">                </span><span class="p">}</span>
+
+<span class="w">                </span><span class="c1">// Keep a small rolling window for debugging/peek().</span>
+<span class="w">                </span><span class="n">recent_lines_buf</span><span class="p">.</span><span class="n">try_add_data</span><span class="p">(</span><span class="o">&amp;</span><span class="n">buf</span><span class="p">,</span><span class="w"> </span><span class="n">n</span><span class="p">);</span>
+<span class="w">            </span><span class="p">}</span>
+
+<span class="w">            </span><span class="c1">// --- cooperative shutdown ---</span>
+<span class="w">            </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">stop</span><span class="p">.</span><span class="n">notified</span><span class="p">()</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="n">tracing</span><span class="p">::</span><span class="n">debug</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;stop signal received in tee&quot;</span><span class="p">);</span>
+<span class="w">                </span><span class="k">break</span><span class="p">;</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="c1">// Ensure local std writer is flushed.</span>
+<span class="w">    </span><span class="n">std_writer</span><span class="p">.</span><span class="n">flush</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="c1">// If there&#39;s a final partial line, forward it through both paths.</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">line_buffer</span><span class="p">.</span><span class="n">is_empty</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">line</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">String</span><span class="p">::</span><span class="n">from_utf8_lossy</span><span class="p">(</span><span class="o">&amp;</span><span class="n">line_buffer</span><span class="p">).</span><span class="n">to_string</span><span class="p">();</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="n">line</span><span class="p">.</span><span class="n">len</span><span class="p">()</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">MAX_LINE_SIZE</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">line</span><span class="p">.</span><span class="n">truncate</span><span class="p">(</span><span class="n">MAX_LINE_SIZE</span><span class="p">);</span>
+<span class="w">            </span><span class="n">line</span><span class="p">.</span><span class="n">push_str</span><span class="p">(</span><span class="s">&quot;... [TRUNCATED]&quot;</span><span class="p">);</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">final_line</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="o">&amp;</span><span class="n">prefix</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">p</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;[{p}] {line}&quot;</span><span class="p">),</span><span class="w"> </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">line</span><span class="w"> </span><span class="p">};</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">sender</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">log_sender</span><span class="p">.</span><span class="n">as_mut</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sender</span><span class="p">.</span><span class="n">send</span><span class="p">(</span><span class="n">target</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">final_line</span><span class="p">.</span><span class="n">as_bytes</span><span class="p">().</span><span class="n">to_vec</span><span class="p">()]);</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">tx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">file_monitor_tx</span><span class="p">.</span><span class="n">as_mut</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">tx</span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="n">FileMonitorMessage</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">lines</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">final_line</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="c1">// Nudge the in-band channel once on exit to avoid downstream starvation.</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">sender</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">log_sender</span><span class="p">.</span><span class="n">as_mut</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sender</span><span class="p">.</span><span class="n">flush</span><span class="p">();</span><span class="w"> </span><span class="c1">// posts LogMessage::Flush { sync_version: None }</span>
+<span class="w">    </span><span class="p">}</span>
+
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-they-are">What they are</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#components-wiring-at-a-glance">Components &amp; wiring (at a glance)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#wiring-message-flow">Wiring &amp; message flow</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-guarantees">Ordering guarantees</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#responsibilities-streamfwder-bootstrap-side">Responsibilities (<code class="docutils literal notranslate"><span class="pre">StreamFwder</span></code>, bootstrap side)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#read-batch-algorithm-outline">Read &amp; batch algorithm (outline)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-locallogsender-comes-from-bootstrap-side">Where <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> comes from (bootstrap side)</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-locallogsender-actually-does">What <code class="docutils literal notranslate"><span class="pre">LocalLogSender</span></code> actually does</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-tee-task-forwards-tee">What the <code class="docutils literal notranslate"><span class="pre">tee</span></code> task forwards (<code class="docutils literal notranslate"><span class="pre">tee(..)</span></code>)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#source-level-view-tee">Source-level view: <code class="docutils literal notranslate"><span class="pre">tee()</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-mesh-book/src/logging/stream-forwarders.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-mesh-book/src/logging/stream-forwarders.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Stream Forwarders (bootstrap/host side)",
+       "headline": "Stream Forwarders (bootstrap/host side)",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-mesh-book/src/logging/stream-forwarders.html",
+       "articleBody": "Stream Forwarders (bootstrap/host side)# The bootstrap side is responsible for capturing each child\u2019s stdout/stderr, teeing them locally, and shipping structured log lines to the child\u2019s in-band LogForwardActor over a hyperactor channel. What they are# StreamFwder is a lightweight controller owned by the Host\u2019s BootstrapProcManager. Each controller spawns a background tee task that does the actual I/O. The struct itself only holds control/diagnostic handles. pub struct StreamFwder { /// Join handle for the spawned tee task (child stdout/stderr reader). teer: JoinHandle\u003cResult\u003c(), io::Error\u003e\u003e, /// Circular buffer for recent lines (peek/diagnostics). recent_lines_buf: RotatingLineBuffer, /// Shutdown signal observed by the tee task. stop: Arc\u003cNotify\u003e, } The background task owns the OS pipe reader and does the heavy lifting: reads child stdout/stderr, tees to bootstrap\u2019s own stdout/stderr, optionally appends to per-child files via FileAppender, batches lines and uses LocalLogSender (wrapping Tx\u003cLogMessage\u003e) to send LogMessage::Log, on EOF it calls flush() once (posts Flush(None)) as a final nudge (periodic heartbeats are generated by the child\u2019s LogForwardActor). Components \u0026 wiring (at a glance)# Host\u003cM=BootstrapProcManager\u003e \u2514\u2500 BootstrapProcManager \u2514\u2500 BootstrapProcHandle { proc_id, pipes, ... } \u251c\u2500 StreamFwder(stdout) \u2500\u2500(spawned task \u2192 tee, FileAppender?, LocalLogSender) \u2514\u2500 StreamFwder(stderr) \u2500\u2500(spawned task \u2192 tee, FileAppender?, LocalLogSender) BootstrapProcHandle is the per-child record that owns the two StreamFwder controllers. Each StreamFwder spawns exactly one background \u201ctee\u201d task and keeps its own control/diagnostic handles (e.g., recent_lines_buf, stop). Wiring \u0026 message flow# [host / bootstrap proc] [child / remote proc] StreamFwder \u2500\u2500 LocalLogSender \u2500\u2500\u25ba (unix) \u2500\u2500\u25ba LogForwardActor (serve) (stdout / stderr) ^ ^ | | \u2514\u2500 dials same channel for in-band Flush \u2514\u2500 FileAppender (optional) | BOOTSTRAP_LOG_CHANNEL (env) BootstrapProcManager::spawn chooses a per-child Unix channel address and exports it to the child via BOOTSTRAP_LOG_CHANNEL. The child\u2019s LogForwardActor serves that address; the parent\u2019s LocalLogSender dials it. The forwarder also self-dials the same address to post Flush control markers in-band, guaranteeing ordering w.r.t. data. If BOOTSTRAP_LOG_CHANNEL is absent (tests/local), the forwarder falls back to ChannelAddr::any(ChannelTransport::Unix); in that mode no parent is connected and streaming is effectively disabled. Ordering guarantees# Per stream (stdout or stderr) and per child only. No cross-stream order guarantee (stdout vs stderr may interleave). Responsibilities (StreamFwder, bootstrap side)# Read bytes from each child\u2019s stdout/stderr pipes reliably. Split into lines (preserve non-UTF8 as raw bytes; normalize \\r\\n). Tee: bootstrap\u2019s own stdout/stderr (for local visibility), optional FileAppender (durable local files, rotation), and LocalLogSender \u2192 LogMessage::Log { \u2026 payload: Vec\u003cVec\u003cu8\u003e\u003e }. On EOF, call flush() (posts Flush(None)) once (periodic Flush(None) heartbeats are issued by the child LogForwardActor.). Backpressure: apply bounded batching; never unboundedly buffer. Read \u0026 batch algorithm (outline)# tokio::io::BufReader around each pipe fd. read_until(b\u0027\\n\u0027) (or manual chunking) \u2192 line frames (strip \\n, normalize \\r\\n). Batch up to MAX_LINES or MAX_BYTES or MAX_DEADLINE (whichever first). Emit one LogMessage::Log with payload = Vec\u003cVec\u003cu8\u003e\u003e (lines). (Periodic Flush(None) heartbeats are issued by the child\u2019s LogForwardActor, not here.) Where LocalLogSender comes from (bootstrap side)# BootstrapProcManager::spawn chooses a per-child Unix channel address and exports it to the child via BOOTSTRAP_LOG_CHANNEL. The child\u2019s LogForwardActor serves that address (see its new()), and the bootstrap dials it locally. When wiring a child\u2019s streams, the bootstrap builds a LocalLogSender and passes it into the spawned tee task from StreamFwder::start_with_writer. The sender and all I/O live inside the spawned task; the StreamFwder controller only keeps control/diagnostic handles (teer, recent_lines_buf, stop). // logging.rs :: StreamFwder::start_with_writer(..) \u2014 abridged let log_sender = match LocalLogSender::new(log_channel, pid) { Ok(s) =\u003e Some(Box::new(s) as Box\u003cdyn LogSender + Send\u003e), Err(e) =\u003e { tracing::error!(\"failed to create log sender: {}\", e); None } }; let teer_stop = stop.clone(); let recent_line_buf_clone = recent_lines_buf.clone(); let teer = tokio::spawn(async move { tee( reader, // child\u0027s pipe (stdout / stderr) std_writer, // bootstrap\u2019s own stdout/stderr writer log_sender, // in-band sender to child LogForwardActor file_monitor_addr, // optional FileAppender\u2019s channel target, // OutputTarget::{Stdout, Stderr} prefix, // optional rank prefix teer_stop, // shutdown signal recent_line_buf_clone, ).await }); StreamFwder { teer, recent_lines_buf, stop } What LocalLogSender actually does# LocalLogSender::new(log_channel, pid) dials the child\u2019s served channel (channel::dial::\u003cLogMessage\u003e), holds a ChannelTx\u003cLogMessage\u003e and a Receiver\u003cTxStatus\u003e for liveness. send(..) checks TxStatus::Active and uses tx.post(..) (non-blocking) to emit: LogMessage::Log { hostname, pid, output_target, payload: wirevalue::Any::serialize(\u0026Vec\u003cVec\u003cu8\u003e\u003e) } flush() also checks status and uses tx.post(..) to emit: LogMessage::Flush { sync_version: None } (non-blocking \u201cliveness\u201d ping; no await). What the tee task forwards (tee(..))# Reads bytes from the child pipe, writes through to the bootstrap\u2019s std writer, frames on \\n, applies MAX_LINE_SIZE truncation and optional rank prefix, then: sends batched lines to LocalLogSender::send(target, Vec\u003cVec\u003cu8\u003e\u003e) (if present), posts the same lines to FileAppender via its channel (if present), maintains a rotating in-memory window via recent_lines_buf.try_add_data(..). On EOF, it flushes the std writer and calls log_sender.flush() once to push a Flush(None). Note on heartbeats \u0026 ordering: periodic Flush(None) heartbeats are driven by LogForwardActor (see its init() and the rescheduling in forward()), not by the stream forwarder. The stream forwarder only issues a flush() at EOF. In-band ordering is preserved because both Log and Flush travel on the same channel that the child\u2019s LogForwardActor serves. Source-level view: tee()# // logging.rs \u2014 abridged, annotated async fn tee( mut reader: impl AsyncRead + Unpin + Send + \u0027static, // child\u0027s pipe (stdout/stderr) mut std_writer: Box\u003cdyn io::AsyncWrite + Send + Unpin\u003e, // bootstrap\u0027s own stdout/stderr mut log_sender: Option\u003cBox\u003cdyn LogSender + Send\u003e\u003e, // in-band sender to child forwarder file_monitor_addr: Option\u003cChannelAddr\u003e, // optional FileAppender channel target: OutputTarget, // Stdout | Stderr prefix: Option\u003cString\u003e, // optional rank prefix stop: Arc\u003cNotify\u003e, // shutdown signal recent_lines_buf: RotatingLineBuffer, // rolling diagnostics buffer ) -\u003e Result\u003c(), io::Error\u003e { let mut buf = [0u8; 8192]; let mut line_buffer = Vec::with_capacity(MAX_LINE_SIZE); // If a file-aggregator is active, dial its channel once. let mut file_monitor_tx: Option\u003cChannelTx\u003cFileMonitorMessage\u003e\u003e = file_monitor_addr.and_then(|addr| channel::dial(addr).ok()); loop { tokio::select! { // --- main IO path: read child pipe in chunks --- read_result = reader.read(\u0026mut buf) =\u003e { let n = match read_result { Ok(n) =\u003e n, Err(e) =\u003e { tracing::debug!(\"read error in tee: {e}\"); return Err(e); } }; if n == 0 { tracing::debug!(\"EOF reached in tee\"); break; // -\u003e flush and drain partials below } // Always tee raw bytes to the bootstrap\u0027s local stdout/stderr for immediacy. if let Err(e) = std_writer.write_all(\u0026buf[..n]).await { tracing::warn!(\"error writing to std: {e}\"); } // Frame by \u0027\\n\u0027 -\u003e completed UTF-8 lines (lossy), truncate, prefix if configured. let mut completed_lines = Vec::new(); for \u0026byte in \u0026buf[..n] { if byte == b\u0027\\n\u0027 { let mut line = String::from_utf8_lossy(\u0026line_buffer).to_string(); if line.len() \u003e MAX_LINE_SIZE { line.truncate(MAX_LINE_SIZE); line.push_str(\"... [TRUNCATED]\"); } let final_line = match \u0026prefix { Some(p) =\u003e format!(\"[{p}] {line}\"), None =\u003e line }; completed_lines.push(final_line); line_buffer.clear(); } else { line_buffer.push(byte); } } // Forward completed lines to the in-band log channel and file aggregator (if any). if !completed_lines.is_empty() { if let Some(sender) = log_sender.as_mut() { let bytes: Vec\u003cVec\u003cu8\u003e\u003e = completed_lines.iter() .map(|s| s.as_bytes().to_vec()) .collect(); if let Err(e) = sender.send(target, bytes) { tracing::warn!(\"error sending to log_sender: {e}\"); } } if let Some(tx) = file_monitor_tx.as_mut() { tx.post(FileMonitorMessage { lines: completed_lines }); } } // Keep a small rolling window for debugging/peek(). recent_lines_buf.try_add_data(\u0026buf, n); } // --- cooperative shutdown --- _ = stop.notified() =\u003e { tracing::debug!(\"stop signal received in tee\"); break; } } } // Ensure local std writer is flushed. std_writer.flush().await?; // If there\u0027s a final partial line, forward it through both paths. if !line_buffer.is_empty() { let mut line = String::from_utf8_lossy(\u0026line_buffer).to_string(); if line.len() \u003e MAX_LINE_SIZE { line.truncate(MAX_LINE_SIZE); line.push_str(\"... [TRUNCATED]\"); } let final_line = match \u0026prefix { Some(p) =\u003e format!(\"[{p}] {line}\"), None =\u003e line }; if let Some(sender) = log_sender.as_mut() { let _ = sender.send(target, vec![final_line.as_bytes().to_vec()]); } if let Some(tx) = file_monitor_tx.as_mut() { tx.post(FileMonitorMessage { lines: vec![final_line] }); } } // Nudge the in-band channel once on exit to avoid downstream starvation. if let Some(sender) = log_sender.as_mut() { let _ = sender.flush(); // posts LogMessage::Flush { sync_version: None } } Ok(()) }",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-mesh-book/src/logging/stream-forwarders.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

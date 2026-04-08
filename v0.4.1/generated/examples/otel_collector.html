@@ -1,0 +1,1991 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Exporting Metrics and Logs with OpenTelemetry" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/generated/examples/otel_collector.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="This example shows how to export Monarch’s built-in metrics and logs to an OpenTelemetry Collector and visualize them with Grafana. We deploy the full observability stack on Kubernetes using the Mo..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="This example shows how to export Monarch’s built-in metrics and logs to an OpenTelemetry Collector and visualize them with Grafana. We deploy the full observability stack on Kubernetes using the Mo..." />
+
+    <title>Exporting Metrics and Logs with OpenTelemetry &#8212; Monarch v0.4.1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'generated/examples/otel_collector';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/generated/examples/otel_collector.html" />
+    <link rel="icon" href="../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Python API" href="../../api/index.html" />
+    <link rel="prev" title="Debugging Python Actors with pdb in Monarch" href="debugging.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="Exporting Metrics and Logs with OpenTelemetry - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.4.1">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="api">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.4.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+    
+    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+    
+    <img src="../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item current active">
+        
+          
+          <a class="nav-link nav-internal active" href="getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown current active">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal active" href="index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="#">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../monarch-dashboard.html">
+                Monarch Dashboard
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item current active">
+        
+          
+          <a class="nav-link nav-internal active" href="getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown current active">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal active" href="index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="#">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../monarch-dashboard.html">
+            Monarch Dashboard
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="ping_pong.html">Monarch Actor API: Ping Pong</a></li>
+<li class="toctree-l1"><a class="reference internal" href="crawler.html">Distributed Web Crawler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ddp/spmd_ddp.html">DDP using SPMDActor</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ddp/spmd_job.html">SPMD Job Example</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ddp/kubernetes_ddp.html">DDP on Kubernetes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="grpo_actor.html">Reinforcement Learning with Actors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="distributed_tensors.html">Distributed Tensors in Monarch</a></li>
+
+
+
+
+
+
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Python Actors with pdb in Monarch</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Exporting Metrics and Logs with OpenTelemetry</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://docs.pytorch.org/tutorials/intermediate/monarch_distributed_tutorial.html">Multinode Slurm Tutorial</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Examples</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">Exporting...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <link itemprop="item" href="index.html">
+      <meta itemprop="name" content="Examples">
+      <meta itemprop="position" content="1">
+    </div>
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="Exporting Metrics and Logs with OpenTelemetry">
+      <meta itemprop="position" content="2">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <div class="sphx-glr-download-link-note admonition note">
+<p class="admonition-title">Note</p>
+<p><a class="reference internal" href="#sphx-glr-download-generated-examples-otel-collector-py"><span class="std std-ref">Go to the end</span></a>
+to download the full example code</p>
+</div>
+<section class="sphx-glr-example-title" id="exporting-metrics-and-logs-with-opentelemetry">
+<span id="sphx-glr-generated-examples-otel-collector-py"></span><h1>Exporting Metrics and Logs with OpenTelemetry<a class="headerlink" href="#exporting-metrics-and-logs-with-opentelemetry" title="Link to this heading">#</a></h1>
+<p>This example shows how to export Monarch’s built-in metrics and logs to an
+<a class="reference external" href="https://opentelemetry.io/docs/collector/">OpenTelemetry Collector</a> and
+visualize them with <a class="reference external" href="https://grafana.com/grafana/">Grafana</a>. We deploy the
+full observability stack on Kubernetes using the
+<a class="reference external" href="https://github.com/meta-pytorch/monarch-kubernetes/">Monarch CRD and operator</a>.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code> is set, Monarch’s telemetry layer exports
+metrics and logs via OTLP/HTTP to the specified collector. Metrics are exported
+automatically. Log export uses the unified tracing layer, which is enabled
+by default and wires up the OTLP log sink.
+Built-in actor system metrics (mailbox posts, messages sent/received, queue
+sizes, etc.) and log events are exported with no code changes.</p>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌──────────────┐
+│  Controller  │──OTLP/HTTP──┐
+│  (main.py)   │             │
+└──────────────┘             ▼
+                        ┌────────────────┐     ┌────────────┐
+                        │ OTEL Collector │────▶│  stdout    │
+                        │  (port 4318)   │     │  (debug)   │
+                        └────────────────┘     └────────────┘
+┌──────────────┐             ▲           │     ┌────────────┐     ┌────────────┐
+│  Worker pods │──OTLP/HTTP──┘           ├────▶│ Prometheus │────▶│ Prometheus │
+│  (mesh)      │                         │     │  (scrape   │     │  (server   │
+└──────────────┘                         │     │  port 8889)│     │  port 9090)│
+                                         │     └────────────┘     └──────┬─────┘
+                                         │     ┌────────────┐            │
+                                         └────▶│   Loki     │            │
+                                               │ (port 3100)│            │
+                                               └──────┬─────┘            │
+                                                      │                  │
+                                         ┌────────────┴──────────────────┘
+                                         │       Grafana                 │
+                                         │     (port 3000)               │
+                                         │  Prometheus + Loki            │
+                                         └───────────────────────────────┘
+</pre></div>
+</div>
+<p>Both the controller and worker pods set <code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code>
+pointing at the collector service. The collector receives OTLP metrics and
+logs and fans them out to:</p>
+<ul class="simple">
+<li><p><strong>debug exporter</strong> – logs metrics and log records to stdout (verify with
+<code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span></code>)</p></li>
+<li><p><strong>prometheus exporter</strong> – exposes a <code class="docutils literal notranslate"><span class="pre">/metrics</span></code> endpoint on port 8889</p></li>
+<li><p><strong>loki exporter</strong> – forwards log records to
+<a class="reference external" href="https://grafana.com/oss/loki/">Grafana Loki</a> for aggregation and querying</p></li>
+</ul>
+<p><a class="reference external" href="https://grafana.com/grafana/">Grafana</a> connects to both Prometheus and Loki
+as datasources, providing a unified UI for exploring metrics and logs.</p>
+</section>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>A Kubernetes cluster with the
+<a class="reference external" href="https://github.com/meta-pytorch/monarch-kubernetes/">Monarch CRD and operator</a>
+installed</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">kubectl</span></code> configured to access the cluster</p></li>
+</ul>
+</section>
+<section id="deploy-the-observability-stack">
+<h2>Deploy the Observability Stack<a class="headerlink" href="#deploy-the-observability-stack" title="Link to this heading">#</a></h2>
+<p>The Kubernetes manifests live alongside this script in the <code class="docutils literal notranslate"><span class="pre">otel_collector/</span></code>
+directory. Deploy them in order:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create the namespace</span>
+<span class="n">kubectl</span> <span class="n">create</span> <span class="n">namespace</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span>
+
+<span class="c1"># Deploy Loki (log aggregation backend)</span>
+<span class="n">kubectl</span> <span class="n">apply</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">loki</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">rollout</span> <span class="n">status</span> <span class="n">deployment</span><span class="o">/</span><span class="n">loki</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span>
+
+<span class="c1"># Deploy the OTEL collector</span>
+<span class="n">kubectl</span> <span class="n">apply</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">collector</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">rollout</span> <span class="n">status</span> <span class="n">deployment</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">collector</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span>
+
+<span class="c1"># Deploy Prometheus (scrapes metrics from the collector)</span>
+<span class="n">kubectl</span> <span class="n">apply</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">prometheus</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">rollout</span> <span class="n">status</span> <span class="n">deployment</span><span class="o">/</span><span class="n">prometheus</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span>
+
+<span class="c1"># Deploy Grafana (visualization)</span>
+<span class="n">kubectl</span> <span class="n">apply</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">grafana</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">rollout</span> <span class="n">status</span> <span class="n">deployment</span><span class="o">/</span><span class="n">grafana</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span>
+
+<span class="c1"># Deploy the controller pod (includes RBAC)</span>
+<span class="n">kubectl</span> <span class="n">apply</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">controller</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">wait</span> <span class="o">--</span><span class="k">for</span><span class="o">=</span><span class="n">condition</span><span class="o">=</span><span class="n">Ready</span> <span class="n">pod</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">controller</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span> <span class="o">--</span><span class="n">timeout</span><span class="o">=</span><span class="mi">120</span><span class="n">s</span>
+</pre></div>
+</div>
+</section>
+<section id="run-the-example">
+<h2>Run the Example<a class="headerlink" href="#run-the-example" title="Link to this heading">#</a></h2>
+<p>Copy this script to the controller pod and run it:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">kubectl</span> <span class="n">cp</span> <span class="n">otel_collector</span><span class="o">.</span><span class="n">py</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">controller</span><span class="p">:</span><span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">main</span><span class="o">.</span><span class="n">py</span>
+<span class="n">kubectl</span> <span class="n">exec</span> <span class="o">-</span><span class="n">it</span> <span class="n">otel</span><span class="o">-</span><span class="n">controller</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span> <span class="o">--</span> \
+    <span class="n">python</span> <span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">main</span><span class="o">.</span><span class="n">py</span> <span class="o">--</span><span class="n">num</span><span class="o">-</span><span class="n">replicas</span><span class="o">=</span><span class="mi">2</span> <span class="o">--</span><span class="n">iterations</span><span class="o">=</span><span class="mi">100</span>
+</pre></div>
+</div>
+<p>The script provisions a <code class="docutils literal notranslate"><span class="pre">MonarchMesh</span></code> with <code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code>
+set on worker pods, spawns actors, runs several rounds of work, then cleans up.</p>
+</section>
+<section id="visualize-in-grafana">
+<h2>Visualize in Grafana<a class="headerlink" href="#visualize-in-grafana" title="Link to this heading">#</a></h2>
+<p>Port-forward and open the Grafana UI:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">kubectl</span> <span class="n">port</span><span class="o">-</span><span class="n">forward</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span> <span class="n">svc</span><span class="o">/</span><span class="n">grafana</span> <span class="mi">3000</span><span class="p">:</span><span class="mi">3000</span>
+</pre></div>
+</div>
+<p>Open <a class="reference external" href="http://localhost:3000">http://localhost:3000</a> (no login required).</p>
+<p><strong>Explore Metrics</strong></p>
+<ol class="arabic simple">
+<li><p>Go to <strong>Explore</strong> (compass icon in the left sidebar).</p></li>
+<li><p>Select <strong>Prometheus</strong> datasource from the dropdown.</p></li>
+<li><p>Try these queries:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">mailbox_posts_total</span></code> – total mailbox posts across all actors</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">actor_messages_sent_total</span></code> – messages sent by the actor system</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">actor_messages_received_total</span></code> – messages received</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rate(mailbox_posts_total[1m])</span></code> – mailbox post rate per second</p></li>
+</ul>
+</li>
+</ol>
+<p><strong>Explore Logs</strong></p>
+<ol class="arabic simple">
+<li><p>Go to <strong>Explore</strong> (compass icon in the left sidebar).</p></li>
+<li><p>Select <strong>Loki</strong> datasource from the dropdown.</p></li>
+<li><p>Try these queries:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">{service_name=&quot;monarch-worker&quot;}</span></code> – all worker logs</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">{service_name=&quot;monarch-controller&quot;}</span></code> – all controller logs</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">{service_name=~&quot;.+&quot;}</span></code> – all logs from any service</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">{service_name=&quot;monarch-worker&quot;}</span> <span class="pre">|=</span> <span class="pre">&quot;error&quot;</span></code> – filter for error messages</p></li>
+</ul>
+</li>
+</ol>
+</section>
+<section id="verify-metrics-and-logs">
+<h2>Verify Metrics and Logs<a class="headerlink" href="#verify-metrics-and-logs" title="Link to this heading">#</a></h2>
+<p>Check the collector’s debug output to confirm data is being received:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">kubectl</span> <span class="n">logs</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span> <span class="n">deployment</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">collector</span> <span class="o">--</span><span class="n">tail</span><span class="o">=</span><span class="mi">100</span>
+</pre></div>
+</div>
+<p>You should see metric data points logged with names like <code class="docutils literal notranslate"><span class="pre">mailbox.posts</span></code>,
+<code class="docutils literal notranslate"><span class="pre">actor.messages_sent</span></code>, <code class="docutils literal notranslate"><span class="pre">actor.messages_received</span></code>, etc., as well as log
+records from the actor system.</p>
+<p>To view metrics via Prometheus:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Port-forward the Prometheus endpoint</span>
+<span class="n">kubectl</span> <span class="n">port</span><span class="o">-</span><span class="n">forward</span> <span class="o">-</span><span class="n">n</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span> <span class="n">svc</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">collector</span> <span class="mi">8889</span><span class="p">:</span><span class="mi">8889</span>
+
+<span class="c1"># Scrape metrics</span>
+<span class="n">curl</span> <span class="o">-</span><span class="n">s</span> <span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="n">localhost</span><span class="p">:</span><span class="mi">8889</span><span class="o">/</span><span class="n">metrics</span> <span class="o">|</span> <span class="n">head</span> <span class="o">-</span><span class="mi">50</span>
+</pre></div>
+</div>
+</section>
+<section id="cleanup">
+<h2>Cleanup<a class="headerlink" href="#cleanup" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">kubectl</span> <span class="n">delete</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">controller</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">delete</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">grafana</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">delete</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">prometheus</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">delete</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">otel</span><span class="o">-</span><span class="n">collector</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">delete</span> <span class="o">-</span><span class="n">f</span> <span class="n">otel_collector</span><span class="o">/</span><span class="n">loki</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">kubectl</span> <span class="n">delete</span> <span class="n">namespace</span> <span class="n">monarch</span><span class="o">-</span><span class="n">tests</span>
+</pre></div>
+</div>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Environment Variable</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code></p></td>
+<td><p>(unset)</p></td>
+<td><p>Collector endpoint. When set, enables OTLP metric and log export.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OTEL_SERVICE_NAME</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">unknown_service</span></code></p></td>
+<td><p>Service name attached to all exported telemetry.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OTEL_METRIC_EXPORT_INTERVAL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1s</span></code></p></td>
+<td><p>How often the periodic metric reader pushes to the exporter.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">USE_UNIFIED_LAYER</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Enables the unified tracing layer and OTLP log sink. Enabled by default.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ENABLE_OTEL_METRICS</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Set to <code class="docutils literal notranslate"><span class="pre">false</span></code> to disable OTel metrics entirely.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_HEADERS</span></code></p></td>
+<td><p>(unset)</p></td>
+<td><p>Additional headers for the OTLP exporter (e.g., auth tokens).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_TIMEOUT</span></code></p></td>
+<td><p>(unset)</p></td>
+<td><p>Timeout for OTLP export requests.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="controller-script">
+<h2>Controller Script<a class="headerlink" href="#controller-script" title="Link to this heading">#</a></h2>
+<p>The controller script below spawns actors on Kubernetes worker pods and
+exercises them to generate metrics and log events. Both the controller
+and worker pods have <code class="docutils literal notranslate"><span class="pre">OTEL_EXPORTER_OTLP_ENDPOINT</span></code> set, so all telemetry
+is automatically forwarded to the collector.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">socket</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">kubernetes.client</span><span class="w"> </span><span class="kn">import</span> <span class="n">V1Container</span><span class="p">,</span> <span class="n">V1EnvVar</span><span class="p">,</span> <span class="n">V1PodSpec</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch._src.job.kubernetes</span><span class="w"> </span><span class="kn">import</span> <span class="n">_WORKER_BOOTSTRAP_SCRIPT</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.actor</span><span class="w"> </span><span class="kn">import</span> <span class="n">Actor</span><span class="p">,</span> <span class="n">endpoint</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">monarch.job.kubernetes</span><span class="w"> </span><span class="kn">import</span> <span class="n">KubernetesJob</span>
+
+<span class="n">logger</span><span class="p">:</span> <a href="https://docs.python.org/3/library/logging.html#logging.Logger" title="logging.Logger" class="sphx-glr-backref-module-logging sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">logging</span><span class="o">.</span><span class="n">Logger</span></a> <span class="o">=</span> <a href="https://docs.python.org/3/library/logging.html#logging.getLogger" title="logging.getLogger" class="sphx-glr-backref-module-logging sphx-glr-backref-type-py-function"><span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span></a><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">_OTEL_ENDPOINT</span> <span class="o">=</span> <span class="s2">&quot;http://otel-collector.monarch-tests.svc.cluster.local:4318&quot;</span>
+</pre></div>
+</div>
+<p>Define an actor that performs work to generate telemetry.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">WorkActor</span><span class="p">(</span><span class="n">Actor</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Actor that performs work to generate telemetry.&quot;&quot;&quot;</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">do_work</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Run a loop to generate actor message metrics.&quot;&quot;&quot;</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;starting work with </span><span class="si">%d</span><span class="s2"> iterations&quot;</span><span class="p">,</span> <span class="n">iterations</span><span class="p">)</span>
+        <span class="n">total</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iterations</span><span class="p">):</span>
+            <span class="n">total</span> <span class="o">+=</span> <span class="n">i</span> <span class="o">*</span> <span class="n">i</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;completed work: result=</span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">total</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">{</span>
+            <span class="s2">&quot;hostname&quot;</span><span class="p">:</span> <a href="https://docs.python.org/3/library/socket.html#socket.gethostname" title="socket.gethostname" class="sphx-glr-backref-module-socket sphx-glr-backref-type-py-function"><span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span></a><span class="p">(),</span>
+            <span class="s2">&quot;iterations&quot;</span><span class="p">:</span> <span class="n">iterations</span><span class="p">,</span>
+            <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="n">total</span><span class="p">,</span>
+        <span class="p">}</span>
+
+    <span class="nd">@endpoint</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">ping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;received ping&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;pong from </span><span class="si">{</span><a href="https://docs.python.org/3/library/socket.html#socket.gethostname" title="socket.gethostname" class="sphx-glr-backref-module-socket sphx-glr-backref-type-py-function"><span class="n">socket</span><span class="o">.</span><span class="n">gethostname</span></a><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span>
+</pre></div>
+</div>
+<p>Build the worker pod spec with OTEL environment variables.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">build_worker_pod_spec</span><span class="p">(</span><span class="n">port</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">V1PodSpec</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Build a V1PodSpec with OTEL_EXPORTER_OTLP_ENDPOINT configured.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">V1PodSpec</span><span class="p">(</span>
+        <span class="n">containers</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">V1Container</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="s2">&quot;worker&quot;</span><span class="p">,</span>
+                <span class="n">image</span><span class="o">=</span><span class="s2">&quot;ghcr.io/meta-pytorch/monarch:latest&quot;</span><span class="p">,</span>
+                <span class="n">image_pull_policy</span><span class="o">=</span><span class="s2">&quot;Always&quot;</span><span class="p">,</span>
+                <span class="n">command</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;python&quot;</span><span class="p">,</span> <span class="s2">&quot;-u&quot;</span><span class="p">,</span> <span class="s2">&quot;-c&quot;</span><span class="p">,</span> <span class="n">_WORKER_BOOTSTRAP_SCRIPT</span><span class="p">],</span>
+                <span class="n">env</span><span class="o">=</span><span class="p">[</span>
+                    <span class="n">V1EnvVar</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;MONARCH_PORT&quot;</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">port</span><span class="p">)),</span>
+                    <span class="n">V1EnvVar</span><span class="p">(</span>
+                        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;OTEL_EXPORTER_OTLP_ENDPOINT&quot;</span><span class="p">,</span>
+                        <span class="n">value</span><span class="o">=</span><span class="n">_OTEL_ENDPOINT</span><span class="p">,</span>
+                    <span class="p">),</span>
+                    <span class="n">V1EnvVar</span><span class="p">(</span>
+                        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;OTEL_SERVICE_NAME&quot;</span><span class="p">,</span>
+                        <span class="n">value</span><span class="o">=</span><span class="s2">&quot;monarch-worker&quot;</span><span class="p">,</span>
+                    <span class="p">),</span>
+                    <span class="n">V1EnvVar</span><span class="p">(</span>
+                        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;MONARCH_FILE_LOG&quot;</span><span class="p">,</span>
+                        <span class="n">value</span><span class="o">=</span><span class="s2">&quot;trace&quot;</span><span class="p">,</span>
+                    <span class="p">),</span>
+                <span class="p">],</span>
+            <span class="p">)</span>
+        <span class="p">]</span>
+    <span class="p">)</span>
+</pre></div>
+</div>
+<p>The main function provisions workers, spawns actors, and runs several
+rounds of work to produce a stream of metrics and logs.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+    <span class="n">parser</span> <span class="o">=</span> <a href="https://docs.python.org/3/library/argparse.html#argparse.ArgumentParser" title="argparse.ArgumentParser" class="sphx-glr-backref-module-argparse sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span></a><span class="p">(</span>
+        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Monarch OTEL Collector Kubernetes example&quot;</span>
+    <span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
+        <span class="s2">&quot;--num-replicas&quot;</span><span class="p">,</span>
+        <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+        <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Number of worker replicas (default: 2)&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span>
+        <span class="s2">&quot;--iterations&quot;</span><span class="p">,</span>
+        <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>
+        <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Number of work rounds to generate metrics (default: 5)&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">args</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
+
+    <span class="n">otel_endpoint</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;OTEL_EXPORTER_OTLP_ENDPOINT&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Controller OTEL_EXPORTER_OTLP_ENDPOINT: </span><span class="si">{</span><span class="n">otel_endpoint</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Connecting to Kubernetes...&quot;</span><span class="p">)</span>
+    <span class="n">job</span> <span class="o">=</span> <span class="n">KubernetesJob</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;monarch-tests&quot;</span><span class="p">)</span>
+    <span class="n">port</span> <span class="o">=</span> <span class="mi">26600</span>
+    <span class="n">job</span><span class="o">.</span><span class="n">add_mesh</span><span class="p">(</span>
+        <span class="s2">&quot;workers&quot;</span><span class="p">,</span>
+        <span class="n">num_replicas</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">num_replicas</span><span class="p">,</span>
+        <span class="n">pod_spec</span><span class="o">=</span><span class="n">build_worker_pod_spec</span><span class="p">(</span><span class="n">port</span><span class="p">),</span>
+        <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Waiting for </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">num_replicas</span><span class="si">}</span><span class="s2"> worker pod(s)...&quot;</span><span class="p">)</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+    <span class="n">host_mesh</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">workers</span>
+    <span class="n">procs</span> <span class="o">=</span> <span class="n">host_mesh</span><span class="o">.</span><span class="n">spawn_procs</span><span class="p">()</span>
+
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Spawning actors...&quot;</span><span class="p">)</span>
+    <span class="n">actors</span> <span class="o">=</span> <span class="n">procs</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="s2">&quot;work_actor&quot;</span><span class="p">,</span> <span class="n">WorkActor</span><span class="p">)</span>
+
+    <span class="c1"># Run several rounds of work to generate a stream of metrics.</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">iterations</span><span class="p">):</span>
+        <span class="n">results</span> <span class="o">=</span> <span class="n">actors</span><span class="o">.</span><span class="n">ping</span><span class="o">.</span><span class="n">call</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;  Round </span><span class="si">{</span><span class="n">i</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">list</span><span class="p">(</span><span class="n">results</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="n">work_results</span> <span class="o">=</span> <span class="n">actors</span><span class="o">.</span><span class="n">do_work</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="mi">1000</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">_</span><span class="p">,</span> <span class="n">result</span> <span class="ow">in</span> <span class="n">work_results</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="nb">print</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;    </span><span class="si">{</span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;hostname&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">: computed </span><span class="si">{</span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;iterations&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2"> iterations&quot;</span>
+            <span class="p">)</span>
+
+    <span class="c1"># Wait for the periodic metric reader and log sink to flush.</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Waiting for metrics and logs to flush to collector...&quot;</span><span class="p">)</span>
+    <a href="https://docs.python.org/3/library/time.html#time.sleep" title="time.sleep" class="sphx-glr-backref-module-time sphx-glr-backref-type-py-function"><span class="n">time</span><span class="o">.</span><span class="n">sleep</span></a><span class="p">(</span><span class="mi">10</span><span class="p">)</span>
+
+    <span class="nb">print</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Verify metrics and logs in the OTEL collector logs:&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;  kubectl logs -n monarch-tests deployment/otel-collector --tail=100&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Scrape Prometheus endpoint:&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;  kubectl port-forward -n monarch-tests svc/otel-collector 8889:8889&quot;</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;  curl http://localhost:8889/metrics&quot;</span><span class="p">)</span>
+
+    <span class="n">procs</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+    <span class="n">job</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Done.&quot;</span><span class="p">)</span>
+
+
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">&quot;__main__&quot;</span><span class="p">:</span>
+    <span class="n">main</span><span class="p">()</span>
+</pre></div>
+</div>
+<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.000 seconds)</p>
+<div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-generated-examples-otel-collector-py">
+<div class="sphx-glr-download sphx-glr-download-python docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/474faa13b72ade20551e5531a79f8ea5/otel_collector.py"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Python</span> <span class="pre">source</span> <span class="pre">code:</span> <span class="pre">otel_collector.py</span></code></a></p>
+</div>
+<div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
+<p><a class="reference download internal" download="" href="../../_downloads/d44a1ad5ba5fcc9cbcf3405404992a56/otel_collector.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">otel_collector.ipynb</span></code></a></p>
+</div>
+</div>
+<p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="debugging.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Debugging Python Actors with pdb in Monarch</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../../api/index.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Python API</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="debugging.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Debugging Python Actors with pdb in Monarch</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../../api/index.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Python API</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploy-the-observability-stack">Deploy the Observability Stack</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-example">Run the Example</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#visualize-in-grafana">Visualize in Grafana</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-metrics-and-logs">Verify Metrics and Logs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cleanup">Cleanup</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#controller-script">Controller Script</a></li>
+</ul>
+  </nav></div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Exporting Metrics and Logs with OpenTelemetry",
+       "headline": "Exporting Metrics and Logs with OpenTelemetry",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/generated/examples/otel_collector.html",
+       "articleBody": "Note Go to the end to download the full example code Exporting Metrics and Logs with OpenTelemetry# This example shows how to export Monarch\u2019s built-in metrics and logs to an OpenTelemetry Collector and visualize them with Grafana. We deploy the full observability stack on Kubernetes using the Monarch CRD and operator. When OTEL_EXPORTER_OTLP_ENDPOINT is set, Monarch\u2019s telemetry layer exports metrics and logs via OTLP/HTTP to the specified collector. Metrics are exported automatically. Log export uses the unified tracing layer, which is enabled by default and wires up the OTLP log sink. Built-in actor system metrics (mailbox posts, messages sent/received, queue sizes, etc.) and log events are exported with no code changes. Architecture# \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Controller \u2502\u2500\u2500OTLP/HTTP\u2500\u2500\u2510 \u2502 (main.py) \u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u25bc \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 OTEL Collector \u2502\u2500\u2500\u2500\u2500\u25b6\u2502 stdout \u2502 \u2502 (port 4318) \u2502 \u2502 (debug) \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u25b2 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 Worker pods \u2502\u2500\u2500OTLP/HTTP\u2500\u2500\u2518 \u251c\u2500\u2500\u2500\u2500\u25b6\u2502 Prometheus \u2502\u2500\u2500\u2500\u2500\u25b6\u2502 Prometheus \u2502 \u2502 (mesh) \u2502 \u2502 \u2502 (scrape \u2502 \u2502 (server \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 port 8889)\u2502 \u2502 port 9090)\u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502 \u2514\u2500\u2500\u2500\u2500\u25b6\u2502 Loki \u2502 \u2502 \u2502 (port 3100)\u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 Grafana \u2502 \u2502 (port 3000) \u2502 \u2502 Prometheus + Loki \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 Both the controller and worker pods set OTEL_EXPORTER_OTLP_ENDPOINT pointing at the collector service. The collector receives OTLP metrics and logs and fans them out to: debug exporter \u2013 logs metrics and log records to stdout (verify with kubectl logs) prometheus exporter \u2013 exposes a /metrics endpoint on port 8889 loki exporter \u2013 forwards log records to Grafana Loki for aggregation and querying Grafana connects to both Prometheus and Loki as datasources, providing a unified UI for exploring metrics and logs. Prerequisites# A Kubernetes cluster with the Monarch CRD and operator installed kubectl configured to access the cluster Deploy the Observability Stack# The Kubernetes manifests live alongside this script in the otel_collector/ directory. Deploy them in order: # Create the namespace kubectl create namespace monarch-tests # Deploy Loki (log aggregation backend) kubectl apply -f otel_collector/loki.yaml kubectl rollout status deployment/loki -n monarch-tests # Deploy the OTEL collector kubectl apply -f otel_collector/otel-collector.yaml kubectl rollout status deployment/otel-collector -n monarch-tests # Deploy Prometheus (scrapes metrics from the collector) kubectl apply -f otel_collector/prometheus.yaml kubectl rollout status deployment/prometheus -n monarch-tests # Deploy Grafana (visualization) kubectl apply -f otel_collector/grafana.yaml kubectl rollout status deployment/grafana -n monarch-tests # Deploy the controller pod (includes RBAC) kubectl apply -f otel_collector/controller.yaml kubectl wait --for=condition=Ready pod/otel-controller -n monarch-tests --timeout=120s Run the Example# Copy this script to the controller pod and run it: kubectl cp otel_collector.py monarch-tests/otel-controller:/tmp/main.py kubectl exec -it otel-controller -n monarch-tests -- \\ python /tmp/main.py --num-replicas=2 --iterations=100 The script provisions a MonarchMesh with OTEL_EXPORTER_OTLP_ENDPOINT set on worker pods, spawns actors, runs several rounds of work, then cleans up. Visualize in Grafana# Port-forward and open the Grafana UI: kubectl port-forward -n monarch-tests svc/grafana 3000:3000 Open http://localhost:3000 (no login required). Explore Metrics Go to Explore (compass icon in the left sidebar). Select Prometheus datasource from the dropdown. Try these queries: mailbox_posts_total \u2013 total mailbox posts across all actors actor_messages_sent_total \u2013 messages sent by the actor system actor_messages_received_total \u2013 messages received rate(mailbox_posts_total[1m]) \u2013 mailbox post rate per second Explore Logs Go to Explore (compass icon in the left sidebar). Select Loki datasource from the dropdown. Try these queries: {service_name=\"monarch-worker\"} \u2013 all worker logs {service_name=\"monarch-controller\"} \u2013 all controller logs {service_name=~\".+\"} \u2013 all logs from any service {service_name=\"monarch-worker\"} |= \"error\" \u2013 filter for error messages Verify Metrics and Logs# Check the collector\u2019s debug output to confirm data is being received: kubectl logs -n monarch-tests deployment/otel-collector --tail=100 You should see metric data points logged with names like mailbox.posts, actor.messages_sent, actor.messages_received, etc., as well as log records from the actor system. To view metrics via Prometheus: # Port-forward the Prometheus endpoint kubectl port-forward -n monarch-tests svc/otel-collector 8889:8889 # Scrape metrics curl -s http://localhost:8889/metrics | head -50 Cleanup# kubectl delete -f otel_collector/controller.yaml kubectl delete -f otel_collector/grafana.yaml kubectl delete -f otel_collector/prometheus.yaml kubectl delete -f otel_collector/otel-collector.yaml kubectl delete -f otel_collector/loki.yaml kubectl delete namespace monarch-tests Configuration# Environment Variable Default Description OTEL_EXPORTER_OTLP_ENDPOINT (unset) Collector endpoint. When set, enables OTLP metric and log export. OTEL_SERVICE_NAME unknown_service Service name attached to all exported telemetry. OTEL_METRIC_EXPORT_INTERVAL 1s How often the periodic metric reader pushes to the exporter. USE_UNIFIED_LAYER true Enables the unified tracing layer and OTLP log sink. Enabled by default. ENABLE_OTEL_METRICS true Set to false to disable OTel metrics entirely. OTEL_EXPORTER_OTLP_HEADERS (unset) Additional headers for the OTLP exporter (e.g., auth tokens). OTEL_EXPORTER_OTLP_TIMEOUT (unset) Timeout for OTLP export requests. Controller Script# The controller script below spawns actors on Kubernetes worker pods and exercises them to generate metrics and log events. Both the controller and worker pods have OTEL_EXPORTER_OTLP_ENDPOINT set, so all telemetry is automatically forwarded to the collector. import argparse import logging import os import socket import time from kubernetes.client import V1Container, V1EnvVar, V1PodSpec from monarch._src.job.kubernetes import _WORKER_BOOTSTRAP_SCRIPT from monarch.actor import Actor, endpoint from monarch.job.kubernetes import KubernetesJob logger: logging.Logger = logging.getLogger(__name__) _OTEL_ENDPOINT = \"http://otel-collector.monarch-tests.svc.cluster.local:4318\" Define an actor that performs work to generate telemetry. class WorkActor(Actor): \"\"\"Actor that performs work to generate telemetry.\"\"\" @endpoint def do_work(self, iterations: int) -\u003e dict: \"\"\"Run a loop to generate actor message metrics.\"\"\" logger.info(\"starting work with %d iterations\", iterations) total = 0 for i in range(iterations): total += i * i logger.info(\"completed work: result=%d\", total) return { \"hostname\": socket.gethostname(), \"iterations\": iterations, \"result\": total, } @endpoint def ping(self) -\u003e str: logger.info(\"received ping\") return f\"pong from {socket.gethostname()}\" Build the worker pod spec with OTEL environment variables. def build_worker_pod_spec(port: int) -\u003e V1PodSpec: \"\"\"Build a V1PodSpec with OTEL_EXPORTER_OTLP_ENDPOINT configured.\"\"\" return V1PodSpec( containers=[ V1Container( name=\"worker\", image=\"ghcr.io/meta-pytorch/monarch:latest\", image_pull_policy=\"Always\", command=[\"python\", \"-u\", \"-c\", _WORKER_BOOTSTRAP_SCRIPT], env=[ V1EnvVar(name=\"MONARCH_PORT\", value=str(port)), V1EnvVar( name=\"OTEL_EXPORTER_OTLP_ENDPOINT\", value=_OTEL_ENDPOINT, ), V1EnvVar( name=\"OTEL_SERVICE_NAME\", value=\"monarch-worker\", ), V1EnvVar( name=\"MONARCH_FILE_LOG\", value=\"trace\", ), ], ) ] ) The main function provisions workers, spawns actors, and runs several rounds of work to produce a stream of metrics and logs. def main(): parser = argparse.ArgumentParser( description=\"Monarch OTEL Collector Kubernetes example\" ) parser.add_argument( \"--num-replicas\", type=int, default=2, help=\"Number of worker replicas (default: 2)\", ) parser.add_argument( \"--iterations\", type=int, default=5, help=\"Number of work rounds to generate metrics (default: 5)\", ) args = parser.parse_args() otel_endpoint = os.environ.get(\"OTEL_EXPORTER_OTLP_ENDPOINT\", \"\") print(f\"Controller OTEL_EXPORTER_OTLP_ENDPOINT: {otel_endpoint}\") print(\"Connecting to Kubernetes...\") job = KubernetesJob(namespace=\"monarch-tests\") port = 26600 job.add_mesh( \"workers\", num_replicas=args.num_replicas, pod_spec=build_worker_pod_spec(port), port=port, ) print(f\"Waiting for {args.num_replicas} worker pod(s)...\") state = job.state() host_mesh = state.workers procs = host_mesh.spawn_procs() print(\"Spawning actors...\") actors = procs.spawn(\"work_actor\", WorkActor) # Run several rounds of work to generate a stream of metrics. for i in range(args.iterations): results = actors.ping.call().get() print(f\" Round {i + 1}: {list(results)}\") work_results = actors.do_work.call(1000).get() for _, result in work_results.items(): print( f\" {result[\u0027hostname\u0027]}: computed {result[\u0027iterations\u0027]} iterations\" ) # Wait for the periodic metric reader and log sink to flush. print(\"Waiting for metrics and logs to flush to collector...\") time.sleep(10) print() print(\"Verify metrics and logs in the OTEL collector logs:\") print(\" kubectl logs -n monarch-tests deployment/otel-collector --tail=100\") print() print(\"Scrape Prometheus endpoint:\") print(\" kubectl port-forward -n monarch-tests svc/otel-collector 8889:8889\") print(\" curl http://localhost:8889/metrics\") procs.stop().get() job.kill() print(\"Done.\") if __name__ == \"__main__\": main() Total running time of the script: (0 minutes 0.000 seconds) Download Python source code: otel_collector.py Download Jupyter notebook: otel_collector.ipynb Gallery generated by Sphinx-Gallery",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/generated/examples/otel_collector.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

@@ -1,0 +1,145 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Interactive TUI client for the Monarch mesh admin HTTP API."><title>hyperactor_mesh_admin_tui_lib - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="hyperactor_mesh_admin_tui_lib" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate hyperactor_mesh_admin_tui_lib</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../hyperactor_mesh_admin_tui_lib/index.html">hyperactor_<wbr>mesh_<wbr>admin_<wbr>tui_<wbr>lib</a><span class="version">0.0.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#design-pillars-algebraic" title="Design Pillars (Algebraic)">Design Pillars (Algebraic)</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>hyperactor_<wbr>mesh_<wbr>admin_<wbr>tui_<wbr>lib</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/hyperactor_mesh_admin_tui_lib/lib.rs.html#9-346">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Interactive TUI client for the Monarch mesh admin HTTP API.</p>
+<p>Displays the mesh topology as a navigable tree by walking <code>GET /v1/{reference}</code> endpoints. Selecting any node shows contextual
+details on the right pane, including actor flight recorder events
+when an actor is selected.</p>
+<p>Binaries construct a <a href="struct.TuiConfig.html" title="struct hyperactor_mesh_admin_tui_lib::TuiConfig"><code>TuiConfig</code></a> (after resolving any
+<code>mast_conda:///</code> handles themselves) and call <a href="fn.run.html" title="fn hyperactor_mesh_admin_tui_lib::run"><code>run</code></a>.</p>
+<h2 id="design-pillars-algebraic"><a class="doc-anchor" href="#design-pillars-algebraic">§</a>Design Pillars (Algebraic)</h2>
+<p>This TUI is intentionally structured around three algebraic
+invariants to make behavior correct by construction:</p>
+<ol>
+<li><strong>TUI-1 (join-semilattice):</strong> All fetch results merge via
+<code>FetchState::join</code>, guaranteeing commutativity, associativity,
+and idempotence under retries and reordering.</li>
+<li><strong>TUI-2 (cursor-bounds):</strong> Selection is managed by <code>Cursor</code>, which
+enforces the invariant <code>pos &lt; len</code> (or <code>pos == 0</code> when empty).</li>
+<li><strong>TUI-3 (tree-recursion):</strong> The mesh topology is stored
+as an explicit tree (<code>TreeNode { children }</code>) and rendered via
+a pure projection (<code>flatten_tree</code>), avoiding ad-hoc list
+surgery.</li>
+</ol>
+<p>Additional invariants enforced throughout the code:</p>
+<ul>
+<li><strong>TUI-4 (failed-always-visible):</strong> Failed nodes are always
+visible regardless of the <code>show_stopped</code> toggle.</li>
+<li><strong>TUI-5 (single-fetch-path):</strong> All cache writes go through
+<code>fetch_with_join</code> (no direct inserts).</li>
+<li><strong>TUI-6 (refresh-staleness):</strong> <code>FetchState::Ready</code> with
+<code>generation &lt; refresh_gen</code> is refetched; errors always retry.</li>
+<li><strong>TUI-7 (synthetic-root):</strong> The root node is synthetic and
+always expanded; only its children are rendered at depth 0.</li>
+<li><strong>TUI-8 (cycle-safety):</strong> Tree building rejects only true
+cycles (nodes that appear in their own ancestor path).</li>
+<li><strong>TUI-9 (depth-cap):</strong> Recursion is bounded by
+<code>MAX_TREE_DEPTH</code> (Root→Host→Proc→Actor→ChildActor).</li>
+<li><strong>TUI-10 (fold-traversal):</strong> Walks over <code>TreeNode</code> use fold
+abstractions, not bespoke recursion.</li>
+<li><strong>TUI-11 (selection-semantics):</strong> Cursor restoration prefers
+<code>(reference, depth)</code> to disambiguate; falls back to
+reference-only if depth changes.</li>
+<li><strong>TUI-12 (serial-topology-fetches):</strong> Topology cache fetches
+(via <code>fetch_with_join</code> / <code>build_tree_node</code>) are serial within
+a refresh cycle; join semantics handle retries and reordering.
+Overlay fetches (py-spy, config, diagnostics) are concurrent
+via <code>tokio::spawn</code> and do not participate in the topology cache.</li>
+<li><strong>TUI-13 (stopped-detection):</strong> <code>is_stopped_node</code> matches
+<code>Actor</code> variants whose <code>actor_status</code> starts with <code>"stopped:"</code>
+or <code>"failed:"</code>. All other variants return false.</li>
+<li><strong>TUI-14 (stopped-dual-source):</strong> <code>TreeNode.stopped</code> is true
+if the cached payload is stopped OR the child ref appears in
+the parent proc’s <code>stopped_children</code> list.</li>
+<li><strong>TUI-15 (filter-order):</strong> When both filters are off, system
+membership is checked first.</li>
+<li><strong>TUI-16 (placeholder-equivalence):</strong> <code>placeholder_stopped</code> is
+identical to <code>placeholder</code> except <code>stopped: true</code>.</li>
+<li><strong>TUI-17 (failure-propagation):</strong> A node’s <code>failed</code> flag is
+<code>is_failed_node(payload) || children.any(failed)</code>. Host/root
+nodes are failed only when a descendant is.</li>
+<li><strong>TUI-18 (collapsed-failure-carry):</strong> When collapsed, prior
+<code>failed</code> state is carried forward via <code>failed_keys</code>. Expanded
+nodes always recompute from live children.</li>
+<li><strong>TUI-19 (system-dual-source):</strong> <code>TreeNode.is_system</code> is true
+if <code>is_system: true</code> in payload OR child ref in parent’s
+<code>system_children</code>. Style precedence: selected &gt; stopped &gt;
+system &gt; node-type.</li>
+<li><strong>TUI-20 (proc-accounting):</strong> Displayed total is <code>num_actors + stopped_children.len()</code>. <code>"(max retained)"</code> appears iff cap
+reached.</li>
+</ul>
+<p>TLS and transport invariants:</p>
+<ul>
+<li><strong>TUI-T1 (tls-auto-detect):</strong> <code>client::build_client</code> probes
+for TLS material in priority order: explicit CLI paths →
+<code>try_tls_pem_bundle</code> → plain HTTP fallback.</li>
+<li><strong>TUI-T2 (prebuilt-client):</strong> <code>App::new</code> receives a pre-built
+<code>reqwest::Client</code> and <code>base_url</code> (including scheme). TLS
+configuration is external to the app state.</li>
+<li><strong>TUI-T3 (scheme-inclusive-url):</strong> <code>base_url</code> always starts
+with <code>http://</code> or <code>https://</code>; bare <code>host:port</code> is resolved to
+a scheme during client construction, never stored schemeless.</li>
+<li><strong>TUI-21 (job-overlay-coherence):</strong> <code>active_job.is_some() ↔ overlay.is_some()</code>. Enforced by <code>set_job</code>/<code>dismiss_job</code> —
+all creation goes through <code>set_job</code> (which calls
+<code>rebuild_overlay</code>) and all teardown through <code>dismiss_job</code>
+(which clears both fields). Makes it structurally impossible
+to have an orphaned overlay or a running job with no display
+surface.</li>
+</ul>
+<p>Py-spy overlay invariants:</p>
+<ul>
+<li><strong>PY-1 (fresh-trace):</strong> Every <code>p</code> press issues a new HTTP
+fetch; no cached py-spy result is ever reused.</li>
+<li><strong>PY-2 (overlay-ownership):</strong> A py-spy result may only populate
+a still-valid active py-spy overlay. Stale results are
+invalidated structurally: <code>active_job</code> carries the receiver
+inside the <code>PySpy</code> variant, so replacing or clearing <code>active_job</code>
+drops the receiver and cancels any in-flight fetch. TUI-21
+guarantees <code>active_job</code> is always <code>None</code> when <code>overlay</code> is <code>None</code>.</li>
+<li><strong>PY-3 (replacement):</strong> Opening or refreshing py-spy replaces
+prior overlay content and resets scroll to zero on result
+arrival.</li>
+<li><strong>PY-4 (selection-totality):</strong> <code>p</code> is a no-op on Root/Host;
+targets the proc ref directly on Proc; targets the owning proc
+via <code>detail.parent</code> on Actor.</li>
+<li><strong>PY-5 (overlay-isolation):</strong> Diagnostics and py-spy overlays
+must not write into each other’s display surface. Enforced by
+<code>set_job</code>: <code>RunDiagnostics</code> calls <code>set_job</code> with the
+<code>Diagnostics</code> variant (dropping any live <code>PySpy</code> receiver);
+Esc calls <code>dismiss_job</code>; <code>recv_active_job</code> fires only for the
+variant currently stored.</li>
+</ul>
+<p>Config overlay invariants:</p>
+<ul>
+<li><strong>CFG-1 (fresh-snapshot):</strong> Every <code>C</code> press issues a new HTTP
+fetch; no cached config result is ever reused.</li>
+<li><strong>CFG-2 (overlay-ownership):</strong> A config result may only populate
+a still-valid active config overlay. Stale results are
+invalidated structurally: <code>active_job</code> carries the receiver
+inside the <code>Config</code> variant, so replacing or clearing <code>active_job</code>
+drops the receiver and cancels any in-flight fetch. TUI-21
+guarantees <code>active_job</code> is always <code>None</code> when <code>overlay</code> is <code>None</code>.</li>
+<li><strong>CFG-3 (replacement):</strong> Opening or refreshing config replaces
+prior overlay content and resets scroll to zero on result
+arrival.</li>
+<li><strong>CFG-4 (selection-totality):</strong> <code>C</code> targets the proc ref directly
+on Proc (worker or service); targets the owning proc via
+<code>detail.parent</code> on Actor; no-op on Root/Host. Backend routes to
+ProcAgent or HostAgent per proc type (same as PY-4).</li>
+<li><strong>CFG-5 (overlay-isolation):</strong> Config, Diagnostics, and PySpy
+overlays must not write into each other’s display surface.
+Enforced by <code>set_job</code>: each variant drops any prior receiver;
+<code>recv_active_job</code> fires only for the variant currently stored.</li>
+</ul>
+<p>Laziness + recursion benefits:</p>
+<ul>
+<li><strong>Lazy expansion</strong>: proc/actor children are placeholders until
+expanded, keeping refresh costs bounded and scaling work to what
+the user explores.</li>
+<li><strong>Structural recursion</strong>: tree operations are defined by
+recursion/folds over the explicit tree, avoiding brittle
+index-based manipulation and making the view a pure projection.</li>
+</ul>
+<div class="example-wrap"><pre class="language-bash"><code># Terminal 1: Run dining philosophers (or any hyperactor application)
+buck2 run fbcode//monarch/hyperactor_mesh:hyperactor_mesh_example_dining_philosophers
+
+# Terminal 2: Run this TUI (use the port printed by the application)
+buck2 run fbcode//monarch/hyperactor_mesh_admin_tui:hyperactor_mesh_admin_tui -- --addr 127.0.0.1:XXXXX</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.TuiConfig.html" title="struct hyperactor_mesh_admin_tui_lib::TuiConfig">TuiConfig</a></dt><dd>Configuration for the mesh admin TUI.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.LangName.html" title="enum hyperactor_mesh_admin_tui_lib::LangName">Lang<wbr>Name</a></dt><dd>Selectable display language.</dd><dt><a class="enum" href="enum.ThemeName.html" title="enum hyperactor_mesh_admin_tui_lib::ThemeName">Theme<wbr>Name</a></dt><dd>Selectable color theme.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.run.html" title="fn hyperactor_mesh_admin_tui_lib::run">run</a></dt><dd>Run the mesh admin TUI. Does not return until the user exits
+or diagnostics complete.</dd></dl></section></div></main></body></html>
