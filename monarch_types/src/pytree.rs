@@ -271,6 +271,7 @@ mod tests {
 
     use super::PyTree;
 
+    #[cfg_attr(not(feature = "tensor_engine"), ignore = "requires tensor_engine")]
     #[test]
     fn flatten_unflatten() -> Result<()> {
         Python::initialize();
@@ -285,6 +286,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(not(feature = "tensor_engine"), ignore = "requires tensor_engine")]
     #[test]
     fn try_map() -> Result<()> {
         Python::initialize();

@@ -15,11 +15,16 @@ import mmap
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from collections.abc import Generator
 
 import pytest
+
+if sys.platform != "linux":
+    pytest.skip("linux-only", allow_module_level=True)
+
 from isolate_in_subprocess import isolate_in_subprocess
 from monarch._rust_bindings.monarch_extension.chunked_fuse import (
     FuseMountHandle,
