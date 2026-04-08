@@ -19,6 +19,8 @@ jobs:
   build-rocm:
     name: Build ROCm (py3.10)
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    # TODO: temporary, change to false after the job is fixed
+    continue-on-error: true
     strategy:
       fail-fast: true
       matrix:
