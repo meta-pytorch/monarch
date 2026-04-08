@@ -16,7 +16,8 @@ import re
 import subprocess
 import sys
 import time
-from typing import cast, IO, Optional
+from contextlib import contextmanager
+from typing import cast, Generator, IO, Optional
 
 import monarch.actor
 import pytest
@@ -461,6 +462,15 @@ async def test_exception_after_wait_unmonitored():
 """
 
 
+def is_process_running(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
+        return True
+    except OSError:
+        return False
+
+
 # oss_skip: importlib not pulling resource correctly in git CI, needs to be revisited
 @pytest.mark.oss_skip
 def test_python_actor_process_cleanup():
@@ -514,14 +524,6 @@ def test_python_actor_process_cleanup():
     print("Waiting for child processes to be cleaned up...")
     cleanup_timeout = 120
     start_time = time.time()
-
-    def is_process_running(pid):
-        """Check if a process with the given PID is still running."""
-        try:
-            os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
-            return True
-        except OSError:
-            return False
 
     still_running = set(child_pids)
 
@@ -1536,11 +1538,10 @@ def test_controller_controller_error():
         actor_1.fail_with_supervision_error.call_one().get()
 
     # Make sure the error message includes what originally happened.
-    with pytest.raises(
-        ActorError,
-        match="Simulated actor failure for supervision testing",
-    ):
+    with pytest.raises(ActorError) as error:
         get_or_spawn_controller("actor_1", ErrorActor).get()
+    error.match("Failure on actor_1")
+    error.match("Simulated actor failure for supervision testing")
 
     # Verify that the other actor is still reachable.
     # Note that we cannot spawn new actors on a proc mesh that has prior supervision
@@ -1648,3 +1649,75 @@ def test_unhandled_fault_hook_runs_atexit() -> None:
             f"file {marker_path} should have contents 'finalized' if the atexit handlers were run"
         )
     os.unlink(marker_path)
+
+
+def subprocess_with_hard_exit(
+    queue: multiprocessing.Queue, procs_ref: ProcMesh
+) -> None:
+    # The actors spawned in this process should exit themselves once the client
+    # is gone.
+    procs = this_host().spawn_procs()
+    actors = procs.spawn("error", ErrorActor)
+    actors_on_ref = procs_ref.spawn("error", ErrorActor)
+    # Ensure the procs and actors are spawned with a message.
+    pids = actors.get_pid.call().get()
+    pids = [pid for _, pid in pids]
+    pids_on_ref = actors_on_ref.get_pid.call().get()
+    pids_on_ref = [pid for _, pid in pids_on_ref]
+    # The pids owned by this client will be dead, but the pids on the referenced
+    # proc mesh should be alive. The actors will be gone.
+    queue.put(pids)
+    queue.put(pids_on_ref)
+    # Sleep for a long time so there is time to be interrupted.
+    time.sleep(120)
+
+
+@contextmanager
+def set_environment(**kwargs: str) -> Generator[None, None, None]:
+    try:
+        old = dict(os.environ)
+        new_keys = set(kwargs.keys()) - set(old.keys())
+        os.environ.update(kwargs)
+        yield
+    finally:
+        # Make sure to delete any new environments that were added
+        for k in new_keys:
+            del os.environ[k]
+        # Restore the old environment
+        os.environ.update(old)
+
+
+@pytest.mark.timeout(120)
+def test_client_hard_exit_cleanup() -> None:
+    """Tests that actors and procs exit when client disconnects abruptly without running cleanup"""
+    with configured(mesh_orphan_timeout="10s"):
+        # Set the environment variable as well as the config to ensure the subprocess
+        # client gets the same value.
+        with set_environment(HYPERACTOR_MESH_ORPHAN_TIMEOUT="10s"):
+            # Start some procs from this client to ensure they are not killed if
+            # the subprocess client goes away.
+            procs = this_host().spawn_procs()
+            # Start a subprocess that will be a client, and kill the process.
+            # Ensure the process is new and not forked.
+            ctx = multiprocessing.get_context("spawn")
+            q = ctx.Queue()
+            p = ctx.Process(target=subprocess_with_hard_exit, args=(q, procs))
+            p.start()
+            # These pids should be gone because that client spawned the procs.
+            pids = q.get()
+            pids_on_ref = q.get()
+            # Make sure to terminate abnormally (SIGTERM), so we can test that this
+            # works even without any involvement from the user.
+            p.terminate()
+            # Ensure the processes exit after waiting for the timeout specified.
+            time.sleep(15)
+            processes_exist = [pid for pid in pids if is_process_running(pid)]
+            assert not processes_exist
+
+            ref_processes_exist = [
+                pid for pid in pids_on_ref if is_process_running(pid)
+            ]
+            assert ref_processes_exist
+
+            # There is currently no Python API to determine if the actors spawned
+            # by the subprocess are gone other than an undeliverable message.

@@ -491,6 +491,7 @@ pub struct StreamState<S> {
     pub subscriber: hyperactor_reference::PortRef<State<S>>,
 }
 wirevalue::register_type!(StreamState<ActorState>);
+wirevalue::register_type!(StreamState<ProcState>);
 
 // Cannot derive Bind and Unbind for this generic, implement manually.
 impl<S> Unbind for StreamState<S>

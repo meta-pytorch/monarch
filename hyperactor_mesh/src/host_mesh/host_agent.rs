@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use enum_as_inner::EnumAsInner;
 use hyperactor::Actor;
 use hyperactor::ActorHandle;
+use hyperactor::Bind;
 use hyperactor::Context;
 use hyperactor::HandleClient;
 use hyperactor::Handler;
@@ -31,6 +32,7 @@ use hyperactor::Instance;
 use hyperactor::PortHandle;
 use hyperactor::Proc;
 use hyperactor::RefClient;
+use hyperactor::Unbind;
 use hyperactor::channel::ChannelTransport;
 use hyperactor::context;
 use hyperactor::host::Host;
@@ -55,7 +57,10 @@ use crate::bootstrap::BootstrapProcConfig;
 use crate::bootstrap::BootstrapProcManager;
 use crate::config_dump::ConfigDump;
 use crate::config_dump::ConfigDumpResult;
+use crate::proc_agent::MESH_ORPHAN_TIMEOUT;
 use crate::proc_agent::ProcAgent;
+use crate::proc_agent::STREAM_STATE_SUBSCRIBER;
+use crate::proc_agent::SelfCheck;
 use crate::pyspy::PySpyDump;
 use crate::pyspy::PySpyWorker;
 use crate::resource;
@@ -176,6 +181,81 @@ pub(crate) struct ProcCreationState {
         ),
         HostError,
     >,
+    /// If set, the time at which this proc should be considered orphaned and killable.
+    /// Will be periodically reset by KeepaliveGetState messages.
+    pub(crate) expiry_time: Option<std::time::SystemTime>,
+    /// True once a stop has been requested for this proc, preventing redundant
+    /// stop calls in subsequent SelfCheck ticks.
+    pub(crate) stop_initiated: bool,
+    /// Streaming subscribers that receive `State<ProcState>` on every
+    /// state change. Dead subscribers are removed via undeliverable handling.
+    pub(crate) subscribers: Vec<hyperactor_reference::PortRef<resource::State<ProcState>>>,
+}
+
+impl ProcCreationState {
+    fn proc_id(&self) -> Option<&hyperactor_reference::ProcId> {
+        match &self.created {
+            Ok((proc_id, _)) => Some(proc_id),
+            Err(_) => None,
+        }
+    }
+
+    /// Derive the resource status from spawn result, stop initiation,
+    /// and the observed supervision event.
+    async fn status(&self, host: Option<&HostAgentMode>) -> resource::Status {
+        match &self.created {
+            Ok((proc_id, _mesh_agent)) => {
+                
+                match host {
+                    Some(host) => host.proc_status(proc_id).await.0,
+                    None => resource::Status::Stopped,
+                }
+            }
+            Err(e) => resource::Status::Failed(e.to_string()),
+        }
+    }
+
+    /// Build the `State<ProcState>` for this instance, suitable for
+    /// replies and subscriber notifications.
+    async fn to_state(
+        &self,
+        name: &Name,
+        host: Option<&HostAgentMode>,
+        min_proc_status: resource::Status,
+    ) -> resource::State<ProcState> {
+        match &self.created {
+            Ok((proc_id, mesh_agent)) => {
+                let (status, proc_status, bootstrap_command) = match host {
+                    Some(host) => {
+                        let (status, proc_status) = host.proc_status(proc_id).await;
+                        let status = status.clamp_min(min_proc_status);
+                        (status, proc_status, host.bootstrap_command())
+                    }
+                    None => (resource::Status::Unknown, None, None),
+                };
+                resource::State {
+                    name: name.clone(),
+                    status,
+                    state: Some(ProcState {
+                        proc_id: proc_id.clone(),
+                        create_rank: self.rank,
+                        mesh_agent: mesh_agent.clone(),
+                        bootstrap_command,
+                        proc_status,
+                    }),
+                    generation: 0,
+                    timestamp: std::time::SystemTime::now(),
+                }
+            }
+            Err(e) => resource::State {
+                name: name.clone(),
+                status: resource::Status::Failed(e.to_string()),
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+        }
+    }
 }
 
 /// Actor name used when spawning the host mesh agent on the system proc.
@@ -270,6 +350,8 @@ impl fmt::Debug for DrainWorker {
         resource::CreateOrUpdate<ProcSpec>,
         resource::Stop,
         resource::GetState<ProcState>,
+        resource::KeepaliveGetState<ProcState>,
+        resource::StreamState<ProcState>,
         resource::GetRankStatus { cast = true },
         resource::WaitRankStatus { cast = true },
         resource::List,
@@ -309,11 +391,20 @@ pub struct HostAgent {
     /// `shutdown_tx` when the host shuts down so the caller can
     /// drain it.
     mailbox_handle: Option<MailboxServerHandle>,
+    /// If set, check for periodic keepalive messages from the owning controller.
+    /// If a proc's keepalive expiry lapses, stop that proc.
+    mesh_orphan_timeout: Option<Duration>,
 }
 
 impl HostAgent {
     /// Create a new host mesh agent running in the provided mode.
     pub fn new(host: HostAgentMode) -> Self {
+        let mesh_orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
+        let mesh_orphan_timeout = if mesh_orphan_timeout.is_zero() {
+            None
+        } else {
+            Some(mesh_orphan_timeout)
+        };
         Self {
             state: HostAgentState::Detached(host),
             created: HashMap::new(),
@@ -322,6 +413,7 @@ impl HostAgent {
             proc_status_port: None,
             local_mesh_agent: OnceLock::new(),
             mailbox_handle: None,
+            mesh_orphan_timeout,
         }
     }
 
@@ -599,6 +691,9 @@ impl Actor for HostAgent {
 
         self.proc_status_port = Some(this.port::<ProcStatusChanged>());
 
+        if let Some(delay) = &self.mesh_orphan_timeout {
+            this.self_message_with_delay(SelfCheck::default(), *delay)?;
+        }
         Ok(())
     }
 }
@@ -609,6 +704,33 @@ impl fmt::Debug for HostAgent {
             .field("host", &"..")
             .field("created", &self.created)
             .finish()
+    }
+}
+
+#[async_trait]
+impl Handler<resource::KeepaliveGetState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: resource::KeepaliveGetState<ProcState>,
+    ) -> anyhow::Result<()> {
+        // Same impl as GetState, but additionally update the keepalive expiry time
+        // on the proc so SelfCheck knows the owner is still alive.
+        if let Ok(instance_state) = self
+            .created
+            .get_mut(&message.get_state.name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "attempting to keepalive a proc that doesn't exist: {}",
+                    message.get_state.name
+                )
+            })
+        {
+            instance_state.expiry_time = Some(message.expires_after);
+        }
+
+        // Forward the rest of the impl to GetState.
+        <Self as Handler<resource::GetState<ProcState>>>::handle(self, cx, message.get_state).await
     }
 }
 
@@ -669,6 +791,9 @@ impl Handler<resource::CreateOrUpdate<ProcSpec>> for HostAgent {
                 rank,
                 host_mesh_name: create_or_update.spec.host_mesh_name.clone(),
                 created,
+                expiry_time: None,
+                stop_initiated: false,
+                subscribers: Vec::new(),
             },
         );
 
@@ -728,26 +853,29 @@ impl Handler<resource::Stop> for HostAgent {
             reason = %message.reason,
             "stopping proc"
         );
-        let host = match self.host() {
-            Some(h) => h,
-            None => {
-                // Host already shut down; all procs are terminated.
-                tracing::debug!(
-                    proc_name = %message.name,
-                    "ignoring Stop: HostAgent has already shut down"
-                );
-                return Ok(());
-            }
-        };
+        if self.host().is_none() {
+            // Host already shut down; all procs are terminated.
+            tracing::debug!(
+                proc_name = %message.name,
+                "ignoring Stop: HostAgent has already shut down"
+            );
+            return Ok(());
+        }
         let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
 
-        if let Some(ProcCreationState {
-            created: Ok((proc_id, _)),
-            ..
-        }) = self.created.get(&message.name)
-        {
-            host.request_stop(cx, proc_id, timeout, &message.reason)
-                .await;
+        // Extract proc_id before borrowing host, since get_mut borrows
+        // self.created while host() borrows self.state.
+        let proc_id = if let Some(state) = self.created.get_mut(&message.name) {
+            state.stop_initiated = true;
+            state.proc_id().cloned()
+        } else {
+            None
+        };
+        if let Some(proc_id) = &proc_id {
+            if let Some(host) = self.host() {
+                host.request_stop(cx, proc_id, timeout, &message.reason)
+                    .await;
+            }
         }
 
         // Status may have changed to Stopping; notify pending waiters.
@@ -769,22 +897,13 @@ impl Handler<resource::GetRankStatus> for HostAgent {
         use crate::resource::Status;
 
         let (rank, status) = match self.created.get(&get_rank_status.name) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, _mesh_agent)),
-                ..
-            }) => {
-                let raw_status = match self.host() {
-                    Some(host) => host.proc_status(proc_id).await.0,
-                    None => resource::Status::Unknown,
-                };
-                (*rank, raw_status.clamp_min(self.min_proc_status()))
+            Some(proc_state) => {
+                let raw_status = proc_state.status(self.host()).await;
+                (
+                    proc_state.rank,
+                    raw_status.clamp_min(self.min_proc_status()),
+                )
             }
-            Some(ProcCreationState {
-                rank,
-                created: Err(e),
-                ..
-            }) => (*rank, Status::Failed(e.to_string())),
             None => (usize::MAX, Status::NotExist),
         };
 
@@ -821,46 +940,41 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
         use crate::resource::Status;
 
         match self.created.get(&msg.name) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, _)),
-                ..
-            }) => {
-                let rank = *rank;
-                let status = match self.host() {
-                    Some(host) => host.proc_status(proc_id).await.0,
-                    None => Status::Stopped,
-                };
+            Some(proc_state) => {
+                let rank = proc_state.rank;
+                match &proc_state.created {
+                    Ok((proc_id, _)) => {
+                        let status = proc_state.status(self.host()).await;
 
-                // If already at or past the requested threshold, reply immediately.
-                if status >= msg.min_status {
-                    let overlay = StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                        // If already at or past the requested threshold, reply immediately.
+                        if status >= msg.min_status {
+                            let overlay =
+                                StatusOverlay::try_from_runs(vec![(rank..(rank + 1), status)])
+                                    .expect("valid single-run overlay");
+                            let _ = msg.reply.send(cx, overlay);
+                            return Ok(());
+                        }
+
+                        // Stash the waiter and start a bridge if we don't have one yet.
+                        self.pending_proc_waiters
+                            .entry(msg.name.clone())
+                            .or_default()
+                            .push((msg.min_status, rank, msg.reply));
+
+                        let proc_id = proc_id.clone();
+                        self.start_watch_bridge(&msg.name, &proc_id).await;
+                    }
+                    Err(e) => {
+                        // Creation failed — reply immediately with Failed status.
+                        let overlay = StatusOverlay::try_from_runs(vec![(
+                            rank..(rank + 1),
+                            Status::Failed(e.to_string()),
+                        )])
                         .expect("valid single-run overlay");
-                    let _ = msg.reply.send(cx, overlay);
-                    return Ok(());
+                        let _ = msg.reply.send(cx, overlay);
+                        return Ok(());
+                    }
                 }
-
-                // Stash the waiter and start a bridge if we don't have one yet.
-                self.pending_proc_waiters
-                    .entry(msg.name.clone())
-                    .or_default()
-                    .push((msg.min_status, rank, msg.reply));
-
-                let proc_id = proc_id.clone();
-                self.start_watch_bridge(&msg.name, &proc_id).await;
-            }
-            Some(ProcCreationState {
-                rank,
-                created: Err(e),
-                ..
-            }) => {
-                // Creation failed — reply immediately with Failed status.
-                let overlay = StatusOverlay::try_from_runs(vec![(
-                    *rank..(*rank + 1),
-                    Status::Failed(e.to_string()),
-                )])
-                .expect("valid single-run overlay");
-                let _ = msg.reply.send(cx, overlay);
             }
             None => {
                 // Proc doesn't exist yet. Stash the waiter with a
@@ -881,21 +995,15 @@ impl Handler<resource::WaitRankStatus> for HostAgent {
 impl Handler<ProcStatusChanged> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, msg: ProcStatusChanged) -> anyhow::Result<()> {
         use crate::StatusOverlay;
-        use crate::resource::Status;
 
         let status = match self.created.get(&msg.name) {
-            Some(ProcCreationState {
-                created: Ok((proc_id, _)),
-                ..
-            }) => match self.host() {
-                Some(host) => host.proc_status(proc_id).await.0,
-                None => Status::Stopped,
-            },
-            Some(ProcCreationState {
-                created: Err(_), ..
-            }) => {
-                // Already replied with Failed when they were stashed.
-                return Ok(());
+            Some(proc_state) => {
+                if proc_state.created.is_err() {
+                    // Already replied with Failed when they were stashed.
+                    return Ok(());
+                } else {
+                    proc_state.status(self.host()).await
+                }
             }
             None => {
                 // Proc not created yet, nothing to flush.
@@ -1134,7 +1242,17 @@ impl Handler<ShutdownHost> for HostAgent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Named, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Named,
+    Serialize,
+    Deserialize,
+    Bind,
+    Unbind
+)]
 pub struct ProcState {
     pub proc_id: hyperactor_reference::ProcId,
     pub create_rank: usize,
@@ -1152,42 +1270,11 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
         get_state: resource::GetState<ProcState>,
     ) -> anyhow::Result<()> {
         let state = match self.created.get(&get_state.name) {
-            Some(ProcCreationState {
-                rank,
-                created: Ok((proc_id, mesh_agent)),
-                ..
-            }) => {
-                let (raw_status, proc_status, bootstrap_command) = match self.host() {
-                    Some(host) => {
-                        let (status, proc_status) = host.proc_status(proc_id).await;
-                        (status, proc_status, host.bootstrap_command())
-                    }
-                    None => (resource::Status::Unknown, None, None),
-                };
-                let status = raw_status.clamp_min(self.min_proc_status());
-                resource::State {
-                    name: get_state.name.clone(),
-                    status,
-                    state: Some(ProcState {
-                        proc_id: proc_id.clone(),
-                        create_rank: *rank,
-                        mesh_agent: mesh_agent.clone(),
-                        bootstrap_command,
-                        proc_status,
-                    }),
-                    generation: 0,
-                    timestamp: std::time::SystemTime::now(),
-                }
+            Some(proc_state) => {
+                proc_state
+                    .to_state(&get_state.name, self.host(), self.min_proc_status())
+                    .await
             }
-            Some(ProcCreationState {
-                created: Err(e), ..
-            }) => resource::State {
-                name: get_state.name.clone(),
-                status: resource::Status::Failed(e.to_string()),
-                state: None,
-                generation: 0,
-                timestamp: std::time::SystemTime::now(),
-            },
             None => resource::State {
                 name: get_state.name.clone(),
                 status: resource::Status::NotExist,
@@ -1214,10 +1301,116 @@ impl Handler<resource::GetState<ProcState>> for HostAgent {
 }
 
 #[async_trait]
+impl Handler<resource::StreamState<ProcState>> for HostAgent {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        stream_state: resource::StreamState<ProcState>,
+    ) -> anyhow::Result<()> {
+        let state = match self.created.get(&stream_state.name) {
+            Some(proc_state) => {
+                proc_state
+                    .to_state(&stream_state.name, self.host(), self.min_proc_status())
+                    .await
+            }
+            None => resource::State {
+                name: stream_state.name.clone(),
+                status: resource::Status::NotExist,
+                state: None,
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+        };
+        if let Some(proc_state) = self.created.get_mut(&stream_state.name) {
+            proc_state.subscribers.push(stream_state.subscriber.clone());
+        }
+
+        // Send the current state immediately.
+        let mut headers = Flattrs::new();
+        headers.set(STREAM_STATE_SUBSCRIBER, true);
+        if let Err(e) = stream_state
+            .subscriber
+            .send_with_headers(cx, headers, state)
+        {
+            tracing::warn!(
+                actor = %cx.self_id(),
+                "failed to send initial StreamState to {}: {}",
+                stream_state.subscriber.port_id().actor_id(),
+                e,
+            );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Handler<resource::List> for HostAgent {
     async fn handle(&mut self, cx: &Context<Self>, list: resource::List) -> anyhow::Result<()> {
         list.reply
             .send(cx, self.created.keys().cloned().collect())?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<SelfCheck> for HostAgent {
+    async fn handle(&mut self, cx: &Context<Self>, _: SelfCheck) -> anyhow::Result<()> {
+        // Check each proc's expiry time. If the current time is past the expiry,
+        // stop the proc. This allows automatic cleanup when a controller disappears
+        // but owned resources remain. It is important that this check runs on the
+        // same host as the child proc itself, since the controller could be dead or
+        // disconnected.
+        let Some(duration) = &self.mesh_orphan_timeout else {
+            return Ok(());
+        };
+        let duration = *duration;
+        let now = std::time::SystemTime::now();
+        if self.host().is_none() {
+            anyhow::bail!("HostAgent has already shut down");
+        }
+        let timeout = hyperactor_config::global::get(hyperactor::config::PROCESS_EXIT_TIMEOUT);
+
+        // Collect expired procs before mutating, since stop_proc borrows &mut self.
+        let expired: Vec<(Name, hyperactor_reference::ProcId)> = self
+            .created
+            .iter()
+            .filter_map(|(name, state)| {
+                if state.stop_initiated {
+                    return None;
+                }
+                let expiry = state.expiry_time?;
+                if now > expiry {
+                    if let Ok((proc_id, _)) = &state.created {
+                        return Some((name.clone(), proc_id.clone()));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if !expired.is_empty() {
+            tracing::info!(
+                "stopping {} orphaned procs past their keepalive expiry",
+                expired.len(),
+            );
+        }
+
+        for (name, proc_id) in &expired {
+            // Re-borrow host each iteration to avoid holding an immutable
+            // reference across the mutable get_mut below.
+            let host = self.host().expect("checked above");
+            let (status, _proc_status) = host.proc_status(proc_id).await;
+            if !status.is_stopped() {
+                if let Some(state) = self.created.get_mut(name) {
+                    state.stop_initiated = true;
+                }
+                let host = self.host().expect("checked above");
+                host.request_stop(cx, proc_id, timeout, "orphaned").await;
+            }
+        }
+
+        // Reschedule.
+        cx.self_message_with_delay(SelfCheck::default(), duration)?;
         Ok(())
     }
 }
