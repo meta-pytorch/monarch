@@ -8,6 +8,7 @@
 //! Broadcom (bnxt_re) specific RDMA configuration.
 //!
 //! Broadcom NICs use standard ibverbs without device-specific extensions.
+use crate::nic_backend::NicBackend;
 use std::sync::OnceLock;
 use crate::backend::ibverbs::primitives::IbvConfig;
 use crate::backend::ibverbs::primitives::get_all_devices;
