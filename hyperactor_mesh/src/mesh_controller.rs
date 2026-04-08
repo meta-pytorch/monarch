@@ -37,12 +37,14 @@ use ndslice::ViewExt;
 use ndslice::view::CollectMeshExt;
 use ndslice::view::Point;
 use ndslice::view::Ranked;
+use opentelemetry::metrics::Counter;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Duration;
 use typeuri::Named;
 
 use crate::Name;
+use crate::ProcState;
 use crate::ValueMesh;
 use crate::actor_mesh::ActorMeshRef;
 use crate::bootstrap::ProcStatus;
@@ -79,6 +81,18 @@ declare_static_counter!(
     "actor.actor_mesh_controller.num_stalls"
 );
 
+declare_static_counter!(
+    PROC_MESH_CONTROLLER_SUPERVISION_STALLS,
+    "actor.proc_mesh_controller.num_stalls"
+);
+
+struct UpdateSummary {
+    /// Indices into the input slice that changed.
+    changed: Vec<usize>,
+    /// True if any rank is in a terminal status.
+    is_terminal: bool,
+}
+
 #[derive(Debug)]
 struct HealthState {
     /// The status of each actor in the controlled mesh, paired with the
@@ -87,7 +101,7 @@ struct HealthState {
     statuses: HashMap<Point, (resource::Status, u64)>,
     unhealthy_event: Option<Unhealthy>,
     crashed_ranks: HashMap<usize, ActorSupervisionEvent>,
-    // The unique owner of this actor.
+    /// The unique owner of this actor.
     owner: Option<hyperactor_reference::PortRef<MeshFailure>>,
     /// A set of subscribers to send messages to when events are encountered.
     subscribers: HashSet<hyperactor_reference::PortRef<Option<MeshFailure>>>,
@@ -132,6 +146,40 @@ impl HealthState {
                 true
             }
         }
+    }
+
+    /// Apply a batch of status updates, returning which indices changed and
+    /// whether any rank is now in a terminal state.
+    fn apply_status_updates(
+        &mut self,
+        updates: &[(Point, resource::Status, u64)],
+    ) -> UpdateSummary {
+        let mut changed = Vec::new();
+        let mut is_terminal = false;
+        for (i, (point, status, generation)) in updates.iter().enumerate() {
+            let did_change = self.maybe_update(point.clone(), status.clone(), *generation);
+
+            if !is_terminal {
+                if let Some((s, _)) = self.statuses.get(point) {
+                    if s.is_terminating() {
+                        is_terminal = true;
+                    }
+                }
+            }
+
+            if did_change {
+                changed.push(i);
+            }
+        }
+        UpdateSummary {
+            changed,
+            is_terminal,
+        }
+    }
+
+    /// True when every tracked rank has reached a terminal status.
+    fn all_terminal(&self) -> bool {
+        self.statuses.values().all(|(s, _)| s.is_terminating())
     }
 }
 
@@ -181,11 +229,11 @@ where
 {
     mesh: ActorMeshRef<A>,
     supervision_display_name: String,
-    // Shared health state for the monitor and responding to queries.
+    /// Shared health state for the monitor and responding to queries.
     health_state: HealthState,
-    // The monitor which continuously runs in the background to refresh the state
-    // of actors.
-    // If None, the actor it monitors has already stopped.
+    /// The monitor which continuously runs in the background to refresh the state
+    /// of actors.
+    /// If None, the actor it monitors has already stopped.
     monitor: Option<()>,
 }
 
@@ -773,12 +821,7 @@ impl<A: Referable> Handler<resource::State<ActorState>> for ActorMeshController<
 
         // Once every rank has begun terminating (Stopping or beyond),
         // the monitor is no longer needed.
-        if self
-            .health_state
-            .statuses
-            .values()
-            .all(|(s, _)| s.is_terminating())
-        {
+        if self.health_state.all_terminal() {
             self.monitor.take();
         }
         Ok(())
@@ -788,6 +831,41 @@ impl<A: Referable> Handler<resource::State<ActorState>> for ActorMeshController<
 fn format_system_time(time: std::time::SystemTime) -> String {
     let datetime: chrono::DateTime<chrono::Local> = time.into();
     datetime.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// Log a warning and bump `counter` if the supervision loop is running late.
+///
+/// "Late" means the current wall-clock time exceeds `expected_time` by more
+/// than one full poll interval, i.e. 2x the expected period.
+fn check_stall(
+    expected_time: std::time::SystemTime,
+    actor_id: &hyperactor_reference::ActorId,
+    counter: &Counter<u64>,
+) {
+    if std::time::SystemTime::now()
+        > expected_time + hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY)
+    {
+        let expected_time = format_system_time(expected_time);
+        counter.add(
+            1,
+            kv_pairs!("actor_id" => actor_id.to_string(), "expected_time" => expected_time.clone()),
+        );
+        tracing::warn!(
+            %actor_id,
+            "Handler<CheckState> is being stalled, expected at {}",
+            expected_time,
+        );
+    }
+}
+
+fn proc_state_to_status(
+    state: resource::State<ProcState>,
+) -> Option<(usize, hyperactor_reference::ProcId, resource::Status)> {
+    let status = state.status.clone();
+    match state.state {
+        Some(inner) => Some((inner.create_rank, inner.proc_id, status)),
+        None => None,
+    }
 }
 
 #[async_trait]
@@ -821,27 +899,16 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
         // 2. Use a push-based mode instead of polling.
         // Wait in between checking to avoid using too much network.
 
-        // Check for stalls in the supervision loop. These delays can cause the
-        // subscribers to think the controller is dead.
-        // Allow a little slack time to avoid logging for innocuous delays.
-        // If it's greater than 2x the expected time, log a warning.
-        if std::time::SystemTime::now()
-            > expected_time + hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY)
-        {
-            // Current time is included by default in the log message.
-            let expected_time = format_system_time(expected_time);
-            // Track in both metrics and tracing.
-            ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS.add(1, kv_pairs!("actor_id" => cx.self_id().to_string(), "expected_time" => expected_time.clone()));
-            tracing::warn!(
-                actor_id = %cx.self_id(),
-                "Handler<CheckState> is being stalled, expected at {}",
-                expected_time,
-            );
-        }
+        check_stall(
+            expected_time,
+            cx.self_id(),
+            &ACTOR_MESH_CONTROLLER_SUPERVISION_STALLS,
+        );
         let mesh = &self.mesh;
         let supervision_display_name = &self.supervision_display_name;
         // First check if the proc mesh is dead before trying to query their agents.
-        let proc_states = mesh.proc_mesh().proc_states(cx).await;
+        // Do not use the keepalive because this actor is not the owner.
+        let proc_states = mesh.proc_mesh().proc_states(cx, None).await;
         if let Err(e) = proc_states {
             send_state_change(
                 cx,
@@ -922,29 +989,19 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             self.self_check_state_message(cx)?;
             return Ok(());
         }
-        // If there was any state change, we don't need to send a heartbeat.
-        let mut did_send_state_change = false;
-        // True if any rank is terminating (Stopping or beyond). Once set,
-        // no more heartbeats are sent.
-        let mut any_terminating = false;
+        let actor_states = events.unwrap();
         // This returned point is the created rank, *not* the rank of
         // the possibly sliced input mesh.
-        for (point, state) in events.unwrap().iter() {
-            let changed = self.health_state.maybe_update(
-                point.clone(),
-                state.status.clone(),
-                state.generation,
-            );
-            if !any_terminating {
-                if let Some((s, _)) = self.health_state.statuses.get(&point) {
-                    if s.is_terminating() {
-                        any_terminating = true;
-                    }
-                }
-            }
-            if !changed {
-                continue;
-            }
+        let updates: Vec<_> = actor_states
+            .iter()
+            .map(|(point, state)| (point.clone(), state.status.clone(), state.generation))
+            .collect();
+        let summary = self.health_state.apply_status_updates(&updates);
+
+        // If there was any state change, we don't need to send a heartbeat.
+        let mut did_send_state_change = false;
+        for &idx in &summary.changed {
+            let (_point, state) = actor_states.iter().nth(idx).unwrap();
             let (rank, events) = actor_state_to_supervision_events(state.clone());
             if events.is_empty() {
                 continue;
@@ -959,7 +1016,7 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
                 &mut self.health_state,
             );
         }
-        if !did_send_state_change && !any_terminating {
+        if !did_send_state_change && !summary.is_terminal {
             // No state change, but subscribers need to be sent a message
             // every so often so they know the controller is still alive.
             // Send a "no state change" message.
@@ -967,15 +1024,10 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
             send_heartbeat(cx, &self.health_state);
         }
 
-        // Once every rank has begun terminating, no further state changes
-        // are possible — stop polling and drop the monitor.
-        let all_terminating = self
-            .health_state
-            .statuses
-            .values()
-            .all(|(s, _)| s.is_terminating());
-        if !all_terminating {
-            // Schedule a self send after a waiting period.
+        // If all ranks are in a terminal state, we don't need to continue checking,
+        // as statuses cannot change.
+        // Any new subscribers will get an immediate message saying the mesh is stopped.
+        if !self.health_state.all_terminal() {
             self.self_check_state_message(cx)?;
         } else {
             // There's no need to send a stop message during cleanup if all
@@ -987,15 +1039,44 @@ impl<A: Referable> Handler<CheckState> for ActorMeshController<A> {
 }
 
 #[derive(Debug)]
-#[hyperactor::export]
+#[hyperactor::export(handlers = [
+    CheckState,
+    resource::State<ProcState>,
+    resource::Stop { cast = true },
+    resource::GetState<resource::mesh::State<()>> { cast = true },
+])]
 pub(crate) struct ProcMeshController {
     mesh: ProcMeshRef,
+    /// Shared health state for the monitor and responding to queries.
+    /// Currently there are no subscribers or queries.
+    health_state: HealthState,
+    /// The monitor which continuously runs in the background to refresh the state
+    /// of procs.
+    /// If None, the proc mesh it monitors has already stopped.
+    monitor: Option<()>,
 }
 
 impl ProcMeshController {
     /// Create a new proc controller based on the provided reference.
-    pub(crate) fn new(mesh: ProcMeshRef) -> Self {
-        Self { mesh }
+    pub(crate) fn new(mesh: ProcMeshRef, initial_statuses: ValueMesh<resource::Status>) -> Self {
+        Self {
+            mesh,
+            // No owner registered for proc meshes yet.
+            health_state: HealthState::new(initial_statuses.iter().collect(), None),
+            monitor: None,
+        }
+    }
+
+    fn self_check_state_message(&self, cx: &Instance<Self>) -> Result<(), ActorError> {
+        // Only schedule a self message if the monitor has not been dropped.
+        if self.monitor.is_some() {
+            // Save when we expect the next check state message, so we can automatically
+            // detect stalls as they accumulate.
+            let delay = hyperactor_config::global::get(SUPERVISION_POLL_FREQUENCY);
+            cx.self_message_with_delay(CheckState(std::time::SystemTime::now() + delay), delay)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1003,6 +1084,32 @@ impl ProcMeshController {
 impl Actor for ProcMeshController {
     async fn init(&mut self, this: &Instance<Self>) -> Result<(), anyhow::Error> {
         this.set_system();
+
+        // Subscribe to streaming state updates from all HostAgents so the
+        // controller receives state changes in real time, complementing the
+        // existing polling loop.
+        if let Some(hosts) = self.mesh.hosts() {
+            for (_, agent) in hosts.host_entries() {
+                agent.send(
+                    this,
+                    resource::StreamState::<ProcState> {
+                        name: self.mesh.name().clone(),
+                        // All ProcAgents send updates directly to this port
+                        // so that failures along the comm tree path does not
+                        // affect clean shutdowns.
+                        // Avoid binding the handle here: the controller's
+                        // exported ports are bound when host_mesh installs the
+                        // ActorRef after spawn. Binding the same handle twice
+                        // panics.
+                        subscriber: hyperactor_reference::PortRef::<resource::State<ProcState>>::attest_message_port(this.self_id()).unsplit(),
+                    },
+                )?;
+            }
+        }
+
+        // Start the monitor task.
+        self.monitor = Some(());
+        self.self_check_state_message(this)?;
         Ok(())
     }
 
@@ -1011,25 +1118,261 @@ impl Actor for ProcMeshController {
         this: &Instance<Self>,
         _err: Option<&ActorError>,
     ) -> Result<(), anyhow::Error> {
+        // If the monitor hasn't been dropped yet, send a stop message to the
+        // host mesh.
         // Cannot use "ProcMesh::stop" as it's only defined on ProcMesh, not ProcMeshRef.
-        let names = self
+        if self.monitor.take().is_some() {
+            let names = self
+                .mesh
+                .proc_ids()
+                .collect::<Vec<hyperactor_reference::ProcId>>();
+            let region = self.mesh.region().clone();
+            if let Some(hosts) = self.mesh.hosts() {
+                hosts
+                    .stop_proc_mesh(
+                        this,
+                        self.mesh.name(),
+                        names,
+                        region,
+                        "proc mesh controller cleanup".to_string(),
+                    )
+                    .await
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn record_proc_state_change(
+    cx: &impl context::Actor,
+    rank: usize,
+    state: resource::State<ProcState>,
+    mesh_name: &Name,
+    health_state: &mut HealthState,
+) {
+    // This does not include the Stopped status, which is a state that occurs when the
+    // user calls stop() on a proc or actor mesh.
+    let is_failed = state.status.is_failure();
+    if is_failed {
+        tracing::warn!(
+            name = "SupervisionEvent",
+            proc_mesh = %mesh_name,
+            %state,
+            "detected supervision error on monitored mesh",
+        );
+    } else {
+        tracing::debug!(
+            name = "SupervisionEvent",
+            proc_mesh = %mesh_name,
+            %state,
+            "detected non-error supervision event on monitored mesh",
+        );
+    }
+
+    // TODO: Make MeshFailure work for Proc meshes as well.
+    // Make a fake ActorSupervisionEvent for now.
+    let actor_status =
+        proc_status_to_actor_status(state.state.as_ref().and_then(|s| s.proc_status.clone()));
+    let event = ActorSupervisionEvent::new(
+        // Attribute this to the monitored actor, even if the underlying
+        // cause is a proc_failure. We propagate the cause explicitly.
+        cx.instance().self_id().clone(),
+        None,
+        actor_status,
+        None,
+    );
+    let failure_message = MeshFailure {
+        actor_mesh_name: Some(mesh_name.to_string()),
+        crashed_ranks: vec![rank],
+        event: event.clone(),
+    };
+    health_state.crashed_ranks.insert(rank, event.clone());
+    health_state.unhealthy_event = Some(Unhealthy::StreamClosed(failure_message.clone()));
+    // TODO: send messages to owners and subscribers.
+}
+
+#[async_trait]
+impl Handler<CheckState> for ProcMeshController {
+    /// Checks proc states and reschedules as a self-message.
+    ///
+    /// * SUPERVISION_POLL_FREQUENCY controls how frequently to poll.
+    /// * self-messaging stops when self.monitor is set to None.
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        CheckState(expected_time): CheckState,
+    ) -> Result<(), anyhow::Error> {
+        // A delayed CheckState may arrive after Stop has already dropped
+        // the monitor. Discard it — there is nothing left to poll.
+        if self.monitor.is_none() {
+            return Ok(());
+        }
+
+        check_stall(
+            expected_time,
+            cx.self_id(),
+            &PROC_MESH_CONTROLLER_SUPERVISION_STALLS,
+        );
+
+        let mesh = &self.mesh;
+        // Query for proc mesh state from the host mesh. Send the keepalive so
+        // the host knows the controller is still alive.
+        let orphan_timeout = hyperactor_config::global::get(MESH_ORPHAN_TIMEOUT);
+        let keepalive = if orphan_timeout.is_zero() {
+            None
+        } else {
+            Some(std::time::SystemTime::now() + orphan_timeout)
+        };
+        let proc_states = mesh.proc_states(cx, keepalive).await;
+        let proc_states = match proc_states {
+            Ok(Some(proc_states)) => proc_states,
+            Ok(None) => {
+                self.self_check_state_message(cx)?;
+                return Ok(());
+            }
+            Err(_) => {
+                // TODO: record in health state.
+                self.self_check_state_message(cx)?;
+                return Ok(());
+            }
+        };
+        // This returned point is the created rank, *not* the rank of
+        // the possibly sliced input mesh.
+        let updates: Vec<_> = proc_states
+            .iter()
+            .map(|(point, state)| (point.clone(), state.status.clone(), state.generation))
+            .collect();
+        let summary = self.health_state.apply_status_updates(&updates);
+
+        for &idx in &summary.changed {
+            let (_point, state) = proc_states.iter().nth(idx).unwrap();
+            let (rank, _proc_id, _status) =
+                proc_state_to_status(state.clone()).expect("proc state is None");
+            record_proc_state_change(cx, rank, state, mesh.name(), &mut self.health_state);
+        }
+
+        if !self.health_state.all_terminal() {
+            self.self_check_state_message(cx)?;
+        } else {
+            self.monitor.take();
+        }
+        return Ok(());
+    }
+}
+
+#[async_trait]
+impl Handler<resource::State<ProcState>> for ProcMeshController {
+    /// Updates streamed back from HostAgent.
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        state: resource::State<ProcState>,
+    ) -> Result<(), anyhow::Error> {
+        let Some((rank, _, _)) = proc_state_to_status(state.clone()) else {
+            // No rank found, would only occur if there was no successfully spawned
+            // proc state, which shouldn't happen in practice.
+            return Ok(());
+        };
+        let point = self.mesh.region().extent().point_of_rank(rank)?;
+
+        let changed = self
+            .health_state
+            .maybe_update(point, state.status.clone(), state.generation);
+
+        if changed {
+            record_proc_state_change(cx, rank, state, self.mesh.name(), &mut self.health_state);
+        }
+
+        if self.health_state.all_terminal() {
+            self.monitor.take();
+        }
+        Ok(())
+    }
+}
+
+impl resource::mesh::Mesh for ProcMeshController {
+    type Spec = ();
+    type State = ();
+}
+
+#[async_trait]
+impl Handler<resource::Stop> for ProcMeshController {
+    async fn handle(&mut self, cx: &Context<Self>, message: resource::Stop) -> anyhow::Result<()> {
+        let mesh_name = self.mesh.name().clone();
+        tracing::info!(
+            name = "ProcMeshControllerStatus",
+            %mesh_name,
+            reason = %message.reason,
+            "stopping proc mesh"
+        );
+        if self.monitor.take().is_none() {
+            tracing::debug!(
+                actor_id = %cx.self_id(),
+                %mesh_name,
+                "duplicate stop request, proc mesh is already stopped",
+            );
+            return Ok(());
+        }
+        let procs = self
             .mesh
             .proc_ids()
             .collect::<Vec<hyperactor_reference::ProcId>>();
         let region = self.mesh.region().clone();
         if let Some(hosts) = self.mesh.hosts() {
             hosts
-                .stop_proc_mesh(
-                    this,
-                    self.mesh.name(),
-                    names,
-                    region,
-                    "proc mesh controller cleanup".to_string(),
-                )
-                .await
-        } else {
-            Ok(())
+                .stop_proc_mesh(cx, &mesh_name, procs, region, message.reason)
+                .await?;
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<resource::GetState<resource::mesh::State<()>>> for ProcMeshController {
+    async fn handle(
+        &mut self,
+        cx: &Context<Self>,
+        message: resource::GetState<resource::mesh::State<()>>,
+    ) -> anyhow::Result<()> {
+        let status = if let Some(Unhealthy::Crashed(e)) = &self.health_state.unhealthy_event {
+            resource::Status::Failed(e.to_string())
+        } else if let Some(Unhealthy::StreamClosed(_)) = &self.health_state.unhealthy_event {
+            resource::Status::Stopped
+        } else if self.monitor.is_none() {
+            resource::Status::Stopped
+        } else {
+            resource::Status::Running
+        };
+        let mut statuses = self
+            .health_state
+            .statuses
+            .iter()
+            .map(|(p, (s, _))| (p.clone(), s.clone()))
+            .collect::<Vec<_>>();
+        statuses.sort_by_key(|(p, _)| p.rank());
+        let statuses: ValueMesh<resource::Status> =
+            statuses
+                .into_iter()
+                .map(|(_, s)| s)
+                .collect_mesh::<ValueMesh<_>>(self.mesh.region().clone())?;
+        let state = resource::mesh::State {
+            statuses,
+            state: (),
+        };
+        message.reply.send(
+            cx,
+            resource::State {
+                name: message.name,
+                status,
+                state: Some(state),
+                generation: 0,
+                timestamp: std::time::SystemTime::now(),
+            },
+        )?;
+        Ok(())
     }
 }
 
@@ -1141,24 +1484,27 @@ mod tests {
             );
         }
 
-        // Wait long enough for the expiry to pass and at least one
-        // SelfCheck cycle to fire. With MESH_ORPHAN_TIMEOUT = 1s and
-        // expiry in 2s, by around 4s at least two SelfCheck cycles will
-        // have elapsed after the expiry.
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
-        // Query again, this time *without* a keepalive so we don't
-        // extend the expiry.
-        let states = proc_mesh
-            .actor_states(instance, actor_name.clone())
-            .await
-            .unwrap();
-        for state in states.values() {
-            assert_eq!(
-                state.status,
-                resource::Status::Stopped,
-                "actor should be stopped after keepalive expiry"
+        // Poll until all actors are stopped, rather than sleeping a
+        // fixed duration. The expiry is 2s and SelfCheck fires every 1s,
+        // so this should converge quickly, but we allow a generous timeout
+        // for slow CI environments.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let states = proc_mesh
+                .actor_states(instance, actor_name.clone())
+                .await
+                .unwrap();
+            if states
+                .values()
+                .all(|s| s.status == resource::Status::Stopped)
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for actors to be stopped after keepalive expiry"
             );
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
@@ -1252,21 +1598,25 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the controller time to run at least one CheckState cycle
-        // (polling every 1s) so it sends KeepaliveGetState to the agents.
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        // Verify actors are running before the crash.
-        let states = actor_proc_mesh
-            .actor_states(instance, child_name.clone())
-            .await
-            .unwrap();
-        for state in states.values() {
-            assert_eq!(
-                state.status,
-                resource::Status::Running,
-                "actor should be running before controller crash"
+        // Poll until the controller has run at least one CheckState cycle
+        // and all actors report Running.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let states = actor_proc_mesh
+                .actor_states(instance, child_name.clone())
+                .await
+                .unwrap();
+            if states
+                .values()
+                .all(|s| s.status == resource::Status::Running)
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for actors to reach Running before controller crash"
             );
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         // Kill the controller's process uncleanly. send_to_children: false
@@ -1282,23 +1632,24 @@ mod tests {
             )
             .unwrap();
 
-        // Wait for:
-        //  - keepalive expiry (2s from last CheckState)
-        //  - at least one SelfCheck cycle (every 2s)
-        //  - margin for processing
-        tokio::time::sleep(Duration::from_secs(8)).await;
-
-        // Actors should now be stopped via the orphan timeout.
-        let states = actor_proc_mesh
-            .actor_states(instance, child_name.clone())
-            .await
-            .unwrap();
-        for state in states.values() {
-            assert_eq!(
-                state.status,
-                resource::Status::Stopped,
-                "actor should be stopped after controller crash and orphan timeout"
+        // Poll until all actors are stopped via the orphan timeout.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let states = actor_proc_mesh
+                .actor_states(instance, child_name.clone())
+                .await
+                .unwrap();
+            if states
+                .values()
+                .all(|s| s.status == resource::Status::Stopped)
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for actors to be stopped after controller crash and orphan timeout"
             );
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         let _ = actor_hm.shutdown(instance).await;
