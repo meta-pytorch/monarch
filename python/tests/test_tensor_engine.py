@@ -6,9 +6,15 @@
 
 # pyre-unsafe
 
+import sys
+
 import monarch
 import pytest
 import torch
+
+if sys.platform != "linux":
+    pytest.skip("linux-only", allow_module_level=True)
+
 from monarch import remote
 from monarch._src.actor.host_mesh import this_host
 from monarch.actor import Actor, as_endpoint, endpoint
