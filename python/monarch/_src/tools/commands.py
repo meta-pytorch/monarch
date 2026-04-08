@@ -565,12 +565,15 @@ def apply_job(module_path: Optional[str] = None) -> None:
         set_current_job(module_path)  # pyre-ignore[16]
 
     job = load_current_job()
-    t0 = time.time()
     state = job.state()
+    t0 = time.time()
     mesh = next(iter(state._hosts.values()))
     procs = mesh.spawn_procs()
-    procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
-    print(f"Job is ready ({time.time() - t0:.0f}s)")
+    try:
+        procs.spawn("_ready_check", BashActor).run.call("true").get()  # pyre-ignore[16]
+        print(f"Job is ready ({time.time() - t0:.0f}s)")
+    finally:
+        procs.stop().get(timeout=30.0)
 
 
 def _parse_env(env: Optional[list[str]]) -> dict[str, str]:
@@ -723,7 +726,7 @@ def exec_on_job(
             rank=rank,
             point=point,
             per_host=per_host,
-        )
+        ).get()
         max_rc = max(max_rc, rc)
 
     if kill and last_mesh is not None:

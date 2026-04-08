@@ -7,7 +7,6 @@
 # pyre-unsafe
 
 import contextlib
-import io
 import logging
 import os
 import pickle
@@ -16,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -33,12 +33,51 @@ from monarch.actor import (
     current_rank,
     enable_transport,
     endpoint,
+    Future,
     HostMesh,
     Port,
     this_host,
 )
 from monarch.distributed_telemetry.actor import start_telemetry
 from monarch.distributed_telemetry.engine import QueryEngine
+
+
+@contextlib.contextmanager
+def _redirect_stdio(stdout=None, stderr=None):
+    """Redirect stdout/stderr at the OS fd level.
+
+    Unlike contextlib.redirect_stdout/stderr, subprocesses also inherit the
+    redirect because file descriptors 1 and 2 are replaced via os.dup2.
+
+    *stdout* and *stderr* must be file objects backed by a real OS file
+    descriptor (e.g. from open() or tempfile.TemporaryFile). StringIO is not
+    supported.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    redirects = []
+    if stdout is not None:
+        redirects.append((1, stdout, "stdout"))
+    if stderr is not None:
+        redirects.append((2, stderr, "stderr"))
+
+    saved_fds = {}
+    saved_py = {}
+    for fd, new_file, attr in redirects:
+        saved_fds[fd] = os.dup(fd)
+        os.dup2(new_file.fileno(), fd)
+        saved_py[attr] = getattr(sys, attr)
+        setattr(sys, attr, new_file)
+    try:
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        for fd, _, attr in redirects:
+            setattr(sys, attr, saved_py[attr])
+            os.dup2(saved_fds[fd], fd)
+            os.close(saved_fds[fd])
 
 
 class BashActor(Actor):
@@ -152,27 +191,41 @@ class BashActor(Actor):
                 source = f.read()
             code = compile(source, py_file, "exec")
 
+            capture = output_dir is None
             if output_dir is not None:
                 os.makedirs(output_dir, exist_ok=True)
-                out_f: Any = open(os.path.join(output_dir, "stdout.txt"), "w")
-                err_f: Any = open(os.path.join(output_dir, "stderr.txt"), "w")
+                out_ctx = open(os.path.join(output_dir, "stdout.txt"), "w")
+                err_ctx = open(os.path.join(output_dir, "stderr.txt"), "w")
             else:
-                out_f = io.StringIO()
-                err_f = io.StringIO()
+                out_ctx = tempfile.TemporaryFile(mode="w+")
+                err_ctx = tempfile.TemporaryFile(mode="w+")
 
-            with (
-                out_f,
-                err_f,
-                patch.object(sys, "argv", argv),
-                contextlib.redirect_stdout(out_f),
-                contextlib.redirect_stderr(err_f),
-            ):
-                exec(code, {"__name__": "__main__", "__file__": py_file})
-                return {
-                    "returncode": 0,
-                    "stdout": out_f.getvalue() if output_dir is None else "",
-                    "stderr": err_f.getvalue() if output_dir is None else "",
-                }
+            returncode = 1
+            stdout_val = ""
+            stderr_val = ""
+            with out_ctx as out_f, err_ctx as err_f:
+                with (
+                    patch.object(sys, "argv", argv),
+                    _redirect_stdio(stdout=out_f, stderr=err_f),
+                ):
+                    try:
+                        returncode = 0
+                        exec(code, {"__name__": "__main__", "__file__": py_file})
+                    except Exception:
+                        returncode = 1
+                        traceback.print_exc()
+
+                if capture:
+                    out_f.seek(0)
+                    err_f.seek(0)
+                    stdout_val = out_f.read()
+                    stderr_val = err_f.read()
+
+            return {
+                "returncode": returncode,
+                "stdout": stdout_val,
+                "stderr": stderr_val,
+            }
 
     @endpoint
     def run_streaming(
@@ -869,7 +922,7 @@ def exec_command(
     rank: Optional[int] = None,
     point: Optional[Dict[str, int]] = None,
     per_host: Optional[Dict[str, int]] = None,
-) -> int:
+) -> "Future[int]":
     """Run a command on *host_mesh* via BashActor.
 
     Args:
@@ -890,56 +943,61 @@ def exec_command(
             to :meth:`~monarch.actor.HostMesh.spawn_procs`.
 
     Returns:
-        Maximum return code across all ranks (0 = success).
+        A Future resolving to the maximum return code across all ranks (0 = success).
     """
-    procs = (
-        host_mesh.spawn_procs(per_host=per_host)
-        if per_host
-        else host_mesh.spawn_procs()
-    )
-    if point is not None:
-        procs = procs.slice(**point)
-    elif rank is not None:
-        procs = procs.flatten("rank").slice(rank=rank)
 
-    bash_actors = procs.spawn("BashActor", BashActor)
+    async def _impl() -> int:
+        if point is not None:
+            host_mesh_s = host_mesh.slice(**point)
+        elif rank is not None:
+            host_mesh_s = host_mesh.flatten("rank").slice(rank=rank)
+        else:
+            host_mesh_s = host_mesh
 
-    client_cwd = os.getcwd()
+        procs = host_mesh_s.spawn_procs(per_host=per_host)
+        try:
+            bash_actors = procs.spawn("BashActor", BashActor)
 
-    if cmd[0].endswith(".py") or cmd[0] == "-m":
-        results = bash_actors.run_python.call(
-            cmd,
-            env=env,
-            workdir=workdir,
-            client_cwd=client_cwd,
-            output_dir=output_dir,
-        ).get()
-    else:
-        lines: List[str] = ["#!/bin/bash"]
-        if env:
-            for k, v in env.items():
-                lines.append(f"export {k}={shlex.quote(v)}")
-        if workdir:
-            lines.append(f"cd {shlex.quote(workdir)}")
-        elif client_cwd:
-            lines.append(
-                f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
-            )
-        lines.append(shlex.join(cmd))
-        script = "\n".join(lines) + "\n"
-        results = bash_actors.run.call(script, output_dir=output_dir).get()
-    max_rc = 0
-    for _rank_key, result in results:
-        rc = result.get("returncode", 1)
-        max_rc = max(max_rc, rc)
-        if output_dir is None:
-            stdout = result.get("stdout", "")
-            stderr = result.get("stderr", "")
-            if stdout:
-                print(stdout, end="")
-            if stderr:
-                print(stderr, end="", file=sys.stderr)
-    return max_rc
+            client_cwd = os.getcwd()
+
+            if cmd[0].endswith(".py") or cmd[0] == "-m":
+                results = await bash_actors.run_python.call(
+                    cmd,
+                    env=env,
+                    workdir=workdir,
+                    client_cwd=client_cwd,
+                    output_dir=output_dir,
+                )
+            else:
+                lines: List[str] = ["#!/bin/bash"]
+                if env:
+                    for k, v in env.items():
+                        lines.append(f"export {k}={shlex.quote(v)}")
+                if workdir:
+                    lines.append(f"cd {shlex.quote(workdir)}")
+                elif client_cwd:
+                    lines.append(
+                        f"[ -d {shlex.quote(client_cwd)} ] && cd {shlex.quote(client_cwd)}"
+                    )
+                lines.append(shlex.join(cmd))
+                script = "\n".join(lines) + "\n"
+                results = await bash_actors.run.call(script, output_dir=output_dir)
+            max_rc = 0
+            for _rank_key, result in results:
+                rc = result.get("returncode", 1)
+                max_rc = max(max_rc, rc)
+                if output_dir is None:
+                    stdout = result.get("stdout", "")
+                    stderr = result.get("stderr", "")
+                    if stdout:
+                        print(stdout, end="")
+                    if stderr:
+                        print(stderr, end="", file=sys.stderr)
+            return max_rc
+        finally:
+            await procs.stop()
+
+    return Future(coro=_impl())
 
 
 class LocalJob(JobTrait):

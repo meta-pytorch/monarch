@@ -1408,8 +1408,6 @@ macro_rules! context_span {
 }
 
 pub mod env {
-    use rand::RngCore;
-
     /// Env var name set when monarch launches subprocesses to forward the execution context
     pub const HYPERACTOR_EXECUTION_ID_ENV: &str = "HYPERACTOR_EXECUTION_ID";
     pub const OTEL_EXPORTER: &str = "HYPERACTOR_OTEL_EXPORTER";
@@ -1430,7 +1428,7 @@ pub mod env {
                 let datetime: chrono::DateTime<chrono::Local> = now.into();
                 datetime.format("%b-%d_%H:%M").to_string()
             };
-            let random_number: u16 = (rand::rng().next_u32() % 1000) as u16;
+            let random_number: u16 = (rand::random::<u32>() % 1000) as u16;
             let execution_id = format!("{}_{}_{}", username, now, random_number);
             execution_id
         });
