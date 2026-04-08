@@ -772,6 +772,235 @@ class TestWaitForReadyPods(unittest.TestCase):
         self.assertEqual(result, [("10.0.0.1", 9999)])
 
 
+class TestVerifyPodsReady(unittest.TestCase):
+    """Tests for KubernetesJob._verify_pods_ready."""
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def _make_job(self, mock_configure: MagicMock) -> KubernetesJob:
+        return KubernetesJob(namespace="test-ns")
+
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_matching_endpoints_returns_true(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+
+        mock_api = MagicMock()
+        mock_core_api_cls.return_value = mock_api
+        mock_api.list_namespaced_pod.return_value = MagicMock(
+            items=[
+                _make_pod("w-0", 0, True, ip="10.0.0.1"),
+                _make_pod("w-1", 1, True, ip="10.0.0.2"),
+            ]
+        )
+
+        result = job._verify_pods_ready(
+            label_selector="app=test",
+            num_replicas=2,
+            pod_rank_label="apps.kubernetes.io/pod-index",
+            expected_endpoints=[("10.0.0.1", 26600), ("10.0.0.2", 26600)],
+        )
+        self.assertTrue(result)
+
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_changed_ip_returns_false(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+
+        mock_api = MagicMock()
+        mock_core_api_cls.return_value = mock_api
+        mock_api.list_namespaced_pod.return_value = MagicMock(
+            items=[
+                _make_pod("w-0", 0, True, ip="10.0.0.99"),
+                _make_pod("w-1", 1, True, ip="10.0.0.2"),
+            ]
+        )
+
+        result = job._verify_pods_ready(
+            label_selector="app=test",
+            num_replicas=2,
+            pod_rank_label="apps.kubernetes.io/pod-index",
+            expected_endpoints=[("10.0.0.1", 26600), ("10.0.0.2", 26600)],
+        )
+        self.assertFalse(result)
+
+    @patch("monarch._src.job.kubernetes.client.CoreV1Api")
+    @patch("monarch._src.job.kubernetes.config.load_incluster_config")
+    def test_pod_no_longer_ready_returns_false(
+        self,
+        mock_load_config: MagicMock,
+        mock_core_api_cls: MagicMock,
+    ) -> None:
+        job = self._make_job()
+
+        mock_api = MagicMock()
+        mock_core_api_cls.return_value = mock_api
+        mock_api.list_namespaced_pod.return_value = MagicMock(
+            items=[
+                _make_pod("w-0", 0, False, ip="10.0.0.1"),
+                _make_pod("w-1", 1, True, ip="10.0.0.2"),
+            ]
+        )
+
+        result = job._verify_pods_ready(
+            label_selector="app=test",
+            num_replicas=2,
+            pod_rank_label="apps.kubernetes.io/pod-index",
+            expected_endpoints=[("10.0.0.1", 26600), ("10.0.0.2", 26600)],
+        )
+        self.assertFalse(result)
+
+    @patch(
+        "monarch._src.job.kubernetes.config.load_incluster_config",
+        side_effect=k8s_config.ConfigException("not in cluster"),
+    )
+    def test_config_failure_returns_false(
+        self,
+        mock_load_config: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        result = job._verify_pods_ready(
+            label_selector="app=test",
+            num_replicas=1,
+            pod_rank_label="apps.kubernetes.io/pod-index",
+            expected_endpoints=[("10.0.0.1", 26600)],
+        )
+        self.assertFalse(result)
+
+
+class TestStateDurability(unittest.TestCase):
+    """Tests for _state() retry logic: discover all meshes, then verify all."""
+
+    @patch("monarch._src.job.kubernetes.configure")
+    def _make_job(
+        self, mock_configure: MagicMock, max_retries: int = 3
+    ) -> KubernetesJob:
+        return KubernetesJob(namespace="test-ns", max_retries=max_retries)
+
+    @patch("monarch._src.job.kubernetes.attach_to_workers")
+    @patch.object(KubernetesJob, "_verify_all_mesh_endpoints", return_value=True)
+    @patch.object(
+        KubernetesJob,
+        "_discover_all_mesh_endpoints",
+        return_value={"workers": [("10.0.0.1", 26600)]},
+    )
+    def test_state_succeeds_on_first_attempt(
+        self,
+        mock_discover: MagicMock,
+        mock_verify: MagicMock,
+        mock_attach: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1)
+        mock_attach.return_value = MagicMock()
+
+        job._state()
+
+        mock_discover.assert_called_once()
+        mock_verify.assert_called_once()
+        mock_attach.assert_called_once_with(
+            name="workers",
+            ca="trust_all_connections",
+            workers=["tcp://10.0.0.1:26600"],
+        )
+
+    @patch("monarch._src.job.kubernetes.attach_to_workers")
+    @patch.object(
+        KubernetesJob,
+        "_verify_all_mesh_endpoints",
+        side_effect=[False, True],
+    )
+    @patch.object(
+        KubernetesJob,
+        "_discover_all_mesh_endpoints",
+        side_effect=[
+            {"workers": [("10.0.0.1", 26600)]},
+            {"workers": [("10.0.0.99", 26600)]},
+        ],
+    )
+    def test_state_retries_on_verification_failure(
+        self,
+        mock_discover: MagicMock,
+        mock_verify: MagicMock,
+        mock_attach: MagicMock,
+    ) -> None:
+        job = self._make_job()
+        job.add_mesh("workers", num_replicas=1)
+        mock_attach.return_value = MagicMock()
+
+        job._state()
+
+        self.assertEqual(mock_discover.call_count, 2)
+        self.assertEqual(mock_verify.call_count, 2)
+        mock_attach.assert_called_once_with(
+            name="workers",
+            ca="trust_all_connections",
+            workers=["tcp://10.0.0.99:26600"],
+        )
+
+    @patch.object(KubernetesJob, "_verify_all_mesh_endpoints", return_value=False)
+    @patch.object(
+        KubernetesJob,
+        "_discover_all_mesh_endpoints",
+        return_value={"workers": [("10.0.0.1", 26600)]},
+    )
+    def test_state_raises_after_max_retries(
+        self,
+        mock_discover: MagicMock,
+        mock_verify: MagicMock,
+    ) -> None:
+        job = self._make_job(max_retries=2)
+        job.add_mesh("workers", num_replicas=1)
+        with self.assertRaises(RuntimeError, msg="Failed to get stable mesh endpoints"):
+            job._state()
+        self.assertEqual(mock_discover.call_count, 2)
+        self.assertEqual(mock_verify.call_count, 2)
+
+    @patch("monarch._src.job.kubernetes.attach_to_workers")
+    @patch.object(
+        KubernetesJob,
+        "_verify_all_mesh_endpoints",
+        side_effect=[False, True],
+    )
+    @patch.object(
+        KubernetesJob,
+        "_discover_all_mesh_endpoints",
+        side_effect=[
+            {
+                "mesh1": [("10.0.0.1", 26600)],
+                "mesh2": [("10.0.1.1", 26600)],
+            },
+            {
+                "mesh1": [("10.0.0.1", 26600)],
+                "mesh2": [("10.0.1.99", 26600)],
+            },
+        ],
+    )
+    def test_state_retries_all_meshes_together(
+        self,
+        mock_discover: MagicMock,
+        mock_verify: MagicMock,
+        mock_attach: MagicMock,
+    ) -> None:
+        """When one mesh's pods change, all meshes are re-discovered."""
+        job = self._make_job()
+        job.add_mesh("mesh1", num_replicas=1)
+        job.add_mesh("mesh2", num_replicas=1)
+        mock_attach.return_value = MagicMock()
+
+        job._state()
+
+        self.assertEqual(mock_discover.call_count, 2)
+        self.assertEqual(mock_attach.call_count, 2)
+
+
 class TestKill(unittest.TestCase):
     """Tests for KubernetesJob._kill."""
 
