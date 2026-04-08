@@ -619,6 +619,7 @@ mod tests {
         Ok((proc, instance, host_mesh, proc_mesh))
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn test_world_smoke() {
         let (proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
@@ -642,6 +643,7 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn spawn_respects_forwarding_flag() {
         let (_, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
@@ -701,6 +703,7 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn set_mode_behaviors() {
         let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
@@ -818,6 +821,7 @@ mod tests {
         host_mesh.shutdown(&instance).await.expect("host shutdown");
     }
 
+    #[cfg_attr(not(target_os = "linux"), ignore = "linux-only")]
     #[tokio::test]
     async fn flush_behaviors() {
         let (_proc, instance, mut host_mesh, proc_mesh) = test_world().await.expect("world failed");
