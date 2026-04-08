@@ -224,7 +224,7 @@ class SlurmJob(JobTrait):
             return None
 
     def _wait_for_job_start(
-        self, job_id: str, expected_nodes: int, timeout: Optional[int] = None
+        self, job_id: str, expected_nodes: int, timeout: int = 300
     ) -> List[str]:
         """
         Wait for the SLURM job to start and return the allocated hostnames.
@@ -235,7 +235,7 @@ class SlurmJob(JobTrait):
         start_time = time.time()
 
         try:
-            while timeout is None or time.time() - start_time < timeout:
+            while time.time() - start_time < timeout:
                 job_info = self._get_job_info_json(job_id)
 
                 if not job_info:
@@ -244,11 +244,29 @@ class SlurmJob(JobTrait):
                 job_state = job_info.get("job_state", [])
 
                 if "RUNNING" in job_state:
-                    # Extract hostnames from job_resources.nodes.allocation
                     job_resources = job_info.get("job_resources", {})
                     nodes_info = job_resources.get("nodes", {})
-                    allocation = nodes_info.get("allocation", [])
-                    hostnames = [node["name"] for node in allocation]
+
+                    hostnames = []
+
+                    if isinstance(nodes_info, dict) and "allocation" in nodes_info:
+                        allocation = nodes_info.get("allocation", [])
+                        hostnames = [node["name"] for node in allocation]
+                    elif "allocated_nodes" in job_resources:
+                        allocated_nodes = job_resources.get("allocated_nodes", [])
+                        hostnames = [node["nodename"] for node in allocated_nodes]
+                    elif isinstance(nodes_info, str) and nodes_info:
+                        import subprocess
+
+                        result = subprocess.run(
+                            ["scontrol", "show", "hostnames", nodes_info],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if result.returncode == 0:
+                            hostnames = [
+                                h for h in result.stdout.strip().split("\n") if h
+                            ]
 
                     logger.info(
                         f"SLURM job {job_id} is running on {len(hostnames)} nodes: {hostnames}"
@@ -268,12 +286,11 @@ class SlurmJob(JobTrait):
                 else:
                     logger.debug(f"SLURM job {job_id} status: {job_state}, waiting...")
 
-                time.sleep(2)  # Check every 2 seconds
+                time.sleep(2)
 
             raise RuntimeError(f"Timeout waiting for SLURM job {job_id} to start")
 
         except Exception:
-            # Cleanup on failure - reuse _kill() logic
             logger.error(f"Failed to start SLURM job {job_id}, cancelling job")
             self._kill()
             raise
