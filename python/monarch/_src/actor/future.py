@@ -13,6 +13,7 @@ from typing import (
     Coroutine,
     Generator,
     Generic,
+    List,
     NamedTuple,
     Optional,
     TypeVar,
@@ -198,3 +199,54 @@ class Future(Generic[R]):
             return None
         except Exception as e:
             return e
+
+    @staticmethod
+    def gather(
+        *futures: "Future[Any]",
+        return_exceptions: bool = False,
+    ) -> "Future[List[Any]]":
+        """Drive multiple Futures concurrently, returning a Future of their results.
+
+        Results are returned in the same order as the input futures.
+        Input futures are consumed and should not be reused.
+
+        Args:
+            return_exceptions: If False (default), the first exception raised by
+                any future propagates immediately. If True, exceptions are treated
+                as successful results and returned in the result list.
+        """
+        if not futures:
+
+            async def _empty() -> List[Any]:
+                return []
+
+            return Future(coro=_empty())
+
+        tasks: List[PythonTask[Any]] = []
+        for f in futures:
+            match f._status:
+                case _Unawaited(coro=coro):
+                    tasks.append(coro)
+                    f._status = _Exception(
+                        ValueError("this Future was consumed by gather()")
+                    )
+                case _:
+                    raise ValueError(
+                        "Future passed to gather() has already been consumed "
+                        "(via .get(), await, or another gather call)"
+                    )
+
+        async def _gather() -> List[Any]:
+            shared = [t.spawn() for t in tasks]
+            results: List[Any] = []
+            for s in shared:
+                if return_exceptions:
+                    try:
+                        results.append(await s)
+                    except Exception as e:
+                        results.append(e)
+                else:
+                    results.append(await s)
+            return results
+
+        return Future(coro=_gather())
