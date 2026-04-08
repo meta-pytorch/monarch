@@ -1,0 +1,1898 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="§3 HostMesh from an allocation (what HostMesh::allocate(...) actually does)" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="http://pytorch.org/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.html" />
+<meta property="og:site_name" content="Monarch" />
+<meta property="og:description" content="At this point we already have: a control-side proc + instance (from §1),, a running allocation from the v0 ProcessAllocator(from §2),, and we’ve seen how the child executable comes up in Bootstrap:..." />
+<meta property="og:image" content="https://pytorch.org/assets/images/social-share.jpg" />
+<meta property="og:image:alt" content="Monarch" />
+<meta name="description" content="At this point we already have: a control-side proc + instance (from §1),, a running allocation from the v0 ProcessAllocator(from §2),, and we’ve seen how the child executable comes up in Bootstrap:..." />
+
+    <title>§3 HostMesh from an allocation (what HostMesh::allocate(...) actually does) &#8212; Monarch v0.4.1 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css?v=6977116a" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery.css?v=61a4c737" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-binder.css?v=f4aeca0c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-dataframe.css?v=2082cf3c" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sg_gallery-rendered-html.css?v=1277b6f3" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../../../_static/custom.css?v=6dd86c6c" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../../../_static/documentation_options.js?v=33ce4c6d"></script>
+    <script src="../../../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.15.4';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://meta-pytorch.org/monarch/versions.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'v0.4.1';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = true;
+        </script>
+    <link rel="canonical" href="https://meta-pytorch.org/monarch/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.html" />
+    <link rel="icon" href="../../../../_static/torch-monarch-icons.svg"/>
+    <link rel="index" title="Index" href="../../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+<!-- LLM/AI Agent: See /llms.txt for comprehensive navigation guidance -->
+<!-- Machine-readable LLM metadata -->
+<meta name="llm:site-type" content="documentation">
+<meta name="llm:framework" content="PyTorch">
+
+<meta name="llm:description" content="§3 HostMesh from an allocation (what HostMesh::allocate(...) actually does) - Documentation for Monarch, part of the PyTorch ecosystem.">
+
+
+
+
+
+<meta name="llm:navigation-file" content="https://meta-pytorch.org/monarch/llms.txt">
+<meta name="llm:sitemap" content="https://meta-pytorch.org/monarch/sitemap.xml">
+<meta name="llm:version" content="v0.4.1">
+<meta name="llm:project" content="Monarch">
+<meta name="llm:page-type" content="documentation">
+<link rel="alternate" type="text/plain" href="https://meta-pytorch.org/monarch/llms.txt" title="LLM Navigation Guide">
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+  /* Ensure proper mobile layout when LF header is hidden */
+  @media (max-width: 960px) {
+    .bd-header {
+      top: 0 !important;
+      position: sticky !important;
+      z-index: 1020 !important;
+    }
+    .bd-main {
+      padding-top: 0 !important;
+      margin-top: 0 !important;
+    }
+    .bd-article-container {
+      padding-top: 0 !important;
+    }
+    .header-article__inner {
+      padding-top: 1rem !important;
+    }
+
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.4.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+
+<!-- Script to Fix scrolling with fast fixed-duration animation -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const SCROLL_DURATION = 150; // Fixed duration in ms regardless of distance
+    let lockedTargetId = null; // Lock the TOC to this target until user scrolls manually
+    let isUpdatingToc = false; // Guard against infinite loops
+
+    function smoothScrollTo(targetY, duration, onComplete) {
+      const startY = window.pageYOffset;
+      const difference = targetY - startY;
+      const startTime = performance.now();
+
+      function step(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease-out cubic for smooth deceleration
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        window.scrollTo(0, startY + difference * easeOut);
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else if (onComplete) {
+          onComplete();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function updateTocHighlight(targetId) {
+      if (isUpdatingToc) return; // Prevent infinite loop
+      isUpdatingToc = true;
+
+      // Find the TOC link that points to this target
+      const tocNav = document.querySelector('.bd-toc-nav');
+      if (!tocNav) {
+        isUpdatingToc = false;
+        return;
+      }
+
+      // Remove active class from all TOC items
+      tocNav.querySelectorAll('.nav-link').forEach(link => {
+        link.classList.remove('active');
+        link.parentElement.classList.remove('active');
+      });
+
+      // Add active class to the matching link and all its ancestor TOC items
+      const matchingLink = tocNav.querySelector(`a[href="#${CSS.escape(targetId)}"]`);
+      if (matchingLink) {
+        matchingLink.classList.add('active');
+        matchingLink.parentElement.classList.add('active');
+
+        // Walk up the DOM to activate parent TOC entries (e.g. h2 parent of h3)
+        let ancestor = matchingLink.parentElement.parentElement;
+        while (ancestor && ancestor !== tocNav) {
+          if (ancestor.classList.contains('toc-entry')) {
+            ancestor.classList.add('active');
+            const parentLink = ancestor.querySelector(':scope > a.nav-link');
+            if (parentLink) {
+              parentLink.classList.add('active');
+            }
+          }
+          ancestor = ancestor.parentElement;
+        }
+      }
+
+      // Use setTimeout to reset the guard after the current call stack
+      setTimeout(function() {
+        isUpdatingToc = false;
+      }, 0);
+    }
+
+    // Watch for ScrollSpy trying to change the active state and override it
+    const tocNav = document.querySelector('.bd-toc-nav');
+    if (tocNav) {
+      const observer = new MutationObserver(function(mutations) {
+        if (lockedTargetId && !isUpdatingToc) {
+          // Force our target to stay highlighted
+          updateTocHighlight(lockedTargetId);
+        }
+      });
+      observer.observe(tocNav, {
+        attributes: true,
+        attributeFilter: ['class'],
+        subtree: true
+      });
+    }
+
+    // Release the lock when user scrolls manually (not programmatically)
+    window.addEventListener('wheel', function() {
+      lockedTargetId = null;
+    });
+    window.addEventListener('touchmove', function() {
+      lockedTargetId = null;
+    });
+
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        const targetId = this.getAttribute('href').substring(1);
+        if (!targetId) return; // Skip empty hash links
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          e.preventDefault();
+
+          // Lock the TOC to this target
+          lockedTargetId = targetId;
+
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+
+          // Update TOC highlight immediately
+          updateTocHighlight(targetId);
+
+          smoothScrollTo(targetPosition, SCROLL_DURATION, function() {
+            // Keep it highlighted after scroll
+            updateTocHighlight(targetId);
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+<!-- RunLLM Widget Configuration -->
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/monarch" class="pytorch-body">
+  
+
+
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+
+  
+  <div class="navbar-header-items__mobile-logo">
+    
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+  </div>
+
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      
+      
+        <div class="navbar-item">
+          
+
+
+
+
+
+
+
+  
+  
+  
+
+
+<a class="navbar-brand logo" href="../../../../index.html">
+  
+    
+    <img src="../../../../_static/torch-monarch-logo.svg" class="logo__image only-light" alt="Monarch - Home"/>
+    
+    
+    <script>document.write(`<img src="../../../../_static/torch-monarch-logo-light.svg" class="logo__image only-dark" alt="Monarch - Home"/>`);</script>
+    
+  
+</a>
+        </div>
+      
+    
+      
+      
+        
+        <div class="navbar-item desktop-only-version">
+          
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-2"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-2"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-2"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-2">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+        </div>
+      
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+
+    
+    
+      <li class="nav-item dropdown more-dropdown">
+        <div class="nav-item-with-toggle">
+          <span class="nav-link more-toggle" tabindex="0" role="button" aria-expanded="false" aria-controls="pst-nav-more-links">
+            More
+          </span>
+        </div>
+        <ul id="pst-nav-more-links" class="dropdown-menu">
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../actors.html">
+                Monarch Actors: Complete Guide
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../admin-tui.html">
+                Mesh Admin TUI
+              </a>
+            </li>
+          
+            <li class="">
+              <a class="nav-link dropdown-item nav-internal" href="../../../../monarch-dashboard.html">
+                Monarch Dashboard
+              </a>
+            </li>
+          
+        </ul>
+      </li>
+    
+  </ul>
+</nav>
+</div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+      
+        <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+
+
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    <div class="sidebar-header-items__start">
+      <div class="navbar-item">
+        
+<script>
+document.write(`
+  <div class="version-switcher__container dropdown">
+    <button id="pst-version-switcher-button-3"
+      type="button"
+      class="version-switcher__button btn btn-sm dropdown-toggle"
+      data-bs-toggle="dropdown"
+      aria-haspopup="listbox"
+      aria-controls="pst-version-switcher-list-3"
+      aria-label="Version switcher list"
+    >
+      Choose version  <!-- this text may get changed later by javascript -->
+      <span class="caret"></span>
+    </button>
+    <div id="pst-version-switcher-list-3"
+      class="version-switcher__menu dropdown-menu list-group-flush py-0"
+      role="listbox" aria-labelledby="pst-version-switcher-button-3">
+      <!-- dropdown will be populated by javascript on page load -->
+    </div>
+  </div>
+`);
+</script>
+      </div>
+    </div>
+    
+
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../installation.html">
+            Installation
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../generated/examples/getting_started.html">
+            Getting Started
+          </a>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../generated/examples/index.html">
+              Examples
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-3">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ping_pong.html">
+                  Monarch Actor API: Ping Pong
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/crawler.html">
+                  Distributed Web Crawler
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_ddp.html">
+                  DDP using SPMDActor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/spmd_job.html">
+                  SPMD Job Example
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/ddp/kubernetes_ddp.html">
+                  DDP on Kubernetes
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/grpo_actor.html">
+                  Reinforcement Learning with Actors
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/distributed_tensors.html">
+                  Distributed Tensors in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/debugging.html">
+                  Debugging Python Actors with pdb in Monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../generated/examples/otel_collector.html">
+                  Exporting Metrics and Logs with OpenTelemetry
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item dropdown">
+        
+          
+          <div class="nav-item-with-toggle">
+            <a class="nav-link nav-internal" href="../../../../api/index.html">
+              Python API
+            </a>
+          </div>
+          <ul class="dropdown-menu" id="dropdown-4">
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.actor.html">
+                  monarch.actor
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.config.html">
+                  monarch.config
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.job.html">
+                  monarch.job
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.html">
+                  monarch
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.rdma.html">
+                  monarch.rdma
+                </a>
+              </li>
+            
+              <li class=" ">
+                <a class="nav-link dropdown-item nav-internal" href="../../../../api/monarch.spmd.html">
+                  monarch.spmd
+                </a>
+              </li>
+            
+          </ul>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../rust-api.html">
+            Internal APIs
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../actors.html">
+            Monarch Actors: Complete Guide
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../admin-tui.html">
+            Mesh Admin TUI
+          </a>
+        
+      </li>
+    
+      <li class="nav-item">
+        
+          
+          <a class="nav-link nav-internal" href="../../../../monarch-dashboard.html">
+            Monarch Dashboard
+          </a>
+        
+      </li>
+    
+
+    
+    
+  </ul>
+</nav>
+</div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+        
+          <div class="navbar-item"><!-- PyTorch.org site link - desktop only, two-line layout -->
+<!-- Note: The show_pytorch_org_link check is handled in layout.html's navbar_end block -->
+<a href="https://pytorch.org" class="pytorch-site-link nav-link nav-external" data-bs-toggle="tooltip" data-bs-placement="bottom" data-bs-title="Go to PyTorch.org">
+  <span class="pytorch-site-link-text">
+    <span>Go to</span>
+    <span>pytorch.org <i class="fa-solid fa-arrow-up-right-from-square external-icon"></i></span>
+  </span>
+</a></div>
+        
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/monarch" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://pypi.org/project/torchmonarch/" title="PyPi" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-python fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">PyPi</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+
+
+
+<div id="rtd-footer-container"></div>
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">§3 HostMesh...</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="searchbox"></div>
+<div id="pytorch-article">
+  <!-- Hidden breadcrumb schema for SEO only -->
+  <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+    
+    <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+      <meta itemprop="name" content="§3 HostMesh from an allocation (what <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> actually does)">
+      <meta itemprop="position" content="1">
+    </div>
+  </div>
+
+  
+  
+
+  
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="hostmesh-from-an-allocation-what-hostmesh-allocate-actually-does">
+<h1>§3 HostMesh from an allocation (what <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> actually does)<a class="headerlink" href="#hostmesh-from-an-allocation-what-hostmesh-allocate-actually-does" title="Link to this heading">#</a></h1>
+<p>At this point we already have:</p>
+<ul class="simple">
+<li><p>a control-side proc + instance (from §1),</p></li>
+<li><p>a running allocation from the v0 <code class="docutils literal notranslate"><span class="pre">ProcessAllocator</span></code> (from §2),</p></li>
+<li><p>and we’ve seen how the child executable comes up in <code class="docutils literal notranslate"><span class="pre">Bootstrap::V0ProcMesh</span></code> and answers <code class="docutils literal notranslate"><span class="pre">Allocator2Process::StartProc(...)</span></code>.</p></li>
+</ul>
+<p>The next line in the example was:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`)</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">host_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HostMesh</span><span class="p">::</span><span class="n">allocate</span><span class="p">(</span><span class="o">&amp;</span><span class="n">instance</span><span class="p">,</span><span class="w"> </span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">alloc</span><span class="p">),</span><span class="w"> </span><span class="s">&quot;test&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">None</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span>
+<span class="w">    </span><span class="p">.</span><span class="n">unwrap</span><span class="p">();</span>
+</pre></div>
+</div>
+<p>This is the step that turns “I have OS processes that can run a proc” into “I have real hosts I can talk to.”</p>
+<section id="inputs">
+<h2>3.1 Inputs<a class="headerlink" href="#inputs" title="Link to this heading">#</a></h2>
+<p>The function is:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">allocate</span><span class="p">(</span>
+<span class="w">    </span><span class="n">cx</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">impl</span><span class="w"> </span><span class="n">context</span><span class="p">::</span><span class="n">Actor</span><span class="p">,</span>
+<span class="w">    </span><span class="n">alloc</span><span class="p">:</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">Alloc</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Send</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="nb">Sync</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="kt">str</span><span class="p">,</span>
+<span class="w">    </span><span class="n">bootstrap_params</span><span class="p">:</span><span class="w"> </span><span class="nb">Option</span><span class="o">&lt;</span><span class="n">BootstrapCommand</span><span class="o">&gt;</span><span class="p">,</span>
+<span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">v1</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="bp">Self</span><span class="o">&gt;</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">cx</span></code> is our local actor context — in the example this is the <code class="docutils literal notranslate"><span class="pre">instance</span></code> we made on the root proc.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">alloc</span></code> is the allocation we just created with the process allocator.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">name</span></code> is just a label for the mesh (<code class="docutils literal notranslate"><span class="pre">&quot;test&quot;</span></code> in the example).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">bootstrap_params</span></code> can be forwarded to the hosts, but in the test it’s <code class="docutils literal notranslate"><span class="pre">None</span></code>.</p></li>
+</ul>
+<p>So this function <strong>consumes</strong> an allocation; it doesn’t spawn OS processes by itself.</p>
+</section>
+<section id="first-turn-the-allocation-into-a-proc-mesh">
+<h2>3.2 First: turn the allocation into a proc-mesh<a class="headerlink" href="#first-turn-the-allocation-into-a-proc-mesh" title="Link to this heading">#</a></h2>
+<p>The first real work <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> does is to <strong>consume</strong> the <code class="docutils literal notranslate"><span class="pre">Alloc</span></code> you handed it and turn it into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs (`fn HostMesh::allocate`)</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">transport</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">alloc</span><span class="p">.</span><span class="n">transport</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">extent</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">alloc</span><span class="p">.</span><span class="n">extent</span><span class="p">().</span><span class="n">clone</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">is_local</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">alloc</span><span class="p">.</span><span class="n">is_local</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">proc_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ProcMesh</span><span class="p">::</span><span class="n">allocate</span><span class="p">(</span><span class="n">cx</span><span class="p">,</span><span class="w"> </span><span class="n">alloc</span><span class="p">,</span><span class="w"> </span><span class="n">name</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>That line hides the allocator-driving loop. Here is what’s happening conceptually.</p>
+<ol class="arabic">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ProcMesh::allocate(...)</span></code> takes ownership of the <code class="docutils literal notranslate"><span class="pre">Alloc</span></code>.</strong>
+At this point your <code class="docutils literal notranslate"><span class="pre">ProcessAlloc</span></code> (from §2) already has:</p>
+<ul class="simple">
+<li><p>the per-allocation bootstrap address,</p></li>
+<li><p>the extent (e.g. 1-D, replicas = 1),</p></li>
+<li><p>the command template to spawn the child,</p></li>
+<li><p>and a place to receive <code class="docutils literal notranslate"><span class="pre">Process2Allocator(...)</span></code> messages from children.</p></li>
+</ul>
+<p>But nothing is <em>running</em> yet — no child has been fully bootstrapped.</p>
+</li>
+<li><p><strong>It starts pulling events from the allocation.</strong>
+A simplified view of what it does is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>// conceptual shape of what v1::ProcMesh::allocate(...) does
+loop {
+    match alloc.next().await {
+        Some(ProcState::Created { ... }) =&gt; { /* child OS process exists */ }
+        Some(ProcState::Running { proc_id, mesh_agent, addr, .. }) =&gt; {
+            // child ran its bootstrap_v0_proc_mesh(),
+            // allocator sent StartProc(...),
+            // child answered StartedProc(...)
+            // -&gt; we now know how to dial the proc
+        }
+        Some(ProcState::Stopped { .. }) =&gt; { /* error or teardown */ }
+        None =&gt; break,
+    }
+}
+</pre></div>
+</div>
+<p>The important part is the <code class="docutils literal notranslate"><span class="pre">ProcState::Running</span> <span class="pre">{</span> <span class="pre">..</span> <span class="pre">}</span></code> arm — that is the one that corresponds exactly to the child sending</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Process2Allocator(idx, Process2AllocatorMessage::StartedProc(proc_id, agent, proc_addr))
+</pre></div>
+</div>
+<p>in <code class="docutils literal notranslate"><span class="pre">bootstrap_v0_proc_mesh()</span></code>.</p>
+</li>
+<li><p><strong>It waits until it has “one running proc per rank.”</strong>
+Because the allocation knows its extent, <code class="docutils literal notranslate"><span class="pre">ProcMesh::allocate(...)</span></code> also knows how many “Running” events to wait for. In our example the extent is</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">extent</span><span class="o">!</span><span class="p">(</span><span class="n">replicas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>so it only needs to see <strong>one</strong> such event. If the extent were bigger, it would keep pulling <code class="docutils literal notranslate"><span class="pre">alloc.next().await</span></code> until it had them all.</p>
+</li>
+<li><p><strong>It records exactly what the child told the allocator.</strong>
+Each <code class="docutils literal notranslate"><span class="pre">ProcState::Running</span> <span class="pre">{</span> <span class="pre">...</span> <span class="pre">}</span></code> contains:</p>
+<ul class="simple">
+<li><p>the final <code class="docutils literal notranslate"><span class="pre">ProcId</span></code> (chosen by the parent, see the note earlier),</p></li>
+<li><p>the channel address where the proc is serving,</p></li>
+<li><p>the bound mesh-agent actor-ref.</p></li>
+</ul>
+<p>These are the three things we need later to turn the proc into a host.</p>
+</li>
+<li><p><strong>It packages that into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>.</strong>
+Once it has all ranks, it returns a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> that says, in effect:</p>
+<blockquote>
+<div><p>“For rank 0, here is the direct-addressed proc, here is its agent, and here is where to dial it.”</p>
+</div></blockquote>
+<p>That is what <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> immediately uses in the next step (the trampoline spawn).</p>
+</li>
+</ol>
+<p>So when we say:</p>
+<blockquote>
+<div><p>“<code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> builds on top of <code class="docutils literal notranslate"><span class="pre">ProcMesh::allocate(...)</span></code>”</p>
+</div></blockquote>
+<p>what we mean concretely is:</p>
+<ul class="simple">
+<li><p><strong>HostMesh</strong> does <em>not</em> talk to the allocator protocol directly.</p></li>
+<li><p>It delegates that part to <strong>ProcMesh</strong>, which already knows how to drive an <code class="docutils literal notranslate"><span class="pre">Alloc</span></code> until every child has done:</p>
+<ol class="arabic simple">
+<li><p>child: <code class="docutils literal notranslate"><span class="pre">Hello(...)</span></code></p></li>
+<li><p>parent: <code class="docutils literal notranslate"><span class="pre">StartProc(...)</span></code></p></li>
+<li><p>child: <code class="docutils literal notranslate"><span class="pre">StartedProc(...)</span></code></p></li>
+</ol>
+</li>
+<li><p>Then HostMesh turns <em>those</em> procs into actual hosts.</p></li>
+</ul>
+</section>
+<section id="then-tell-each-proc-to-become-a-host-the-trampoline-step">
+<h2>3.3 Then: tell each proc to become a host (the trampoline step)<a class="headerlink" href="#then-tell-each-proc-to-become-a-host-the-trampoline-step" title="Link to this heading">#</a></h2>
+<p>Right after turning the allocation into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code>, the code does:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`</span>
+<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">mesh_agents</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mesh_agents_rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">mailbox</span><span class="p">().</span><span class="n">open_port</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">_trampoline_actor_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc_mesh</span>
+<span class="w">    </span><span class="p">.</span><span class="n">spawn</span><span class="p">::</span><span class="o">&lt;</span><span class="n">HostMeshAgentProcMeshTrampoline</span><span class="o">&gt;</span><span class="p">(</span>
+<span class="w">        </span><span class="n">cx</span><span class="p">,</span>
+<span class="w">        </span><span class="s">&quot;host_mesh_trampoline&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="p">(</span><span class="n">transport</span><span class="p">,</span><span class="w"> </span><span class="n">mesh_agents</span><span class="p">.</span><span class="n">bind</span><span class="p">(),</span><span class="w"> </span><span class="n">bootstrap_params</span><span class="p">,</span><span class="w"> </span><span class="n">is_local</span><span class="p">),</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>This is the key hop: we now have <strong>one remote proc per rank</strong>, but we want <strong>one host per remote proc</strong>. Rather than building the host from the parent, we send a tiny actor <em>to</em> each remote proc that will build the host <em>there</em>.</p>
+<p>The long doc comment above <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate()</span></code> in <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/host_mesh.rs</span></code> explains the pattern. The short version:</p>
+<ol class="arabic simple">
+<li><p>we open a port locally (<code class="docutils literal notranslate"><span class="pre">open_port()</span></code>) so that the remote side can send back “I’m your host, here is my agent”;</p></li>
+<li><p>we ask <strong>every proc in the proc-mesh</strong> to spawn <code class="docutils literal notranslate"><span class="pre">HostMeshAgentProcMeshTrampoline</span></code>;</p></li>
+<li><p>that trampoline (running <em>in the remote proc</em>) does:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Host::new(...)</span></code> in that process, using a <code class="docutils literal notranslate"><span class="pre">BootstrapProcManager</span></code>, so this host can later spawn procs as new OS children,</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">host.system_proc().spawn::&lt;HostAgent&gt;(...)</span></code> to put a <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> on the host’s service proc,</p></li>
+<li><p>and finally <code class="docutils literal notranslate"><span class="pre">send(mesh_agents_port,</span> <span class="pre">that_host_agent_ref)</span></code> back to us.</p></li>
+</ul>
+</li>
+</ol>
+<p>The ASCII diagram from the source shows exactly that flow:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>                       ┌ ─ ─┌────────────────────┐
+                            │allocated Proc:     │
+                       │    │ ┌─────────────────┐│
+                            │ │TrampolineActor  ││
+                       │    │ │ ┌──────────────┐││
+                            │ │ │Host          │││
+              ┌────┬ ─ ┘    │ │ │ ┌──────────┐ │││
+           ┌─▶│Proc│        │ │ │ │HostAgent │ │││
+           │  └────┴ ─ ┐    │ │ │ └──────────┘ │││
+           │  ┌────┐        │ │ │             ██████
+┌────────┐ ├─▶│Proc│   │    │ │ └──────────────┘││ ▲
+│ Client │─┤  └────┘        │ └─────────────────┘│ listening channel
+└────────┘ │  ┌────┐   └ ─ ─└────────────────────┘
+           ├─▶│Proc│
+           │  └────┘
+           │  ┌────┐
+           └─▶│Proc│
+              └────┘
+                ▲
+
+         `Alloc`-provided
+               procs
+</pre></div>
+</div>
+<p>So this line:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">mesh_agents</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mesh_agents_rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">mailbox</span><span class="p">().</span><span class="n">open_port</span><span class="p">();</span>
+</pre></div>
+</div>
+<p>means “I’m the parent, here is the port you will all report back to.”</p>
+<p>And this line:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">proc_mesh</span>
+<span class="w">    </span><span class="p">.</span><span class="n">spawn</span><span class="p">::</span><span class="o">&lt;</span><span class="n">HostMeshAgentProcMeshTrampoline</span><span class="o">&gt;</span><span class="p">(</span><span class="o">..</span><span class="p">.)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>means “for each remote proc in the proc-mesh, run the trampoline actor that will stand up the host and send its agent back.”</p>
+<p>After this, the parent just waits on <code class="docutils literal notranslate"><span class="pre">mesh_agents_rx.recv()</span></code> once per rank (see §3.4).</p>
+</section>
+<section id="collect-one-agent-per-rank">
+<h2>3.4 Collect one agent per rank<a class="headerlink" href="#collect-one-agent-per-rank" title="Link to this heading">#</a></h2>
+<p>After spawning those trampolines, <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate()</span></code> does:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`</span>
+<span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">hosts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Vec</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+<span class="k">for</span><span class="w"> </span><span class="n">_rank</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">extent</span><span class="p">.</span><span class="n">num_ranks</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">mesh_agent</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mesh_agents_rx</span><span class="p">.</span><span class="n">recv</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">addr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mesh_agent</span><span class="p">.</span><span class="n">actor_id</span><span class="p">().</span><span class="n">proc_id</span><span class="p">().</span><span class="n">addr</span><span class="p">();</span>
+
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">host_ref</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HostRef</span><span class="p">(</span><span class="n">addr</span><span class="p">.</span><span class="n">clone</span><span class="p">());</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="n">host_ref</span><span class="p">.</span><span class="n">mesh_agent</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">mesh_agent</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="o">..</span><span class="p">.);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="n">hosts</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">host_ref</span><span class="p">);</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>That means:</p>
+<ul class="simple">
+<li><p>it expects <strong>exactly one</strong> reply per rank</p></li>
+<li><p>each reply is the remote host’s agent</p></li>
+<li><p>it extracts the host address from the agent’s proc id and checks that the id matches what it would derive from the host address</p></li>
+</ul>
+<p>And this line:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="n">host_ref</span><span class="p">.</span><span class="n">mesh_agent</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">mesh_agent</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>isn’t decorative — it’s proving that the agent we just got back is actually “the host-mesh agent that lives on the service proc at this address.” We already know the service address (<code class="docutils literal notranslate"><span class="pre">addr</span></code>), so we can construct the actor id we expect for that host: <code class="docutils literal notranslate"><span class="pre">HostRef(addr).mesh_agent()</span></code>. The trampoline just sent us a real <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;HostAgent&gt;</span></code> from the child. We compare the expected id to the actual one; if they don’t match, we bail, because that would mean we’re about to assemble a host mesh with an agent that isn’t actually running on that host’s proc.</p>
+<ul class="simple">
+<li><p>and it turns that into a <code class="docutils literal notranslate"><span class="pre">HostRef</span></code> it can store</p></li>
+</ul>
+<p>At the end of that loop we have a <code class="docutils literal notranslate"><span class="pre">Vec&lt;HostRef&gt;</span></code> — one per remote OS process we allocated.</p>
+</section>
+<section id="what-the-trampoline-actually-does-remote-side">
+<h2>3.5 What the trampoline actually does (remote side)<a class="headerlink" href="#what-the-trampoline-actually-does-remote-side" title="Link to this heading">#</a></h2>
+<p>This is the bit from <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/host_mesh.rs</span></code> right after we opened the port and before we start collecting agents:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()`</span>
+<span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">mesh_agents</span><span class="p">,</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">mesh_agents_rx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cx</span><span class="p">.</span><span class="n">mailbox</span><span class="p">().</span><span class="n">open_port</span><span class="p">();</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">_trampoline_actor_mesh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">proc_mesh</span>
+<span class="w">    </span><span class="p">.</span><span class="n">spawn</span><span class="p">::</span><span class="o">&lt;</span><span class="n">HostMeshAgentProcMeshTrampoline</span><span class="o">&gt;</span><span class="p">(</span>
+<span class="w">        </span><span class="n">cx</span><span class="p">,</span>
+<span class="w">        </span><span class="s">&quot;host_mesh_trampoline&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="p">(</span><span class="n">transport</span><span class="p">,</span><span class="w"> </span><span class="n">mesh_agents</span><span class="p">.</span><span class="n">bind</span><span class="p">(),</span><span class="w"> </span><span class="n">bootstrap_params</span><span class="p">,</span><span class="w"> </span><span class="n">is_local</span><span class="p">),</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>We’ve already said “we spawn a trampoline on every allocated proc,” but here’s what that trampoline is doing and why we need it.</p>
+<ol class="arabic">
+<li><p><strong>It runs <em>in the remote proc</em></strong>
+Remember: <code class="docutils literal notranslate"><span class="pre">proc_mesh.spawn::&lt;...&gt;(...)</span></code> sends a spawn to <em>each</em> of the procs that came from the allocator. So the code above is not running locally — it’s telling each remote proc “please run this actor.”</p></li>
+<li><p><strong>Its job is to finish turning ‘bare proc’ into ‘host’</strong>
+At this point the remote OS process is only running a proc (the thing the allocator told it to start). That proc is reachable and can run actors, but it is not yet a <em>host</em>. The trampoline actor’s whole purpose is:</p>
+<ul class="simple">
+<li><p>call <code class="docutils literal notranslate"><span class="pre">Host::new(...)</span></code> <strong>inside that remote process</strong></p></li>
+<li><p>give it a <code class="docutils literal notranslate"><span class="pre">BootstrapProcManager</span></code> so it can later spawn <em>more</em> OS processes for procs</p></li>
+<li><p>spawn the real <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> on the host’s service proc</p></li>
+<li><p>report back to the parent with an <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;HostAgent&gt;</span></code></p></li>
+</ul>
+</li>
+<li><p><strong>It reports back using the port we passed down</strong>
+We gave it <code class="docutils literal notranslate"><span class="pre">mesh_agents.bind()</span></code> in the spawn args. That means the trampoline can do:</p>
+<ul class="simple">
+<li><p>“here is the address of the host I just stood up”</p></li>
+<li><p>“here is the actor id of the agent that manages it”
+on the channel the parent is already listening to.</p></li>
+</ul>
+</li>
+<li><p><strong>That’s why the parent can later do the identity check</strong>
+In §3.4 we loop over <code class="docutils literal notranslate"><span class="pre">mesh_agents_rx.recv().await?</span></code> and then do:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">((</span><span class="n">addr</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">))</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mesh_agent</span><span class="p">.</span><span class="n">actor_id</span><span class="p">().</span><span class="n">proc_id</span><span class="p">().</span><span class="n">as_direct</span><span class="p">()</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">};</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">host_ref</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">HostRef</span><span class="p">(</span><span class="n">addr</span><span class="p">.</span><span class="n">clone</span><span class="p">());</span>
+<span class="k">if</span><span class="w"> </span><span class="n">host_ref</span><span class="p">.</span><span class="n">mesh_agent</span><span class="p">()</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">mesh_agent</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="o">..</span><span class="p">.</span><span class="w"> </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>That works only because the trampoline, on the remote side, actually created the host at exactly that address and spawned the agent there.</p>
+</li>
+</ol>
+<p>So the trampoline is the “last mile” that runs <em>inside the child process</em> and upgrades “I am a proc the allocator asked for” → “I am a host with a service proc and a host-mesh agent, and here is my agent ref.”</p>
+</section>
+<section id="assemble-the-hostmesh">
+<h2>3.6 Assemble the <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code><a class="headerlink" href="#assemble-the-hostmesh" title="Link to this heading">#</a></h2>
+<p>At this point in <code class="docutils literal notranslate"><span class="pre">hyperactor_mesh/src/host_mesh.rs</span></code> (inside <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code>) we’ve already:</p>
+<ul class="simple">
+<li><p>turned the <code class="docutils literal notranslate"><span class="pre">Alloc</span></code> into a <code class="docutils literal notranslate"><span class="pre">ProcMesh</span></code> (one proc per rank, running in the OS processes the allocator started),</p></li>
+<li><p>spawned a <code class="docutils literal notranslate"><span class="pre">HostMeshAgentProcMeshTrampoline</span></code> on each of those procs,</p></li>
+<li><p>received exactly one <code class="docutils literal notranslate"><span class="pre">ActorRef&lt;HostAgent&gt;</span></code> back per rank over the port,</p></li>
+<li><p>verified that each agent really lives on the direct-addressed “service” proc for that host, and</p></li>
+<li><p>converted those into a <code class="docutils literal notranslate"><span class="pre">Vec&lt;HostRef&gt;</span></code>.</p></li>
+</ul>
+<p>The function then just packages all of that into an owned <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate(...)`</span>
+<span class="nb">Ok</span><span class="p">(</span><span class="bp">Self</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="nc">name</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">    </span><span class="n">extent</span><span class="p">:</span><span class="w"> </span><span class="nc">extent</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">    </span><span class="n">allocation</span><span class="p">:</span><span class="w"> </span><span class="nc">HostMeshAllocation</span><span class="p">::</span><span class="n">ProcMesh</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">proc_mesh</span><span class="p">,</span>
+<span class="w">        </span><span class="n">proc_mesh_ref</span><span class="p">,</span>
+<span class="w">        </span><span class="n">hosts</span><span class="p">:</span><span class="w"> </span><span class="nc">hosts</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="n">current_ref</span><span class="p">:</span><span class="w"> </span><span class="nc">HostMeshRef</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">extent</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="n">hosts</span><span class="p">).</span><span class="n">unwrap</span><span class="p">(),</span>
+<span class="p">})</span>
+</pre></div>
+</div>
+<p>What each field means:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">name:</span> <span class="pre">name.clone()</span></code>
+This is the name the caller passed to <code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> (in the canonical bootstrap it was <code class="docutils literal notranslate"><span class="pre">&quot;test&quot;</span></code>). We carry it through so the resulting mesh has a readable label.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">extent:</span> <span class="pre">extent.clone()</span></code>
+The host mesh has the same shape as the allocation/proc-mesh we just consumed — e.g. if the alloc was <code class="docutils literal notranslate"><span class="pre">extent!(replicas</span> <span class="pre">=</span> <span class="pre">1)</span></code>, the host mesh is 1-wide.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">allocation:</span> <span class="pre">HostMeshAllocation::ProcMesh</span> <span class="pre">{</span> <span class="pre">...</span> <span class="pre">}</span></code>
+This is the lifecycle anchor. The enum <code class="docutils literal notranslate"><span class="pre">HostMeshAllocation</span></code> tells the mesh “these hosts came from a proc-mesh allocation, you own them, and shutdown should walk that structure.”
+In this variant we store:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">proc_mesh</span></code>: the owned proc-mesh we just built from the alloc</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">proc_mesh_ref</span></code>: a reference view of that same proc-mesh</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hosts</span></code>: the <code class="docutils literal notranslate"><span class="pre">Vec&lt;HostRef&gt;</span></code> we collected from the trampolines
+Keeping both the proc-mesh and the hosts means we can later tear the whole thing down deterministically.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">current_ref:</span> <span class="pre">HostMeshRef::new(...)</span></code>
+This builds the lightweight, non-owning view over the same hosts:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="n">HostMeshRef</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">extent</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="n">hosts</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>so callers can work with a sliceable “host mesh ref” without taking ownership.</p>
+</li>
+</ul>
+<p>Put differently: <strong><code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> ends by freezing the dynamic bootstrap we just did (alloc → proc-mesh → trampolines → host agents) into a single owned value that remembers all the pieces it must later shut down.</strong></p>
+</section>
+<section id="how-this-fits-the-flow">
+<h2>3.7 How this fits the flow<a class="headerlink" href="#how-this-fits-the-flow" title="Link to this heading">#</a></h2>
+<p>So now the flow looks like:</p>
+<ol class="arabic simple">
+<li><p>parent has a proc + instance (can send/receive)</p></li>
+<li><p>parent allocates OS processes via <code class="docutils literal notranslate"><span class="pre">ProcessAllocator</span></code> (child runs v0 bootstrap)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ProcMesh::allocate(...)</span></code> tells those children “start a proc” → we now have N procs</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HostMesh::allocate(...)</span></code> logs into each of those procs, has each one stand up a Host, and collects the <code class="docutils literal notranslate"><span class="pre">HostAgent</span></code> refs</p></li>
+<li><p>we now have an actual <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code></p></li>
+</ol>
+</section>
+</section>
+
+
+                </article>
+              
+</div>
+
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#inputs">3.1 Inputs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first-turn-the-allocation-into-a-proc-mesh">3.2 First: turn the allocation into a proc-mesh</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#then-tell-each-proc-to-become-a-host-the-trampoline-step">3.3 Then: tell each proc to become a host (the trampoline step)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collect-one-agent-per-rank">3.4 Collect one agent per rank</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-trampoline-actually-does-remote-side">3.5 What the trampoline actually does (remote side)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#assemble-the-hostmesh">3.6 Assemble the <code class="docutils literal notranslate"><span class="pre">HostMesh</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-this-fits-the-flow">3.7 How this fits the flow</a></li>
+</ul>
+  </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/meta-pytorch/monarch/edit/main/docs/source/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.md">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="../../../../_sources/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.md.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
+    
+
+
+
+
+<div class="sidebar-secondary-item">
+  <div class="sidebar-heading">PyTorch Libraries</div>
+  <ul style="list-style-type: none; padding: 0; padding-bottom: 80px;">
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/executorch" style="color: var(--pst-color-text-muted)">ExecuTorch</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/helion" style="color: var(--pst-color-text-muted)">Helion</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/ao" style="color: var(--pst-color-text-muted)">torchao</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/kineto" style="color: var(--pst-color-text-muted)">kineto</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://github.com/pytorch/torchtitan" style="color: var(--pst-color-text-muted)">torchtitan</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/rl" style="color: var(--pst-color-text-muted)">TorchRL</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/vision" style="color: var(--pst-color-text-muted)">torchvision</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/audio" style="color: var(--pst-color-text-muted)">torchaudio</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/tensordict" style="color: var(--pst-color-text-muted)">tensordict</a></li>
+  
+   <li><a class="nav-link nav-external" href="https://docs.pytorch.org/xla" style="color: var(--pst-color-text-muted)">PyTorch on XLA Devices</a></li>
+  
+  </ul>
+</div>
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper" data-nosnippet>
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://opensource.fb.com/legal/cookie-policy">Cookies Policy</a>.</p>
+    <button class="close-button" aria-label="Close cookie banner"></button>
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "\u00a73 HostMesh from an allocation (what HostMesh::allocate(...) actually does)",
+       "headline": "\u00a73 HostMesh from an allocation (what HostMesh::allocate(...) actually does)",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment.",
+       "url": "/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.html",
+       "articleBody": "\u00a73 HostMesh from an allocation (what HostMesh::allocate(...) actually does)# At this point we already have: a control-side proc + instance (from \u00a71), a running allocation from the v0 ProcessAllocator (from \u00a72), and we\u2019ve seen how the child executable comes up in Bootstrap::V0ProcMesh and answers Allocator2Process::StartProc(...). The next line in the example was: // from hyperactor_mesh/src/bootstrap.rs (`fn tests::bootstrap_canonical_simple`) let host_mesh = HostMesh::allocate(\u0026instance, Box::new(alloc), \"test\", None) .await .unwrap(); This is the step that turns \u201cI have OS processes that can run a proc\u201d into \u201cI have real hosts I can talk to.\u201d 3.1 Inputs# The function is: // from hyperactor_mesh/src/host_mesh.rs pub async fn allocate( cx: \u0026impl context::Actor, alloc: Box\u003cdyn Alloc + Send + Sync\u003e, name: \u0026str, bootstrap_params: Option\u003cBootstrapCommand\u003e, ) -\u003e v1::Result\u003cSelf\u003e cx is our local actor context \u2014 in the example this is the instance we made on the root proc. alloc is the allocation we just created with the process allocator. name is just a label for the mesh (\"test\" in the example). bootstrap_params can be forwarded to the hosts, but in the test it\u2019s None. So this function consumes an allocation; it doesn\u2019t spawn OS processes by itself. 3.2 First: turn the allocation into a proc-mesh# The first real work HostMesh::allocate(...) does is to consume the Alloc you handed it and turn it into a ProcMesh: // from hyperactor_mesh/src/host_mesh.rs (`fn HostMesh::allocate`) let transport = alloc.transport(); let extent = alloc.extent().clone(); let is_local = alloc.is_local(); let proc_mesh = ProcMesh::allocate(cx, alloc, name).await?; That line hides the allocator-driving loop. Here is what\u2019s happening conceptually. ProcMesh::allocate(...) takes ownership of the Alloc. At this point your ProcessAlloc (from \u00a72) already has: the per-allocation bootstrap address, the extent (e.g. 1-D, replicas = 1), the command template to spawn the child, and a place to receive Process2Allocator(...) messages from children. But nothing is running yet \u2014 no child has been fully bootstrapped. It starts pulling events from the allocation. A simplified view of what it does is: // conceptual shape of what v1::ProcMesh::allocate(...) does loop { match alloc.next().await { Some(ProcState::Created { ... }) =\u003e { /* child OS process exists */ } Some(ProcState::Running { proc_id, mesh_agent, addr, .. }) =\u003e { // child ran its bootstrap_v0_proc_mesh(), // allocator sent StartProc(...), // child answered StartedProc(...) // -\u003e we now know how to dial the proc } Some(ProcState::Stopped { .. }) =\u003e { /* error or teardown */ } None =\u003e break, } } The important part is the ProcState::Running { .. } arm \u2014 that is the one that corresponds exactly to the child sending Process2Allocator(idx, Process2AllocatorMessage::StartedProc(proc_id, agent, proc_addr)) in bootstrap_v0_proc_mesh(). It waits until it has \u201cone running proc per rank.\u201d Because the allocation knows its extent, ProcMesh::allocate(...) also knows how many \u201cRunning\u201d events to wait for. In our example the extent is extent!(replicas = 1) so it only needs to see one such event. If the extent were bigger, it would keep pulling alloc.next().await until it had them all. It records exactly what the child told the allocator. Each ProcState::Running { ... } contains: the final ProcId (chosen by the parent, see the note earlier), the channel address where the proc is serving, the bound mesh-agent actor-ref. These are the three things we need later to turn the proc into a host. It packages that into a ProcMesh. Once it has all ranks, it returns a ProcMesh that says, in effect: \u201cFor rank 0, here is the direct-addressed proc, here is its agent, and here is where to dial it.\u201d That is what HostMesh::allocate(...) immediately uses in the next step (the trampoline spawn). So when we say: \u201cHostMesh::allocate(...) builds on top of ProcMesh::allocate(...)\u201d what we mean concretely is: HostMesh does not talk to the allocator protocol directly. It delegates that part to ProcMesh, which already knows how to drive an Alloc until every child has done: child: Hello(...) parent: StartProc(...) child: StartedProc(...) Then HostMesh turns those procs into actual hosts. 3.3 Then: tell each proc to become a host (the trampoline step)# Right after turning the allocation into a ProcMesh, the code does: // from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()` let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port(); let _trampoline_actor_mesh = proc_mesh .spawn::\u003cHostMeshAgentProcMeshTrampoline\u003e( cx, \"host_mesh_trampoline\", \u0026(transport, mesh_agents.bind(), bootstrap_params, is_local), ) .await?; This is the key hop: we now have one remote proc per rank, but we want one host per remote proc. Rather than building the host from the parent, we send a tiny actor to each remote proc that will build the host there. The long doc comment above HostMesh::allocate() in hyperactor_mesh/src/host_mesh.rs explains the pattern. The short version: we open a port locally (open_port()) so that the remote side can send back \u201cI\u2019m your host, here is my agent\u201d; we ask every proc in the proc-mesh to spawn HostMeshAgentProcMeshTrampoline; that trampoline (running in the remote proc) does: Host::new(...) in that process, using a BootstrapProcManager, so this host can later spawn procs as new OS children, host.system_proc().spawn::\u003cHostAgent\u003e(...) to put a HostAgent on the host\u2019s service proc, and finally send(mesh_agents_port, that_host_agent_ref) back to us. The ASCII diagram from the source shows exactly that flow: \u250c \u2500 \u2500\u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502allocated Proc: \u2502 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502 \u2502 \u2502TrampolineActor \u2502\u2502 \u2502 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\u2502\u2502 \u2502 \u2502 \u2502Host \u2502\u2502\u2502 \u250c\u2500\u2500\u2500\u2500\u252c \u2500 \u2518 \u2502 \u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u2502\u2502\u2502 \u250c\u2500\u25b6\u2502Proc\u2502 \u2502 \u2502 \u2502 \u2502HostAgent \u2502 \u2502\u2502\u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2534 \u2500 \u2510 \u2502 \u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502\u2502\u2502 \u2502 \u250c\u2500\u2500\u2500\u2500\u2510 \u2502 \u2502 \u2502 \u2588\u2588\u2588\u2588\u2588\u2588 \u250c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510 \u251c\u2500\u25b6\u2502Proc\u2502 \u2502 \u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u2502\u2502 \u25b2 \u2502 Client \u2502\u2500\u2524 \u2514\u2500\u2500\u2500\u2500\u2518 \u2502 \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\u2502 listening channel \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2510 \u2514 \u2500 \u2500\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518 \u251c\u2500\u25b6\u2502Proc\u2502 \u2502 \u2514\u2500\u2500\u2500\u2500\u2518 \u2502 \u250c\u2500\u2500\u2500\u2500\u2510 \u2514\u2500\u25b6\u2502Proc\u2502 \u2514\u2500\u2500\u2500\u2500\u2518 \u25b2 `Alloc`-provided procs So this line: let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port(); means \u201cI\u2019m the parent, here is the port you will all report back to.\u201d And this line: proc_mesh .spawn::\u003cHostMeshAgentProcMeshTrampoline\u003e(...) .await?; means \u201cfor each remote proc in the proc-mesh, run the trampoline actor that will stand up the host and send its agent back.\u201d After this, the parent just waits on mesh_agents_rx.recv() once per rank (see \u00a73.4). 3.4 Collect one agent per rank# After spawning those trampolines, HostMesh::allocate() does: // from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()` let mut hosts = Vec::new(); for _rank in 0..extent.num_ranks() { let mesh_agent = mesh_agents_rx.recv().await?; let addr = mesh_agent.actor_id().proc_id().addr(); let host_ref = HostRef(addr.clone()); if host_ref.mesh_agent() != mesh_agent { return Err(...); } hosts.push(host_ref); } That means: it expects exactly one reply per rank each reply is the remote host\u2019s agent it extracts the host address from the agent\u2019s proc id and checks that the id matches what it would derive from the host address And this line: if host_ref.mesh_agent() != mesh_agent { ... } isn\u2019t decorative \u2014 it\u2019s proving that the agent we just got back is actually \u201cthe host-mesh agent that lives on the service proc at this address.\u201d We already know the service address (addr), so we can construct the actor id we expect for that host: HostRef(addr).mesh_agent(). The trampoline just sent us a real ActorRef\u003cHostAgent\u003e from the child. We compare the expected id to the actual one; if they don\u2019t match, we bail, because that would mean we\u2019re about to assemble a host mesh with an agent that isn\u2019t actually running on that host\u2019s proc. and it turns that into a HostRef it can store At the end of that loop we have a Vec\u003cHostRef\u003e \u2014 one per remote OS process we allocated. 3.5 What the trampoline actually does (remote side)# This is the bit from hyperactor_mesh/src/host_mesh.rs right after we opened the port and before we start collecting agents: // from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate()` let (mesh_agents, mut mesh_agents_rx) = cx.mailbox().open_port(); let _trampoline_actor_mesh = proc_mesh .spawn::\u003cHostMeshAgentProcMeshTrampoline\u003e( cx, \"host_mesh_trampoline\", \u0026(transport, mesh_agents.bind(), bootstrap_params, is_local), ) .await?; We\u2019ve already said \u201cwe spawn a trampoline on every allocated proc,\u201d but here\u2019s what that trampoline is doing and why we need it. It runs in the remote proc Remember: proc_mesh.spawn::\u003c...\u003e(...) sends a spawn to each of the procs that came from the allocator. So the code above is not running locally \u2014 it\u2019s telling each remote proc \u201cplease run this actor.\u201d Its job is to finish turning \u2018bare proc\u2019 into \u2018host\u2019 At this point the remote OS process is only running a proc (the thing the allocator told it to start). That proc is reachable and can run actors, but it is not yet a host. The trampoline actor\u2019s whole purpose is: call Host::new(...) inside that remote process give it a BootstrapProcManager so it can later spawn more OS processes for procs spawn the real HostAgent on the host\u2019s service proc report back to the parent with an ActorRef\u003cHostAgent\u003e It reports back using the port we passed down We gave it mesh_agents.bind() in the spawn args. That means the trampoline can do: \u201chere is the address of the host I just stood up\u201d \u201chere is the actor id of the agent that manages it\u201d on the channel the parent is already listening to. That\u2019s why the parent can later do the identity check In \u00a73.4 we loop over mesh_agents_rx.recv().await? and then do: let Some((addr, _)) = mesh_agent.actor_id().proc_id().as_direct() else { ... }; let host_ref = HostRef(addr.clone()); if host_ref.mesh_agent() != mesh_agent { ... } That works only because the trampoline, on the remote side, actually created the host at exactly that address and spawned the agent there. So the trampoline is the \u201clast mile\u201d that runs inside the child process and upgrades \u201cI am a proc the allocator asked for\u201d \u2192 \u201cI am a host with a service proc and a host-mesh agent, and here is my agent ref.\u201d 3.6 Assemble the HostMesh# At this point in hyperactor_mesh/src/host_mesh.rs (inside HostMesh::allocate(...)) we\u2019ve already: turned the Alloc into a ProcMesh (one proc per rank, running in the OS processes the allocator started), spawned a HostMeshAgentProcMeshTrampoline on each of those procs, received exactly one ActorRef\u003cHostAgent\u003e back per rank over the port, verified that each agent really lives on the direct-addressed \u201cservice\u201d proc for that host, and converted those into a Vec\u003cHostRef\u003e. The function then just packages all of that into an owned HostMesh: // from hyperactor_mesh/src/host_mesh.rs `HostMesh::allocate(...)` Ok(Self { name: name.clone(), extent: extent.clone(), allocation: HostMeshAllocation::ProcMesh { proc_mesh, proc_mesh_ref, hosts: hosts.clone(), }, current_ref: HostMeshRef::new(name, extent.into(), hosts).unwrap(), }) What each field means: name: name.clone() This is the name the caller passed to HostMesh::allocate(...) (in the canonical bootstrap it was \"test\"). We carry it through so the resulting mesh has a readable label. extent: extent.clone() The host mesh has the same shape as the allocation/proc-mesh we just consumed \u2014 e.g. if the alloc was extent!(replicas = 1), the host mesh is 1-wide. allocation: HostMeshAllocation::ProcMesh { ... } This is the lifecycle anchor. The enum HostMeshAllocation tells the mesh \u201cthese hosts came from a proc-mesh allocation, you own them, and shutdown should walk that structure.\u201d In this variant we store: proc_mesh: the owned proc-mesh we just built from the alloc proc_mesh_ref: a reference view of that same proc-mesh hosts: the Vec\u003cHostRef\u003e we collected from the trampolines Keeping both the proc-mesh and the hosts means we can later tear the whole thing down deterministically. current_ref: HostMeshRef::new(...) This builds the lightweight, non-owning view over the same hosts: HostMeshRef::new(name, extent.into(), hosts) so callers can work with a sliceable \u201chost mesh ref\u201d without taking ownership. Put differently: HostMesh::allocate(...) ends by freezing the dynamic bootstrap we just did (alloc \u2192 proc-mesh \u2192 trampolines \u2192 host agents) into a single owned value that remembers all the pieces it must later shut down. 3.7 How this fits the flow# So now the flow looks like: parent has a proc + instance (can send/receive) parent allocates OS processes via ProcessAllocator (child runs v0 bootstrap) ProcMesh::allocate(...) tells those children \u201cstart a proc\u201d \u2192 we now have N procs HostMesh::allocate(...) logs into each of those procs, has each one stand up a Host, and collects the HostAgent refs we now have an actual HostMesh",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/books/hyperactor-mesh-book/src/meshes/bootstrapping-hostmesh-from-allocation.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>
