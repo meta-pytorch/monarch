@@ -11,9 +11,6 @@ use std::time::Duration;
 
 use derive_more::Into;
 use monarch_types::py_global;
-use nccl_sys::cudaError_t;
-use nccl_sys::cudaSetDevice;
-use nccl_sys::cudaStream_t;
 use pyo3::Py;
 use pyo3::PyAny;
 use pyo3::prelude::*;
@@ -167,7 +164,9 @@ impl Stream {
         })
     }
 
-    pub fn stream(&self) -> cudaStream_t {
+    /// Get the raw CUDA stream pointer. Only available with the `cuda` feature.
+    #[cfg(feature = "cuda")]
+    pub fn stream(&self) -> nccl_sys::cudaStream_t {
         Python::attach(|py| {
             let stream_obj = self.inner.bind(py);
             let cuda_stream = stream_obj.getattr("cuda_stream").unwrap();
@@ -175,14 +174,22 @@ impl Stream {
             // Extract the raw pointer
             let ptr = cuda_stream.extract::<usize>().unwrap();
 
-            ptr as cudaStream_t
+            ptr as nccl_sys::cudaStream_t
         })
     }
 }
 
 impl PartialEq for Stream {
     fn eq(&self, other: &Self) -> bool {
-        self.stream() == other.stream()
+        #[cfg(feature = "cuda")]
+        {
+            return self.stream() == other.stream();
+        }
+
+        #[cfg(not(feature = "cuda"))]
+        {
+            self.inner.as_ptr() == other.inner.as_ptr()
+        }
     }
 }
 
@@ -476,7 +483,8 @@ pub enum CudaError {
     ApiFailureBase,
 }
 
-pub fn cuda_check(result: cudaError_t) -> Result<(), CudaError> {
+#[cfg(feature = "cuda")]
+pub fn cuda_check(result: nccl_sys::cudaError_t) -> Result<(), CudaError> {
     match result.0 {
         0 => Ok(()),
         1 => Err(CudaError::InvalidValue),
@@ -558,8 +566,14 @@ pub fn cuda_check(result: cudaError_t) -> Result<(), CudaError> {
     }
 }
 
+#[cfg(feature = "cuda")]
 pub fn set_device(device: CudaDevice) -> Result<(), CudaError> {
     let index: i8 = device.index().into();
     // SAFETY: intended usage of this function
-    unsafe { cuda_check(cudaSetDevice(index.into())) }
+    unsafe { cuda_check(nccl_sys::cudaSetDevice(index.into())) }
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn set_device(_device: CudaDevice) -> Result<(), CudaError> {
+    panic!("set_device requires the `cuda` feature (CUDA/ROCm runtime)")
 }

@@ -8,8 +8,10 @@
 
 #include <Python.h>
 #include <torch/version.h> // @manual=//caffe2:version_cpp
+#ifdef MONARCH_HAS_CUDA
 // @lint-ignore CLANGTIDY facebook-hte-RelativeInclude
 #include "mock_cuda.h"
+#endif
 
 // @lint-ignore-every CLANGTIDY facebook-hte-NullableReturn
 static PyObject* getBuiltPytorchVersion(PyObject*, PyObject*) {
@@ -44,12 +46,14 @@ static PyObject* getBuiltPytorchVersion(PyObject*, PyObject*) {
 }
 
 static PyMethodDef _C_methods[] = {
+#ifdef MONARCH_HAS_CUDA
     {"patch_cuda",
      patch_cuda,
      METH_NOARGS,
      "Initialize the monarch cuda patch."},
     {"mock_cuda", mock_cuda, METH_NOARGS, "Enable cuda mocking."},
     {"unmock_cuda", unmock_cuda, METH_NOARGS, "Disable cuda mocking."},
+#endif
     {"get_built_pytorch_version",
      getBuiltPytorchVersion,
      METH_NOARGS,

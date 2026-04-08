@@ -71,11 +71,9 @@ def _has_tensor_engine() -> bool:
     try:
         # Torch is needed for tensor engine
         import torch  # @manual  # noqa: F401
+        from monarch import _rust_bindings
 
-        # Confirm that rust bindings were built with tensor engine enabled
-        from monarch._rust_bindings.rdma import _RdmaManager  # noqa
-
-        return True
+        return _rust_bindings.has_tensor_engine()
     except ImportError:
         logging.warning("Tensor engine is not available on this platform")
         return False

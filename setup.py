@@ -161,20 +161,23 @@ build_cuda = build_tensor_engine and (
 build_rocm = build_tensor_engine and (
     gpu_platform == "rocm" or (not gpu_platform and rocm_home)
 )
+build_gpu = build_cuda or build_rocm
 
 print("=" * 80)
 if build_tensor_engine:
-    print("✓ Building WITH tensor_engine (GPU support)")
-    print(f"  - PyTorch: {torch_config['lib_path']}")
-    if build_cuda:
-        print(f"  - CUDA: {cuda_home}")
-    elif build_rocm:
-        print(f"  - ROCm: {rocm_home}")
+    if build_gpu:
+        print("✓ Building WITH tensor_engine + GPU support")
+        print(f"  - PyTorch: {torch_config['lib_path']}")
+        if build_cuda:
+            print(f"  - CUDA: {cuda_home}")
+        elif build_rocm:
+            print(f"  - ROCm: {rocm_home}")
     else:
-        print("  - GPU: Not found (CPU-only)")
+        print("✓ Building WITH tensor_engine (CPU-only, no GPU/NCCL/RDMA)")
+        print(f"  - PyTorch: {torch_config['lib_path']}")
     print(f"  - C++11 ABI: {'enabled' if torch_config['cxx11_abi'] else 'disabled'}")
 else:
-    print("Building WITHOUT tensor_engine (CPU-only, no GPU support)")
+    print("Building WITHOUT tensor_engine (actors only, no torch)")
 print("=" * 80)
 
 # Set PYO3_PYTHON for Rust binaries
@@ -286,22 +289,35 @@ class build_ext(_build_ext):
 
 
 # Extension Creation
-def create_cpp_extension(name: str, sources: List[str]) -> Extension:
+def create_cpp_extension(
+    name: str, sources: List[str], extra_macros: Optional[List] = None
+) -> Extension:
     """
     Create a C++ extension with torch dependencies.
 
     Args:
         name: Extension module name (e.g., "monarch.common._C")
         sources: List of source file paths
+        extra_macros: Optional list of (name, value) tuples for preprocessor defines
 
     Returns:
         Extension object configured for torch
     """
+    libraries = ["c10", "torch", "torch_cpu", "torch_python"]
+    extra_link_args = []
+    if sys.platform == "darwin":
+        extra_link_args.append("-undefined")
+        extra_link_args.append("dynamic_lookup")
+    else:
+        libraries.append("dl")
+
     return Extension(
         name,
         sources,
         extra_compile_args=["-std=c++17", "-g", "-O3"],
-        libraries=["dl", "c10", "torch", "torch_cpu", "torch_python"],
+        extra_link_args=extra_link_args,
+        define_macros=extra_macros or [],
+        libraries=libraries,
         library_dirs=[torch_config["lib_path"]],
         include_dirs=[
             os.path.dirname(os.path.abspath(__file__)),
@@ -318,12 +334,14 @@ def create_cpp_extension(name: str, sources: List[str]) -> Extension:
 ext_modules = []
 if build_tensor_engine:
     cpp_sources = ["python/monarch/common/init.cpp"]
+    cuda_macros = []
     if build_cuda:
-        # mock_cuda.cpp is not compatible with ROCm (relies on CUDA-specific assembly)
+        # mock_cuda.cpp is not compatible with ROCm or macOS (relies on x86 CUDA-specific assembly)
         cpp_sources.append("python/monarch/common/mock_cuda.cpp")
+        cuda_macros.append(("MONARCH_HAS_CUDA", "1"))
 
     ext_modules = [
-        create_cpp_extension("monarch.common._C", cpp_sources),
+        create_cpp_extension("monarch.common._C", cpp_sources, cuda_macros),
         create_cpp_extension(
             "monarch.gradient._gradient_generator",
             ["python/monarch/gradient/_gradient_generator.cpp"],
@@ -337,6 +355,8 @@ rust_extensions = []
 rust_features = ["extension-module", "distributed_sql_telemetry"]
 if build_tensor_engine:
     rust_features.append("tensor_engine")
+if build_gpu:
+    rust_features.append("tensor_engine_gpu")
 
 rust_extensions.append(
     RustExtension(
@@ -345,7 +365,7 @@ rust_extensions.append(
         path="monarch_extension/Cargo.toml",
         debug=False,
         features=rust_features,
-        args=[] if build_tensor_engine else ["--no-default-features"],
+        args=["--no-default-features"],
         rustc_flags=rust_link_flags,
     )
 )

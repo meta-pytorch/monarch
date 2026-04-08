@@ -261,7 +261,7 @@ impl<'a, T: FromPyObject<'a>> FromPyObject<'a> for PyTree<T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, fbcode_build))]
 mod tests {
     use anyhow::Result;
     use pyo3::IntoPyObject;

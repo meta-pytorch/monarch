@@ -8,10 +8,14 @@
 
 #![feature(assert_matches)]
 
+pub mod nccl_types;
 mod pyobject;
 mod python;
 mod pytree;
 
+pub use nccl_types::NcclUniqueId;
+pub use nccl_types::ReduceOp;
+pub use nccl_types::UniqueId;
 use pyo3::PyErr;
 use pyo3::exceptions::PyValueError;
 pub use pyobject::PickledPyObject;

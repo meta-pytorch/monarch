@@ -18,7 +18,7 @@ pyo3 = { version = "0.26", features = ["anyhow", "multiple-pymethods", "py-clone
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_bytes = "0.11"
 thiserror = "2.0.18"
-torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda" }
+torch-sys-cuda = { version = "0.0.0", path = "../torch-sys-cuda", optional = true, default-features = false }
 torch-sys2 = { version = "0.0.0", path = "../torch-sys2" }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 typeuri = { version = "0.0.0", path = "../typeuri" }
@@ -26,3 +26,7 @@ wirevalue = { version = "0.0.0", path = "../wirevalue" }
 
 [build-dependencies]
 build_utils = { path = "../build_utils" }
+
+[features]
+cuda = ["dep:torch-sys-cuda"]
+default = []
