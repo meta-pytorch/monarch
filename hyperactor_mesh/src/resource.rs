@@ -808,6 +808,10 @@ pub(crate) struct ProcSpec {
     /// Optional bootstrap command override. When set, this command is used
     /// to spawn the proc instead of the host agent's default bootstrap command.
     pub(crate) bootstrap_command: Option<BootstrapCommand>,
+    /// The name of the HostMesh that owns this proc. Used by
+    /// `DrainHost` to selectively drain only procs belonging to a
+    /// specific mesh.
+    pub(crate) host_mesh_name: Option<crate::Name>,
 }
 wirevalue::register_type!(ProcSpec);
 

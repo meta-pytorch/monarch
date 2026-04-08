@@ -811,6 +811,7 @@ impl PythonActor {
                 });
             } else {
                 tracing::info!(actor_id = %instance.self_id(), "client stopped");
+                instance.change_status(hyperactor::actor::ActorStatus::Stopped("client stopped".into()));
             }
         });
 
