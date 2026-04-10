@@ -108,6 +108,27 @@ pub struct RdmaBuffer {
 wirevalue::register_type!(RdmaBuffer);
 
 impl RdmaBuffer {
+    /// Checks if this operation is an EFA same-node loopback where SRD would
+    /// silently drop RDMA traffic. EFA's SRD protocol does not support loopback;
+    /// libfabric handles this via SHM, but at the ibverbs level we must fall back
+    /// to a direct memory copy for CPU buffers.
+    fn is_efa_same_actor_loopback(&self, remote: &RdmaBuffer) -> bool {
+        crate::efa::is_efa_device() && self.owner.actor_id() == remote.owner.actor_id()
+    }
+
+    /// Returns true if `addr` points to CUDA device memory.
+    fn is_device_memory(addr: usize) -> bool {
+        unsafe {
+            let mut mem_type: i32 = 0;
+            let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+                &mut mem_type as *mut _ as *mut std::ffi::c_void,
+                rdmaxcel_sys::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                addr as rdmaxcel_sys::CUdeviceptr,
+            );
+            err == rdmaxcel_sys::CUDA_SUCCESS
+        }
+    }
+
     /// Read from the RdmaBuffer into the provided memory.
     ///
     /// This method transfers data from the buffer into the local memory region provided over RDMA.
@@ -132,6 +153,30 @@ impl RdmaBuffer {
             remote.owner.actor_id(),
             remote,
         );
+
+        // EFA SRD drops same-node loopback RDMA traffic. For CPU buffers on the
+        // same actor (same process), fall back to a direct memory copy.
+        if self.is_efa_same_actor_loopback(&remote) {
+            if Self::is_device_memory(self.addr) || Self::is_device_memory(remote.addr) {
+                tracing::warn!(
+                    "EFA loopback with CUDA memory detected; \
+                     SRD does not support same-node loopback and this operation may hang"
+                );
+            } else {
+                tracing::debug!(
+                    "[buffer] EFA same-node loopback detected, using memcpy (put: self -> remote)"
+                );
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        self.addr as *const u8,
+                        remote.addr as *mut u8,
+                        self.size,
+                    );
+                }
+                return Ok(true);
+            }
+        }
+
         let remote_owner = remote.owner.clone();
 
         let local_device = self.device_name.clone();
@@ -184,6 +229,30 @@ impl RdmaBuffer {
             remote.owner.actor_id(),
             remote,
         );
+
+        // EFA SRD drops same-node loopback RDMA traffic. For CPU buffers on the
+        // same actor (same process), fall back to a direct memory copy.
+        if self.is_efa_same_actor_loopback(&remote) {
+            if Self::is_device_memory(self.addr) || Self::is_device_memory(remote.addr) {
+                tracing::warn!(
+                    "EFA loopback with CUDA memory detected; \
+                     SRD does not support same-node loopback and this operation may hang"
+                );
+            } else {
+                tracing::debug!(
+                    "[buffer] EFA same-node loopback detected, using memcpy (get: remote -> self)"
+                );
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        remote.addr as *const u8,
+                        self.addr as *mut u8,
+                        self.size,
+                    );
+                }
+                return Ok(true);
+            }
+        }
+
         let remote_owner = remote.owner.clone(); // Clone before the move!
 
         // Extract device name from buffer, fallback to a default if not present
