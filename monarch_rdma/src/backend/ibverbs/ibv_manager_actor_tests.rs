@@ -100,6 +100,46 @@ mod tests {
         Ok(())
     }
 
+    /// Tests that write_from_local works on same-actor loopback via the memcpy fallback.
+    /// This covers the EFA SRD case where loopback RDMA traffic is silently dropped.
+    /// On non-EFA hardware the RDMA path is used; on EFA the memcpy path kicks in.
+    /// Either way the data must arrive correctly.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_write_from_local_same_actor_loopback() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 256;
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+        // Both buffers on the same device → same actor → loopback
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        env.rdma_handle_2
+            .write_from_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
+    /// Tests that read_into_local works on same-actor loopback via the memcpy fallback.
+    #[timed_test::async_timed_test(timeout_secs = 60)]
+    async fn test_rdma_read_into_local_same_actor_loopback() -> Result<(), anyhow::Error> {
+        const BSIZE: usize = 256;
+        let devices = get_all_devices();
+        if devices.is_empty() {
+            println!("Skipping test: RDMA devices not available");
+            return Ok(());
+        }
+        let env = IbvTestEnv::setup(BSIZE, "cpu:0", "cpu:0").await?;
+        env.rdma_handle_2
+            .read_into_local(&env.client_1, env.local_memory_1.clone(), 5)
+            .await?;
+        env.verify_buffers(BSIZE, 0).await?;
+        env.cleanup().await?;
+        Ok(())
+    }
+
     // Test that RDMA read can be performed between two actors on separate devices.
     #[timed_test::async_timed_test(timeout_secs = 60)]
     async fn test_rdma_read_separate_devices() -> Result<(), anyhow::Error> {

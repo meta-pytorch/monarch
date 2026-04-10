@@ -1100,6 +1100,19 @@ impl IbvBackend {
         ))
     }
 
+    /// Returns `true` if `addr` points to CUDA device memory.
+    fn is_device_memory(addr: usize) -> bool {
+        unsafe {
+            let mut mem_type: i32 = 0;
+            let err = rdmaxcel_sys::rdmaxcel_cuPointerGetAttribute(
+                &mut mem_type as *mut _ as *mut std::ffi::c_void,
+                rdmaxcel_sys::CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                addr as rdmaxcel_sys::CUdeviceptr,
+            );
+            err == rdmaxcel_sys::CUDA_SUCCESS
+        }
+    }
+
     /// Core submit logic: registers local MR via actor message, resolves remote
     /// IbvBuffer lazily, executes the op locally, and deregisters local MR.
     async fn execute_op(
@@ -1108,6 +1121,56 @@ impl IbvBackend {
         op: IbvOp,
         timeout: Duration,
     ) -> Result<(), anyhow::Error> {
+        // EFA SRD silently drops same-node loopback RDMA traffic. When both
+        // the local and remote buffers are managed by the same IbvManagerActor
+        // (same process) and the hardware is EFA, fall back to a direct memcpy
+        // for CPU buffers. This mirrors how libfabric uses SHM for same-node
+        // transfers.
+        if crate::efa::is_efa_device() && self.actor_id() == op.remote_manager.actor_id() {
+            let local_addr = op.local_memory.addr();
+            let remote_addr = op.remote_buffer.addr;
+            let size = op.local_memory.size();
+
+            if Self::is_device_memory(local_addr) || Self::is_device_memory(remote_addr) {
+                tracing::warn!(
+                    "EFA loopback with CUDA memory detected; \
+                     SRD does not support same-node loopback and this operation may hang"
+                );
+                // Fall through to the RDMA path (will likely hang, but this is
+                // a known limitation — CUDA same-node needs a separate fix).
+            } else {
+                tracing::debug!(
+                    "[ibv] EFA same-node loopback detected, using memcpy \
+                     (op={:?}, local=0x{:x}, remote=0x{:x}, size={})",
+                    op.op_type,
+                    local_addr,
+                    remote_addr,
+                    size,
+                );
+                unsafe {
+                    match op.op_type {
+                        RdmaOpType::WriteFromLocal => {
+                            // local -> remote
+                            std::ptr::copy_nonoverlapping(
+                                local_addr as *const u8,
+                                remote_addr as *mut u8,
+                                size,
+                            );
+                        }
+                        RdmaOpType::ReadIntoLocal => {
+                            // remote -> local
+                            std::ptr::copy_nonoverlapping(
+                                remote_addr as *const u8,
+                                local_addr as *mut u8,
+                                size,
+                            );
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
         // Register the local memory via actor message
         let (local_mrv, local_device_name) = self
             .register_mr(cx, op.local_memory.addr(), op.local_memory.size())
