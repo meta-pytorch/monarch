@@ -66,11 +66,6 @@ def _resolve_path(path: str) -> str:
     return path.replace("$SUBDIR", _point_to_key(dict(rank)))
 
 
-RDMA_PARALLEL_TLS_THRESHOLD = (
-    8  # blocks <= this: TLS to all workers; above: RDMA fan-out
-)
-
-
 def classify_workers(
     client_hashes: list[str],
     client_total_size: int,
@@ -128,12 +123,7 @@ class FUSEActor(Actor):
         self._total_size = 0
         self._fuse_handle = None
         self._cache_path = None
-        self._tls_receiver = None
         self._pack_index = {}
-        self._rdma_src_staging = None  # staging for get_blocks_rdma_buffer (source)
-        self._rdma_src_staging_mv = None
-        self._rdma_dst_staging = None  # staging for replace_blocks (destination)
-        self._rdma_dst_staging_mv = None
         # Dirty block indices accumulated since the last refresh.
         # None means a full buffer copy is needed (initial mount or full transfer).
         self._pending_dirty_blocks: list[int] | None = None
@@ -230,183 +220,72 @@ class FUSEActor(Actor):
             offset += size
         self._next_chunk_idx = 0
 
-        # TODO(cpuhrsch): Re-enable EFA init after testing on SLURM.
-        # EFA requires explicit initialization of its manager actor on each
-        # worker (EfaManagerActor) before workers can register destination
-        # buffers for RDMA transfers. Unlike ibverbs which lazily initializes.
-        # Code was:
-        #   if self.backend == "slurm":
-        #       from monarch.rdma import is_rdma_available
-        #       if not is_rdma_available():
-        #           from monarch._src.rdma.rdma import _ensure_init_efa_manager
-        #           _ensure_init_efa_manager().block_on()
-
-    @endpoint
-    def fetch_chunk_rdma(self, rdma_buffer, chunk_size: int, timeout: int = 300):
-        """Receive RDMABuffer (works with both ibverbs and EFA) and read from it."""
-        import mmap as _mmap
-
-        idx = self._next_chunk_idx
-
-        # Copy into pre-allocated mmap via RDMA (ibverbs or TCP fallback).
-        offset, _ = self._chunk_offsets[idx]
-        dst_mv = self._chunk_storage_mv[offset : offset + chunk_size]
-        t1 = time.time()
-
-        if self._cache_path:
-            # RDMA memory registration fails on file-backed MAP_SHARED pages.
-            # Receive into an anonymous buffer, then copy to the cache file.
-            # Don't explicitly close the anonymous mmap — it can raise
-            # BufferError if the Rust RDMABuffer still holds a reference.
-            anon = _mmap.mmap(-1, chunk_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
-            anon_mv = memoryview(anon)
-            rdma_buffer.read_into(anon_mv, timeout=timeout).get()
-            dst_mv[:] = anon_mv
-        else:
-            rdma_buffer.read_into(dst_mv, timeout=timeout).get()
-
-        t2 = time.time()
-        self.chunks.append(dst_mv)
-        self._next_chunk_idx += 1
-        gbs = (chunk_size / 1e9) / max(t2 - t1, 1e-9)
-        print(
-            f"[WORKER] fetch_chunk {idx}: {chunk_size / (1024**2):.0f}MiB "
-            f"in {t2 - t1:.3f}s ({gbs:.1f} GB/s)",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    @endpoint
-    def fanout_chunk_rdma(
-        self, peer_actors, chunk_size: int, chunk_idx: int = -1, timeout: int = 300
-    ):
-        """Fan out a chunk to peer workers via RDMA.
-
-        Args:
-            peer_actors: Mesh of peer FUSEActors to receive the chunk.
-            chunk_size: Size of the chunk in bytes.
-            chunk_idx: Which chunk to fan out. Defaults to -1 (last received).
-            timeout: RDMA timeout in seconds.
-        """
-        import mmap
-
-        from monarch.rdma import RDMABuffer
-
-        t0 = time.time()
-        idx = chunk_idx if chunk_idx >= 0 else self._next_chunk_idx - 1
-        offset, _ = self._chunk_offsets[idx]
-        src_mv = self._chunk_storage_mv[offset : offset + chunk_size]
-
-        # RDMA memory registration (ibv_reg_mr) can fail on file-backed
-        # MAP_SHARED mmap pages.  Copy into an anonymous buffer so the
-        # RDMABuffer always uses anonymous memory.
-        anon = None
-        if self._cache_path:
-            anon = mmap.mmap(-1, chunk_size, mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
-            anon_mv = memoryview(anon)
-            anon_mv[:] = src_mv
-            rdma_buffer = RDMABuffer(anon_mv)
-        else:
-            rdma_buffer = RDMABuffer(src_mv)
-        flat_peers = peer_actors.flatten("rank")
-        t1 = time.time()
-        futures = []
-        for rank in range(len(flat_peers)):
-            peer = flat_peers.slice(rank=rank)
-            futures.append(peer.fetch_chunk_rdma.call(rdma_buffer, chunk_size, timeout))
-        t2 = time.time()
-        for f in futures:
-            f.get()
-        t3 = time.time()
-
-        # Anonymous mmap is reclaimed on GC; explicit close() can raise
-        # BufferError if the Rust RDMABuffer still holds a reference.
-
-        n = len(flat_peers)
-        gbs = (chunk_size * n / 1e9) / max(t3 - t1, 1e-9)
-        print(
-            f"[WORKER] fanout_chunk {idx}: setup={t1 - t0:.3f}s, "
-            f"dispatch={t2 - t1:.3f}s, wait={t3 - t2:.3f}s, "
-            f"total={t3 - t0:.3f}s ({gbs:.1f} GB/s aggregate, {n} peers)",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    @endpoint
-    def get_blocks_rdma_buffer(self, block_indices, total_size):
-        """Copy multiple blocks into a contiguous staging buffer, return RDMABuffer.
-
-        Blocks are packed contiguously (no gaps). The caller MUST wait for
-        all peers to finish reading before calling this again.
-        """
-        import mmap as _mmap
-
-        from monarch.rdma import RDMABuffer
-
-        staging_needed = 0
-        for bi in block_indices:
-            staging_needed += min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-
-        if (
-            self._rdma_src_staging is None
-            or len(self._rdma_src_staging) < staging_needed
-        ):
-            self._rdma_src_staging = _mmap.mmap(
-                -1, staging_needed, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
-            )
-            self._rdma_src_staging_mv = memoryview(self._rdma_src_staging)
-
-        pos = 0
-        for bi in block_indices:
-            block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            offset = bi * HASH_BLOCK_SIZE
-            self._rdma_src_staging_mv[pos : pos + block_size] = self._chunk_storage_mv[
-                offset : offset + block_size
-            ]
-            pos += block_size
-
-        return RDMABuffer(self._rdma_src_staging_mv[:staging_needed])
-
     @endpoint
     def ensure_storage(self, total_size):
-        """Ensure storage is allocated at the given size for RDMA reception."""
+        """Ensure storage is allocated at the given size."""
         if self._chunk_storage is not None and self._total_size == total_size:
             return
         self._alloc_storage(total_size)
 
     @endpoint
-    def replace_blocks(
-        self,
-        block_indices,
-        total_size,
-        rdma_buffer,
-        staging_size: int,
-        timeout: int = 300,
-    ):
-        """Overwrite multiple hash blocks from a single contiguous RDMA buffer.
+    def get_blocks_rdma_buffer(self, block_indices, total_size):
+        """Pack specified blocks into a contiguous staging buffer, return RDMABuffer.
 
-        The rdma_buffer contains blocks packed contiguously (matching the
-        order in block_indices). This reduces RDMA round-trips vs per-block.
-
-        Also updates the Rust FUSE chunk buffer in-place so that a subsequent
-        ``refresh_mount`` only needs to swap metadata (not re-copy all chunks).
+        Used for leader→peer fan-out: the leader packs its blocks and
+        peers read from the returned RDMABuffer via ibverbs RDMA.
         """
         import mmap as _mmap
 
-        if self._rdma_dst_staging is None or len(self._rdma_dst_staging) < staging_size:
-            self._rdma_dst_staging = _mmap.mmap(
-                -1, staging_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
-            )
-            self._rdma_dst_staging_mv = memoryview(self._rdma_dst_staging)
+        from monarch.rdma import RDMABuffer
 
-        staging_slice = self._rdma_dst_staging_mv[:staging_size]
-        rdma_buffer.read_into(staging_slice, timeout=timeout).get()
+        staging_needed = sum(
+            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
+            for bi in block_indices
+        )
+
+        staging = _mmap.mmap(
+            -1, staging_needed, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
+        )
+        staging_mv = memoryview(staging)
 
         pos = 0
         for bi in block_indices:
             block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
             offset = bi * HASH_BLOCK_SIZE
-            self._chunk_storage_mv[offset : offset + block_size] = staging_slice[
+            staging_mv[pos : pos + block_size] = self._chunk_storage_mv[
+                offset : offset + block_size
+            ]
+            pos += block_size
+
+        return RDMABuffer(staging_mv[:staging_needed])
+
+    def _receive_rdma_impl(self, rdma_buffer, block_indices, total_size, timeout=300):
+        """Shared implementation for receive_rdma and receive_and_relay_rdma."""
+        import mmap as _mmap
+
+        if self._chunk_storage is None or self._total_size != total_size:
+            self._alloc_storage(total_size)
+
+        staging_size = sum(
+            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
+            for bi in block_indices
+        )
+
+        # RDMA memory registration fails on file-backed MAP_SHARED pages.
+        # Always use anonymous mmap for the RDMA destination.
+        staging = _mmap.mmap(-1, staging_size, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS)
+        staging_mv = memoryview(staging)
+
+        t0 = time.time()
+        rdma_buffer.read_into(staging_mv[:staging_size], timeout=timeout).get()
+        t1 = time.time()
+
+        # Scatter from staging into chunk storage at correct offsets.
+        pos = 0
+        for bi in block_indices:
+            block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
+            offset = bi * HASH_BLOCK_SIZE
+            self._chunk_storage_mv[offset : offset + block_size] = staging_mv[
                 pos : pos + block_size
             ]
             pos += block_size
@@ -414,6 +293,42 @@ class FUSEActor(Actor):
         if self._pending_dirty_blocks is not None:
             self._pending_dirty_blocks.extend(block_indices)
         # If _pending_dirty_blocks is None a full copy is already scheduled.
+
+        t2 = time.time()
+        gbs = (staging_size / 1e9) / max(t1 - t0, 1e-9)
+        print(
+            f"[WORKER] receive_rdma: {staging_size // (1024**2)}MiB "
+            f"in {t1 - t0:.2f}s ({gbs:.1f} GB/s), "
+            f"scatter={t2 - t1:.3f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        return staging_mv[:staging_size]
+
+    @endpoint
+    def receive_rdma(self, rdma_buffer, block_indices, total_size, timeout=300):
+        """Receive dirty blocks from client via RDMA read.
+
+        The client creates an RDMABuffer containing all dirty blocks
+        packed contiguously. This endpoint reads the data and scatters
+        blocks to their correct offsets in chunk storage.
+        """
+        self._receive_rdma_impl(rdma_buffer, block_indices, total_size, timeout)
+
+    @endpoint
+    def receive_and_relay_rdma(self, rdma_buffer, block_indices, total_size, timeout=300):
+        """Receive dirty blocks and return an RDMABuffer for fan-out to peers.
+
+        Like receive_rdma, but returns an RDMABuffer wrapping the received
+        staging buffer. Peers can read from it via ibverbs, eliminating the
+        redundant gather step that get_blocks_rdma_buffer would perform.
+        """
+        from monarch.rdma import RDMABuffer
+
+        staging_mv = self._receive_rdma_impl(
+            rdma_buffer, block_indices, total_size, timeout
+        )
+        return RDMABuffer(staging_mv)
 
     def _do_refresh(self, new_block_hashes=None, total_size=0, pack_index=None):
         """Swap metadata and chunk data into the running FUSE filesystem."""
@@ -524,57 +439,6 @@ class FUSEActor(Actor):
         return self._pack_index
 
     @endpoint
-    def prepare_receiver(self, num_streams, total_size, cert_path=None, port=0):
-        """Create a Rust TLS receiver and return its address."""
-        from monarch._rust_bindings.monarch_extension.tls_receiver import TlsReceiver
-
-        if self._chunk_storage is None or self._total_size != total_size:
-            self._alloc_storage(total_size)
-
-        self._tls_receiver = TlsReceiver(num_streams, cert_path=cert_path, port=port)
-        return (
-            self._tls_receiver.addr,
-            self._tls_receiver.tls_hostname,
-            self._cache_path or "",
-        )
-
-    @endpoint
-    def receive_blocks(self, dirty_blocks=None):
-        """Block until the TLS receiver has finished receiving all blocks.
-
-        Accumulates ``dirty_blocks`` for atomic application during the
-        subsequent ``refresh_mount`` call. The Rust buffer is not touched
-        here; chunk patches and metadata swap happen together under one
-        write lock in ``refresh()``.
-        """
-        if self._tls_receiver is None:
-            raise RuntimeError("prepare_receiver() not called")
-        self._tls_receiver.wait(self._chunk_storage_mv)
-        self._tls_receiver = None
-        if dirty_blocks is not None and self._pending_dirty_blocks is not None:
-            self._pending_dirty_blocks.extend(dirty_blocks)
-        else:
-            # dirty_blocks=None means the full buffer was overwritten.
-            self._pending_dirty_blocks = None
-        return True
-
-    @endpoint
-    def receive_block(self, block_idx: int, data: bytes, total_size: int):
-        """Receive a single block via actor message passing.
-
-        Allocates storage on first call. Slower than TLS but works
-        without custom TLS certs (e.g. GitHub CI, local testing).
-        """
-        if self._chunk_storage is None or self._total_size != total_size:
-            self._alloc_storage(total_size)
-
-        offset = block_idx * HASH_BLOCK_SIZE
-        self._chunk_storage_mv[offset : offset + len(data)] = data  # noqa: E203
-        # Accumulate for atomic application during refresh_mount.
-        if self._pending_dirty_blocks is not None:
-            self._pending_dirty_blocks.append(block_idx)
-
-    @endpoint
     def mkdir(self, path):
         """Create a directory on the worker."""
         prepare_mount_point(_resolve_path(path))
@@ -615,10 +479,6 @@ class MountHandler:
         mntpoint: Optional[str] = None,
         chunk_size=None,
         backend: str = "slurm",
-        num_parallel_streams: int = 8,
-        transfer_mode: str = "rust_tls",
-        cert_path: Optional[str] = None,
-        tls_port: int = 0,
     ):
         self.sourcepath = os.path.abspath(sourcepath)
         if mntpoint is None:
@@ -629,18 +489,6 @@ class MountHandler:
         self.procs = None
         self.chunk_size = chunk_size
         self.backend = backend
-        if num_parallel_streams < 1:
-            raise ValueError(
-                f"num_parallel_streams must be >= 1, got {num_parallel_streams}"
-            )
-        self.num_parallel_streams = num_parallel_streams
-        if transfer_mode not in ("rust_tls", "actor"):
-            raise ValueError(
-                f"transfer_mode must be 'rust_tls' or 'actor', got {transfer_mode!r}"
-            )
-        self.transfer_mode = transfer_mode
-        self.cert_path = cert_path
-        self.tls_port = tls_port
         self._staging_mv = None
         self._pack_shm_path = None
         self._mounted = False
@@ -702,6 +550,18 @@ class MountHandler:
             flush=True,
         )
 
+        # No-op shortcut: all workers already have the right data and
+        # are mounted — nothing to transfer, refresh, or remount.
+        if not worker_dirty and self._mounted:
+            t_done = time.time()
+            print(
+                f"_sync(): all workers up-to-date, nothing to do. "
+                f"total={t_done - t_start:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+
         self.fuse_actors.set_meta.call(meta).get()
 
         t_meta_done = time.time()
@@ -721,16 +581,19 @@ class MountHandler:
         sorted_dirty = sorted(dirty_blocks)
 
         target_ranks = sorted(worker_dirty.keys())
+        is_full_transfer = len(sorted_dirty) == len(all_blocks)
 
         if sorted_dirty and target_ranks:
             print(
                 f"_sync(): {len(sorted_dirty)}/{len(client_hashes)} blocks dirty "
-                f"across {len(target_ranks)} workers",
+                f"across {len(target_ranks)} workers"
+                f"{' (full transfer)' if is_full_transfer else ''}",
                 file=sys.stderr,
                 flush=True,
             )
             self._transfer_fanout(
-                flat_actors, target_ranks, sorted_dirty, client_total_size
+                flat_actors, target_ranks, sorted_dirty, client_total_size,
+                full_transfer=is_full_transfer,
             )
 
         t_transfer_done = time.time()
@@ -817,123 +680,30 @@ class MountHandler:
         self._sync()
         return self
 
-    def _transfer_blocks_actor(self, fuse_actor, dirty_blocks, total_size):
-        """Transfer dirty blocks via actor message passing.
-
-        Sends each block as a bytes argument to the receive_block endpoint.
-        Slower than Rust TLS but works without custom TLS certs.
-        """
-        if not dirty_blocks:
-            return
-
-        t_start = time.time()
-        total_bytes = 0
-        for bi in dirty_blocks:
-            offset = bi * HASH_BLOCK_SIZE
-            size = min(HASH_BLOCK_SIZE, total_size - offset)
-            block_data = bytes(self._staging_mv[offset : offset + size])
-            fuse_actor.receive_block.call(bi, block_data, total_size).get()
-            total_bytes += size
-        t_done = time.time()
-
-        elapsed = max(t_done - t_start, 1e-9)
-        gbs = (total_bytes / 1e9) / elapsed
-        print(
-            f"Actor block transfer ({len(dirty_blocks)} blocks): "
-            f"{total_bytes // (1024**2)}MiB in {elapsed:.1f}s ({gbs:.1f} GB/s)"
-        )
-
-    def _transfer_blocks_rust_tls(self, fuse_actor, dirty_blocks, total_size):
-        """Transfer dirty blocks to a single worker using Rust TLS.
-
-        Sends blocks directly from ``self._staging_mv`` (the buffer produced
-        by ``pack_directory_chunked``) so no second pack step is needed.
-
-        Flow:
-          1. Worker: prepare_receiver() → creates TlsReceiver, returns address
-          2. Client: send_blocks_from_buffer() → parallel TLS connections
-          3. Worker: receive_blocks() → waits for all data
-        """
-        if not dirty_blocks:
-            return
-
-        from monarch._rust_bindings.monarch_extension.tls_sender import (
-            send_blocks_from_buffer,
-        )
-
-        num_streams = self.num_parallel_streams
-
-        total_bytes = sum(
-            min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
-            for bi in dirty_blocks
-        )
-
-        # 1. Start receiver on worker (returns address, tls_hostname, cache path).
-        t_start = time.time()
-        result = fuse_actor.prepare_receiver.call(
-            num_streams,
-            total_size,
-            cert_path=self.cert_path,
-            port=self.tls_port,
-        ).get()
-        addr, tls_hostname, cache_path = [v for _, v in result][0]
-        addresses = [addr] * num_streams
-
-        # Hook: let callers rewrite addresses (e.g. for port-forwarding).
-        if hasattr(self, "_address_rewriter") and self._address_rewriter is not None:
-            addresses, tls_hostname = self._address_rewriter(
-                addr, num_streams, tls_hostname
-            )
-
-        # 2. Fire receive_blocks (non-blocking) so worker starts waiting.
-        # Pass dirty_blocks so the worker updates only those ranges in the
-        # Rust flat buffer instead of mirroring the entire 11GB mmap.
-        recv_future = fuse_actor.receive_blocks.call(dirty_blocks)
-
-        # 3. Send blocks directly from the staging buffer.
-        #    Receiver uses a self-signed cert (or custom cert_path), so
-        #    skip CA verification on the sender side.
-        t_setup = time.time()
-        send_blocks_from_buffer(
-            self._staging_mv,
-            total_size,
-            dirty_blocks,
-            addresses,
-            cache_path,
-            tls_hostname=tls_hostname,
-            ca_path=None,
-        )
-        t_send = time.time()
-
-        # 4. Wait for receiver to finish.
-        recv_future.get()
-        t_done = time.time()
-
-        gbs = (total_bytes / 1e9) / max(t_send - t_setup, 1e-9)
-        print(
-            f"Rust TLS block transfer ({len(dirty_blocks)} blocks, "
-            f"{num_streams} streams): {total_bytes // (1024**2)}MiB "
-            f"in {t_send - t_setup:.1f}s ({gbs:.1f} GB/s), "
-            f"setup={t_setup - t_start:.2f}s, "
-            f"total={t_done - t_start:.1f}s"
-        )
-
     def _transfer_fanout(
         self,
         flat_actors: object,
         target_ranks: list[int],
         dirty_blocks: list[int],
         total_size: int,
+        full_transfer: bool = False,
     ) -> None:
-        """Transfer dirty blocks: TLS to leader, RDMA fan-out to peers.
+        """Transfer dirty blocks: client → leaders via RDMABuffer, leaders → peers via RDMA.
 
-        Small incremental transfers (≤ RDMA_PARALLEL_TLS_THRESHOLD blocks)
-        go directly via TLS to each worker in parallel — faster than any
-        RDMA round-trip for small payloads.
+        The client sends to leader(s) using RDMABuffer (TCP fallback on
+        client since it typically lacks ibverbs). Leaders then fan out to
+        peers using RDMABuffer over ibverbs for maximum throughput.
 
-        Large transfers use TLS to the leader, then a single RDMA fan-out
-        to all peers (one staging + one RDMA read per peer).
+        When peers exist, leaders use receive_and_relay_rdma which returns
+        the received staging buffer as an RDMABuffer — eliminating the
+        redundant gather that get_blocks_rdma_buffer would perform.
+
+        When full_transfer is True (cold start — all blocks dirty), the
+        client skips the gather copy and wraps _staging_mv directly since
+        the packed buffer already contains all blocks contiguously.
         """
+        from monarch.rdma import RDMABuffer
+
         t0 = time.time()
 
         total_bytes = sum(
@@ -941,178 +711,120 @@ class MountHandler:
             for bi in dirty_blocks
         )
 
-        # Use multiple leaders for higher initial fan-out.
-        # TLS from client to each leader in parallel, then tree fan-out.
+        if full_transfer:
+            # Cold start: all blocks dirty, _staging_mv already has them
+            # contiguously in order. Skip the gather copy.
+            rdma_buf = RDMABuffer(self._staging_mv[:total_bytes])
+        else:
+            import mmap as _mmap
+
+            # Partial update: gather dirty blocks into a contiguous staging buffer.
+            staging = _mmap.mmap(
+                -1, total_bytes, _mmap.MAP_PRIVATE | _mmap.MAP_ANONYMOUS
+            )
+            staging_mv = memoryview(staging)
+            pos = 0
+            for bi in dirty_blocks:
+                block_size = min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE)
+                offset = bi * HASH_BLOCK_SIZE
+                staging_mv[pos : pos + block_size] = self._staging_mv[
+                    offset : offset + block_size
+                ]
+                pos += block_size
+            rdma_buf = RDMABuffer(staging_mv[:total_bytes])
+
+        t_setup = time.time()
+
+        # Pick leader(s) — transfer from client to leaders first.
         num_leaders = min(4, len(target_ranks))
         leader_ranks = target_ranks[:num_leaders]
         peer_ranks = target_ranks[num_leaders:]
 
-        transfer_fn = (
-            self._transfer_blocks_actor
-            if self.transfer_mode == "actor"
-            else self._transfer_blocks_rust_tls
-        )
+        # Step 1: Client → leader(s) via RDMABuffer (TCP fallback).
+        # If there are peers, leaders use receive_and_relay_rdma which
+        # returns an RDMABuffer for fan-out (avoids redundant gather).
+        leader_relay_futures = {}
+        leader_futures = {}
+        for rank in leader_ranks:
+            worker = flat_actors.slice(rank=rank)
+            if peer_ranks:
+                leader_relay_futures[rank] = worker.receive_and_relay_rdma.call(
+                    rdma_buf, dirty_blocks, total_size
+                )
+            else:
+                leader_futures[rank] = worker.receive_rdma.call(
+                    rdma_buf, dirty_blocks, total_size
+                )
 
-        # Small incremental: TLS/actor to every worker in parallel (no RDMA).
-        if len(dirty_blocks) <= RDMA_PARALLEL_TLS_THRESHOLD or not peer_ranks:
-            workers = [(rank, flat_actors.slice(rank=rank)) for rank in target_ranks]
-
-            # Ensure all workers have storage allocated.
-            ensure_futures = []
-            for _rank, worker in workers:
-                ensure_futures.append(worker.ensure_storage.call(total_size))
-            for f in ensure_futures:
+        if not peer_ranks:
+            for rank, f in leader_futures.items():
                 f.get()
-
-            from concurrent.futures import ThreadPoolExecutor
-
-            with ThreadPoolExecutor(max_workers=len(workers)) as pool:
-                futures = {
-                    pool.submit(transfer_fn, worker, dirty_blocks, total_size): rank
-                    for rank, worker in workers
-                }
-                for future in futures:
-                    future.result()  # raises on first failure
-
-            t_done = time.time()
-            print(
-                f"Parallel transfer to {len(target_ranks)} workers: "
-                f"{total_bytes // (1024**2)}MiB "
-                f"({len(dirty_blocks)} blocks) in {t_done - t0:.1f}s"
-            )
+                elapsed = time.time() - t_setup
+                gbs = (total_bytes / 1e9) / max(elapsed, 1e-9)
+                print(
+                    f"  leader rank={rank}: {total_bytes // (1024**2)}MiB "
+                    f"done at {elapsed:.1f}s ({gbs:.1f} GB/s)",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return
 
-        # Large transfer: TLS to leaders, then chunked tree RDMA fan-out.
-
-        # Step 1: TLS transfer to all leaders in parallel.
-        from concurrent.futures import ThreadPoolExecutor
-
-        with ThreadPoolExecutor(max_workers=num_leaders) as pool:
-            tls_futures = {
-                pool.submit(
-                    transfer_fn,
-                    flat_actors.slice(rank=r),
-                    dirty_blocks,
-                    total_size,
-                ): r
-                for r in leader_ranks
-            }
-            for f in tls_futures:
-                f.result()
-        t_tls = time.time()
-
-        # Step 2: Ensure peers have storage allocated.
+        # Step 2: Ensure peers have storage allocated (overlaps with leader transfer).
+        ensure_futures = []
         for rank in peer_ranks:
-            flat_actors.slice(rank=rank).ensure_storage.call(total_size).get()
-
-        # Step 3: Chunked pipelined tree RDMA fan-out.
-        # Concurrent reads from the same RDMABuffer are not safe
-        # (see disabled test_rdma_buffer_read_into_concurrent in
-        # test_rdma_unit.py: "TODO: fix concurrency issues").
-        # Tree fan-out avoids this: each source sends to at most ONE
-        # destination per round. Source and destination use SEPARATE
-        # staging buffers (_rdma_src_staging vs _rdma_dst_staging),
-        # so a node CAN be both source and destination simultaneously.
-        #
-        # Chunking splits the payload into ~1GB pieces. Once a node
-        # receives chunk 0, it can forward chunk 0 while receiving
-        # chunk 1. Latency ≈ (tree_depth + num_chunks - 1) × chunk_time.
-        rdma_chunk_blocks = max(1, (1024 * 1024 * 1024) // HASH_BLOCK_SIZE)
-        block_chunks = [
-            dirty_blocks[i : i + rdma_chunk_blocks]
-            for i in range(0, len(dirty_blocks), rdma_chunk_blocks)
-        ]
-        num_chunks = len(block_chunks)
-        chunk_byte_sizes = [
-            sum(
-                min(HASH_BLOCK_SIZE, total_size - bi * HASH_BLOCK_SIZE) for bi in blocks
+            ensure_futures.append(
+                flat_actors.slice(rank=rank).ensure_storage.call(total_size)
             )
-            for blocks in block_chunks
-        ]
+        for f in ensure_futures:
+            f.get()
 
-        chunk_owners: dict[int, set[int]] = {
-            c: set(leader_ranks) for c in range(num_chunks)
-        }
-        completed_peers: set[int] = set()
+        # Distribute peers round-robin across leaders.
+        leader_peer_groups: dict[int, list[int]] = {r: [] for r in leader_ranks}
+        for i, peer_rank in enumerate(peer_ranks):
+            leader_rank = leader_ranks[i % num_leaders]
+            leader_peer_groups[leader_rank].append(peer_rank)
 
-        while len(completed_peers) < len(peer_ranks):
-            # Schedule: each source sends one chunk to one destination.
-            # Sources may not send two chunks at once (overwrites staging).
-            # A node CAN be src for chunk A and dst for chunk B in the
-            # same round because they use separate staging buffers.
-            src_used: set[int] = set()
-            dst_used: set[int] = set()
-            pairs: list[tuple[int, int, int]] = []
-            for chunk_idx in range(num_chunks):
-                for src_rank in list(chunk_owners[chunk_idx]):
-                    if src_rank in src_used:
-                        continue
-                    dst_rank = None
-                    for c in peer_ranks:
-                        if (
-                            c not in completed_peers
-                            and c not in chunk_owners[chunk_idx]
-                            and c not in dst_used
-                        ):
-                            dst_rank = c
-                            break
-                    if dst_rank is None:
-                        continue
-                    src_used.add(src_rank)
-                    dst_used.add(dst_rank)
-                    pairs.append((src_rank, dst_rank, chunk_idx))
-
-            if not pairs:
-                break
-
-            # Fire all staging calls in parallel (different sources).
-            staging_futures = []
-            for src_rank, dst_rank, chunk_idx in pairs:
-                src = flat_actors.slice(rank=src_rank)
-                staging_futures.append(
-                    (
-                        src_rank,
-                        dst_rank,
-                        chunk_idx,
-                        src.get_blocks_rdma_buffer.call(
-                            block_chunks[chunk_idx], total_size
-                        ),
+        # Step 3: Collect leader RDMABuffers and fan out to peers.
+        # Each leader's receive_and_relay_rdma returns an RDMABuffer
+        # wrapping the staging buffer it received into — no re-gather needed.
+        peer_futures = []
+        for leader_rank, relay_f in leader_relay_futures.items():
+            leader_rdma_result = relay_f.get()
+            elapsed = time.time() - t_setup
+            gbs = (total_bytes / 1e9) / max(elapsed, 1e-9)
+            print(
+                f"  leader rank={leader_rank}: {total_bytes // (1024**2)}MiB "
+                f"done at {elapsed:.1f}s ({gbs:.1f} GB/s)",
+                file=sys.stderr,
+                flush=True,
+            )
+            leader_rdma_buf = [v for _, v in leader_rdma_result][0]
+            for peer_rank in leader_peer_groups[leader_rank]:
+                worker = flat_actors.slice(rank=peer_rank)
+                peer_futures.append(
+                    worker.receive_rdma.call(
+                        leader_rdma_buf, dirty_blocks, total_size
                     )
                 )
 
-            # Collect staging results and fire transfers.
-            transfer_futures = []
-            for _src_rank, dst_rank, chunk_idx, staging_f in staging_futures:
-                rdma_result = staging_f.get()
-                rdma_buf = [v for _, v in rdma_result][0]
-                dst = flat_actors.slice(rank=dst_rank)
-                transfer_futures.append(
-                    (
-                        dst_rank,
-                        chunk_idx,
-                        dst.replace_blocks.call(
-                            block_chunks[chunk_idx],
-                            total_size,
-                            rdma_buf,
-                            chunk_byte_sizes[chunk_idx],
-                        ),
-                    )
-                )
-
-            for dst_rank, chunk_idx, f in transfer_futures:
-                f.get()
-                chunk_owners[chunk_idx].add(dst_rank)
-                if all(dst_rank in chunk_owners[c] for c in range(num_chunks)):
-                    completed_peers.add(dst_rank)
-
-        t_rdma = time.time()
-        tls_gbs = (total_bytes / 1e9) / max(t_tls - t0, 1e-9)
-        rdma_gbs = (total_bytes * len(peer_ranks) / 1e9) / max(t_rdma - t_tls, 1e-9)
+        t_leaders = time.time()
         print(
-            f"TLS→{num_leaders} leaders: {total_bytes // (1024**2)}MiB in {t_tls - t0:.1f}s "
-            f"({tls_gbs:.1f} GB/s), "
-            f"RDMA fan-out: {len(dirty_blocks)} blocks to {len(peer_ranks)} "
-            f"peers in {t_rdma - t_tls:.1f}s ({rdma_gbs:.1f} GB/s)",
+            f"Client → {num_leaders} leader(s): "
+            f"{total_bytes // (1024**2)}MiB in {t_leaders - t_setup:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        for f in peer_futures:
+            f.get()
+
+        t_done = time.time()
+        peer_gbs = (total_bytes * len(peer_ranks) / 1e9) / max(t_done - t_leaders, 1e-9)
+        print(
+            f"{num_leaders} leader(s) → {len(peer_ranks)} peer(s) via RDMA: "
+            f"{total_bytes // (1024**2)}MiB in {t_done - t_leaders:.1f}s "
+            f"({peer_gbs:.1f} GB/s), "
+            f"total={t_done - t0:.1f}s",
             file=sys.stderr,
             flush=True,
         )
@@ -1162,24 +874,11 @@ def remotemount(
     mntpoint: Optional[str] = None,
     chunk_size: Optional[int] = None,
     backend: str = "slurm",
-    num_parallel_streams: int = 8,
-    transfer_mode: str = "rust_tls",
-    cert_path: Optional[str] = None,
-    tls_port: int = 0,
 ) -> MountHandler:
     """Mount a local directory on remote hosts via RDMA transfer and FUSE.
 
-    Args:
-        transfer_mode: "rust_tls" (default) uses custom Rust TLS sender/receiver
-            for maximum throughput. "actor" uses monarch's built-in actor message
-            passing — slower but works without Meta TLS certs (e.g. CI, local testing).
-        cert_path: Path to a PEM file containing cert + private key for TLS.
-            Used by the receiver (server identity). If None, falls back to
-            Meta's default cert paths. When set, the sender skips server
-            verification (for self-signed certs).
-        tls_port: Port for the TLS receiver to bind to. Default 0 picks a
-            random port. Set to a known port when using pre-established
-            port-forward tunnels.
+    Uses RDMABuffer for data transfer — supports ibverbs (hardware RDMA)
+    with automatic TCP fallback when ibverbs is unavailable.
     """
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
@@ -1189,8 +888,4 @@ def remotemount(
         mntpoint,
         chunk_size,
         backend,
-        num_parallel_streams,
-        transfer_mode,
-        cert_path,
-        tls_port,
     )

@@ -8,6 +8,12 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+// Force the linker to retain serde Deserialize impls for types used
+// through trait-object dispatch in upstream crates. Without this, the
+// cdylib linker strips the generated visitor functions, causing
+// undefined symbol errors at runtime.
+
+
 #[cfg(feature = "tensor_engine")]
 mod client;
 pub mod code_sync;
@@ -26,7 +32,7 @@ mod fast_pack;
 mod panic;
 mod readonly_fuse;
 mod tls_receiver;
-mod tls_sender;
+pub(crate) mod tls_sender;
 mod trace;
 
 use pyo3::prelude::*;

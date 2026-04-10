@@ -128,7 +128,6 @@ def main(
     num_hosts: int = 2,
     gpus_per_host: int = 8,
     host_type: str = "grandteton",
-    num_parallel_streams: int = 8,
 ):
     t_main_start = time.time()
     if verbose:
@@ -156,6 +155,7 @@ def main(
         actor_spawn_max_idle="300s",
         message_delivery_timeout="600s",
         rdma_max_chunk_size_mb=256,
+        rdma_tcp_fallback_parallelism=8,
     )
     t_configure_done = time.time()
     print(
@@ -241,7 +241,6 @@ def main(
         str(mount_point),
         chunk_size=chunk_size,
         backend=backend,
-        num_parallel_streams=num_parallel_streams,
     )
     rm.open()
     t_rm_open = time.time()
@@ -318,6 +317,5 @@ if __name__ == "__main__":
     parser.add_argument("--num_hosts", type=int, default=2)
     parser.add_argument("--gpus_per_host", type=int, default=8)
     parser.add_argument("--host_type", default="grandteton")
-    parser.add_argument("--num_parallel_streams", type=int, default=8)
     args = parser.parse_args()
     main(**vars(args))
