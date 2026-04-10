@@ -8,8 +8,8 @@
 
 """Benchmark remotemount transfer throughput.
 
-Compares transfer modes (actor vs rust_tls) and varies TLS stream counts.
-Measures cold transfer, no-change skip, and incremental re-transfer.
+Measures cold transfer, no-change skip, and incremental re-transfer
+using RDMA-based flat fan-out.
 
 Usage:
     buck run fbcode//monarch/python/benches/remotemount:bench_tls_packing
@@ -49,13 +49,6 @@ class TestActor(Actor):
             return f"ERROR: {e}"
 
 
-CERT_PATH = "/var/facebook/x509_identities/server.pem"
-
-
-def _has_tls_certs():
-    return os.path.exists(CERT_PATH)
-
-
 def _format_throughput(nbytes, seconds):
     if seconds <= 0:
         return "inf"
@@ -65,28 +58,15 @@ def _format_throughput(nbytes, seconds):
     return f"{mbps:.0f} MB/s"
 
 
-def bench_cold_transfer(
-    host_mesh,
-    test_dir,
-    backend,
-    transfer_mode,
-    num_parallel_streams=8,
-):
-    """Run a single cold transfer and return (open_time, data_size)."""
+def bench_cold_transfer(host_mesh, test_dir, backend):
+    """Run a single cold transfer and return open_time."""
     from monarch.remotemount import remotemount
 
     mount_point = (
         test_dir if backend == "mast" else tempfile.mkdtemp(prefix="remotemount_mnt_")
     )
 
-    handler = remotemount(
-        host_mesh,
-        test_dir,
-        mount_point,
-        backend=backend,
-        transfer_mode=transfer_mode,
-        num_parallel_streams=num_parallel_streams,
-    )
+    handler = remotemount(host_mesh, test_dir, mount_point, backend=backend)
 
     t0 = time.time()
     handler.open()
@@ -100,14 +80,7 @@ def bench_cold_transfer(
     return open_time
 
 
-def bench_incremental_cycle(
-    host_mesh,
-    test_dir,
-    test_actors,
-    backend,
-    transfer_mode,
-    num_parallel_streams=8,
-):
+def bench_incremental_cycle(host_mesh, test_dir, test_actors, backend):
     """Run full open/skip/modify/re-transfer cycle. Returns dict of timings."""
     from monarch.remotemount import remotemount
 
@@ -115,14 +88,7 @@ def bench_incremental_cycle(
         test_dir if backend == "mast" else tempfile.mkdtemp(prefix="remotemount_mnt_")
     )
 
-    handler = remotemount(
-        host_mesh,
-        test_dir,
-        mount_point,
-        backend=backend,
-        transfer_mode=transfer_mode,
-        num_parallel_streams=num_parallel_streams,
-    )
+    handler = remotemount(host_mesh, test_dir, mount_point, backend=backend)
 
     # Cold transfer.
     t0 = time.time()
@@ -180,6 +146,7 @@ def main(
     host_type="gb300",
     locality_constraints="",
     data_size_mb=50,
+    runs=3,
     verbose=True,
 ) -> None:
     if verbose:
@@ -194,8 +161,8 @@ def main(
     configure(
         enable_log_forwarding=True,
         tail_log_lines=100,
-        host_spawn_ready_timeout="120s",
-        mesh_proc_spawn_max_idle="120s",
+        host_spawn_ready_timeout="300s",
+        mesh_proc_spawn_max_idle="300s",
         message_delivery_timeout="600s",
     )
 
@@ -222,7 +189,7 @@ def main(
     print("=" * 78)
     print(f"Remotemount benchmark — {total / (1024 * 1024):.0f} MB payload")
     print("=" * 78)
-    print(f"Backend: {backend}, TLS certs: {_has_tls_certs()}\n")
+    print(f"Backend: {backend}\n")
 
     # Set up host mesh.
     job = None
@@ -244,13 +211,15 @@ def main(
             env={
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "MAST_PRECHECK_SKIP_TIME_CONSUMING_CHECKS": "1",
+                # Force lazy symbol binding on aarch64 to avoid
+                # ImportError on undefined symbols never called at runtime.
+                "LD_BIND_LAZY": "1",
+                "MONARCH_RDMA_TCP_FALLBACK_PARALLELISM": os.environ.get(
+                    "MONARCH_RDMA_TCP_FALLBACK_PARALLELISM", "1"
+                ),
             },
         )
         job.add_mesh("workers", num_hosts, host_type=host_type)
-        # A workspace directory triggers conda-packing of CONDA_PREFIX
-        # into an ephemeral fbpkg shipped to workers. Without this, the
-        # scheduler deploys the base image as-is (x86), which fails on
-        # aarch64 hosts like GB200/GB300.
         job.add_directory(tempfile.mkdtemp())
         host_meshes = job.state()
         host_mesh = host_meshes.workers
@@ -260,62 +229,33 @@ def main(
     procs = host_mesh.spawn_procs(per_host={"gpus": gpus_per_host})
     test_actors = procs.spawn("TestActor", TestActor)
 
-    # ---- Section 1: actor vs rust_tls comparison ----
-    modes = ["actor"]
-    if _has_tls_certs() or backend == "mast":
-        modes.append("rust_tls")
+    # ---- Cold transfer runs ----
+    data_bin = os.path.join(test_dir, "data.bin")
+    data_size = os.path.getsize(data_bin)
 
-    print("--- Transfer mode comparison (cold transfer) ---")
-    print(f"{'Mode':>12}  {'Streams':>8}  {'Cold':>8}  {'Throughput':>12}")
-    print("-" * 48)
+    print(f"--- Cold transfer ({runs} runs) ---")
+    print(f"{'Run':>5}  {'Cold':>8}  {'Throughput':>12}")
+    print("-" * 30)
 
-    for mode in modes:
-        streams = 8 if mode == "rust_tls" else 1
-        t = bench_cold_transfer(
-            host_mesh, test_dir, backend, mode, num_parallel_streams=streams
-        )
-        print(
-            f"{mode:>12}  {streams:>8}  {t:>7.2f}s  {_format_throughput(total, t):>12}"
-        )
+    for run in range(runs):
+        # Rewrite data.bin to force cold transfer.
+        with open(data_bin, "wb") as f:
+            remaining = data_size
+            while remaining > 0:
+                chunk = min(remaining, 64 * 1024 * 1024)
+                f.write(os.urandom(chunk))
+                remaining -= chunk
+        t = bench_cold_transfer(host_mesh, test_dir, backend)
+        print(f"{run + 1:>5}  {t:>7.2f}s  {_format_throughput(total, t):>12}")
 
-    # ---- Section 2: rust_tls stream count sweep ----
-    if "rust_tls" in modes:
-        print("\n--- rust_tls stream count sweep (cold transfer) ---")
-        print(f"{'Streams':>8}  {'Cold':>8}  {'Throughput':>12}")
-        print("-" * 34)
-
-        for streams in [1, 2, 4, 8, 16]:
-            t = bench_cold_transfer(
-                host_mesh,
-                test_dir,
-                backend,
-                "rust_tls",
-                num_parallel_streams=streams,
-            )
-            print(f"{streams:>8}  {t:>7.2f}s  {_format_throughput(total, t):>12}")
-
-    # ---- Section 3: full incremental cycle for each mode ----
+    # ---- Incremental cycle ----
     print("\n--- Incremental cycle (cold / skip / re-transfer) ---")
+    timings = bench_incremental_cycle(host_mesh, test_dir, test_actors, backend)
     print(
-        f"{'Mode':>12}  {'Cold':>8}  {'Skip':>8}  {'Retransfer':>10}  {'Throughput':>12}"
+        f"  Cold:       {timings['cold']:>7.2f}s  {_format_throughput(total, timings['cold']):>12}"
     )
-    print("-" * 60)
-
-    for mode in modes:
-        streams = 8 if mode == "rust_tls" else 1
-        timings = bench_incremental_cycle(
-            host_mesh,
-            test_dir,
-            test_actors,
-            backend,
-            mode,
-            num_parallel_streams=streams,
-        )
-        print(
-            f"{mode:>12}  {timings['cold']:>7.2f}s  {timings['skip']:>7.2f}s  "
-            f"{timings['retransfer']:>9.2f}s  "
-            f"{_format_throughput(total, timings['cold']):>12}"
-        )
+    print(f"  Skip:       {timings['skip']:>7.2f}s")
+    print(f"  Retransfer: {timings['retransfer']:>7.2f}s")
 
     print()
 

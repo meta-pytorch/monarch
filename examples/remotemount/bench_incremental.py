@@ -112,7 +112,27 @@ def _run(
         cmd.extend(extra_args)
 
     t0 = time.time()
-    result = subprocess.run(cmd, input=script, capture_output=True, text=True)
+    # Stream output live while capturing for parsing.
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    proc.stdin.write(script)
+    proc.stdin.close()
+    lines = []
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        lines.append(line)
+        print(f"    | {line}", flush=True)
+    proc.wait()
+    stdout_data = "\n".join(lines)
+    result = subprocess.CompletedProcess(
+        cmd, proc.returncode, stdout=stdout_data, stderr=""
+    )
     elapsed = time.time() - t0
 
     # Extract classification from logs.
@@ -512,7 +532,7 @@ def main(
     )
     os.makedirs(base_work_dir, exist_ok=True)
 
-    extra_args = ["--num_parallel_streams", str(streams)]
+    extra_args = []
 
     all_results = {}
     for num_hosts in host_list:
